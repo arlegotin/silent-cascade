@@ -43,6 +43,9 @@ qwen = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/silent_cascade"]
 
+[tool.hatch.build.targets.sdist]
+only-include = ["src/silent_cascade", "README.md", "LICENSE", "pyproject.toml"]
+
 [tool.pytest.ini_options]
 minversion = "8.4"
 testpaths = ["tests"]
