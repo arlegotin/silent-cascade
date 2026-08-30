@@ -11,6 +11,14 @@ from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.validation import JsonValue
 
 
+class _PreparationCleanupError(Exception):
+    def __init__(self, primary: OSError, temp_path: Path, cleanup_reason: str) -> None:
+        super().__init__(str(primary))
+        self.primary = primary
+        self.temp_path = temp_path
+        self.cleanup_reason = cleanup_reason
+
+
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
     try:
@@ -30,6 +38,10 @@ def _durable_temp(path: Path, data: bytes, mode: int) -> Path:
             os.fsync(handle.fileno())
         os.chmod(temp_path, mode)
         return temp_path
+    except OSError as error:
+        if cleanup_reason := _cleanup_temp(temp_path):
+            raise _PreparationCleanupError(error, temp_path, cleanup_reason) from error
+        raise
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
@@ -46,6 +58,17 @@ def _cleanup_temp(path: Path) -> str | None:
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
     try:
         temp_path = _durable_temp(path, data, mode)
+    except _PreparationCleanupError as error:
+        raise AtomicWriteError(
+            "atomic preparation failed",
+            context={
+                "path": str(path),
+                "published": False,
+                "reason": str(error.primary),
+                "cleanup_reason": error.cleanup_reason,
+                "temp_path": str(error.temp_path),
+            },
+        ) from error.primary
     except OSError as error:
         raise AtomicWriteError(
             "atomic preparation failed",
@@ -80,6 +103,17 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
 def atomic_create_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
     try:
         temp_path = _durable_temp(path, data, mode)
+    except _PreparationCleanupError as error:
+        raise AtomicWriteError(
+            "atomic preparation failed",
+            context={
+                "path": str(path),
+                "published": False,
+                "reason": str(error.primary),
+                "cleanup_reason": error.cleanup_reason,
+                "temp_path": str(error.temp_path),
+            },
+        ) from error.primary
     except OSError as error:
         raise AtomicWriteError(
             "atomic preparation failed",
