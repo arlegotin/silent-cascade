@@ -2,6 +2,7 @@
 
 import copy
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,11 +43,14 @@ def seed_all(seed: int) -> None:
         raise TypeError("seed must be an int")
     if not 0 <= seed <= 2**64 - 1:
         raise ValueError("seed must be in range 0..2**64-1")
-    random.seed(seed)
-    np.random.seed(seed % (2**32))
-    torch.manual_seed(seed)
-    if mps_rng_state_supported() and hasattr(torch.mps, "manual_seed"):
-        torch.mps.manual_seed(seed)
+
+    def apply_seed() -> None:
+        random.seed(seed)
+        np.random.seed(seed % (2**32))
+        # torch.manual_seed also seeds the MPS default generator when present.
+        torch.manual_seed(seed)
+
+    _apply_transactionally("seed global RNGs", apply_seed)
 
 
 def snapshot_global_rng() -> RngSnapshot:
@@ -60,13 +64,76 @@ def snapshot_global_rng() -> RngSnapshot:
 
 
 def restore_global_rng(snapshot: RngSnapshot) -> None:
+    _prevalidate_snapshot(snapshot)
+    _apply_transactionally("restore global RNGs", lambda: _apply_snapshot(snapshot))
+
+
+def _prevalidate_snapshot(snapshot: RngSnapshot) -> None:
     if snapshot.torch_mps_state is not None and not mps_rng_state_supported():
         raise DoctorError("MPS RNG state cannot be restored on this runtime")
-    random.setstate(snapshot.python_state)
-    np.random.set_state(snapshot.numpy_state)
+
+    isolated_python = random.Random()
+    isolated_python.setstate(copy.deepcopy(snapshot.python_state))
+
+    isolated_numpy = np.random.RandomState()
+    isolated_numpy.set_state(copy.deepcopy(snapshot.numpy_state))
+
+    isolated_torch_cpu = torch.Generator(device="cpu")
+    isolated_torch_cpu.set_state(snapshot.torch_cpu_state.clone())
+
+
+def _apply_snapshot(snapshot: RngSnapshot) -> None:
+    random.setstate(copy.deepcopy(snapshot.python_state))
+    np.random.set_state(copy.deepcopy(snapshot.numpy_state))
     torch.set_rng_state(snapshot.torch_cpu_state.clone())
     if snapshot.torch_mps_state is not None:
         torch.mps.set_rng_state(snapshot.torch_mps_state.clone())
+
+
+def _apply_transactionally(operation: str, mutation: Callable[[], None]) -> None:
+    caller_snapshot = snapshot_global_rng()
+    try:
+        mutation()
+    except Exception as original_error:
+        rollback_errors = _rollback_global_rng(caller_snapshot)
+        if rollback_errors:
+            rollback_detail = "; ".join(rollback_errors)
+            raise DoctorError(
+                f"{operation} failed and RNG rollback also failed: "
+                f"{type(original_error).__name__}: {original_error}; {rollback_detail}",
+                context={
+                    "operation": operation,
+                    "original_error_type": type(original_error).__name__,
+                    "original_error": str(original_error),
+                    "rollback_errors": rollback_errors,
+                },
+            ) from original_error
+        raise
+
+
+def _rollback_global_rng(snapshot: RngSnapshot) -> list[str]:
+    """Best-effort rollback that never re-enters the public restore path."""
+
+    rollback_errors: list[str] = []
+    for backend, restore in (
+        ("Python", lambda: random.setstate(copy.deepcopy(snapshot.python_state))),
+        ("NumPy", lambda: np.random.set_state(copy.deepcopy(snapshot.numpy_state))),
+        ("Torch CPU", lambda: torch.set_rng_state(snapshot.torch_cpu_state.clone())),
+    ):
+        try:
+            restore()
+        except Exception as error:
+            rollback_errors.append(f"{backend}: {type(error).__name__}: {error}")
+
+    if snapshot.torch_mps_state is not None:
+        try:
+            if not mps_rng_state_supported():
+                raise DoctorError("MPS RNG state cannot be restored on this runtime")
+            torch.mps.set_rng_state(snapshot.torch_mps_state.clone())
+        except Exception as error:
+            rollback_errors.append(f"MPS: {type(error).__name__}: {error}")
+
+    return rollback_errors
 
 
 def verify_rng_round_trip(*, include_mps: bool) -> RngRoundTripReport:
