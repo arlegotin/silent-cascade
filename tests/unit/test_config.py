@@ -1,9 +1,17 @@
 from pathlib import Path
 
 import pytest
+import yaml
+from pydantic import Field
 
 from silent_cascade.config import ProjectConfig, parse_set_override, resolve_config
 from silent_cascade.errors import ConfigurationError
+from silent_cascade.validation import StrictModel
+
+
+class MergeConfig(StrictModel):
+    literal_merge: int = Field(alias="<<")
+    merged_value: int
 
 
 def write_yaml(path: Path, text: str) -> Path:
@@ -131,6 +139,33 @@ def test_parse_set_override_rejects_repeated_yaml_merge_keys_with_expression_con
         parse_set_override(expression)
 
     assert raised.value.context == {"expression": expression, "key": "<<"}
+
+
+def test_resolve_config_allows_quoted_merge_literal_with_merge_directive(
+    tmp_path: Path,
+) -> None:
+    config = write_yaml(
+        tmp_path / "merge-literal.yaml",
+        '"<<": 7\n<<: {merged_value: 9}\n',
+    )
+
+    resolved = resolve_config(MergeConfig, [config])
+
+    assert yaml.safe_load(config.read_text(encoding="utf-8")) == {
+        "<<": 7,
+        "merged_value": 9,
+    }
+    assert resolved.config.literal_merge == 7
+    assert resolved.config.merged_value == 9
+
+
+def test_parse_set_override_allows_quoted_merge_literal_with_merge_directive() -> None:
+    expression = 'config={"<<": 7, <<: {merged_value: 9}}'
+
+    path, value = parse_set_override(expression)
+
+    assert path == ("config",)
+    assert value == yaml.safe_load(expression.split("=", 1)[1])
 
 
 def test_resolve_config_allows_explicit_key_to_override_yaml_merge(tmp_path: Path) -> None:

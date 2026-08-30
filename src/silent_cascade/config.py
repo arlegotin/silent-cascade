@@ -112,6 +112,7 @@ class ResolvedConfig[TConfig: StrictModel]:
 
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+_MERGE_KEY_SENTINEL = object()
 
 
 class _DuplicateKeyError(ConstructorError):
@@ -138,13 +139,11 @@ class _StrictSafeLoader(yaml.SafeLoader):
 
         seen_keys: set[object] = set()
         for key_node, _value_node in node.value:
-            key = (
-                "<<"
-                if key_node.tag == _YAML_MERGE_TAG
-                else self.construct_object(key_node, deep=deep)
-            )
+            is_merge_key = key_node.tag == _YAML_MERGE_TAG
+            key = "<<" if is_merge_key else self.construct_object(key_node, deep=deep)
+            seen_key = _MERGE_KEY_SENTINEL if is_merge_key else key
             try:
-                hash(key)
+                hash(seen_key)
             except TypeError as error:
                 raise ConstructorError(
                     "while constructing a mapping",
@@ -152,9 +151,9 @@ class _StrictSafeLoader(yaml.SafeLoader):
                     "found unhashable key",
                     key_node.start_mark,
                 ) from error
-            if key in seen_keys:
+            if seen_key in seen_keys:
                 raise _DuplicateKeyError(key, node, key_node)
-            seen_keys.add(key)
+            seen_keys.add(seen_key)
         return super().construct_mapping(node, deep=deep)
 
 
