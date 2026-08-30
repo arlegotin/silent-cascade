@@ -4,6 +4,16 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-08-30 — Plan version 1.0.2
+
+CI/CD was removed by explicit project-owner direction. Silent Cascade now uses
+only local verification: `make verify` runs linting, formatting checks, tests,
+the environment doctor, and the package build in the current workspace. No
+hosted workflow, deployment pipeline, release pipeline, or third-party
+automation is configured. This operational policy does not alter the frozen
+scientific controls, metrics, acceptance gates, or zero-foundation-call primary
+path.
+
 ## 2026-08-30 — Plan version 1.0.1
 
 The optional `qwen` dependency range `huggingface-hub>=0.34,<1` was changed to

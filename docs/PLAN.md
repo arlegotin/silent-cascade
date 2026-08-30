@@ -4,7 +4,7 @@ The canonical requirements live in the [design specification](superpowers/specs/
 
 | Phase | Plan | Gate |
 |---|---|---|
-| 0 — Bootstrap | [Phase 0 implementation plan](superpowers/plans/2026-08-30-phase-0-bootstrap.md) | `uv sync --locked --group dev`, `make ci`, and `uv run silent-cascade doctor` |
+| 0 — Bootstrap | [Phase 0 implementation plan](superpowers/plans/2026-08-30-phase-0-bootstrap.md) | `uv sync --locked --group dev`, `make verify`, and `uv run silent-cascade doctor` |
 | 1 — Generator and oracle | Governed by a separate plan after the Phase 0 gate | Phase 0 must pass first |
 | 2 — Flow and event engine | Governed by a separate plan after the Phase 1 gate | Phase 1 must pass first |
 | 3 — Neural components | Governed by a separate plan after the Phase 2 gate | Phase 2 must pass first |

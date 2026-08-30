@@ -52,6 +52,17 @@ By default, always work in current branch and make meaningful commits along the 
 - When blocked, investigate systematically, choose the strongest supported
   path, document the ruling and its tradeoff, and keep delivering.
 
+## Local-only verification policy
+
+- Do not add or restore CI/CD workflows, hosted build/test automation,
+  deployment pipelines, release pipelines, or third-party automation unless the
+  user explicitly reverses this policy.
+- Run linting, formatting, tests, doctor diagnostics, and package builds only
+  in the local workspace. Use `make verify` as the complete local quality gate.
+- Do not describe a hosted check as required or available when documenting the
+  project. Keep repository instructions and phase plans aligned with this
+  local-only policy.
+
 ## Silent Cascade contract
 
 - The Python package is named `silent_cascade`; the CLI executable is

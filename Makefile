@@ -1,4 +1,4 @@
-.PHONY: setup doctor lint test smoke ci
+.PHONY: setup doctor lint test smoke verify
 
 setup:
 	uv sync --locked --group dev
@@ -16,4 +16,5 @@ test:
 smoke:
 	uv run pytest -q tests/integration/test_cli_doctor.py tests/regression/test_import_boundaries.py
 
-ci: lint test doctor
+verify: lint test doctor
+	uv build

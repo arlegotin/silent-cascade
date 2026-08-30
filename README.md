@@ -9,10 +9,13 @@ The repository is in Phase 0 bootstrap and reports no benchmark results. The pro
 ```bash
 uv sync --locked --group dev
 uv run silent-cascade doctor
-make ci
+make verify
 ```
 
 The primary path is offline at runtime and uses exactly zero foundation-model calls. Qwen is optional, isolated, and outside the scientific path.
+
+No CI/CD is configured for this project. Linting, tests, environment checks,
+and package builds run only in the local workspace.
 
 ## Protocol
 

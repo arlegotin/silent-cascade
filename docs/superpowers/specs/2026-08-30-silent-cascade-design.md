@@ -4,7 +4,7 @@
 
 **Status:** Approved design specification
 
-**Plan version:** 1.0.1
+**Plan version:** 1.0.2
 
 **Research freeze date:** 2026-08-30
 
@@ -55,6 +55,10 @@ Non-negotiable rules:
 8. Do not weaken baselines, metrics, or acceptance gates after viewing frozen-test results.
 9. The final repository must contain no unfinished-work markers, dummy metrics, fake plots, or stubbed documented commands.
 10. A scientifically negative result is acceptable. An unreproducible or weakly controlled positive result is not.
+11. CI/CD is disabled for this project. Run linting, tests, diagnostics, and
+    package builds only in the local workspace; do not add hosted workflows or
+    deployment/release pipelines unless the repository owner explicitly
+    reverses this policy.
 
 ---
 
@@ -1355,7 +1359,7 @@ The implementation is technically valid only when:
 - CPU replay reproduces publication traces and decisions;
 - checkpoint continuation is identical on CPU;
 - generator shortcut audits pass;
-- CI and local MPS smoke tests pass;
+- local CPU and MPS verification passes;
 - all tables are generated from raw artifacts.
 
 ### 10.11 Scientific-support gates
@@ -1600,7 +1604,6 @@ silent-cascade/
 ├── Makefile
 ├── .python-version
 ├── .gitignore
-├── .github/workflows/ci.yml
 ├── configs/
 │   ├── base.yaml
 │   ├── data/{primary,stress}.yaml
@@ -1649,14 +1652,14 @@ Boundaries:
 - the engine never passes `EpisodeBundle`, generator seed, or private outcome specification to an agent condition;
 - `models`, `eventflow`, and `memory` may not import `env.oracle`;
 - training may consume oracle traces; evaluation must execute autonomously;
-- optional `foundation` packages are lazy imports and absent from core CI;
+- optional `foundation` packages are lazy imports and absent from local core verification;
 - reporting reads artifacts and may not silently rerun experiments.
 
 Commit source, tests, configs, frozen manifests, small fixtures, aggregate outputs, report Markdown, and selected figures. Do not commit Qwen weights, normal full checkpoints, large raw traces, caches, or machine-specific paths.
 
 ---
 
-## 15. Configuration, CLI, and workflows
+## 15. Configuration, CLI, and local workflows
 
 ### 15.1 Configuration
 
@@ -1718,7 +1721,7 @@ replay-samples
 demo
 demo-qwen
 release-audit
-ci
+verify
 ```
 
 All targets are idempotent. Reuse an artifact only when code revision, config hash, generator hash, checkpoint hash, and upstream artifact hashes match. Otherwise fail instead of overwriting. `pilot` creates only debug/validation manifests, runs the oracle and leakage audit, trains/evaluates one EventFlow seed, replays a sample, and builds a pilot report. `freeze-tests` is the only target allowed to create final frozen-test manifests.
@@ -1728,7 +1731,7 @@ All targets are idempotent. Reuse an artifact only when code revision, config ha
 ```bash
 uv sync --locked --group dev
 uv run silent-cascade doctor
-make ci
+make verify
 make pilot
 make freeze-tests
 make primary
@@ -1809,13 +1812,13 @@ Generate `reports/{version}/final_report.md` with abstract, claim boundary, task
 
 ### Phase 0 — bootstrap
 
-Implement package, lockfile, license, config validation/hashing, CLI, typed errors, atomic writes, CPU CI, Makefile, and a short `docs/PLAN.md` index pointing to this canonical specification and the approved phase plans.
+Implement package, lockfile, license, config validation/hashing, CLI, typed errors, atomic writes, local CPU verification, Makefile, and a short `docs/PLAN.md` index pointing to this canonical specification and the approved phase plans.
 
 Gate:
 
 ```bash
 uv sync --locked --group dev
-make ci
+make verify
 uv run silent-cascade doctor
 ```
 
@@ -1913,9 +1916,13 @@ Gate: typed demo works with Qwen absent; Qwen cannot mutate memory or act; core 
 
 Commit a small set of fixed episodes and expected oracle traces, guard crossings, checkpoint continuation, aggregate statistics, and a deterministic miniature report. Update only with explicit schema/version changes and a documented reason.
 
-### CI
+### Local verification
 
-Linux CPU CI runs lint, formatting check, unit/property/integration tests, a small leakage audit, oracle smoke, tiny training/autonomous evaluation, and report fixture. MPS and Qwen are local gates, not required in hosted CI.
+`make verify` runs linting, formatting checks, unit/property/integration tests,
+the relevant leakage and oracle smoke checks, tiny training/autonomous
+evaluation, report fixtures, environment diagnostics, and package builds in the
+local workspace. MPS and Qwen remain capability-gated local checks. No hosted
+CI/CD is configured.
 
 ---
 
@@ -2044,7 +2051,7 @@ Publish the architecture diagram, successful/failure timelines, compute Pareto c
 - no third-party model weights committed;
 - no telemetry;
 - no web, shell, or personal-file access in the agent;
-- badges limited to CI, license, and reproduction;
+- badges limited to license and reproduction;
 - one frozen-protocol tag and one result-release tag;
 - generated files below normal GitHub limits.
 
@@ -2179,7 +2186,7 @@ Large checkpoints and raw traces may be release attachments or regenerated; the 
 
 ### Bootstrap
 
-- [ ] Create package, license, README shell, lockfile, Makefile, CI, config models, hashing, `doctor`, atomic writes, and crash bundles.
+- [ ] Create package, license, README shell, lockfile, Makefile, local verification, config models, hashing, `doctor`, atomic writes, and crash bundles.
 - [ ] Confirm core imports do not load optional MLX packages or initiate downloads.
 
 ### Environment and oracle

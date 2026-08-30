@@ -35,6 +35,7 @@
 - Modify: `docs/PLAN.md`
 - Modify: `docs/deviations.md`
 - Modify: `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`
+- Modify: `docs/superpowers/plans/2026-08-30-local-only-verification.md`
 - Modify: `docs/superpowers/plans/2026-08-30-phase-0-bootstrap.md`
 
 **Interfaces:**
@@ -157,12 +158,16 @@ Apply all of these exact policy changes:
 4. Canonical design: bump `Plan version` to `1.0.2`; add a non-negotiable local-only automation rule; remove `.github/workflows/ci.yml` from the tree; replace every active CI/hosted-workflow requirement with local verification; rename the CI test-plan subsection to `Local verification`; remove the CI badge allowance.
 5. Phase 0 plan: replace CPU/Linux CI goals, file-map entries, coverage evidence, Task 8 workflow steps, commands, and completion gates with local verification; change the Task 8 commit example to `chore: add local Phase 0 quality gate`.
 
-After editing, this command must print nothing:
+After editing, this command must print nothing across the maintained product and
+Phase 0 documents. This migration plan is intentionally excluded because it
+records the removed path and the RED state that preceded the change.
 
 ```bash
 rg -n -i \
   'make ci|\.github/workflows|linux cpu ci|hosted ci|core ci|cpu ci|github actions' \
-  AGENTS.md README.md Makefile docs tests
+  AGENTS.md README.md Makefile docs/PLAN.md docs/deviations.md \
+  docs/superpowers/specs/2026-08-30-silent-cascade-design.md \
+  docs/superpowers/plans/2026-08-30-phase-0-bootstrap.md tests
 ```
 
 Explicit statements that CI/CD is disabled are allowed and required.
@@ -201,6 +206,7 @@ Expected: locked sync, lint, formatting, all tests, doctor, package build, impor
 ```bash
 git add AGENTS.md Makefile README.md docs/PLAN.md docs/deviations.md \
   docs/superpowers/specs/2026-08-30-silent-cascade-design.md \
+  docs/superpowers/plans/2026-08-30-local-only-verification.md \
   docs/superpowers/plans/2026-08-30-phase-0-bootstrap.md \
   tests/integration/test_phase0_repository.py
 git add -u .github/workflows/ci.yml
@@ -208,4 +214,3 @@ git commit -m "chore: make project verification local-only"
 ```
 
 Verify the committed state with `make verify` and `git status --short`.
-
