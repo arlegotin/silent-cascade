@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.29"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked core and development dependencies
+        run: uv sync --locked --group dev
+      - name: Run Phase 0 quality gate
+        run: make ci
+      - name: Build source and wheel artifacts
+        run: uv build
