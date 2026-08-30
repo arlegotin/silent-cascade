@@ -33,3 +33,23 @@ The implementation uses the exact requested Pydantic configuration and exception
 ## Concerns
 
 None. The default uv cache remains inaccessible in this sandbox; verification used the permitted task-scoped `/tmp/silent-cascade-uv-cache` and repository behavior is unchanged.
+
+## Fix Round 1
+
+Review identified that the original shallow context copy did not enforce the JSON-compatible `JsonValue` contract at runtime. Added focused tests in `tests/unit/test_errors.py` proving construction rejects arbitrary objects, nested non-finite floats, and non-string nested mapping keys. Added the private `_validated_json_value` recursive validator in `src/silent_cascade/errors.py`; it canonicalizes supported lists/dicts, enforces string keys, rejects unsupported values, and rejects NaN/infinities before storage.
+
+Exact RED command and result:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest tests/unit/test_errors.py -q
+2 failed, 2 passed in 0.31s
+```
+
+Exact focused GREEN command and result:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest tests/unit/test_errors.py tests/unit/test_validation.py tests/unit/test_package.py -q && git diff --check
+7 passed in 0.16s
+```
+
+The reviewer's deferred infinity-only `StrictModel` coverage item was not expanded in this fix round.

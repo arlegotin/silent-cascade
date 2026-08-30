@@ -1,9 +1,32 @@
 """Stable typed errors for fail-loud execution."""
 
 from collections.abc import Mapping
+import math
 from typing import ClassVar
 
 from silent_cascade.validation import JsonValue
+
+
+def _validated_json_value(value: object, *, path: str = "context") -> JsonValue:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must contain finite numbers")
+        return value
+    if isinstance(value, list):
+        return [
+            _validated_json_value(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        result: dict[str, JsonValue] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} mapping keys must be strings")
+            result[key] = _validated_json_value(item, path=f"{path}.{key}")
+        return result
+    raise TypeError(f"{path} contains a non-JSON value: {type(value).__name__}")
 
 
 class SilentCascadeError(Exception):
@@ -17,7 +40,7 @@ class SilentCascadeError(Exception):
     ) -> None:
         super().__init__(message)
         self.message = message
-        self.context = dict(context or {})
+        self.context = _validated_json_value(dict(context or {}))
 
     def to_payload(self) -> dict[str, JsonValue]:
         return {

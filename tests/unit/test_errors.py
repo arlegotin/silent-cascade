@@ -1,3 +1,7 @@
+import math
+
+import pytest
+
 from silent_cascade.errors import (
     ArtifactError,
     AtomicWriteError,
@@ -20,3 +24,15 @@ def test_error_hierarchy_supports_precise_and_family_catches() -> None:
     assert issubclass(AtomicWriteError, ArtifactError)
     assert issubclass(ArtifactError, SilentCascadeError)
     assert issubclass(TimeOrderError, DynamicsError)
+
+
+def test_typed_error_rejects_non_json_context_values() -> None:
+    with pytest.raises(TypeError):
+        AtomicWriteError("invalid", context={"value": object()})
+
+
+def test_typed_error_rejects_nested_nonfinite_values_and_non_string_keys() -> None:
+    with pytest.raises(ValueError):
+        AtomicWriteError("invalid", context={"items": [{"value": math.inf}]})
+    with pytest.raises(TypeError):
+        AtomicWriteError("invalid", context={"items": {1: "value"}})
