@@ -35,6 +35,14 @@ def _durable_temp(path: Path, data: bytes, mode: int) -> Path:
         raise
 
 
+def _cleanup_temp(path: Path) -> str | None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        return str(error)
+    return None
+
+
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
     try:
         temp_path = _durable_temp(path, data, mode)
@@ -49,12 +57,18 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
         published = True
         _fsync_directory(path.parent)
     except OSError as error:
+        context = {"path": str(path), "published": published, "reason": str(error)}
+        if cleanup_reason := _cleanup_temp(temp_path):
+            context["cleanup_reason"] = cleanup_reason
         raise AtomicWriteError(
             "published but durability unconfirmed" if published else "atomic replace failed",
-            context={"path": str(path), "published": published, "reason": str(error)},
+            context=context,
         ) from error
-    finally:
-        temp_path.unlink(missing_ok=True)
+    if cleanup_reason := _cleanup_temp(temp_path):
+        raise AtomicWriteError(
+            "published but durability unconfirmed" if published else "atomic cleanup failed",
+            context={"path": str(path), "published": published, "cleanup_reason": cleanup_reason},
+        )
 
 
 def atomic_create_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
@@ -69,20 +83,28 @@ def atomic_create_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
     try:
         os.link(temp_path, path)
         published = True
-        temp_path.unlink()
         _fsync_directory(path.parent)
     except FileExistsError as error:
+        context = {"path": str(path), "published": False}
+        if cleanup_reason := _cleanup_temp(temp_path):
+            context["cleanup_reason"] = cleanup_reason
         raise AtomicWriteError(
             "artifact already exists",
-            context={"path": str(path), "published": False},
+            context=context,
         ) from error
     except OSError as error:
+        context = {"path": str(path), "published": published, "reason": str(error)}
+        if cleanup_reason := _cleanup_temp(temp_path):
+            context["cleanup_reason"] = cleanup_reason
         raise AtomicWriteError(
             "published but durability unconfirmed" if published else "atomic create failed",
-            context={"path": str(path), "published": published, "reason": str(error)},
+            context=context,
         ) from error
-    finally:
-        temp_path.unlink(missing_ok=True)
+    if cleanup_reason := _cleanup_temp(temp_path):
+        raise AtomicWriteError(
+            "published but durability unconfirmed",
+            context={"path": str(path), "published": published, "cleanup_reason": cleanup_reason},
+        )
 
 
 def atomic_write_text(

@@ -98,3 +98,46 @@ def test_atomic_create_post_publication_failure_reports_uncertain_durability(
     assert raised.value.context["published"] is True
     assert destination.read_bytes() == b"new"
     assert not list(tmp_path.glob(".artifact.bin.*.tmp"))
+
+
+def test_atomic_write_cleanup_failure_preserves_replace_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    destination.write_bytes(b"old")
+
+    monkeypatch.setattr(os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("replace")))
+    original_unlink = Path.unlink
+
+    def fail_temp_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith(".tmp"):
+            raise OSError("cleanup")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_temp_unlink)
+    with pytest.raises(AtomicWriteError, match="atomic replace failed") as raised:
+        atomic_write_bytes(destination, b"new")
+    assert raised.value.context["published"] is False
+    assert raised.value.context["cleanup_reason"] == "cleanup"
+    assert destination.read_bytes() == b"old"
+    assert list(tmp_path.glob(".artifact.bin.*.tmp"))
+
+
+def test_atomic_create_cleanup_failure_preserves_post_link_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    original_unlink = Path.unlink
+
+    def fail_temp_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith(".tmp"):
+            raise OSError("cleanup")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_temp_unlink)
+    with pytest.raises(AtomicWriteError, match="published but durability unconfirmed") as raised:
+        atomic_create_bytes(destination, b"new")
+    assert raised.value.context["published"] is True
+    assert raised.value.context["cleanup_reason"] == "cleanup"
+    assert destination.read_bytes() == b"new"
+    assert list(tmp_path.glob(".artifact.bin.*.tmp"))
