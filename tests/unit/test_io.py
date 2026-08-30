@@ -100,6 +100,22 @@ def test_atomic_create_post_publication_failure_reports_uncertain_durability(
     assert not list(tmp_path.glob(".artifact.bin.*.tmp"))
 
 
+def test_atomic_create_removes_temp_before_directory_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    observed: list[bool] = []
+    original_fsync = __import__("silent_cascade.io", fromlist=["_fsync_directory"])._fsync_directory
+
+    def record_directory_fsync(path: Path) -> None:
+        observed.append(bool(list(path.glob(".artifact.bin.*.tmp"))))
+        original_fsync(path)
+
+    monkeypatch.setattr("silent_cascade.io._fsync_directory", record_directory_fsync)
+    atomic_create_bytes(destination, b"new")
+    assert observed == [False]
+
+
 def test_atomic_write_cleanup_failure_preserves_replace_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -119,6 +135,7 @@ def test_atomic_write_cleanup_failure_preserves_replace_error(
         atomic_write_bytes(destination, b"new")
     assert raised.value.context["published"] is False
     assert raised.value.context["cleanup_reason"] == "cleanup"
+    assert raised.value.context["temp_path"]
     assert destination.read_bytes() == b"old"
     assert list(tmp_path.glob(".artifact.bin.*.tmp"))
 
@@ -139,5 +156,6 @@ def test_atomic_create_cleanup_failure_preserves_post_link_state(
         atomic_create_bytes(destination, b"new")
     assert raised.value.context["published"] is True
     assert raised.value.context["cleanup_reason"] == "cleanup"
+    assert raised.value.context["temp_path"]
     assert destination.read_bytes() == b"new"
     assert list(tmp_path.glob(".artifact.bin.*.tmp"))
