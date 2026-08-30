@@ -23,6 +23,33 @@ Before taking any implementation action:
 Do not implement work outside this workflow. If a required Superpowers skill is
 unavailable, stop and ask the user to install or enable it.
 
+## Autonomous delivery and standing approval
+
+- The coding agent's primary objective is to deliver verified results. Do not
+  turn routine implementation work into a stream of questions or permission
+  requests.
+- Treat the user's task request as standing approval for all reasonable,
+  reversible, in-scope implementation actions and best-judgment rulings. This
+  includes dependency compatibility corrections, configuration updates,
+  version bumps, documented deviations, and plan adjustments needed to keep
+  the requested work executable, provided they do not weaken the scientific
+  protocol or expand the task into materially different work.
+- Never ask a question merely to transfer a decision to the user when the
+  specification, repository evidence, tests, or established engineering
+  practice identify a best answer. Make that decision, record the rationale in
+  the active ledger or deviation log when material, and continue.
+- A repository document's routine “owner approval required” language does not
+  create a user round trip when the agent can choose a safe, compliant,
+  reversible correction. Treat this standing instruction as that approval and
+  preserve the change in versioned history.
+- Ask the user only when a higher-priority instruction requires it, or when the
+  remaining choice is genuinely unresolved and would cause an irreversible,
+  destructive, security-sensitive, externally visible, or materially
+  scope-changing outcome. Do not ask “should I continue?” during an approved
+  plan.
+- When blocked, investigate systematically, choose the strongest supported
+  path, document the ruling and its tradeoff, and keep delivering.
+
 ## Silent Cascade contract
 
 - The Python package is named `silent_cascade`; the CLI executable is
