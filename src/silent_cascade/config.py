@@ -22,6 +22,20 @@ class RuntimeConfig(StrictModel):
     allow_mps_fallback: Literal[False] = False
     primary_foundation_model_calls: Literal[0] = 0
 
+    @field_validator("primary_offline", "allow_mps_fallback", mode="before")
+    @classmethod
+    def require_exact_boolean_type(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("value must be an exact bool")
+        return value
+
+    @field_validator("primary_foundation_model_calls", mode="before")
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("value must be an exact int")
+        return value
+
     @field_validator("device_preference", mode="before")
     @classmethod
     def tuple_from_yaml_list(cls, value: object) -> object:
@@ -49,6 +63,13 @@ class LimitsConfig(StrictModel):
     retain_all_failure_traces: Literal[True] = True
     foundation_model_workers: int = Field(default=1, ge=0, le=1)
 
+    @field_validator("retain_all_failure_traces", mode="before")
+    @classmethod
+    def require_exact_boolean_type(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("value must be an exact bool")
+        return value
+
 
 class PathsConfig(StrictModel):
     runs: str = "runs"
@@ -70,6 +91,13 @@ class ProjectConfig(StrictModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("value must be an exact int")
+        return value
 
 
 @dataclass(frozen=True, slots=True)

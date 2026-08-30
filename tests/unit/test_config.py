@@ -93,3 +93,26 @@ def test_runtime_device_preference_must_include_cpu(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigurationError, match="configuration validation failed"):
         resolve_config(ProjectConfig, [config])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "true"),
+        ("runtime.primary_offline", "1"),
+        ("runtime.allow_mps_fallback", "0"),
+        ("runtime.primary_foundation_model_calls", "false"),
+        ("limits.retain_all_failure_traces", "1"),
+    ],
+)
+def test_literal_fields_reject_bool_integer_equivalents(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    section, _, name = field.partition(".")
+    field_yaml = f"{field}: {value}" if not name else f"{section}:\n  {name}: {value}"
+    config = write_yaml(
+        tmp_path / "coercion.yaml",
+        f"schema_version: 1\nexperiment_version: v1\n{field_yaml}\n",
+    )
+    with pytest.raises(ConfigurationError, match="configuration validation failed"):
+        resolve_config(ProjectConfig, [config])
