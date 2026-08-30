@@ -131,6 +131,73 @@ def test_atomic_create_preparation_failure_keeps_primary_error_when_cleanup_fail
     assert not destination.exists()
 
 
+def test_atomic_write_non_os_preparation_failure_keeps_primary_when_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    destination.write_bytes(b"old")
+    primary = RuntimeError("injected preparation runtime failure")
+
+    def fail_preparation(_path: Path, _mode: int) -> None:
+        raise primary
+
+    original_unlink = Path.unlink
+
+    def fail_temp_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith(".tmp"):
+            raise PermissionError("injected cleanup failure")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", fail_preparation)
+    monkeypatch.setattr(Path, "unlink", fail_temp_unlink)
+    with pytest.raises(AtomicWriteError, match="atomic preparation failed") as raised:
+        atomic_write_bytes(destination, b"new")
+
+    assert raised.value.context["published"] is False
+    assert raised.value.context["reason"] == "injected preparation runtime failure"
+    assert raised.value.context["cleanup_reason"] == "injected cleanup failure"
+    temp_path = raised.value.context["temp_path"]
+    assert isinstance(temp_path, str)
+    orphan = Path(temp_path)
+    assert orphan.parent == tmp_path
+    assert list(tmp_path.glob(".artifact.bin.*.tmp")) == [orphan]
+    assert destination.read_bytes() == b"old"
+    assert raised.value.__cause__ is primary
+
+
+def test_atomic_create_non_os_preparation_failure_keeps_primary_when_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    primary = TypeError("injected preparation type failure")
+
+    def fail_preparation(_path: Path, _mode: int) -> None:
+        raise primary
+
+    original_unlink = Path.unlink
+
+    def fail_temp_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith(".tmp"):
+            raise PermissionError("injected cleanup failure")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", fail_preparation)
+    monkeypatch.setattr(Path, "unlink", fail_temp_unlink)
+    with pytest.raises(AtomicWriteError, match="atomic preparation failed") as raised:
+        atomic_create_bytes(destination, b"new")
+
+    assert raised.value.context["published"] is False
+    assert raised.value.context["reason"] == "injected preparation type failure"
+    assert raised.value.context["cleanup_reason"] == "injected cleanup failure"
+    temp_path = raised.value.context["temp_path"]
+    assert isinstance(temp_path, str)
+    orphan = Path(temp_path)
+    assert orphan.parent == tmp_path
+    assert list(tmp_path.glob(".artifact.bin.*.tmp")) == [orphan]
+    assert not destination.exists()
+    assert raised.value.__cause__ is primary
+
+
 def test_atomic_write_post_publication_failure_reports_uncertain_durability(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

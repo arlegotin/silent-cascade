@@ -12,7 +12,7 @@ from silent_cascade.validation import JsonValue
 
 
 class _PreparationCleanupError(Exception):
-    def __init__(self, primary: OSError, temp_path: Path, cleanup_reason: str) -> None:
+    def __init__(self, primary: Exception, temp_path: Path, cleanup_reason: str) -> None:
         super().__init__(str(primary))
         self.primary = primary
         self.temp_path = temp_path
@@ -38,19 +38,24 @@ def _durable_temp(path: Path, data: bytes, mode: int) -> Path:
             os.fsync(handle.fileno())
         os.chmod(temp_path, mode)
         return temp_path
-    except OSError as error:
+    except Exception as error:
         if cleanup_reason := _cleanup_temp(temp_path):
             raise _PreparationCleanupError(error, temp_path, cleanup_reason) from error
         raise
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
+    except BaseException as error:
+        try:
+            cleanup_reason = _cleanup_temp(temp_path)
+        except BaseException as cleanup_error:
+            cleanup_reason = str(cleanup_error)
+        if cleanup_reason:
+            error.add_note(f"temporary cleanup failed for {temp_path}: {cleanup_reason}")
         raise
 
 
 def _cleanup_temp(path: Path) -> str | None:
     try:
         path.unlink(missing_ok=True)
-    except OSError as error:
+    except Exception as error:
         return str(error)
     return None
 
