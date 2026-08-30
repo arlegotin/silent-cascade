@@ -55,3 +55,14 @@ seed stream-preservation coverage for `-1` (`ValueError`), `True`
 exact endpoint seeds `0` and `2**64-1`.
 
 Fix Round 2 focused tests: `8 passed, 1 skipped`.
+
+## Fix Round 3
+
+Scoped the simulated unavailable-MPS monkeypatch with
+`monkeypatch.context()`, ensuring it ends before the outer snapshot is
+restored. Parameterized invalid-seed tests now conditionally clone and compare
+MPS RNG state in addition to Python, NumPy, and Torch CPU streams. The direct
+MPS branch is skipped on this CPU host; reviewers should re-run it on an MPS
+capable runtime.
+
+Fix Round 3 focused tests: `8 passed, 1 skipped` locally.

@@ -7,6 +7,7 @@ import torch
 
 from silent_cascade.errors import DoctorError
 from silent_cascade.rng import (
+    mps_rng_state_supported,
     restore_global_rng,
     seed_all,
     snapshot_global_rng,
@@ -55,6 +56,7 @@ def test_seed_all_rejects_invalid_seed_without_mutating_rng(
         current = snapshot_global_rng()
         expected = _draw_cpu_stream()
         restore_global_rng(current)
+        mps_before = torch.mps.get_rng_state().clone() if mps_rng_state_supported() else None
 
         with pytest.raises(exception_type, match="seed"):
             seed_all(invalid_seed)
@@ -63,6 +65,8 @@ def test_seed_all_rejects_invalid_seed_without_mutating_rng(
         assert actual[0] == expected[0]
         assert actual[1] == expected[1]
         assert torch.equal(actual[2], expected[2])
+        if mps_before is not None:
+            assert torch.equal(torch.mps.get_rng_state(), mps_before)
     finally:
         restore_global_rng(outer)
 
@@ -86,15 +90,16 @@ def test_restore_rejects_unavailable_mps_without_mutating_cpu_rng(monkeypatch) -
         expected = _draw_cpu_stream()
         restore_global_rng(current)
         mps_snapshot = replace(target, torch_mps_state=torch.zeros(1, dtype=torch.uint8))
-        monkeypatch.setattr("silent_cascade.rng.mps_rng_state_supported", lambda: False)
+        with monkeypatch.context() as patcher:
+            patcher.setattr("silent_cascade.rng.mps_rng_state_supported", lambda: False)
 
-        with pytest.raises(DoctorError, match="MPS RNG state"):
-            restore_global_rng(mps_snapshot)
+            with pytest.raises(DoctorError, match="MPS RNG state"):
+                restore_global_rng(mps_snapshot)
 
-        actual = _draw_cpu_stream()
-        assert actual[0] == expected[0]
-        assert actual[1] == expected[1]
-        assert torch.equal(actual[2], expected[2])
+            actual = _draw_cpu_stream()
+            assert actual[0] == expected[0]
+            assert actual[1] == expected[1]
+            assert torch.equal(actual[2], expected[2])
     finally:
         restore_global_rng(outer)
 
