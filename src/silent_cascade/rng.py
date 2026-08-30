@@ -38,8 +38,10 @@ def mps_rng_state_supported() -> bool:
 
 
 def seed_all(seed: int) -> None:
-    if seed < 0:
-        raise ValueError("seed must be non-negative")
+    if type(seed) is not int:
+        raise TypeError("seed must be an int")
+    if not 0 <= seed <= 2**64 - 1:
+        raise ValueError("seed must be in range 0..2**64-1")
     random.seed(seed)
     np.random.seed(seed % (2**32))
     torch.manual_seed(seed)
@@ -58,12 +60,12 @@ def snapshot_global_rng() -> RngSnapshot:
 
 
 def restore_global_rng(snapshot: RngSnapshot) -> None:
+    if snapshot.torch_mps_state is not None and not mps_rng_state_supported():
+        raise DoctorError("MPS RNG state cannot be restored on this runtime")
     random.setstate(snapshot.python_state)
     np.random.set_state(snapshot.numpy_state)
     torch.set_rng_state(snapshot.torch_cpu_state.clone())
     if snapshot.torch_mps_state is not None:
-        if not mps_rng_state_supported():
-            raise DoctorError("MPS RNG state cannot be restored on this runtime")
         torch.mps.set_rng_state(snapshot.torch_mps_state.clone())
 
 

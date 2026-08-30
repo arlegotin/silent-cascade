@@ -31,3 +31,17 @@ mps_rng_state_supported: False
 The MPS-only test is therefore skipped as required by the local capability
 gate. The CPU round-trip diagnostic reports Python, NumPy, and Torch CPU all
 successful, with MPS unchecked and `torch_mps_ok: null`.
+
+## Fix Round 1
+
+Added failure-atomicity tests that establish a distinct current RNG stream
+before invoking an invalid seed or an MPS-incompatible restore. Both tests
+failed before the fix: `seed_all(2**64)` reached Torch after mutating Python
+and NumPy, while MPS restore mutated CPU state before raising `DoctorError`.
+
+`seed_all` now performs exact-`int` (rejecting `bool`) and inclusive
+`0..2**64-1` validation before any RNG mutation. `restore_global_rng` now
+preflights MPS snapshot capability before changing Python, NumPy, or Torch
+CPU state.
+
+Fix focused tests: `4 passed, 1 skipped`.
