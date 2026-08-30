@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from silent_cascade.config import ProjectConfig, resolve_config
+from silent_cascade.config import ProjectConfig, parse_set_override, resolve_config
 from silent_cascade.errors import ConfigurationError
 
 
@@ -49,6 +49,63 @@ def test_resolve_config_rejects_unknown_keys_and_nonfinite_numbers(tmp_path: Pat
     )
     with pytest.raises(ConfigurationError, match="configuration validation failed"):
         resolve_config(ProjectConfig, [nonfinite])
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        (
+            "schema_version: 1\nexperiment_version: v1\nexperiment_version: v2\n",
+            "experiment_version",
+        ),
+        (
+            "schema_version: 1\nexperiment_version: v1\n"
+            "limits:\n  batch_size: 1\n  batch_size: 2\n",
+            "batch_size",
+        ),
+        (
+            "schema_version: 1\nexperiment_version: v1\n"
+            "limits:\n  unknown_limit: true\n"
+            "limits:\n  batch_size: 32\n",
+            "limits",
+        ),
+    ],
+)
+def test_resolve_config_rejects_duplicate_yaml_keys_with_file_and_key_context(
+    tmp_path: Path, text: str, key: str
+) -> None:
+    config = write_yaml(tmp_path / "duplicate.yaml", text)
+
+    with pytest.raises(ConfigurationError, match="duplicate configuration key") as raised:
+        resolve_config(ProjectConfig, [config])
+
+    assert raised.value.message == "duplicate configuration key"
+    assert raised.value.context["path"] == str(config)
+    assert raised.value.context["key"] == key
+
+
+def test_resolve_config_keeps_root_string_key_validation(tmp_path: Path) -> None:
+    config = write_yaml(tmp_path / "non-string-key.yaml", "1: value\n")
+
+    with pytest.raises(
+        ConfigurationError, match="configuration root must be a string-keyed mapping"
+    ):
+        resolve_config(ProjectConfig, [config])
+
+
+def test_resolve_config_wraps_unhashable_yaml_keys_as_configuration_error(tmp_path: Path) -> None:
+    config = write_yaml(tmp_path / "unhashable-key.yaml", "? [one, two]\n: value\n")
+
+    with pytest.raises(ConfigurationError, match="configuration load failed"):
+        resolve_config(ProjectConfig, [config])
+
+
+def test_parse_set_override_rejects_duplicate_mapping_keys() -> None:
+    with pytest.raises(ConfigurationError, match="duplicate configuration key") as raised:
+        parse_set_override("limits={batch_size: 1, batch_size: 2}")
+
+    assert raised.value.context["expression"] == "limits={batch_size: 1, batch_size: 2}"
+    assert raised.value.context["key"] == "batch_size"
 
 
 def test_equivalent_configs_have_identical_canonical_bytes_and_hash(tmp_path: Path) -> None:
@@ -110,9 +167,10 @@ def test_literal_fields_reject_bool_integer_equivalents(
 ) -> None:
     section, _, name = field.partition(".")
     field_yaml = f"{field}: {value}" if not name else f"{section}:\n  {name}: {value}"
+    schema_version_yaml = "" if field == "schema_version" else "schema_version: 1\n"
     config = write_yaml(
         tmp_path / "coercion.yaml",
-        f"schema_version: 1\nexperiment_version: v1\n{field_yaml}\n",
+        f"{schema_version_yaml}experiment_version: v1\n{field_yaml}\n",
     )
     with pytest.raises(ConfigurationError, match="configuration validation failed"):
         resolve_config(ProjectConfig, [config])

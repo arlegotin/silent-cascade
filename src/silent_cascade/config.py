@@ -9,6 +9,8 @@ from typing import Literal
 
 import yaml
 from pydantic import Field, ValidationError, field_validator
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode, Node
 
 from silent_cascade.errors import ConfigurationError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
@@ -111,9 +113,56 @@ class ResolvedConfig[TConfig: StrictModel]:
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
+class _DuplicateKeyError(ConstructorError):
+    """Internal loader error retaining the key that would be overwritten."""
+
+    def __init__(self, key: object, node: MappingNode, key_node: Node) -> None:
+        super().__init__(
+            "while constructing a mapping",
+            node.start_mark,
+            "found duplicate key",
+            key_node.start_mark,
+        )
+        self.key = key
+
+
+class _StrictSafeLoader(yaml.SafeLoader):
+    """SafeLoader variant that rejects duplicate keys in every mapping."""
+
+    def construct_mapping(self, node: Node, deep: bool = False) -> dict[object, object]:
+        if isinstance(node, MappingNode):
+            self.flatten_mapping(node)
+        if not isinstance(node, MappingNode):
+            raise ConstructorError(
+                None, None, f"expected a mapping node, but found {node.id}", node.start_mark
+            )
+
+        mapping: dict[object, object] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                hash(key)
+            except TypeError as error:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found unhashable key",
+                    key_node.start_mark,
+                ) from error
+            if key in mapping:
+                raise _DuplicateKeyError(key, node, key_node)
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
 def _read_yaml_mapping(path: Path) -> dict[str, JsonValue]:
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        loaded = yaml.load(path.read_text(encoding="utf-8"), Loader=_StrictSafeLoader)
+    except _DuplicateKeyError as error:
+        raise ConfigurationError(
+            "duplicate configuration key",
+            context={"path": str(path), "key": str(error.key)},
+        ) from error
     except (OSError, yaml.YAMLError) as error:
         raise ConfigurationError(
             "configuration load failed", context={"path": str(path), "reason": str(error)}
@@ -148,7 +197,12 @@ def parse_set_override(expression: str) -> tuple[tuple[str, ...], JsonValue]:
     if not path or any(not segment or not _KEY.fullmatch(segment) for segment in path):
         raise ConfigurationError("invalid --set override", context={"expression": expression})
     try:
-        value = yaml.safe_load(raw_value)
+        value = yaml.load(raw_value, Loader=_StrictSafeLoader)
+    except _DuplicateKeyError as error:
+        raise ConfigurationError(
+            "duplicate configuration key",
+            context={"expression": expression, "key": str(error.key)},
+        ) from error
     except yaml.YAMLError as error:
         raise ConfigurationError(
             "invalid --set override",
