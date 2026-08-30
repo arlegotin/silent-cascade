@@ -159,3 +159,26 @@ def test_atomic_create_cleanup_failure_preserves_post_link_state(
     assert raised.value.context["temp_path"]
     assert destination.read_bytes() == b"new"
     assert list(tmp_path.glob(".artifact.bin.*.tmp"))
+
+
+def test_atomic_create_collision_cleanup_failure_includes_temp_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    destination.write_bytes(b"first")
+    original_unlink = Path.unlink
+
+    def fail_temp_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith(".tmp"):
+            raise OSError("cleanup")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_temp_unlink)
+    with pytest.raises(AtomicWriteError, match="already exists") as raised:
+        atomic_create_bytes(destination, b"second")
+    assert raised.value.context["published"] is False
+    assert raised.value.context["cleanup_reason"] == "cleanup"
+    temp_path = raised.value.context["temp_path"]
+    assert isinstance(temp_path, str)
+    assert Path(temp_path).exists()
+    assert destination.read_bytes() == b"first"
