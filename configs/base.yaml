@@ -1,0 +1,21 @@
+schema_version: 1
+experiment_version: v1
+runtime:
+  device_preference: [mps, cpu]
+  dtype: float32
+  primary_offline: true
+  allow_mps_fallback: false
+  primary_foundation_model_calls: 0
+limits:
+  max_trainable_parameters: 5000000
+  primary_memory_records: 64
+  max_eventflow_events: 64
+  max_fixed_grid_opportunities: 25000
+  batch_size: 128
+  retained_full_traces: 500
+  retain_all_failure_traces: true
+  foundation_model_workers: 1
+paths:
+  runs: runs
+  reports: reports
+  manifests: manifests
