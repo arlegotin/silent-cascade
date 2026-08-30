@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from silent_cascade.errors import AtomicWriteError
-from silent_cascade.io import atomic_create_bytes, atomic_write_bytes, atomic_write_json
+from silent_cascade.io import (
+    atomic_create_bytes,
+    atomic_write_bytes,
+    atomic_write_json,
+)
 
 
 def test_atomic_write_replaces_destination_with_complete_contents(
@@ -45,3 +49,52 @@ def test_atomic_write_json_uses_canonical_encoding(tmp_path: Path) -> None:
     destination = tmp_path / "artifact.json"
     atomic_write_json(destination, {"z": 2, "a": 1})
     assert destination.read_bytes() == b'{"a":1,"z":2}\n'
+
+
+def test_atomic_write_preparation_failure_is_normalized_and_cleans_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+    destination.write_bytes(b"old")
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("injected preparation failure")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(AtomicWriteError, match="atomic preparation failed") as raised:
+        atomic_write_bytes(destination, b"new")
+    assert raised.value.context["published"] is False
+    assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".artifact.bin.*.tmp"))
+
+
+def test_atomic_write_post_publication_failure_reports_uncertain_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+
+    def fail_directory_fsync(_path: Path) -> None:
+        raise OSError("injected directory fsync failure")
+
+    monkeypatch.setattr("silent_cascade.io._fsync_directory", fail_directory_fsync)
+    with pytest.raises(AtomicWriteError, match="published but durability unconfirmed") as raised:
+        atomic_write_bytes(destination, b"new")
+    assert raised.value.context["published"] is True
+    assert destination.read_bytes() == b"new"
+    assert not list(tmp_path.glob(".artifact.bin.*.tmp"))
+
+
+def test_atomic_create_post_publication_failure_reports_uncertain_durability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "artifact.bin"
+
+    def fail_directory_fsync(_path: Path) -> None:
+        raise OSError("injected directory fsync failure")
+
+    monkeypatch.setattr("silent_cascade.io._fsync_directory", fail_directory_fsync)
+    with pytest.raises(AtomicWriteError, match="published but durability unconfirmed") as raised:
+        atomic_create_bytes(destination, b"new")
+    assert raised.value.context["published"] is True
+    assert destination.read_bytes() == b"new"
+    assert not list(tmp_path.glob(".artifact.bin.*.tmp"))

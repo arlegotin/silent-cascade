@@ -36,34 +36,50 @@ def _durable_temp(path: Path, data: bytes, mode: int) -> Path:
 
 
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
-    temp_path = _durable_temp(path, data, mode)
+    try:
+        temp_path = _durable_temp(path, data, mode)
+    except OSError as error:
+        raise AtomicWriteError(
+            "atomic preparation failed",
+            context={"path": str(path), "published": False, "reason": str(error)},
+        ) from error
+    published = False
     try:
         os.replace(temp_path, path)
+        published = True
         _fsync_directory(path.parent)
     except OSError as error:
         raise AtomicWriteError(
-            "atomic replace failed",
-            context={"path": str(path), "reason": str(error)},
+            "published but durability unconfirmed" if published else "atomic replace failed",
+            context={"path": str(path), "published": published, "reason": str(error)},
         ) from error
     finally:
         temp_path.unlink(missing_ok=True)
 
 
 def atomic_create_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
-    temp_path = _durable_temp(path, data, mode)
+    try:
+        temp_path = _durable_temp(path, data, mode)
+    except OSError as error:
+        raise AtomicWriteError(
+            "atomic preparation failed",
+            context={"path": str(path), "published": False, "reason": str(error)},
+        ) from error
+    published = False
     try:
         os.link(temp_path, path)
+        published = True
         temp_path.unlink()
         _fsync_directory(path.parent)
     except FileExistsError as error:
         raise AtomicWriteError(
             "artifact already exists",
-            context={"path": str(path)},
+            context={"path": str(path), "published": False},
         ) from error
     except OSError as error:
         raise AtomicWriteError(
-            "atomic create failed",
-            context={"path": str(path), "reason": str(error)},
+            "published but durability unconfirmed" if published else "atomic create failed",
+            context={"path": str(path), "published": published, "reason": str(error)},
         ) from error
     finally:
         temp_path.unlink(missing_ok=True)
