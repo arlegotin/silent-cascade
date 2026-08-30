@@ -16,8 +16,7 @@ def _validated_json_value(value: object, *, path: str = "context") -> JsonValue:
         return value
     if isinstance(value, list):
         return [
-            _validated_json_value(item, path=f"{path}[{index}]")
-            for index, item in enumerate(value)
+            _validated_json_value(item, path=f"{path}[{index}]") for index, item in enumerate(value)
         ]
     if isinstance(value, dict):
         result: dict[str, JsonValue] = {}
