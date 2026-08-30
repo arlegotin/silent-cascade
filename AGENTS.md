@@ -23,6 +23,8 @@ Before taking any implementation action:
 Do not implement work outside this workflow. If a required Superpowers skill is
 unavailable, stop and ask the user to install or enable it.
 
+By default, always work in current branch and make meaningful commits along the way.
+
 ## Autonomous delivery and standing approval
 
 - The coding agent's primary objective is to deliver verified results. Do not
