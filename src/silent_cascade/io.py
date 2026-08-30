@@ -61,7 +61,6 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> None:
         if cleanup_reason := _cleanup_temp(temp_path):
             context["cleanup_reason"] = cleanup_reason
             context["temp_path"] = str(temp_path)
-            context["temp_path"] = str(temp_path)
         raise AtomicWriteError(
             "published but durability unconfirmed" if published else "atomic replace failed",
             context=context,
