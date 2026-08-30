@@ -53,3 +53,27 @@ UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest tests/unit/test_errors.p
 ```
 
 The reviewer's deferred infinity-only `StrictModel` coverage item was not expanded in this fix round.
+
+## Fix Round 2
+
+Controller verification found Ruff import-order failure `I001` in `src/silent_cascade/errors.py`. Reordered the standard-library imports (`math` before `collections.abc`) without changing behavior.
+
+Exact RED command and result:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run ruff check .
+I001 [*] Import block is un-sorted or un-formatted
+Found 1 error.
+[*] 1 fixable with the `--fix` option.
+```
+
+Exact verification command and result:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run ruff check . && UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest tests/unit/test_errors.py tests/unit/test_validation.py tests/unit/test_package.py -q && UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest -q && git diff --check
+All checks passed!
+.......                                                                  [100%]
+7 passed in 0.32s
+.......                                                                  [100%]
+7 passed in 0.18s
+```
