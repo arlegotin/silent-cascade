@@ -111,6 +111,7 @@ class ResolvedConfig[TConfig: StrictModel]:
 
 
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
 
 
 class _DuplicateKeyError(ConstructorError):
@@ -130,16 +131,18 @@ class _StrictSafeLoader(yaml.SafeLoader):
     """SafeLoader variant that rejects duplicate keys in every mapping."""
 
     def construct_mapping(self, node: Node, deep: bool = False) -> dict[object, object]:
-        if isinstance(node, MappingNode):
-            self.flatten_mapping(node)
         if not isinstance(node, MappingNode):
             raise ConstructorError(
                 None, None, f"expected a mapping node, but found {node.id}", node.start_mark
             )
 
-        mapping: dict[object, object] = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
+        seen_keys: set[object] = set()
+        for key_node, _value_node in node.value:
+            key = (
+                "<<"
+                if key_node.tag == _YAML_MERGE_TAG
+                else self.construct_object(key_node, deep=deep)
+            )
             try:
                 hash(key)
             except TypeError as error:
@@ -149,10 +152,10 @@ class _StrictSafeLoader(yaml.SafeLoader):
                     "found unhashable key",
                     key_node.start_mark,
                 ) from error
-            if key in mapping:
+            if key in seen_keys:
                 raise _DuplicateKeyError(key, node, key_node)
-            mapping[key] = self.construct_object(value_node, deep=deep)
-        return mapping
+            seen_keys.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 def _read_yaml_mapping(path: Path) -> dict[str, JsonValue]:

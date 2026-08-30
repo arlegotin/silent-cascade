@@ -108,6 +108,58 @@ def test_parse_set_override_rejects_duplicate_mapping_keys() -> None:
     assert raised.value.context["key"] == "batch_size"
 
 
+def test_resolve_config_rejects_repeated_yaml_merge_keys_with_file_context(
+    tmp_path: Path,
+) -> None:
+    config = write_yaml(
+        tmp_path / "repeated-merge.yaml",
+        "schema_version: 1\nexperiment_version: v1\nlimits:\n"
+        "  <<: {batch_size: 32}\n"
+        "  <<: {primary_memory_records: 64}\n",
+    )
+
+    with pytest.raises(ConfigurationError, match="duplicate configuration key") as raised:
+        resolve_config(ProjectConfig, [config])
+
+    assert raised.value.context == {"path": str(config), "key": "<<"}
+
+
+def test_parse_set_override_rejects_repeated_yaml_merge_keys_with_expression_context() -> None:
+    expression = "limits={<<: {batch_size: 32}, <<: {primary_memory_records: 64}}"
+
+    with pytest.raises(ConfigurationError, match="duplicate configuration key") as raised:
+        parse_set_override(expression)
+
+    assert raised.value.context == {"expression": expression, "key": "<<"}
+
+
+def test_resolve_config_allows_explicit_key_to_override_yaml_merge(tmp_path: Path) -> None:
+    config = write_yaml(
+        tmp_path / "merge-override.yaml",
+        "schema_version: 1\nexperiment_version: v1\nlimits:\n"
+        "  <<: {batch_size: 32}\n"
+        "  batch_size: 64\n",
+    )
+
+    resolved = resolve_config(ProjectConfig, [config])
+
+    assert resolved.config.limits.batch_size == 64
+
+
+def test_resolve_config_keeps_safe_loader_merge_sequence_precedence(tmp_path: Path) -> None:
+    config = write_yaml(
+        tmp_path / "merge-sequence.yaml",
+        "schema_version: 1\nexperiment_version: v1\nlimits:\n"
+        "  <<:\n"
+        "    - {batch_size: 32}\n"
+        "    - {batch_size: 64}\n",
+    )
+
+    resolved = resolve_config(ProjectConfig, [config])
+
+    assert resolved.config.limits.batch_size == 32
+
+
 def test_equivalent_configs_have_identical_canonical_bytes_and_hash(tmp_path: Path) -> None:
     first = write_yaml(
         tmp_path / "first.yaml",
