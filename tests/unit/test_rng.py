@@ -42,38 +42,61 @@ def test_rng_round_trip_reports_mps_unchecked_when_not_requested() -> None:
     assert report.torch_mps_ok is None
 
 
-def test_seed_all_rejects_out_of_range_seed_without_mutating_rng() -> None:
-    seed_all(41)
-    current = snapshot_global_rng()
-    expected = _draw_cpu_stream()
-    restore_global_rng(current)
+@pytest.mark.parametrize(
+    ("invalid_seed", "exception_type"),
+    [(-1, ValueError), (True, TypeError), (2**64, ValueError)],
+)
+def test_seed_all_rejects_invalid_seed_without_mutating_rng(
+    invalid_seed: object, exception_type: type[Exception]
+) -> None:
+    outer = snapshot_global_rng()
+    try:
+        seed_all(41)
+        current = snapshot_global_rng()
+        expected = _draw_cpu_stream()
+        restore_global_rng(current)
 
-    with pytest.raises(ValueError, match="seed"):
-        seed_all(2**64)
+        with pytest.raises(exception_type, match="seed"):
+            seed_all(invalid_seed)
 
-    actual = _draw_cpu_stream()
-    assert actual[0] == expected[0]
-    assert actual[1] == expected[1]
-    assert torch.equal(actual[2], expected[2])
+        actual = _draw_cpu_stream()
+        assert actual[0] == expected[0]
+        assert actual[1] == expected[1]
+        assert torch.equal(actual[2], expected[2])
+    finally:
+        restore_global_rng(outer)
+
+
+@pytest.mark.parametrize("seed", [0, 2**64 - 1])
+def test_seed_all_accepts_exact_endpoint_seeds(seed: int) -> None:
+    outer = snapshot_global_rng()
+    try:
+        seed_all(seed)
+    finally:
+        restore_global_rng(outer)
 
 
 def test_restore_rejects_unavailable_mps_without_mutating_cpu_rng(monkeypatch) -> None:
-    seed_all(41)
-    target = snapshot_global_rng()
-    seed_all(99)
-    current = snapshot_global_rng()
-    expected = _draw_cpu_stream()
-    restore_global_rng(current)
-    mps_snapshot = replace(target, torch_mps_state=torch.zeros(1, dtype=torch.uint8))
-    monkeypatch.setattr("silent_cascade.rng.mps_rng_state_supported", lambda: False)
+    outer = snapshot_global_rng()
+    try:
+        seed_all(41)
+        target = snapshot_global_rng()
+        seed_all(99)
+        current = snapshot_global_rng()
+        expected = _draw_cpu_stream()
+        restore_global_rng(current)
+        mps_snapshot = replace(target, torch_mps_state=torch.zeros(1, dtype=torch.uint8))
+        monkeypatch.setattr("silent_cascade.rng.mps_rng_state_supported", lambda: False)
 
-    with pytest.raises(DoctorError, match="MPS RNG state"):
-        restore_global_rng(mps_snapshot)
+        with pytest.raises(DoctorError, match="MPS RNG state"):
+            restore_global_rng(mps_snapshot)
 
-    actual = _draw_cpu_stream()
-    assert actual[0] == expected[0]
-    assert actual[1] == expected[1]
-    assert torch.equal(actual[2], expected[2])
+        actual = _draw_cpu_stream()
+        assert actual[0] == expected[0]
+        assert actual[1] == expected[1]
+        assert torch.equal(actual[2], expected[2])
+    finally:
+        restore_global_rng(outer)
 
 
 @pytest.mark.skipif(

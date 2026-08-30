@@ -45,3 +45,13 @@ preflights MPS snapshot capability before changing Python, NumPy, or Torch
 CPU state.
 
 Fix focused tests: `4 passed, 1 skipped`.
+
+## Fix Round 2
+
+Wrapped both failure-atomicity tests in outer RNG snapshots with `finally`
+restoration, preventing process-global state leakage. Parameterized invalid
+seed stream-preservation coverage for `-1` (`ValueError`), `True`
+(`TypeError`), and `2**64` (`ValueError`), and added acceptance coverage for
+exact endpoint seeds `0` and `2**64-1`.
+
+Fix Round 2 focused tests: `8 passed, 1 skipped`.
