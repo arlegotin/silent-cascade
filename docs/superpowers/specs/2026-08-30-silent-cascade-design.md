@@ -4,7 +4,7 @@
 
 **Status:** Approved design specification
 
-**Plan version:** 1.0
+**Plan version:** 1.0.1
 
 **Research freeze date:** 2026-08-30
 
@@ -1562,7 +1562,7 @@ dev = [
 qwen = [
   "mlx>=0.32,<0.33",
   "mlx-vlm>=0.6.17,<0.7",
-  "huggingface-hub>=0.34,<1",
+  "huggingface-hub>=1,<2",
 ]
 ```
 

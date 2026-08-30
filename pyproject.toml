@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "silent-cascade"
+version = "0.1.0"
+description = "Persistent event-flow AI research on the Observation-Free Deadline benchmark"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+dependencies = [
+  "torch>=2.13,<2.14",
+  "numpy>=2.2,<3",
+  "pydantic>=2.11,<3",
+  "pyyaml>=6,<7",
+  "typer>=0.16,<1",
+  "rich>=14,<15",
+  "safetensors>=0.5,<1",
+  "scipy>=1.15,<2",
+  "matplotlib>=3.10,<4",
+  "psutil>=7,<8",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+  "hypothesis>=6.130,<7",
+  "pytest-cov>=6,<7",
+  "ruff>=0.12,<1",
+]
+
+[project.optional-dependencies]
+qwen = [
+  "mlx>=0.32,<0.33",
+  "mlx-vlm>=0.6.17,<0.7",
+  "huggingface-hub>=1,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/silent_cascade"]
+
+[tool.pytest.ini_options]
+minversion = "8.4"
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers"]
+
+[tool.coverage.run]
+branch = true
+source = ["silent_cascade"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
