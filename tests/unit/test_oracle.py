@@ -66,6 +66,27 @@ def public_episode(
     )
 
 
+def negative_origin_episode(
+    facts: tuple[LinkFact | HazardFact | SafeFact, ...],
+) -> PublicEpisode:
+    events = tuple(
+        ExternalEvent(index + 10, -19.0 + index, ExternalEventKind.FACT, fact)
+        for index, fact in enumerate(facts)
+    )
+    return PublicEpisode(
+        AgentInit("00000000-0000-4000-8000-000000000008", 64, 4, -20.0),
+        (
+            *events,
+            ExternalEvent(
+                len(events) + 10,
+                -10.0,
+                ExternalEventKind.ACTIVATE,
+                ActivationPayload(1),
+            ),
+        ),
+    )
+
+
 def positive_public(*, delay: float = 24.0) -> PublicEpisode:
     return public_episode(
         (
@@ -142,6 +163,31 @@ def built_negative_trace() -> OracleTrace:
         OracleTimingConfig(jitter_log_std=0.0),
         np.random.default_rng(5),
     )
+
+
+def built_disconnected_trace() -> OracleTrace:
+    public = public_episode((LinkFact(1, 2), LinkFact(2, 3), SafeFact(9)))
+    return build_oracle_trace(
+        public,
+        solve_public_episode(public),
+        ExternalEvent(99, 124.0, ExternalEventKind.END, None),
+        OracleTimingConfig(jitter_log_std=0.0),
+        np.random.default_rng(6),
+    )
+
+
+def unchecked_trace(
+    trace: OracleTrace,
+    *,
+    steps: tuple[OracleTraceStep, ...] | None = None,
+    actions: tuple[Action, ...] | None = None,
+) -> OracleTrace:
+    """Bypass aggregate construction solely to test boundary revalidation."""
+    corrupt = object.__new__(OracleTrace)
+    object.__setattr__(corrupt, "solution", trace.solution)
+    object.__setattr__(corrupt, "steps", trace.steps if steps is None else steps)
+    object.__setattr__(corrupt, "actions", trace.actions if actions is None else actions)
+    return corrupt
 
 
 def test_solver_derives_canonical_path_only_from_public_facts() -> None:
@@ -308,6 +354,8 @@ def test_trace_builder_binds_hazard_fields_to_selected_public_fact(
         {"hazard_type": True},
         {"hazard_type": 4},
         {"public_delay": 24},
+        {"public_delay": 0.0},
+        {"public_delay": -1.0},
         {"public_delay": math.nan},
         {"public_delay": math.inf},
         {"superseded_terminal_record_ids": (True,)},
@@ -367,6 +415,7 @@ def test_oracle_solution_enforces_terminal_discriminants(
         {"timestamp": math.nan},
         {"timestamp": math.inf},
         {"delta": True},
+        {"delta": -0.1},
         {"delta": math.nan},
         {"delta": math.inf},
         {"selected_record_id": True},
@@ -422,6 +471,148 @@ def test_oracle_trace_revalidates_contained_steps_and_actions() -> None:
         OracleTrace(positive.solution, positive.steps[:-1], ())
     with pytest.raises(ValueError):
         OracleTrace(negative.solution, (*negative.steps, positive.steps[-1]), positive.actions)
+
+
+@pytest.mark.parametrize("positive", [True, False])
+def test_negative_absolute_time_origin_builds_actions_and_scales(positive: bool) -> None:
+    terminal_fact: HazardFact | SafeFact
+    terminal_kind: ExternalEventKind
+    if positive:
+        terminal_fact = HazardFact(2, 2, 5.0)
+        terminal_kind = ExternalEventKind.OUTCOME
+    else:
+        terminal_fact = SafeFact(2)
+        terminal_kind = ExternalEventKind.END
+    public = negative_origin_episode((LinkFact(1, 2), terminal_fact))
+    solution = solve_public_episode(public)
+    trace = build_oracle_trace(
+        public,
+        solution,
+        ExternalEvent(99, -5.0, terminal_kind, None),
+        OracleTimingConfig(jitter_log_std=0.0),
+        np.random.default_rng(20),
+    )
+
+    assert all(
+        type(step.timestamp) is float and math.isfinite(step.timestamp) for step in trace.steps
+    )
+    assert all(step.timestamp < 0.0 and step.delta >= 0.0 for step in trace.steps)
+    if positive:
+        assert trace.actions == (Action(2, -5.875, trace.steps[-1].trace_step_id),)
+    else:
+        assert trace.actions == ()
+
+    scaled = scale_oracle_trace(trace, 2.0)
+    assert [step.timestamp for step in scaled.steps] == [
+        step.timestamp * 2.0 for step in trace.steps
+    ]
+    assert [step.delta for step in scaled.steps] == [step.delta * 2.0 for step in trace.steps]
+    assert [action.timestamp for action in scaled.actions] == [
+        action.timestamp * 2.0 for action in trace.actions
+    ]
+
+
+@pytest.mark.parametrize("variant", ["positive", "safe", "disconnected"])
+def test_solution_derived_trace_grammar_accepts_every_primary_variant(variant: str) -> None:
+    trace = {
+        "positive": built_positive_trace,
+        "safe": built_negative_trace,
+        "disconnected": built_disconnected_trace,
+    }[variant]()
+
+    assert oracle_actions(trace) == trace.actions
+    assert scale_oracle_trace(trace, 2.0).solution == trace.solution
+
+
+def test_trace_constructor_rejects_missing_noop_and_act_only_grammars() -> None:
+    safe = built_negative_trace()
+    positive = built_positive_trace()
+    noop = OracleTraceStep(0, None, InternalEventKind.NOOP, 100.1, 0.1, None, None, None)
+    act = OracleTraceStep(0, None, InternalEventKind.ACT, 119.8, 19.8, None, None, None)
+
+    with pytest.raises(ValueError, match="grammar"):
+        OracleTrace(safe.solution, (), ())
+    with pytest.raises(ValueError, match="grammar"):
+        OracleTrace(safe.solution, (noop,), ())
+    with pytest.raises(ValueError, match="grammar"):
+        OracleTrace(positive.solution, (act,), (Action(3, 119.8, 0),))
+    with pytest.raises(ValueError, match="grammar"):
+        OracleTrace(safe.solution, safe.steps[:2], ())
+
+
+def test_trace_constructor_rejects_extra_reordered_support_and_focus() -> None:
+    safe = built_negative_trace()
+    extra_recall = OracleTraceStep(
+        4,
+        3,
+        InternalEventKind.RECALL,
+        safe.steps[-1].timestamp + 0.1,
+        0.1,
+        10,
+        1,
+        1,
+    )
+    extra_compose = OracleTraceStep(
+        5,
+        4,
+        InternalEventKind.COMPOSE,
+        safe.steps[-1].timestamp + 0.2,
+        0.1,
+        10,
+        1,
+        2,
+    )
+    reordered = (
+        replace(safe.steps[0], kind=InternalEventKind.COMPOSE),
+        replace(safe.steps[1], kind=InternalEventKind.RECALL),
+        *safe.steps[2:],
+    )
+    wrong_support = (
+        replace(safe.steps[0], selected_record_id=11),
+        *safe.steps[1:],
+    )
+    wrong_focus = (
+        replace(safe.steps[0], focus_before=2, focus_after=2),
+        *safe.steps[1:],
+    )
+
+    for steps in (
+        (*safe.steps, extra_recall, extra_compose),
+        reordered,
+        wrong_support,
+        wrong_focus,
+    ):
+        with pytest.raises(ValueError, match="grammar"):
+            OracleTrace(safe.solution, steps, ())
+
+
+def test_trace_boundaries_reject_bypassed_grammar_and_forged_actions() -> None:
+    safe = built_negative_trace()
+    positive = built_positive_trace()
+    noop = OracleTraceStep(0, None, InternalEventKind.NOOP, 100.1, 0.1, None, None, None)
+    corrupt_action = object.__new__(Action)
+    object.__setattr__(corrupt_action, "hazard_type", 3)
+    object.__setattr__(corrupt_action, "timestamp", math.nan)
+    object.__setattr__(corrupt_action, "caused_by_event_id", positive.steps[-1].trace_step_id)
+    corrupt_traces = (
+        unchecked_trace(safe, steps=()),
+        unchecked_trace(safe, steps=(noop,)),
+        unchecked_trace(
+            safe,
+            steps=(
+                replace(safe.steps[0], kind=InternalEventKind.COMPOSE),
+                replace(safe.steps[1], kind=InternalEventKind.RECALL),
+                *safe.steps[2:],
+            ),
+        ),
+        unchecked_trace(positive, actions=(corrupt_action,)),
+    )
+
+    for trace in corrupt_traces:
+        with pytest.raises(OracleError):
+            scale_oracle_trace(trace, 2.0)
+        with pytest.raises(OracleError):
+            oracle_actions(trace)
 
 
 def test_trace_records_support_focus_parentage_and_action_target() -> None:

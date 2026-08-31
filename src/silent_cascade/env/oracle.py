@@ -62,10 +62,16 @@ def _require_int_tuple(
         _require_exact_int(item, name, maximum=maximum)
 
 
-def _require_nonnegative_float(value: object, name: str, *, positive: bool = False) -> None:
+def _require_finite_float(value: object, name: str) -> None:
     if type(value) is not float:
         raise TypeError(f"{name} must be an exact float")
-    if not math.isfinite(value) or value < 0.0 or (positive and value == 0.0):
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+
+
+def _require_nonnegative_float(value: object, name: str, *, positive: bool = False) -> None:
+    _require_finite_float(value, name)
+    if value < 0.0 or (positive and value == 0.0):
         qualifier = "positive and finite" if positive else "nonnegative and finite"
         raise ValueError(f"{name} must be {qualifier}")
 
@@ -180,7 +186,7 @@ def _validate_trace_step(step: OracleTraceStep) -> None:
     _require_optional_int(step.parent_trace_step_id, "parent_trace_step_id")
     if not isinstance(step.kind, InternalEventKind):
         raise TypeError("kind must be an InternalEventKind")
-    _require_nonnegative_float(step.timestamp, "timestamp")
+    _require_finite_float(step.timestamp, "timestamp")
     _require_nonnegative_float(step.delta, "delta")
     _require_optional_int(step.selected_record_id, "selected_record_id")
     _require_optional_int(step.focus_before, "focus_before", maximum=MAX_ENTITY_ID)
@@ -199,8 +205,34 @@ def _validate_action(action: Action) -> None:
     if not isinstance(action, Action):
         raise TypeError("actions must contain Action values")
     _require_exact_int(action.hazard_type, "action.hazard_type", maximum=MAX_HAZARD_TYPE)
-    _require_nonnegative_float(action.timestamp, "action.timestamp")
+    _require_finite_float(action.timestamp, "action.timestamp")
     _require_exact_int(action.caused_by_event_id, "action.caused_by_event_id")
+
+
+def _expected_trace_grammar(
+    solution: OracleSolution,
+) -> tuple[tuple[InternalEventKind, int, int, int], ...]:
+    expected: list[tuple[InternalEventKind, int, int, int]] = []
+    for index, record_id in enumerate(solution.link_record_ids):
+        before = solution.node_path[index]
+        after = solution.node_path[index + 1]
+        expected.extend(
+            (
+                (InternalEventKind.RECALL, record_id, before, before),
+                (InternalEventKind.COMPOSE, record_id, before, after),
+            )
+        )
+    if solution.terminal_kind is not OracleTerminalKind.DISCONNECTED:
+        terminal_id = solution.terminal_record_id
+        assert terminal_id is not None
+        node = solution.node_path[-1]
+        expected.extend(
+            (
+                (InternalEventKind.RECALL, terminal_id, node, node),
+                (InternalEventKind.COMPOSE, terminal_id, node, node),
+            )
+        )
+    return tuple(expected)
 
 
 def _validate_trace(trace: OracleTrace) -> None:
@@ -242,6 +274,26 @@ def _validate_trace(trace: OracleTrace) -> None:
         previous = step
     for action in trace.actions:
         _validate_action(action)
+
+    expected_grammar = _expected_trace_grammar(trace.solution)
+    expected_total = len(expected_grammar) + (
+        1 if trace.solution.terminal_kind is OracleTerminalKind.HAZARD else 0
+    )
+    if len(trace.steps) != expected_total:
+        raise ValueError("trace grammar has an incorrect event count")
+    for step, expected in zip(
+        trace.steps[: len(expected_grammar)],
+        expected_grammar,
+        strict=True,
+    ):
+        actual = (
+            step.kind,
+            step.selected_record_id,
+            step.focus_before,
+            step.focus_after,
+        )
+        if actual != expected:
+            raise ValueError("trace grammar does not match oracle support and focus")
 
     act_steps = tuple(step for step in trace.steps if step.kind is InternalEventKind.ACT)
     if trace.solution.terminal_kind is OracleTerminalKind.HAZARD:
@@ -671,4 +723,5 @@ def oracle_actions(trace: OracleTrace) -> tuple[Action, ...]:
     """Return the immutable externally scored action sequence for a trace."""
     if not isinstance(trace, OracleTrace):
         raise TypeError("trace must be an OracleTrace")
+    _require_valid_trace(trace)
     return trace.actions
