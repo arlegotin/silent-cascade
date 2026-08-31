@@ -1,6 +1,7 @@
 """Contracts for the fail-closed public-feature leakage auditor."""
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -242,6 +243,37 @@ def test_counterfactual_hash_known_answers_are_canonical() -> None:
     ) == ("28b15afe82e20b9e8db3c2f5bf4402e454858bfdaf7ce9663001d5aac99f1372")
 
 
+def test_counterfactual_result_builder_matches_canonical_sequence_hash() -> None:
+    """Full-profile result hashing must not retain 132,000 pair models in memory."""
+    from silent_cascade.env.leakage import (
+        CounterfactualCheckId,
+        CounterfactualPairResult,
+        _CounterfactualResultBuilder,
+        counterfactual_result_payload_hash,
+    )
+
+    pairs = tuple(
+        CounterfactualPairResult(
+            pair_key_sha256=f"{index:064x}",
+            decision_mismatch=index == 1,
+            temporal_mismatch=index == 2,
+        )
+        for index in range(3)
+    )
+    builder = _CounterfactualResultBuilder(CounterfactualCheckId.PRESENTATION_PERMUTATION)
+    for pair in pairs:
+        builder.add(pair)
+
+    result = builder.finalize()
+
+    assert result.checked_pairs == 3
+    assert result.decision_mismatch_count == 1
+    assert result.temporal_mismatch_count == 1
+    assert result.result_payload_sha256 == counterfactual_result_payload_hash(
+        CounterfactualCheckId.PRESENTATION_PERMUTATION, pairs
+    )
+
+
 def test_named_positive_controls_have_one_disjoint_targeted_detector() -> None:
     """Deleting a declared leak family or retargeting it to COMBINED must fail this contract."""
     from silent_cascade.env.leakage import NAMED_LEAK_INJECTORS
@@ -259,6 +291,127 @@ def test_named_positive_controls_have_one_disjoint_targeted_detector() -> None:
         ("PC_HAZARD_LAYOUT_BY_CLASS", "positive_hazard_class:order_record_ids"),
         ("PC_MANIFEST_ORDER_BY_VARIANT", "variant_three_way:id_position"),
     }
+
+
+def test_named_positive_controls_write_the_exact_declared_public_codes() -> None:
+    """A one-field encoding drift can create an overlapping or underpowered control."""
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _rewrite_positive_control,
+    )
+    from silent_cascade.schemas import ActivationPayload, HazardFact, SafeFact
+
+    config = _config()
+    bundles = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 17, 3),
+        91,
+    ).episodes
+    examples = tuple(
+        AuditExample(bundle, index, "matched", 17, index) for index, bundle in enumerate(bundles)
+    )
+    by_id = {injector.control_id: injector for injector in NAMED_LEAK_INJECTORS}
+
+    counts = [
+        _rewrite_positive_control(by_id["PC_COUNT_BY_LABEL"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [len(_fact_events(item.bundle)) for item in counts] == [48, 56, 48, 56]
+
+    gaps = [
+        _rewrite_positive_control(by_id["PC_ACTIVATION_GAP_BY_LABEL"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [
+        item.bundle.public.events[-1].timestamp - item.bundle.public.events[-2].timestamp
+        for item in gaps
+    ] == [1.0, 4.0, 1.0, 4.0]
+
+    terminal_order = [
+        _rewrite_positive_control(by_id["PC_TERMINAL_ORDER_BY_VARIANT"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [
+        "".join(
+            "H" if isinstance(event.payload, HazardFact) else "S"
+            for event in _fact_events(item.bundle)[:3]
+        )
+        for item in terminal_order
+    ] == ["HHS", "SHH", "HHS", "HSH"]
+
+    activation_ids = [
+        _rewrite_positive_control(by_id["PC_ACTIVATION_ID_BY_LABEL"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [
+        item.bundle.public.events[-1].payload.start_node
+        for item in activation_ids
+        if isinstance(item.bundle.public.events[-1].payload, ActivationPayload)
+    ] == [0, 63, 0, 63]
+
+    record_ids = [
+        _rewrite_positive_control(by_id["PC_RECORD_ID_BY_VARIANT"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [
+        tuple(event.event_id for event in _fact_events(item.bundle))[:2] for item in record_ids
+    ] == [
+        (0, 1),
+        (256, 257),
+        (0, 1),
+        (128, 129),
+    ]
+
+    public_ids = [
+        _rewrite_positive_control(by_id["PC_PUBLIC_ID_BY_LABEL"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [
+        bytes.fromhex(item.bundle.public.init.episode_public_id.replace("-", ""))[0]
+        for item in public_ids
+    ] == [
+        0,
+        255,
+        0,
+        255,
+    ]
+
+    delays = [
+        _rewrite_positive_control(by_id["PC_DELAY_BY_LABEL"], example, index)
+        for index, example in enumerate(examples)
+    ]
+    assert [
+        {
+            event.payload.delay
+            for event in _fact_events(item.bundle)
+            if isinstance(event.payload, HazardFact)
+        }
+        for item in delays
+    ] == [{1.0}, {1024.0}, {1.0}, {1024.0}]
+
+    for target in range(4):
+        layout = _rewrite_positive_control(
+            by_id["PC_HAZARD_LAYOUT_BY_CLASS"],
+            examples[0],
+            target,
+            injected_hazard_target=target,
+        )
+        first_four = _fact_events(layout.bundle)[:4]
+        assert isinstance(first_four[target].payload, SafeFact)
+        assert sum(isinstance(item.payload, HazardFact) for item in first_four) == 2
+
+    ordered = [
+        _rewrite_positive_control(
+            by_id["PC_MANIFEST_ORDER_BY_VARIANT"],
+            example,
+            index,
+            encoded_manifest_rank=100 + index,
+        )
+        for index, example in enumerate(examples)
+    ]
+    assert [item.manifest_rank for item in ordered] == [100, 101, 102, 103]
 
 
 def test_counterfactual_schemas_reject_forged_passes_and_unknown_tags() -> None:
@@ -502,6 +655,41 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
     assert not list(tmp_path.iterdir())
 
 
+def test_audit_fails_closed_when_workspace_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Suppressing a failed evidence cleanup can leave a publishable partial artifact."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=20)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": source.episode_count,
+                    "permutation_replicates": 1,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+
+    def fail_cleanup(_path: Path) -> None:
+        raise OSError("injected cleanup failure")
+
+    monkeypatch.setattr(leakage.shutil, "rmtree", fail_cleanup)
+
+    with pytest.raises(RuntimeError, match="cleanup"):
+        leakage.audit_leakage(
+            source,
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config)),
+            tmp_path,
+        )
+
+
 def test_audit_rejects_validation_config_digest_before_source_iteration(tmp_path: Path) -> None:
     """Trusting a typed config without hashing it would fit against unauthenticated inputs."""
     from silent_cascade.env.leakage import (
@@ -631,6 +819,42 @@ def test_audit_rejects_forged_authenticated_profile_before_source_iteration(
             tmp_path,
         )
     assert source.iter_calls == 0
+
+
+def test_audit_rejects_self_reordered_source_before_any_probe_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-ranking a reordered stream must not manufacture new source authentication."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=20)
+    reordered = tuple(
+        replace(example, manifest_rank=rank)
+        for rank, example in enumerate(reversed(source.examples))
+    )
+    forged = replace(source, examples=reordered)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={"episode_count": len(reordered)}
+            )
+        }
+    )
+
+    def prohibited_fit(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("probe fitting began before source authentication")
+
+    monkeypatch.setattr(leakage, "_run_probes", prohibited_fit)
+
+    with pytest.raises(ValueError, match="source order or membership"):
+        leakage.audit_leakage(
+            forged,
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config)),
+            tmp_path,
+        )
 
 
 def test_terminal_delay_counterfactual_swaps_both_public_hazard_delays() -> None:
@@ -882,3 +1106,43 @@ def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
 
     assert np.array_equal(actual, expected)
     assert reader.max_batch_seen <= config.feature_batch_size
+
+
+def test_full_profile_feature_shape_streams_under_resident_ceiling(tmp_path: Path) -> None:
+    """The 624 MB full-profile store must execute moments below the 512 MB RSS gate."""
+    import psutil
+
+    from silent_cascade.env.leakage import (
+        _batched_moments,
+        _BatchedFeatureReader,
+    )
+
+    config = _config().data.leakage_audit
+    feature_path = tmp_path / "full-profile.f32"
+    values = np.memmap(
+        feature_path,
+        dtype=np.float32,
+        mode="w+",
+        shape=(100_000, 1_560),
+    )
+    reader = _BatchedFeatureReader(
+        values,
+        0,
+        1_560,
+        None,
+        config.feature_batch_size,
+        config,
+    )
+
+    mean, std, zero = _batched_moments(
+        reader,
+        np.arange(100_000, dtype=np.int64),
+        np.ones(1_560, dtype=bool),
+    )
+
+    assert feature_path.stat().st_size == 624_000_000
+    assert np.array_equal(mean, np.zeros(1_560))
+    assert np.array_equal(std, np.ones(1_560))
+    assert np.all(zero)
+    assert reader.max_batch_seen <= 4_096
+    assert psutil.Process().memory_info().rss <= config.max_resident_working_bytes

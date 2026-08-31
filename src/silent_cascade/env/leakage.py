@@ -8,12 +8,13 @@ named positive-control mode, to synthesize a known leak.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import mmap
 import shutil
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import permutations
@@ -243,8 +244,6 @@ class _SourceManifestHashBuilder:
     """Accumulate the canonical source-manifest JSON without retaining its entries."""
 
     def __init__(self) -> None:
-        import hashlib
-
         self._digest = hashlib.sha256()
         self._digest.update(
             b'{"domain":"silent-cascade/ofd-v1/leakage-source-manifest/v1","episodes":['
@@ -311,24 +310,48 @@ class InMemoryAuditSource:
 
 
 def _clock_pair_manifest_sha256(pairs: Sequence[PairedClockAuditPair]) -> str:
-    return sha256_bytes(
-        canonical_json_bytes(
-            {
-                "domain": "silent-cascade/ofd-v1/leakage-clock-pair-manifest/v1",
-                "pairs": [
-                    {
-                        "parent_manifest_rank": pair.parent.manifest_rank,
-                        "parent_public_id": pair.parent.bundle.public.init.episode_public_id,
-                        "parent_episode_sha256": episode_sha256(pair.parent.bundle),
-                        "scale": pair.child.truth.recipe.clock_scale,
-                        "child_public_id": pair.child.public.init.episode_public_id,
-                        "child_episode_sha256": episode_sha256(pair.child),
-                    }
-                    for pair in pairs
-                ],
-            }
+    builder = _ClockPairManifestHashBuilder()
+    for pair in pairs:
+        builder.add(pair)
+    return builder.finalize()
+
+
+class _ClockPairManifestHashBuilder:
+    """Accumulate the authenticated clock-pair manifest in bounded memory."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._digest.update(
+            b'{"domain":"silent-cascade/ofd-v1/leakage-clock-pair-manifest/v1","pairs":['
         )
-    )
+        self._count = 0
+        self._finalized = False
+
+    def add(self, pair: PairedClockAuditPair) -> None:
+        if self._finalized:
+            raise RuntimeError("clock-pair manifest has already been finalized")
+        if self._count:
+            self._digest.update(b",")
+        self._digest.update(
+            canonical_json_bytes(
+                {
+                    "parent_manifest_rank": pair.parent.manifest_rank,
+                    "parent_public_id": pair.parent.bundle.public.init.episode_public_id,
+                    "parent_episode_sha256": episode_sha256(pair.parent.bundle),
+                    "scale": pair.child.truth.recipe.clock_scale,
+                    "child_public_id": pair.child.public.init.episode_public_id,
+                    "child_episode_sha256": episode_sha256(pair.child),
+                }
+            )
+        )
+        self._count += 1
+
+    def finalize(self) -> str:
+        if self._finalized:
+            raise RuntimeError("clock-pair manifest has already been finalized")
+        self._finalized = True
+        self._digest.update(b"]}")
+        return self._digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1217,6 +1240,53 @@ def _resource_guard(config: LeakageAuditConfig) -> None:
         raise MemoryError("leakage audit resident working-set ceiling exceeded")
 
 
+def _release_memmap_pages(values: np.ndarray) -> None:
+    """Release clean mapped pages after copying one bounded working batch."""
+    mapping = getattr(values, "_mmap", None)
+    if mapping is not None and hasattr(mapping, "madvise"):
+        mapping.madvise(mmap.MADV_DONTNEED)
+
+
+def _allocate_feature_store(path: Path, rows: int) -> None:
+    allocated = np.memmap(
+        path,
+        dtype=np.float32,
+        mode="w+",
+        shape=(rows, _TOTAL_FEATURE_DIMENSION),
+    )
+    allocated.flush()
+    allocated._mmap.close()
+
+
+def _write_feature_batch(
+    path: Path,
+    total_rows: int,
+    start: int,
+    batch: np.ndarray,
+    config: LeakageAuditConfig,
+) -> None:
+    if (
+        batch.ndim != 2
+        or batch.dtype != np.float32
+        or batch.shape[1] != _TOTAL_FEATURE_DIMENSION
+        or not 0 <= start < start + len(batch) <= total_rows
+    ):
+        raise ValueError("feature-store batch coordinates are invalid")
+    _resource_guard(config)
+    mapped = np.memmap(
+        path,
+        dtype=np.float32,
+        mode="r+",
+        shape=(total_rows, _TOTAL_FEATURE_DIMENSION),
+    )
+    try:
+        mapped[start : start + len(batch)] = batch
+        mapped.flush()
+    finally:
+        mapped._mmap.close()
+    _resource_guard(config)
+
+
 def _validate_audit_coordinate(
     example: AuditExample, rank: int, descriptor: AuditSourceDescriptor
 ) -> None:
@@ -1448,6 +1518,13 @@ class _BatchedFeatureReader:
             self.stop - self.start,
         ):
             raise ValueError("feature reader column mask has the wrong width")
+        # Bound the simultaneous raw/float64/centering arrays independently
+        # of the row-count ceiling. Narrow feature groups may still use the
+        # full configured row batch.
+        self.batch_size = min(
+            self.batch_size,
+            max(1, 16_000_000 // max(self.width * 16, 1)),
+        )
 
     @property
     def width(self) -> int:
@@ -1462,10 +1539,25 @@ class _BatchedFeatureReader:
             _resource_guard(self.config)
             batch_indices = indices[offset : offset + self.batch_size]
             self.max_batch_seen = max(self.max_batch_seen, len(batch_indices))
-            batch = self.values[batch_indices, self.start : self.stop]
+            temporary: np.memmap | None = None
+            source = self.values
+            if isinstance(self.values, np.memmap):
+                temporary = np.memmap(
+                    self.values.filename,
+                    dtype=self.values.dtype,
+                    mode="r",
+                    offset=self.values.offset,
+                    shape=self.values.shape,
+                )
+                source = temporary
+            batch = source[batch_indices, self.start : self.stop]
             if self.allowed_columns is not None:
                 batch = batch[:, self.allowed_columns]
-            yield batch_indices, np.asarray(batch)
+            copied = np.array(batch, copy=True)
+            if temporary is not None:
+                temporary._mmap.close()
+                del temporary
+            yield batch_indices, copied
 
 
 def _batched_moments(
@@ -1492,6 +1584,7 @@ def _batched_moments(
         second += batch_second + np.square(delta) * count * batch_count / total
         mean += delta * batch_count / total
         count = total
+        _resource_guard(reader.config)
     if count != len(train) or count == 0:
         raise ValueError("batched moments did not consume the complete training set")
     std = np.sqrt(second / count)
@@ -1556,6 +1649,7 @@ def _fit_predict_batched(
             loss -= float(np.sum(weights * log_probs[np.arange(len(batch_indices)), batch_targets]))
             coefficient_gradient += values.T @ residual
             intercept_gradient += residual.sum(axis=0)
+            _resource_guard(config)
         loss += 0.5 * config.l2_penalty * float(np.sum(coefficients * coefficients))
         coefficient_gradient += config.l2_penalty * coefficients
         return loss, np.concatenate((coefficient_gradient.ravel(), intercept_gradient))
@@ -1584,6 +1678,7 @@ def _fit_predict_batched(
             np.argmax(values @ coefficients + intercept, axis=1)
         ]
         offset += count
+        _resource_guard(config)
     if offset != len(test):
         raise ValueError("batched prediction did not consume the complete test set")
     return predictions, int(result.nit)
@@ -1899,21 +1994,62 @@ def _fit_predict(
     return classes[np.argmax(x_test @ coefficients + intercept, axis=1)], int(result.nit)
 
 
+class _CounterfactualResultBuilder:
+    """Accumulate one canonical counterfactual result without retaining its pairs."""
+
+    def __init__(self, check_id: CounterfactualCheckId) -> None:
+        if not isinstance(check_id, CounterfactualCheckId):
+            raise TypeError("check_id must be a CounterfactualCheckId")
+        self.check_id = check_id
+        self._digest = hashlib.sha256()
+        self._digest.update(
+            b'{"check_id":'
+            + b'"'
+            + check_id.value.encode("ascii")
+            + b'"'
+            + b',"domain":"silent-cascade/ofd-v1/counterfactual-check/v1","pairs":['
+        )
+        self.checked_pairs = 0
+        self.decision_mismatches = 0
+        self.temporal_mismatches = 0
+        self._finalized = False
+
+    def add(self, pair: CounterfactualPairResult) -> None:
+        if self._finalized:
+            raise RuntimeError("counterfactual result has already been finalized")
+        if not isinstance(pair, CounterfactualPairResult):
+            raise TypeError("counterfactual builder requires typed pair results")
+        if self.checked_pairs:
+            self._digest.update(b",")
+        self._digest.update(canonical_json_bytes(pair.model_dump(mode="json")))
+        self.checked_pairs += 1
+        self.decision_mismatches += pair.decision_mismatch
+        self.temporal_mismatches += pair.temporal_mismatch
+
+    def finalize(self) -> CounterfactualCheckResult:
+        if self._finalized:
+            raise RuntimeError("counterfactual result has already been finalized")
+        if not self.checked_pairs:
+            raise ValueError(f"counterfactual source has no {self.check_id.value} pairs")
+        self._finalized = True
+        self._digest.update(b"]}")
+        return CounterfactualCheckResult(
+            check_id=self.check_id,
+            checked_pairs=self.checked_pairs,
+            decision_mismatch_count=self.decision_mismatches,
+            temporal_mismatch_count=self.temporal_mismatches,
+            result_payload_sha256=self._digest.hexdigest(),
+            passed=self.decision_mismatches == 0 and self.temporal_mismatches == 0,
+        )
+
+
 def _counterfactual_result(
     check_id: CounterfactualCheckId, pairs: Sequence[CounterfactualPairResult]
 ) -> CounterfactualCheckResult:
-    if not pairs:
-        raise ValueError(f"counterfactual source has no {check_id.value} pairs")
-    decision_mismatches = sum(pair.decision_mismatch for pair in pairs)
-    temporal_mismatches = sum(pair.temporal_mismatch for pair in pairs)
-    return CounterfactualCheckResult(
-        check_id=check_id,
-        checked_pairs=len(pairs),
-        decision_mismatch_count=decision_mismatches,
-        temporal_mismatch_count=temporal_mismatches,
-        result_payload_sha256=counterfactual_result_payload_hash(check_id, pairs),
-        passed=decision_mismatches == 0 and temporal_mismatches == 0,
-    )
+    builder = _CounterfactualResultBuilder(check_id)
+    for pair in pairs:
+        builder.add(pair)
+    return builder.finalize()
 
 
 def _derived_public_id(domain: str, source_id: str) -> str:
@@ -2016,20 +2152,79 @@ def _normalized_windows_equal(left: EpisodeBundle, right: EpisodeBundle) -> bool
 def _counterfactual_checks(
     source: ReiterableAuditSource,
     profile: LeakageAuditProfileName,
+    config: LeakageAuditConfig | None = None,
 ) -> tuple[CounterfactualCheckResult, ...]:
-    delay_pairs: list[CounterfactualPairResult] = []
-    presentation_pairs: list[CounterfactualPairResult] = []
-    clock_pairs: list[CounterfactualPairResult] = []
+    delay_builder = _CounterfactualResultBuilder(CounterfactualCheckId.TERMINAL_DELAY_SWAP)
+    presentation_builder = _CounterfactualResultBuilder(
+        CounterfactualCheckId.PRESENTATION_PERMUTATION
+    )
+    clock_builder = _CounterfactualResultBuilder(CounterfactualCheckId.PAIRED_CLOCK_SCALE)
+    authentication = source.authentication
+    clock_manifest = _ClockPairManifestHashBuilder()
+    counts = Counter()
+    parent_identities: dict[int, tuple[str, str]] = {}
+    prior_order: tuple[int, int] | None = None
+    for pair_index, pair in enumerate(source.iter_clock_pairs()):
+        if config is not None and pair_index % config.feature_batch_size == 0:
+            _resource_guard(config)
+        clock_manifest.add(pair)
+        parent = pair.parent
+        child = pair.child
+        actual_parent = (
+            parent.bundle.public.init.episode_public_id,
+            episode_sha256(parent.bundle),
+        )
+        prior_identity = parent_identities.setdefault(parent.manifest_rank, actual_parent)
+        if prior_identity != actual_parent:
+            raise ValueError("paired clock manifest disagrees about a parent identity")
+        suite = child.truth.recipe.evaluation_suite
+        tag = "scale_0_1x" if suite is SuiteName.CLOCK_SCALE_0_1X else "scale_10x"
+        scale_order = 0 if tag == "scale_0_1x" else 1
+        order = (scale_order, parent.manifest_rank)
+        if prior_order is not None and order <= prior_order:
+            raise ValueError("paired clock source is not in canonical scale/parent order")
+        prior_order = order
+        counts[tag] += 1
+        expected_child = scale_episode_time(
+            parent.bundle,
+            suite,
+            child.public.init.episode_public_id,
+        )
+        if child != expected_child:
+            raise ValueError("paired clock child is not the exact declared transform")
+        clock_builder.add(
+            CounterfactualPairResult(
+                pair_key_sha256=counterfactual_pair_key(
+                    CounterfactualCheckId.PAIRED_CLOCK_SCALE,
+                    (parent.bundle.public.init.episode_public_id,),
+                    tag,
+                ),
+                decision_mismatch=_decision_signature(child.public)
+                != _decision_signature(parent.bundle.public),
+                temporal_mismatch=not _normalized_windows_equal(child, parent.bundle),
+            )
+        )
+    if clock_manifest.finalize() != authentication.clock_pair_manifest_sha256:
+        raise ValueError("paired clock manifest does not match source authentication")
+    if dict(counts) != authentication.clock_scale_pair_counts:
+        raise ValueError("paired clock counts do not match source authentication")
+
     pending_positive: dict[tuple[SuiteName, int], AuditExample] = {}
-    base_identities: dict[int, tuple[str, str]] = {}
-    for example in source.iter_examples():
+    matched_parent_ranks: set[int] = set()
+    for source_index, example in enumerate(source.iter_examples()):
+        if config is not None and source_index % config.feature_batch_size == 0:
+            _resource_guard(config)
         bundle = example.bundle
         public_id = bundle.public.init.episode_public_id
-        base_identities[example.manifest_rank] = (public_id, episode_sha256(bundle))
+        expected_parent = parent_identities.get(example.manifest_rank)
+        if expected_parent is not None:
+            if expected_parent != (public_id, episode_sha256(bundle)):
+                raise ValueError("paired clock parent is not a member of the authenticated source")
+            matched_parent_ranks.add(example.manifest_rank)
         original = solve_public_episode(bundle.public)
         permuted = _reordered_public(bundle, public_id)
         permuted_bundle = replace(bundle, public=permuted)
-        presentation_pairs.append(
+        presentation_builder.add(
             CounterfactualPairResult(
                 pair_key_sha256=counterfactual_pair_key(
                     CounterfactualCheckId.PRESENTATION_PERMUTATION,
@@ -2054,7 +2249,7 @@ def _counterfactual_checks(
                 right = solve_public_episode(
                     _with_terminal_delay(partner.bundle, original.public_delay)
                 )
-                delay_pairs.append(
+                delay_builder.add(
                     CounterfactualPairResult(
                         pair_key_sha256=counterfactual_pair_key(
                             CounterfactualCheckId.TERMINAL_DELAY_SWAP,
@@ -2082,61 +2277,18 @@ def _counterfactual_checks(
                 )
     if pending_positive:
         raise ValueError("counterfactual source leaves an unpaired positive episode")
-    authentication = source.authentication
-    declared_pairs = tuple(source.iter_clock_pairs())
-    if _clock_pair_manifest_sha256(declared_pairs) != authentication.clock_pair_manifest_sha256:
-        raise ValueError("paired clock manifest does not match source authentication")
-    counts = Counter()
-    prior_order: tuple[int, int] | None = None
-    for pair in declared_pairs:
-        parent = pair.parent
-        child = pair.child
-        expected_parent = base_identities.get(parent.manifest_rank)
-        actual_parent = (
-            parent.bundle.public.init.episode_public_id,
-            episode_sha256(parent.bundle),
-        )
-        if expected_parent != actual_parent:
-            raise ValueError("paired clock parent is not a member of the authenticated source")
-        suite = child.truth.recipe.evaluation_suite
-        tag = "scale_0_1x" if suite is SuiteName.CLOCK_SCALE_0_1X else "scale_10x"
-        scale_order = 0 if tag == "scale_0_1x" else 1
-        order = (scale_order, parent.manifest_rank)
-        if prior_order is not None and order <= prior_order:
-            raise ValueError("paired clock source is not in canonical scale/parent order")
-        prior_order = order
-        counts[tag] += 1
-        expected_child = scale_episode_time(
-            parent.bundle,
-            suite,
-            child.public.init.episode_public_id,
-        )
-        if child != expected_child:
-            raise ValueError("paired clock child is not the exact declared transform")
-        clock_pairs.append(
-            CounterfactualPairResult(
-                pair_key_sha256=counterfactual_pair_key(
-                    CounterfactualCheckId.PAIRED_CLOCK_SCALE,
-                    (parent.bundle.public.init.episode_public_id,),
-                    tag,
-                ),
-                decision_mismatch=_decision_signature(child.public)
-                != _decision_signature(parent.bundle.public),
-                temporal_mismatch=not _normalized_windows_equal(child, parent.bundle),
-            )
-        )
-    if dict(counts) != authentication.clock_scale_pair_counts:
-        raise ValueError("paired clock counts do not match source authentication")
+    if matched_parent_ranks != set(parent_identities):
+        raise ValueError("paired clock parent is not a member of the authenticated source")
     if profile is LeakageAuditProfileName.PHASE1_GATE and (
-        len(delay_pairs) != 25_000
-        or len(presentation_pairs) != 100_000
+        delay_builder.checked_pairs != 25_000
+        or presentation_builder.checked_pairs != 100_000
         or dict(counts) != {"scale_0_1x": 5_000, "scale_10x": 2_000}
     ):
         raise ValueError("phase1 counterfactual denominators are not exact")
     return (
-        _counterfactual_result(CounterfactualCheckId.TERMINAL_DELAY_SWAP, delay_pairs),
-        _counterfactual_result(CounterfactualCheckId.PRESENTATION_PERMUTATION, presentation_pairs),
-        _counterfactual_result(CounterfactualCheckId.PAIRED_CLOCK_SCALE, clock_pairs),
+        delay_builder.finalize(),
+        presentation_builder.finalize(),
+        clock_builder.finalize(),
     )
 
 
@@ -2547,12 +2699,16 @@ def audit_leakage(
         raise MemoryError("leakage feature-store ceiling exceeded")
     work = Path(mkdtemp(prefix="silent-cascade-leakage-", dir=workspace))
     feature_path = work / "features.f32"
+    features: np.memmap | None = None
+    public_values: np.ndarray | None = None
     try:
-        features = np.memmap(
-            feature_path,
+        _allocate_feature_store(feature_path, source.episode_count)
+        feature_buffer = np.empty(
+            (
+                min(config.feature_batch_size, source.episode_count),
+                _TOTAL_FEATURE_DIMENSION,
+            ),
             dtype=np.float32,
-            mode="w+",
-            shape=(source.episode_count, _TOTAL_FEATURE_DIMENSION),
         )
         rows: list[_StoredExample] = []
         digest = CorpusHashBuilder(source.episode_count)
@@ -2588,7 +2744,17 @@ def audit_leakage(
                 raise ValueError("audit seed-token collision")
             seen_tokens.add(token)
             feature_set = extract_shortcut_features(example, source.episode_count)
-            features[index] = feature_set.vectors[ShortcutFeatureGroup.COMBINED]
+            feature_buffer[index % len(feature_buffer)] = feature_set.vectors[
+                ShortcutFeatureGroup.COMBINED
+            ]
+            if (index + 1) % len(feature_buffer) == 0:
+                _write_feature_batch(
+                    feature_path,
+                    source.episode_count,
+                    index + 1 - len(feature_buffer),
+                    feature_buffer,
+                    config,
+                )
             bundle = example.bundle
             bundle_digest = episode_sha256(bundle)
             digest.add(CorpusDigestEntry(bundle.public.init.episode_public_id, bundle_digest))
@@ -2618,6 +2784,16 @@ def audit_leakage(
             ] += 1
         if len(rows) != source.episode_count:
             raise ValueError("audit source yielded the wrong number of examples")
+        remainder = len(rows) % len(feature_buffer)
+        if remainder:
+            _write_feature_batch(
+                feature_path,
+                source.episode_count,
+                len(rows) - remainder,
+                feature_buffer[:remainder],
+                config,
+            )
+        del feature_buffer
         if source.descriptor.generation_mode == "matched":
             flush_matched_group()
         corpus_hash = digest.finalize()
@@ -2638,7 +2814,6 @@ def audit_leakage(
                 raise ValueError("audit source second pass differs from first pass")
         if second_count != len(rows):
             raise ValueError("audit source second pass differs from first pass")
-        features.flush()
         train, test, split_hash = _split_memberships(
             rows,
             config.audit_seed,
@@ -2646,7 +2821,13 @@ def audit_leakage(
             source.descriptor.generation_mode,
             strict_divisible=profile is LeakageAuditProfileName.PHASE1_GATE,
         )
-        public_values = np.asarray(features)
+        features = np.memmap(
+            feature_path,
+            dtype=np.float32,
+            mode="r",
+            shape=(source.episode_count, _TOTAL_FEATURE_DIMENSION),
+        )
+        public_values = features
         probes = _run_probes(
             public_values, rows, train, test, config, selected_profile, corpus_hash
         )
@@ -2695,7 +2876,7 @@ def audit_leakage(
                     work,
                 ),
             )
-        counterfactual = _counterfactual_checks(source, profile)
+        counterfactual = _counterfactual_checks(source, profile, config)
         clean_pass = not selected_profile.enforce_clean_statistical_gate or all(
             probe.passed for probe in probes
         )
@@ -2741,6 +2922,11 @@ def audit_leakage(
             ),
         )
     finally:
-        with suppress(UnboundLocalError):
+        if public_values is not None:
+            del public_values
+        if features is not None:
             del features
-        shutil.rmtree(work, ignore_errors=True)
+        try:
+            shutil.rmtree(work)
+        except OSError as error:
+            raise RuntimeError("leakage audit workspace cleanup failed") from error
