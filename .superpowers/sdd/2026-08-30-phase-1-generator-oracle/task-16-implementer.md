@@ -69,3 +69,106 @@
   collection, and the final `phase1_analysis` provenance scope.
 - The required full reviewer acceptance matrix and full local `make verify` are
   still pending; this round is not a completion claim.
+
+## Fix round 3: complete RED / GREEN evidence
+
+### Formatting and manifest-clock authentication
+
+- RED: the mandatory scoped formatter reported that
+  `tests/integration/test_phase1_services.py` would be reformatted; the inherited
+  `make verify` therefore exited during lint before tests, doctor, or builds.
+- GREEN: after formatting, scoped Ruff check and format verification both
+  passed. Commit `212f105` records only that gate restoration.
+- RED: the first real manifest-clock fixture reached the independent invariant
+  validator as an unscaled child and failed with the expected FACT/activation
+  gap invariant error. After separating parent validation, an adversarial
+  second regenerator returned a valid child derived from the wrong parent and
+  pytest failed exactly with `Failed: DID NOT RAISE <class 'ValueError'>`.
+- GREEN: Task 16 now reconstructs authenticated parents from each manifest
+  entry's parent public ID/hash, regenerates the child independently, checks
+  exact transform/order/counts, and compares normalized decision/window
+  evidence. The focused manifest-clock set passed `3 passed, 9 deselected in
+  1.15s`; commit `48b8556` records the fix.
+
+### Independent leakage authority and executable source modes
+
+- RED: the independent-authority test first failed with
+  `Phase1ServiceDependencies.for_test() got an unexpected keyword argument
+  'build_audit_anchor'`.
+- GREEN: Task 16 now requires a separate immutable anchor-authority capability,
+  calls it independently from source construction, and never copies source
+  authentication into provenance. A poison test substitutes authentication
+  from a second genuinely generated source while the anchor remains pinned;
+  the real Task 15 boundary rejects it and publishes nothing.
+- RED: the real matched-source path failed with `manifest audit provenance
+  changed during source binding` when current execution commit/audit seeds
+  correctly differed from immutable embedded source provenance.
+- GREEN: current execution provenance is now distinct from immutable source
+  provenance while authenticating the exact generator/config/allocation/root
+  identity. Matched sources derive positive `0.1x` and `10x` clock pairs from
+  every authenticated base parent. Both matched and independent 12-episode
+  sources execute the real Task 16-to-Task 15 call, preserve complete
+  scientific-failure reports, refuse corrupted authentication before
+  publication, and clean the workspace. Commit `f0ca233` records this boundary.
+
+### Acceptance matrix and allocation recipe authentication
+
+- GREEN checkpoint before further expansion:
+  `uv run pytest -q tests/integration/test_phase1_services.py` passed `24 passed
+  in 5.27s`; scoped Ruff check and format verification passed. Commit `05fb48b`
+  preserves that coherent acceptance slice.
+- RED: an independently valid bundle generated with root seed 42 was accepted
+  for the bound root-41 allocation. The focused regression failed exactly with
+  `Failed: DID NOT RAISE <class 'ValueError'>`.
+- GREEN: every base and clock-parent bundle is now authenticated against its
+  exact allocation request: namespace, suite, root seed, episode/quartet
+  coordinate, requested path, allocated variant, unscaled recipe, and derived
+  public ID. Manifest regeneration is independently bound to entry ID/hash,
+  accepted attempt, coordinate, suite, and path. The same checks protect oracle
+  and both leakage source modes. Task 16 passed `26 passed in 5.22s`; commit
+  `f164d55` records this fix.
+- GREEN: the complete approved Step 1/5/9 matrix passed `35 passed in 5.85s`.
+  It covers sealed production identity and the deferred 10,000 adapter spy;
+  exact 8-16 test bounds and output-tree separation; all selector/source
+  request errors; freeze reuse/divergence/privacy; authorized validation and
+  renamed frozen access; current complete provenance and zero model calls;
+  per-episode, cohort, allocation-recipe, suite-policy, denominator, rejection,
+  and separate exact-random checks; allocation and manifest clocks; immutable
+  publication reuse/divergence; both leakage modes and pass/scientific-failure/
+  corruption behavior; workspace cleanup; typed counterfactual schemas and
+  audit seeds; and the shared Task 2 oracle/leakage/reproducibility digest.
+  Commits `8b3b8c1` and `5f27637` record the matrix and its bounded-resource
+  publication checks. All real matched/allocation Task 15 calls remain; only
+  duplicate audit reruns were replaced by direct immutable-report publication
+  checks.
+
+### Final local verification
+
+- `uv run ruff check src/silent_cascade/env/services.py tests/integration/test_phase1_services.py`
+  passed: `All checks passed!`.
+- `uv run ruff format --check src/silent_cascade/env/services.py tests/integration/test_phase1_services.py`
+  passed: `2 files already formatted`.
+- `uv run pytest -q tests/integration/test_phase1_services.py tests/unit/test_manifest.py tests/unit/test_oracle.py tests/unit/test_leakage.py`
+  passed: `285 passed in 198.01s`.
+- The first two complete `make verify` attempts each reached `745 passed` but
+  the existing full-profile leakage RSS test crossed its process ceiling after
+  full-suite allocator retention. The same test passed alone (`1 passed in
+  1.67s`) and directly after the Task 16 matrix (`36 passed in 6.31s`), ruling
+  out a deterministic product failure and direct Task 16 leak. The ceiling was
+  not changed. Removing only duplicate Task 15 executions from publication
+  reuse checks preserved every real scientific path and bounded suite memory.
+- Final `make verify` passed with normal local repository/cache access:
+  repository Ruff passed, all 60 files were formatted, pytest passed `746
+  passed in 211.98s`, `silent-cascade doctor` reported Overall PASS, and
+  `uv build` produced both `dist/silent_cascade-0.1.0.tar.gz` and
+  `dist/silent_cascade-0.1.0-py3-none-any.whl`.
+
+## Fix round 3 commits
+
+- `212f105` — `style: restore Task 16 formatting gate`
+- `48b8556` — `fix: authenticate manifest clock evidence`
+- `f0ca233` — `fix: separate leakage source authority`
+- `05fb48b` — `test: exercise Task 16 evidence boundaries`
+- `f164d55` — `fix: authenticate oracle source recipes`
+- `8b3b8c1` — `test: complete Task 16 acceptance matrix`
+- `5f27637` — `test: bound Task 16 acceptance resources`
