@@ -21,6 +21,7 @@ from silent_cascade.env.episode import (
     EpisodeRecipe,
     EpisodeTruth,
     EpisodeVariant,
+    IndependentEpisodeCoordinate,
     MatchedEpisodeCoordinate,
     PublicEpisode,
 )
@@ -32,11 +33,16 @@ from silent_cascade.rng import (
     COHORT_SCOPED_STREAMS,
     AllocationLabelKey,
     CounterSeedKey,
+    IndependentCounterSeedKey,
+    IndependentPublicIdKey,
     PublicIdBatchKey,
     SeedStream,
+    allocate_independent_public_id,
     allocate_independent_variants,
     allocate_public_ids,
     derive_counter_seed,
+    derive_independent_counter_seed,
+    independent_local_generator,
     local_generator,
 )
 from silent_cascade.schemas import (
@@ -1132,6 +1138,414 @@ def regenerate_matched_episode(
         if bundle.public.init.episode_public_id == expected_public_id:
             return bundle
     raise GenerationError("matched cohort regeneration public ID mismatch")
+
+
+@dataclass(frozen=True, slots=True)
+class _IndependentEpisodeTemplate:
+    """One episode-local primary topology and timing draw.
+
+    This is deliberately not a cohort template: every value comes from an
+    ``IndependentCounterSeedKey`` for the request's own episode index.
+    """
+
+    relevant_nodes: tuple[int, ...]
+    relevant_edges: tuple[tuple[int, int], ...]
+    distractor_edges: tuple[tuple[int, int], ...]
+    unreachable_terminal_nodes: tuple[int, int, int]
+    episode_delay: float
+    fact_gap_sequence: tuple[float, ...]
+    activation_gap: float
+    hazard_class_multiset: tuple[int, int]
+
+
+def _independent_stream(
+    request: IndependentEpisodeRequest, stream: SeedStream, attempt: int
+) -> np.random.Generator:
+    if stream is SeedStream.LABEL:
+        raise ValueError("independent episodes cannot consume allocation label streams")
+    return independent_local_generator(
+        IndependentCounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=request.split_namespace,
+            suite=request.suite,
+            root_seed=request.root_seed,
+            episode_index=request.episode_index,
+            stream=stream,
+            attempt=attempt,
+        )
+    )
+
+
+def _independent_seed_token(
+    request: IndependentEpisodeRequest, stream: SeedStream, attempt: int
+) -> str:
+    if stream is SeedStream.LABEL:
+        raise ValueError("independent episodes cannot consume allocation label streams")
+    return derive_independent_counter_seed(
+        IndependentCounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=request.split_namespace,
+            suite=request.suite,
+            root_seed=request.root_seed,
+            episode_index=request.episode_index,
+            stream=stream,
+            attempt=attempt,
+        )
+    ).token
+
+
+def independent_seed_tokens(
+    request: IndependentEpisodeRequest, accepted_attempt: int
+) -> tuple[str, ...]:
+    """Return every construction token for one independent accepted draw."""
+
+    if not isinstance(request, IndependentEpisodeRequest):
+        raise TypeError("request must be an IndependentEpisodeRequest")
+    _require_exact_int(accepted_attempt, "accepted_attempt")
+    if accepted_attempt >= 1_000:
+        raise ValueError("accepted_attempt must be below 1000")
+    return tuple(
+        _independent_seed_token(request, stream, accepted_attempt)
+        for stream in (
+            SeedStream.TEMPLATE,
+            SeedStream.STRUCTURE,
+            SeedStream.TIMESTAMPS,
+            SeedStream.NODE_PERMUTATION,
+            SeedStream.TERMINALS,
+            SeedStream.PRESENTATION,
+        )
+    )
+
+
+def _sample_independent_template(
+    config: Phase1Config, request: IndependentEpisodeRequest, attempt: int
+) -> _IndependentEpisodeTemplate:
+    """Sample the complete primary nuisance recipe for one episode only."""
+
+    spec = suite_spec(request.suite)
+    template_rng = _independent_stream(request, SeedStream.TEMPLATE, attempt)
+    distractor_count = int(
+        template_rng.integers(spec.distractor_link_records[0], spec.distractor_link_records[1] + 1)
+    )
+    episode_delay = _log_uniform(template_rng, spec.delay_log_uniform)
+    hazard_classes = tuple(
+        sorted(
+            int(template_rng.integers(0, config.data.hazard_types))
+            for _ in range(config.data.terminal_hazard_records)
+        )
+    )
+    if len(hazard_classes) != _TERMINAL_RECORD_COUNT - 1:
+        raise ValueError("Phase 1 requires exactly two hazard records")
+
+    relevant_nodes = tuple(range(request.requested_path_length + 1))
+    relevant_edges = tuple(pairwise(relevant_nodes))
+    unreachable_terminal_nodes = (61, 62, 63)
+    distractor_nodes = tuple(
+        node
+        for node in range(request.requested_path_length + 1, config.data.max_entities - 3)
+        if node not in unreachable_terminal_nodes
+    )
+    candidates = tuple(
+        (source, target)
+        for source in distractor_nodes
+        for target in distractor_nodes
+        if source < target
+    )
+    if distractor_count > len(candidates):
+        raise ValueError("distractor topology cannot fit available entity IDs")
+    structure_rng = _independent_stream(request, SeedStream.STRUCTURE, attempt)
+    selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
+    distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
+    _validate_template_topology(
+        relevant_nodes, relevant_edges, distractor_edges, unreachable_terminal_nodes
+    )
+
+    fact_count = len(relevant_edges) + len(distractor_edges) + _TERMINAL_RECORD_COUNT
+    if fact_count > config.data.primary_memory_capacity:
+        raise ValueError("independent facts exceed the fixed memory capacity")
+    timestamps_rng = _independent_stream(request, SeedStream.TIMESTAMPS, attempt)
+    fact_gaps = tuple(
+        _log_uniform(timestamps_rng, _OBSERVATION_GAP_RANGE) for _ in range(fact_count)
+    )
+    activation_gap = _log_uniform(timestamps_rng, _OBSERVATION_GAP_RANGE)
+    return _IndependentEpisodeTemplate(
+        relevant_nodes,
+        relevant_edges,
+        distractor_edges,
+        unreachable_terminal_nodes,
+        episode_delay,
+        fact_gaps,
+        activation_gap,
+        (hazard_classes[0], hazard_classes[1]),
+    )
+
+
+def _build_independent_candidate(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    attempt: int,
+    rejection_reasons: tuple[str, ...],
+) -> EpisodeBundle:
+    """Build one unbound independent candidate from its episode-local streams."""
+
+    template = _sample_independent_template(config, request, attempt)
+    node_rng = _independent_stream(request, SeedStream.NODE_PERMUTATION, attempt)
+    permutation = tuple(int(item) for item in node_rng.permutation(config.data.max_entities))
+    relabel = {canonical: permutation[canonical] for canonical in range(config.data.max_entities)}
+    relevant_nodes = tuple(relabel[node] for node in template.relevant_nodes)
+    facts: list[tuple[LinkFact | HazardFact | SafeFact, str]] = [
+        (LinkFact(relabel[source], relabel[target]), "relevant_link")
+        for source, target in template.relevant_edges
+    ]
+    facts.extend(
+        (LinkFact(relabel[source], relabel[target]), "distractor_link")
+        for source, target in template.distractor_edges
+    )
+
+    terminals_rng = _independent_stream(request, SeedStream.TERMINALS, attempt)
+    hazard_types = tuple(
+        int(item) for item in terminals_rng.permutation(template.hazard_class_multiset)
+    )
+    terminal_nodes = tuple(
+        relabel[template.unreachable_terminal_nodes[int(index)]]
+        for index in terminals_rng.permutation(_TERMINAL_RECORD_COUNT)
+    )
+    target = relevant_nodes[-1]
+    if request.variant is EpisodeVariant.POSITIVE:
+        facts.extend(
+            (
+                (HazardFact(target, hazard_types[0], template.episode_delay), "reachable_terminal"),
+                (
+                    HazardFact(terminal_nodes[0], hazard_types[1], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (SafeFact(terminal_nodes[1]), "decoy_terminal"),
+            )
+        )
+    elif request.variant is EpisodeVariant.SAFE_NEGATIVE:
+        facts.extend(
+            (
+                (SafeFact(target), "reachable_terminal"),
+                (
+                    HazardFact(terminal_nodes[0], hazard_types[0], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (
+                    HazardFact(terminal_nodes[1], hazard_types[1], template.episode_delay),
+                    "decoy_terminal",
+                ),
+            )
+        )
+    elif request.variant is EpisodeVariant.DISCONNECTED_NEGATIVE:
+        facts.extend(
+            (
+                (
+                    HazardFact(terminal_nodes[0], hazard_types[0], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (
+                    HazardFact(terminal_nodes[1], hazard_types[1], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (SafeFact(terminal_nodes[2]), "decoy_terminal"),
+            )
+        )
+    else:
+        raise ValueError("independent request has an unsupported primary variant")
+
+    presentation_rng = _independent_stream(request, SeedStream.PRESENTATION, attempt)
+    presentation = tuple(facts[int(index)] for index in presentation_rng.permutation(len(facts)))
+    if len(presentation) != len(template.fact_gap_sequence):
+        raise ValueError("independent presentation and timestamps disagree")
+    timestamp = 0.0
+    events: list[ExternalEvent] = []
+    relevant_link_ids: dict[int, int] = {}
+    terminal_record_id: int | None = None
+    for event_id, ((payload, role), gap) in enumerate(
+        zip(presentation, template.fact_gap_sequence, strict=True)
+    ):
+        timestamp += gap
+        events.append(ExternalEvent(event_id, timestamp, ExternalEventKind.FACT, payload))
+        if role == "relevant_link":
+            assert isinstance(payload, LinkFact)
+            relevant_link_ids[payload.source_node] = event_id
+        elif role == "reachable_terminal":
+            terminal_record_id = event_id
+    activation_time = timestamp + template.activation_gap
+    fact_count = len(events)
+    events.append(
+        ExternalEvent(
+            fact_count,
+            activation_time,
+            ExternalEventKind.ACTIVATE,
+            ActivationPayload(relevant_nodes[0]),
+        )
+    )
+    relevant_record_ids = tuple(relevant_link_ids[node] for node in relevant_nodes[:-1])
+    if request.variant is not EpisodeVariant.DISCONNECTED_NEGATIVE:
+        if terminal_record_id is None:
+            raise ValueError("reachable terminal record was not constructed")
+        relevant_record_ids = (*relevant_record_ids, terminal_record_id)
+    configured_window = action_window(
+        activation_time, template.episode_delay, config.data.oracle_timing
+    )
+    positive = request.variant is EpisodeVariant.POSITIVE
+    truth = EpisodeTruth(
+        key=EpisodeKey(
+            "ofd-v1",
+            request.split_namespace,
+            request.suite,
+            request.root_seed,
+            IndependentEpisodeCoordinate(
+                "independent", request.episode_index, request.allocation_quartet_index
+            ),
+        ),
+        recipe=EpisodeRecipe(
+            request.requested_path_length,
+            request.variant,
+            len(template.distractor_edges),
+            request.suite,
+            attempt,
+            oracle_timing=config.data.oracle_timing,
+        ),
+        relevant_node_path=relevant_nodes,
+        relevant_record_ids=relevant_record_ids,
+        terminal_record_id=terminal_record_id,
+        relevant_hazard_type=hazard_types[0] if positive else None,
+        private_terminal=ExternalEvent(
+            fact_count + 1,
+            activation_time + template.episode_delay,
+            ExternalEventKind.OUTCOME if positive else ExternalEventKind.END,
+            None,
+        ),
+        activation_time=activation_time,
+        episode_delay=template.episode_delay,
+        action_window_start=configured_window.start if positive else None,
+        action_window_end=configured_window.end if positive else None,
+        action_target=configured_window.target if positive else None,
+        rejection_count=attempt,
+        rejection_reasons=rejection_reasons,
+    )
+    return EpisodeBundle(
+        PublicEpisode(
+            AgentInit(
+                "pending-public-id",
+                config.data.primary_memory_capacity,
+                config.data.hazard_types,
+                0.0,
+            ),
+            tuple(events),
+        ),
+        truth,
+    )
+
+
+def _validate_independent_episode_shape(bundle: EpisodeBundle, config: Phase1Config) -> None:
+    """Generator-local primary shape checks before binding its public ID."""
+
+    _validate_matched_member_shape(bundle, config)
+    minimum_trace_events = 2 * (
+        bundle.truth.recipe.requested_path_length
+        + (0 if bundle.truth.recipe.variant is EpisodeVariant.DISCONNECTED_NEGATIVE else 1)
+    )
+    if (
+        minimum_trace_events * bundle.truth.recipe.oracle_timing.delta_min
+        > bundle.truth.recipe.oracle_timing.terminal_compose_fraction * bundle.truth.episode_delay
+    ):
+        raise ValueError("minimum legal oracle trace cannot fit the episode delay")
+
+
+def _opaque_independent_request_hash(request: IndependentEpisodeRequest) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "generator_version": "ofd-v1",
+                "split_namespace": request.split_namespace.value,
+                "suite": request.suite.value,
+                "root_seed": request.root_seed,
+                "episode_index": request.episode_index,
+                "requested_path_length": request.requested_path_length,
+                "variant": request.variant.value,
+                "allocation_quartet_index": request.allocation_quartet_index,
+            }
+        )
+    ).hexdigest()
+
+
+def generate_independent_episode(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    public_id_seed: int,
+) -> EpisodeBundle:
+    """Generate one independent primary claim-data episode without cohort nuisance sharing."""
+
+    if not isinstance(config, Phase1Config):
+        raise TypeError("config must be a Phase1Config")
+    if not isinstance(request, IndependentEpisodeRequest):
+        raise TypeError("request must be an IndependentEpisodeRequest")
+    rejection_counts: dict[str, int] = {}
+    for attempt in range(config.data.max_generation_attempts):
+        try:
+            candidate = _build_independent_candidate(
+                config, request, attempt, tuple(rejection_counts)
+            )
+            _validate_independent_episode_shape(candidate, config)
+        except ValueError as error:
+            reason = str(error)
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            continue
+        public_id = allocate_independent_public_id(
+            IndependentPublicIdKey(
+                generator_version="ofd-v1",
+                split_namespace=request.split_namespace,
+                suite=request.suite,
+                public_id_seed=public_id_seed,
+                episode_index=request.episode_index,
+                accepted_attempt=attempt,
+            )
+        )
+        bundle = EpisodeBundle(
+            PublicEpisode(
+                AgentInit(
+                    public_id,
+                    candidate.public.init.memory_capacity,
+                    candidate.public.init.hazard_type_count,
+                    candidate.public.init.initial_time,
+                ),
+                candidate.public.events,
+            ),
+            candidate.truth,
+        )
+        validate_episode_invariants(bundle, config)
+        return bundle
+    raise GenerationError(
+        "independent episode generation exhausted",
+        context={
+            "request_hash": _opaque_independent_request_hash(request),
+            "attempt_count": config.data.max_generation_attempts,
+            "rejection_reasons": rejection_counts,
+        },
+    )
+
+
+def regenerate_independent_episode(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    public_id_seed: int,
+    expected_public_id: str,
+    expected_accepted_attempt: int,
+) -> EpisodeBundle:
+    """Rebuild one independent episode and authenticate its stored public identity."""
+
+    _require_exact_int(expected_accepted_attempt, "expected_accepted_attempt")
+    if not isinstance(expected_public_id, str):
+        raise TypeError("expected_public_id must be a string")
+    bundle = generate_independent_episode(config, request, public_id_seed)
+    if bundle.truth.recipe.accepted_attempt != expected_accepted_attempt:
+        raise GenerationError("independent episode regeneration attempt mismatch")
+    if bundle.public.init.episode_public_id != expected_public_id:
+        raise GenerationError("independent episode regeneration public ID mismatch")
+    return bundle
 
 
 def _validate_template_topology(

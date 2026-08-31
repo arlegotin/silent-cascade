@@ -15,11 +15,18 @@ from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
     EpisodeBundle,
     EpisodeVariant,
+    IndependentEpisodeCoordinate,
     MatchedEpisodeCoordinate,
 )
 from silent_cascade.env.timing import action_window
 from silent_cascade.errors import EpisodeInvariantError
-from silent_cascade.rng import CounterSeedKey, SeedStream, local_generator
+from silent_cascade.rng import (
+    CounterSeedKey,
+    IndependentCounterSeedKey,
+    SeedStream,
+    independent_local_generator,
+    local_generator,
+)
 from silent_cascade.schemas import (
     ActivationPayload,
     ExternalEvent,
@@ -304,6 +311,133 @@ def _expected_member_payloads(
     )
 
 
+def _independent_generator(bundle: EpisodeBundle, stream: SeedStream):
+    coordinate = bundle.truth.key.coordinate
+    if not isinstance(coordinate, IndependentEpisodeCoordinate):
+        _fail("independent coordinate is invalid", check_id="rng_provenance")
+    return independent_local_generator(
+        IndependentCounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=bundle.truth.key.split_namespace,
+            suite=bundle.truth.key.suite,
+            root_seed=bundle.truth.key.root_seed,
+            episode_index=coordinate.episode_index,
+            stream=stream,
+            attempt=bundle.truth.recipe.accepted_attempt,
+        )
+    )
+
+
+def _expected_independent_payloads(
+    bundle: EpisodeBundle, config: Phase1Config
+) -> tuple[tuple[object, ...], tuple[float, ...], float, int]:
+    """Reconstruct independent construction from only its episode-local key domains."""
+
+    truth = bundle.truth
+    key = truth.key
+    recipe = truth.recipe
+    coordinate = key.coordinate
+    if (
+        recipe.evaluation_suite is not key.suite
+        or key.generator_version != config.data.generator_version
+        or not isinstance(key.split_namespace, SplitNamespace)
+        or not isinstance(key.suite, SuiteName)
+        or not isinstance(coordinate, IndependentEpisodeCoordinate)
+    ):
+        _fail("invalid RNG provenance", check_id="rng_provenance")
+    if (
+        type(key.root_seed) is not int
+        or not 0 <= key.root_seed < 2**128
+        or type(coordinate.episode_index) is not int
+        or coordinate.episode_index < 0
+        or type(coordinate.allocation_quartet_index) is not int
+        or coordinate.allocation_quartet_index < 0
+        or type(recipe.accepted_attempt) is not int
+        or not 0 <= recipe.accepted_attempt < 1_000
+        or type(truth.rejection_count) is not int
+        or not 0 <= truth.rejection_count < 1_000
+        or truth.rejection_count != recipe.accepted_attempt
+        or type(coordinate.mode) is not str
+        or coordinate.mode != "independent"
+    ):
+        _fail("invalid RNG provenance", check_id="rng_provenance")
+    path_lengths, delay_bounds, distractor_bounds = _suite_parameters(config, key.suite)
+    if recipe.requested_path_length not in path_lengths:
+        _fail("requested path length is invalid for the suite")
+    template_rng = _independent_generator(bundle, SeedStream.TEMPLATE)
+    distractor_count = int(template_rng.integers(distractor_bounds[0], distractor_bounds[1] + 1))
+    episode_delay = _log_uniform(template_rng, delay_bounds)
+    hazard_classes = tuple(
+        sorted(int(template_rng.integers(0, config.data.hazard_types)) for _ in range(2))
+    )
+    relevant_nodes = tuple(range(recipe.requested_path_length + 1))
+    candidates = tuple(
+        (source, target)
+        for source in range(recipe.requested_path_length + 1, config.data.max_entities - 3)
+        for target in range(recipe.requested_path_length + 1, config.data.max_entities - 3)
+        if source < target
+    )
+    structure_rng = _independent_generator(bundle, SeedStream.STRUCTURE)
+    selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
+    distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
+    timestamps_rng = _independent_generator(bundle, SeedStream.TIMESTAMPS)
+    fact_gaps = tuple(
+        _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
+        for _ in range(recipe.requested_path_length + distractor_count + 3)
+    )
+    activation_gap = _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
+    permutation = tuple(
+        int(value)
+        for value in _independent_generator(bundle, SeedStream.NODE_PERMUTATION).permutation(64)
+    )
+    relabel = {canonical: permutation[canonical] for canonical in range(64)}
+    if truth.relevant_node_path != tuple(relabel[node] for node in relevant_nodes):
+        _fail("independent node permutation provenance disagrees")
+    facts: list[object] = [
+        LinkFact(relabel[source], relabel[target]) for source, target in pairwise(relevant_nodes)
+    ]
+    facts.extend(LinkFact(relabel[source], relabel[target]) for source, target in distractor_edges)
+    terminals_rng = _independent_generator(bundle, SeedStream.TERMINALS)
+    hazard_types = tuple(int(value) for value in terminals_rng.permutation(hazard_classes))
+    terminal_nodes = tuple(
+        relabel[(61, 62, 63)[int(index)]] for index in terminals_rng.permutation(3)
+    )
+    target = relabel[relevant_nodes[-1]]
+    if recipe.variant is EpisodeVariant.POSITIVE:
+        facts.extend(
+            (
+                HazardFact(target, hazard_types[0], episode_delay),
+                HazardFact(terminal_nodes[0], hazard_types[1], episode_delay),
+                SafeFact(terminal_nodes[1]),
+            )
+        )
+    elif recipe.variant is EpisodeVariant.SAFE_NEGATIVE:
+        facts.extend(
+            (
+                SafeFact(target),
+                HazardFact(terminal_nodes[0], hazard_types[0], episode_delay),
+                HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
+            )
+        )
+    elif recipe.variant is EpisodeVariant.DISCONNECTED_NEGATIVE:
+        facts.extend(
+            (
+                HazardFact(terminal_nodes[0], hazard_types[0], episode_delay),
+                HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
+                SafeFact(terminal_nodes[2]),
+            )
+        )
+    else:
+        _fail("episode variant is invalid")
+    presentation = _independent_generator(bundle, SeedStream.PRESENTATION).permutation(len(facts))
+    return (
+        tuple(facts[int(index)] for index in presentation),
+        fact_gaps,
+        activation_gap,
+        distractor_count,
+    )
+
+
 def _require_acyclic_links(links: tuple[ExternalEvent, ...]) -> None:
     adjacency: dict[int, set[int]] = defaultdict(set)
     for event in links:
@@ -462,12 +596,19 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         ):
             _fail("every hazard terminal delay must match private episode delay")
 
+    coordinate = truth.key.coordinate
+    if isinstance(coordinate, MatchedEpisodeCoordinate):
+        expected = _expected_member_payloads(bundle, config)
+    elif isinstance(coordinate, IndependentEpisodeCoordinate):
+        expected = _expected_independent_payloads(bundle, config)
+    else:
+        _fail("invalid RNG provenance", check_id="rng_provenance")
     (
         expected_payloads,
         expected_fact_gaps,
         expected_activation_gap,
         expected_distractor_count,
-    ) = _expected_member_payloads(bundle, config)
+    ) = expected
     observed_distractor_count = len(links) - truth.recipe.requested_path_length
     if (
         truth.recipe.distractor_link_count != observed_distractor_count
