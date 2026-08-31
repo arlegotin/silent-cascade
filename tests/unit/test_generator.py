@@ -7,12 +7,19 @@ from pathlib import Path
 import pytest
 
 from silent_cascade.config import resolve_config
-from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
+from silent_cascade.env.config import OracleTimingConfig, Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import EpisodeVariant
 from silent_cascade.env.generator import CohortRequest
-from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
+from silent_cascade.env.oracle import build_oracle_trace, solve_public_episode, verify_oracle_truth
+from silent_cascade.env.reward import action_window, score_actions
 from silent_cascade.errors import GenerationError
-from silent_cascade.rng import PublicIdBatchKey, allocate_public_ids
+from silent_cascade.rng import (
+    CounterSeedKey,
+    PublicIdBatchKey,
+    SeedStream,
+    allocate_public_ids,
+    local_generator,
+)
 from silent_cascade.schemas import ExternalEventKind, HazardFact, LinkFact, SafeFact
 
 
@@ -122,6 +129,74 @@ def test_matched_cohort_is_private_safe_and_oracle_consistent(config: Phase1Conf
             "private_terminal",
         ):
             assert private_name not in public_view
+
+
+def test_matched_recipe_path_length_is_request_link_edge_count(config: Phase1Config) -> None:
+    """Changing recipe length to node count must fail this allocation metadata contract."""
+    from silent_cascade.env.generator import generate_matched_cohort
+
+    request = cohort_request()
+    cohort = generate_matched_cohort(config, request, public_id_seed=91)
+
+    for bundle in cohort.episodes:
+        solution = solve_public_episode(bundle.public)
+        assert bundle.truth.recipe.requested_path_length == request.requested_path_length
+        assert len(bundle.truth.relevant_node_path) == bundle.truth.recipe.requested_path_length + 1
+        assert len(solution.link_record_ids) == request.requested_path_length
+
+
+def test_matched_generation_uses_active_timing_for_truth_oracle_and_scoring(
+    config: Phase1Config,
+) -> None:
+    """Changing generation back to default timing constants must fail configured scoring."""
+    from silent_cascade.env.generator import generate_matched_cohort
+
+    timing = OracleTimingConfig(
+        delta_0=0.25,
+        delta_min=0.05,
+        delta_max=1.0,
+        jitter_log_std=0.1,
+        terminal_compose_fraction=0.55,
+        action_window_start_fraction=0.60,
+        action_target_fraction=0.70,
+        action_window_end_fraction=0.80,
+    )
+    configured = config.model_copy(
+        update={"data": config.data.model_copy(update={"oracle_timing": timing})}
+    )
+    cohort = generate_matched_cohort(configured, cohort_request(), public_id_seed=91)
+    bundle = next(
+        item for item in cohort.episodes if item.truth.recipe.variant is EpisodeVariant.POSITIVE
+    )
+    coordinate = bundle.truth.key.coordinate
+    assert coordinate.mode == "matched"
+    trace = build_oracle_trace(
+        bundle.public,
+        solve_public_episode(bundle.public),
+        bundle.truth.private_terminal,
+        timing,
+        local_generator(
+            CounterSeedKey(
+                generator_version="ofd-v1",
+                split_namespace=bundle.truth.key.split_namespace,
+                suite=bundle.truth.key.suite,
+                root_seed=bundle.truth.key.root_seed,
+                cohort_index=coordinate.cohort_index,
+                member_index=coordinate.member_index,
+                stream=SeedStream.TRACE_JITTER,
+                attempt=bundle.truth.recipe.accepted_attempt,
+            )
+        ),
+    )
+    window = action_window(bundle.truth.activation_time, bundle.truth.episode_delay, timing)
+
+    assert bundle.truth.recipe.oracle_timing == timing
+    assert (
+        bundle.truth.action_window_start,
+        bundle.truth.action_target,
+        bundle.truth.action_window_end,
+    ) == (window.start, window.target, window.end)
+    assert score_actions(bundle.truth, trace.actions).timed_success
 
 
 def test_matched_regeneration_requires_accepted_attempt_and_public_id(config: Phase1Config) -> None:

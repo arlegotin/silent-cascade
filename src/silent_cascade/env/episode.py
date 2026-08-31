@@ -6,12 +6,14 @@ import re
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import field_validator
 
-from silent_cascade.env.config import SplitNamespace, SuiteName
+from silent_cascade.env.config import OracleTimingConfig, SplitNamespace, SuiteName
+from silent_cascade.env.timing import action_window
 from silent_cascade.errors import EpisodeInvariantError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.schemas import AgentInit, ExternalEvent, ExternalEventKind, HazardFact
@@ -135,6 +137,7 @@ class EpisodeRecipe:
     clock_scale: float = 1.0
     parent_public_id: str | None = None
     parent_episode_sha256: str | None = None
+    oracle_timing: OracleTimingConfig = dataclass_field(default_factory=OracleTimingConfig)
 
     def __post_init__(self) -> None:
         _require_int(self.requested_path_length, "requested_path_length", minimum=1)
@@ -142,6 +145,8 @@ class EpisodeRecipe:
             self.evaluation_suite, SuiteName
         ):
             raise TypeError("variant and evaluation_suite must be strict enums")
+        if not isinstance(self.oracle_timing, OracleTimingConfig):
+            raise TypeError("oracle_timing must be an OracleTimingConfig")
         _require_int(self.distractor_link_count, "distractor_link_count")
         _require_int(self.accepted_attempt, "accepted_attempt")
         _require_float(self.clock_scale, "clock_scale", positive=True)
@@ -193,7 +198,7 @@ class EpisodeTruth:
             raise EpisodeInvariantError("recipe suite must match episode key")
         if not isinstance(self.relevant_node_path, tuple) or not self.relevant_node_path:
             raise ValueError("relevant_node_path must be a nonempty tuple")
-        if len(self.relevant_node_path) != self.recipe.requested_path_length:
+        if len(self.relevant_node_path) != self.recipe.requested_path_length + 1:
             raise EpisodeInvariantError("path length must match recipe")
         for node in self.relevant_node_path:
             _require_int(node, "relevant_node_path")
@@ -239,14 +244,15 @@ class EpisodeTruth:
             _require_float(start, "action_window_start")
             _require_float(end, "action_window_end")
             _require_float(target, "action_target")
-            terminal_time = self.private_terminal.timestamp
-            expected_start = terminal_time - 0.25 * self.episode_delay
-            expected_end = terminal_time - 0.10 * self.episode_delay
-            expected_target = terminal_time - 0.175 * self.episode_delay
+            expected = action_window(
+                self.activation_time,
+                self.episode_delay,
+                self.recipe.oracle_timing,
+            )
             if not (
-                _times_equal(start, expected_start)
-                and _times_equal(end, expected_end)
-                and _times_equal(target, expected_target)
+                _times_equal(start, expected.start)
+                and _times_equal(end, expected.end)
+                and _times_equal(target, expected.target)
             ):
                 raise EpisodeInvariantError("positive action window must match OFD timing")
         else:

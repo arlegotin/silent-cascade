@@ -8,25 +8,13 @@ import numpy as np
 
 from silent_cascade.env.config import OracleTimingConfig
 from silent_cascade.env.episode import EpisodeTruth, EpisodeVariant, PublicEpisode
+from silent_cascade.env.timing import action_window
 from silent_cascade.errors import ScoringError
 from silent_cascade.schemas import Action, ExternalEventKind, HazardFact
 
 RANDOM_BASELINE_POSITIVE_SUCCESS_PROBABILITY = 0.125
 RANDOM_BASELINE_NEGATIVE_SUCCESS_PROBABILITY = 0.5
 RANDOM_BASELINE_BALANCED_SUCCESS_PROBABILITY = 0.3125
-
-
-@dataclass(frozen=True, slots=True)
-class ActionWindow:
-    """A target action interval whose right boundary is excluded."""
-
-    start: float
-    end: float
-    target: float
-
-    def contains(self, timestamp: float) -> bool:
-        """Return whether ``timestamp`` lies in this half-open interval."""
-        return self.start <= timestamp < self.end
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,19 +28,6 @@ class EpisodeScore:
     in_window: bool | None
     false_action: bool
     reason: str
-
-
-def action_window(
-    activation_time: float,
-    delay: float,
-    timing: OracleTimingConfig,
-) -> ActionWindow:
-    """Derive the configured action window from public activation and delay."""
-    return ActionWindow(
-        start=activation_time + timing.action_window_start_fraction * delay,
-        end=activation_time + timing.action_window_end_fraction * delay,
-        target=activation_time + timing.action_target_fraction * delay,
-    )
 
 
 def score_actions(truth: EpisodeTruth, actions: Sequence[Action]) -> EpisodeScore:

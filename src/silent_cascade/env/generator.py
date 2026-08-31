@@ -24,6 +24,7 @@ from silent_cascade.env.episode import (
     MatchedEpisodeCoordinate,
     PublicEpisode,
 )
+from silent_cascade.env.timing import action_window
 from silent_cascade.errors import GenerationError
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.rng import (
@@ -942,21 +943,14 @@ def _build_matched_member(
         ExternalEventKind.OUTCOME if variant is EpisodeVariant.POSITIVE else ExternalEventKind.END,
         None,
     )
-    action_start = (
-        private_terminal.timestamp - 0.25 * template.episode_delay
-        if variant is EpisodeVariant.POSITIVE
-        else None
+    configured_window = action_window(
+        activation_time,
+        template.episode_delay,
+        config.data.oracle_timing,
     )
-    action_end = (
-        private_terminal.timestamp - 0.10 * template.episode_delay
-        if variant is EpisodeVariant.POSITIVE
-        else None
-    )
-    action_target = (
-        private_terminal.timestamp - 0.175 * template.episode_delay
-        if variant is EpisodeVariant.POSITIVE
-        else None
-    )
+    action_start = configured_window.start if variant is EpisodeVariant.POSITIVE else None
+    action_end = configured_window.end if variant is EpisodeVariant.POSITIVE else None
+    action_target = configured_window.target if variant is EpisodeVariant.POSITIVE else None
     truth = EpisodeTruth(
         key=EpisodeKey(
             "ofd-v1",
@@ -966,11 +960,12 @@ def _build_matched_member(
             MatchedEpisodeCoordinate("matched", request.cohort_index, member_index),
         ),
         recipe=EpisodeRecipe(
-            request.requested_path_length + 1,
+            request.requested_path_length,
             variant,
             len(template.distractor_edges),
             request.suite,
             attempt,
+            oracle_timing=config.data.oracle_timing,
         ),
         relevant_node_path=relevant_nodes,
         relevant_record_ids=relevant_record_ids,

@@ -111,7 +111,7 @@ def positive_truth() -> EpisodeTruth:
             31,
             MatchedEpisodeCoordinate("matched", 1, 0),
         ),
-        recipe=EpisodeRecipe(4, EpisodeVariant.POSITIVE, 3, SuiteName.IID_PRIMARY, 0),
+        recipe=EpisodeRecipe(3, EpisodeVariant.POSITIVE, 3, SuiteName.IID_PRIMARY, 0),
         relevant_node_path=(9, 7, 2, 5),
         relevant_record_ids=(15, 10, 14, 11),
         terminal_record_id=11,

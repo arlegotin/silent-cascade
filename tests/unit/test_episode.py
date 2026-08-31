@@ -56,7 +56,7 @@ def positive_bundle() -> EpisodeBundle:
             987654321,
             MatchedEpisodeCoordinate("matched", 3, 2),
         ),
-        recipe=EpisodeRecipe(2, EpisodeVariant.POSITIVE, 0, SuiteName.IID_PRIMARY, 4),
+        recipe=EpisodeRecipe(1, EpisodeVariant.POSITIVE, 0, SuiteName.IID_PRIMARY, 4),
         relevant_node_path=(1, 2),
         relevant_record_ids=(10, 11),
         terminal_record_id=11,
@@ -90,6 +90,21 @@ def test_public_projection_has_no_private_truth_fields(positive_bundle: EpisodeB
         ExternalEventKind.FACT,
         ExternalEventKind.ACTIVATE,
     }
+
+
+def test_episode_truth_recipe_path_length_is_link_edge_count(
+    positive_bundle: EpisodeBundle,
+) -> None:
+    """Changing recipe length to node count must fail this schema contract."""
+    truth = positive_bundle.truth
+    edge_count_recipe = replace(truth.recipe, requested_path_length=1)
+
+    corrected = replace(truth, recipe=edge_count_recipe)
+
+    assert corrected.recipe.requested_path_length == 1
+    assert len(corrected.relevant_node_path) == corrected.recipe.requested_path_length + 1
+    with pytest.raises(EpisodeInvariantError, match="path length"):
+        replace(corrected, recipe=replace(edge_count_recipe, requested_path_length=2))
 
 
 def test_public_artifact_and_public_error_payload_do_not_leak_private_sentinel(
@@ -198,7 +213,7 @@ def test_episode_variants_round_trip_through_private_canonical_serialization(
     else:
         private_truth = EpisodeTruth(
             key=truth.key,
-            recipe=EpisodeRecipe(2, variant, 0, SuiteName.IID_PRIMARY, 4),
+            recipe=EpisodeRecipe(1, variant, 0, SuiteName.IID_PRIMARY, 4),
             relevant_node_path=truth.relevant_node_path,
             relevant_record_ids=truth.relevant_record_ids,
             terminal_record_id=truth.terminal_record_id,
@@ -216,7 +231,7 @@ def test_episode_variants_round_trip_through_private_canonical_serialization(
         positive_bundle.public,
         private_truth
         if variant is not EpisodeVariant.POSITIVE
-        else replace(private_truth, recipe=EpisodeRecipe(2, variant, 0, SuiteName.IID_PRIMARY, 4)),
+        else replace(private_truth, recipe=EpisodeRecipe(1, variant, 0, SuiteName.IID_PRIMARY, 4)),
     )
 
     assert episode_from_bytes(canonical_episode_bytes(bundle)) == bundle

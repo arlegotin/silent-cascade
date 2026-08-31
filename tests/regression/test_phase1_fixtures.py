@@ -97,7 +97,7 @@ def _truth_for_case(raw: dict[str, Any], public: PublicEpisode) -> EpisodeTruth:
             MatchedEpisodeCoordinate("matched", 0, 0),
         ),
         recipe=EpisodeRecipe(
-            len(raw["expected_path"]),
+            len(raw["expected_path"]) - 1,
             variant,
             len(raw["facts"]) - len(selected_ids),
             SuiteName.IID_PRIMARY,
