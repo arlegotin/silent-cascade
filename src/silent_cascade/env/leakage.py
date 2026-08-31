@@ -27,7 +27,7 @@ from pydantic import Field, model_validator
 from scipy.optimize import minimize
 from scipy.special import logsumexp
 
-from silent_cascade.env.config import LeakageAuditConfig, SplitNamespace, SuiteName
+from silent_cascade.env.config import LeakageAuditConfig, Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
     CorpusDigestEntry,
     CorpusHashBuilder,
@@ -39,6 +39,7 @@ from silent_cascade.env.episode import (
     episode_sha256,
     scale_episode_time,
 )
+from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
 from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.provenance import EvidenceProvenance
@@ -179,14 +180,41 @@ class ReiterableAuditSource(Protocol):
     def iter_examples(self) -> Iterator[AuditExample]: ...
 
 
+def _source_manifest_sha256(examples: Sequence[AuditExample]) -> str:
+    """Bind a source descriptor to its exact ordered artifact manifest."""
+    return sha256_bytes(
+        canonical_json_bytes(
+            {
+                "domain": "silent-cascade/ofd-v1/leakage-source-manifest/v1",
+                "episodes": [
+                    {
+                        "manifest_rank": example.manifest_rank,
+                        "generation_mode": example.generation_mode,
+                        "randomization_block_index": example.randomization_block_index,
+                        "episode_position": example.episode_position,
+                        "public_id": example.bundle.public.init.episode_public_id,
+                        "episode_sha256": episode_sha256(example.bundle),
+                    }
+                    for example in examples
+                ],
+            }
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class InMemoryAuditSource:
     descriptor: AuditSourceDescriptor
     examples: tuple[AuditExample, ...]
+    validation_config: Phase1Config | None = None
 
     @property
     def episode_count(self) -> int:
         return len(self.examples)
+
+    @property
+    def manifest_sha256(self) -> str:
+        return _source_manifest_sha256(self.examples)
 
     def iter_examples(self) -> Iterator[AuditExample]:
         return iter(self.examples)
@@ -214,6 +242,14 @@ class _InjectedAuditSource:
     @property
     def episode_count(self) -> int:
         return self.source.episode_count
+
+    @property
+    def manifest_sha256(self) -> str:
+        return self.source.manifest_sha256  # type: ignore[attr-defined]
+
+    @property
+    def validation_config(self) -> Phase1Config | None:
+        return getattr(self.source, "validation_config", None)
 
     def iter_examples(self) -> Iterator[AuditExample]:
         return (
@@ -542,13 +578,9 @@ class _StoredExample:
     hazard_class: int | None
     block: int
     position: int
-
-
-@dataclass(frozen=True, slots=True)
-class _FitResult:
-    predictions: np.ndarray
-    iterations: int
-    converged: bool
+    # This is extracted from public FACT records during the first stream.  It
+    # is metadata for the permitted within-episode null, never a predictor.
+    public_hazard_classes: tuple[int, ...] = ()
 
 
 def _fact_events(bundle: EpisodeBundle):
@@ -850,6 +882,14 @@ def _profile_config(config: LeakageAuditConfig, profile: LeakageAuditProfileName
     return config.test if profile is LeakageAuditProfileName.TEST else config.phase1_gate
 
 
+def _validate_holm_attainability(config: LeakageAuditConfig, profile: object) -> None:
+    """Reject a confirmatory profile whose finite null cannot reach Holm alpha."""
+    if getattr(profile, "enforce_clean_statistical_gate", False) and (
+        27 / (profile.permutation_replicates + 1) >= config.alpha
+    ):
+        raise ValueError("permutation replicate count cannot attain the Holm threshold")
+
+
 def _validate_provenance(
     source: ReiterableAuditSource, config: LeakageAuditConfig, provenance: EvidenceProvenance
 ) -> None:
@@ -872,6 +912,14 @@ def _validate_provenance(
         or provenance.foundation_model_calls != 0
     ):
         raise ValueError("source descriptor/provenance mismatch")
+    try:
+        manifest_sha256 = source.manifest_sha256  # type: ignore[attr-defined]
+    except AttributeError as error:
+        raise ValueError("audit source has no authenticated manifest binding") from error
+    if manifest_sha256 != descriptor.allocation_or_manifest_sha256:
+        raise ValueError("source allocation/manifest digest is not authenticated")
+    if not isinstance(getattr(source, "validation_config", None), Phase1Config):
+        raise ValueError("audit source has no canonical validation configuration")
 
 
 def _resource_guard(config: LeakageAuditConfig) -> None:
@@ -879,18 +927,29 @@ def _resource_guard(config: LeakageAuditConfig) -> None:
         raise MemoryError("leakage audit resident working-set ceiling exceeded")
 
 
-def _validate_audit_coordinate(example: AuditExample, rank: int) -> None:
+def _validate_audit_coordinate(
+    example: AuditExample, rank: int, descriptor: AuditSourceDescriptor
+) -> None:
     if example.manifest_rank != rank:
         raise ValueError("audit manifest rank is not canonical source order")
-    coordinate = example.bundle.truth.key.coordinate
+    key = example.bundle.truth.key
+    coordinate = key.coordinate
+    if (
+        key.split_namespace is not descriptor.split_namespace
+        or key.root_seed != descriptor.root_seed
+        or key.suite is not example.bundle.truth.recipe.evaluation_suite
+    ):
+        raise ValueError("audit episode key is not descriptor-bound")
     if example.generation_mode == "matched":
         if not isinstance(coordinate, MatchedEpisodeCoordinate) or (
             coordinate.cohort_index,
             coordinate.member_index,
         ) != (example.randomization_block_index, example.episode_position):
             raise ValueError("matched audit coordinate is not authenticated")
-    elif not isinstance(coordinate, IndependentEpisodeCoordinate) or (
-        coordinate.allocation_quartet_index != example.randomization_block_index
+    elif (
+        not isinstance(coordinate, IndependentEpisodeCoordinate)
+        or coordinate.allocation_quartet_index != example.randomization_block_index
+        or coordinate.episode_index != example.episode_position
     ):
         raise ValueError("independent audit coordinate is not authenticated")
 
@@ -1029,6 +1088,10 @@ def _continuous_columns(group: ShortcutFeatureGroup, width: int) -> np.ndarray:
     elif group is ShortcutFeatureGroup.TERMINAL_MULTISET:
         continuous[:4] = False
         continuous[6:8] = False
+    elif group is ShortcutFeatureGroup.LINK_TOPOLOGY:
+        # Counts and degree moments are scalar quantities; the cycle bit and
+        # every histogram bin are categorical/presence channels.
+        continuous[4:23] = False
     elif group is ShortcutFeatureGroup.COMBINED:
         continuous = np.concatenate(
             tuple(
@@ -1072,54 +1135,6 @@ def _standardize(
     return result_train, result_test
 
 
-def _fit_logistic(
-    x: np.ndarray, labels: np.ndarray, classes: np.ndarray, config: LeakageAuditConfig
-) -> _FitResult:
-    targets = np.searchsorted(classes, labels)
-    n_classes = len(classes)
-    n_features = x.shape[1]
-    class_counts = np.bincount(targets, minlength=n_classes).astype(np.float64)
-    if np.any(class_counts == 0):
-        raise ValueError("optimizer received a missing class")
-    weights = 1.0 / class_counts[targets]
-    weights /= weights.sum()
-
-    def objective(flat: np.ndarray) -> tuple[float, np.ndarray]:
-        coefficients = flat[: n_features * n_classes].reshape(n_features, n_classes)
-        intercept = flat[n_features * n_classes :]
-        logits = x @ coefficients + intercept
-        log_probs = logits - logsumexp(logits, axis=1, keepdims=True)
-        loss = -np.sum(
-            weights * log_probs[np.arange(len(labels)), targets]
-        ) + 0.5 * config.l2_penalty * np.sum(coefficients**2)
-        probs = np.exp(log_probs)
-        residual = (probs - np.eye(n_classes)[targets]) * weights[:, None]
-        gradient = np.concatenate(
-            ((x.T @ residual + config.l2_penalty * coefficients).ravel(), residual.sum(axis=0))
-        )
-        return float(loss), gradient
-
-    result = minimize(
-        objective,
-        np.zeros(n_features * n_classes + n_classes),
-        jac=True,
-        method="L-BFGS-B",
-        options={
-            "maxiter": config.optimizer_max_iterations,
-            "gtol": config.optimizer_gradient_tolerance,
-            "ftol": config.optimizer_function_tolerance,
-        },
-    )
-    if not result.success or not np.isfinite(result.x).all():
-        raise ValueError("leakage logistic optimizer failed")
-    parameters = result.x
-    logits = (
-        x @ parameters[: n_features * n_classes].reshape(n_features, n_classes)
-        + parameters[n_features * n_classes :]
-    )
-    return _FitResult(classes[np.argmax(logits, axis=1)], int(result.nit), True)
-
-
 def _balanced_accuracy(labels: np.ndarray, predictions: np.ndarray, classes: np.ndarray) -> float:
     recalls = [np.mean(predictions[labels == value] == value) for value in classes]
     if any(not np.isfinite(value) for value in recalls):
@@ -1136,15 +1151,55 @@ def _permuted_labels(
     audit_seed: int,
 ) -> np.ndarray:
     result = labels.copy()
+    if task is ShortcutTask.POSITIVE_HAZARD_CLASS:
+        if labels.shape != (len(rows),):
+            raise ValueError("hazard permutation labels must be source-aligned")
+        for index, row in enumerate(rows):
+            if row.variant is not EpisodeVariant.POSITIVE:
+                if labels[index] != -1:
+                    raise ValueError("non-positive hazard label is invalid")
+                continue
+            classes = tuple(sorted(row.public_hazard_classes))
+            if len(classes) != 2 or any(type(value) is not int for value in classes):
+                raise ValueError("positive public hazard multiset is invalid")
+            if classes[0] == classes[1]:
+                continue
+            if labels[index] not in classes:
+                raise ValueError("hazard target is not public")
+            key = AuditSeedKey(
+                "leakage-v1",
+                audit_seed,
+                corpus_hash,
+                task,
+                replicate,
+                row.suite,
+                row.path_length,
+                row.block,
+                row.position,
+            )
+            digest = sha256_bytes(
+                canonical_json_bytes(
+                    {
+                        "schema_version": key.schema_version,
+                        "audit_seed": key.audit_seed,
+                        "corpus_hash": key.corpus_hash,
+                        "task": key.task.value,
+                        "replicate_index": key.replicate_index,
+                        "suite": key.suite.value,
+                        "requested_path_length": key.requested_path_length,
+                        "randomization_block_index": key.randomization_block_index,
+                        "episode_position": key.episode_position,
+                    }
+                )
+            )
+            if int(digest[:16], 16) & 1:
+                result[index] = classes[1] if labels[index] == classes[0] else classes[0]
+        return result
     groups: dict[tuple[SuiteName, int, int], list[int]] = defaultdict(list)
     for index, row in enumerate(rows):
         groups[(row.suite, row.path_length, row.block)].append(index)
     for (suite, path, block), indices in groups.items():
         group_labels = tuple(int(labels[index]) for index in indices)
-        if task is ShortcutTask.POSITIVE_HAZARD_CLASS:
-            # Hazards are independently swapped inside a public episode by the
-            # counterfactual/control source; a group label shuffle is invalid.
-            continue
         candidates = tuple(sorted(set(permutations(group_labels))))
         expected = 6 if task is ShortcutTask.POSITIVE_BINARY else 12
         if len(candidates) != expected:
@@ -1236,17 +1291,20 @@ def _run_probes(
         dtype=np.int64,
     )
     labels_by_task[ShortcutTask.POSITIVE_HAZARD_CLASS] = np.asarray(
-        [rows[index].hazard_class for index in hazard_indices], dtype=np.int8
+        [row.hazard_class if row.variant is EpisodeVariant.POSITIVE else -1 for row in rows],
+        dtype=np.int8,
     )
-    for task, labels in labels_by_task.items():
-        if label_shuffled and task is not ShortcutTask.POSITIVE_HAZARD_CLASS:
-            labels = _permuted_labels(rows, labels, task, -1, corpus_hash, config.audit_seed)
+    for task, source_labels in labels_by_task.items():
+        if label_shuffled:
+            source_labels = _permuted_labels(
+                rows, source_labels, task, -1, corpus_hash, config.audit_seed
+            )
         indices = (
             hazard_indices if task is ShortcutTask.POSITIVE_HAZARD_CLASS else np.arange(len(rows))
         )
         task_train = np.intersect1d(train, indices, assume_unique=True)
         task_test = np.intersect1d(test, indices, assume_unique=True)
-        local_labels = labels
+        local_labels = source_labels[indices]
         if task is ShortcutTask.POSITIVE_HAZARD_CLASS:
             local_indices = {global_index: local for local, global_index in enumerate(indices)}
             train_rows = np.asarray([local_indices[index] for index in task_train], dtype=np.int64)
@@ -1296,31 +1354,7 @@ def _run_probes(
                     ),
                 ):
                     permuted_all = _permuted_labels(
-                        rows,
-                        np.asarray(
-                            [row.variant is EpisodeVariant.POSITIVE for row in rows], dtype=np.int8
-                        )
-                        if task is ShortcutTask.POSITIVE_BINARY
-                        else (
-                            np.asarray(
-                                [list(EpisodeVariant).index(row.variant) for row in rows],
-                                dtype=np.int8,
-                            )
-                            if task is ShortcutTask.VARIANT_THREE_WAY
-                            else np.asarray(
-                                [
-                                    row.hazard_class
-                                    if row.variant is EpisodeVariant.POSITIVE
-                                    else -1
-                                    for row in rows
-                                ],
-                                dtype=np.int8,
-                            )
-                        ),
-                        task,
-                        replicate,
-                        corpus_hash,
-                        config.audit_seed,
+                        rows, labels_by_task[task], task, replicate, corpus_hash, config.audit_seed
                     )
                     permuted = permuted_all[test_rows_global]
                     exceed += _balanced_accuracy(permuted, predictions, classes) >= observed
@@ -1588,7 +1622,10 @@ def audit_leakage(
     ):
         raise TypeError("leakage audit received invalid typed inputs")
     _validate_provenance(source, config, provenance)
+    validation_config = source.validation_config  # type: ignore[attr-defined]
+    assert isinstance(validation_config, Phase1Config)
     selected_profile = _profile_config(config, profile)
+    _validate_holm_attainability(config, selected_profile)
     if source.episode_count != selected_profile.episode_count:
         raise ValueError("source episode count does not equal frozen audit profile")
     if not workspace.exists() or not workspace.is_dir():
@@ -1609,15 +1646,28 @@ def audit_leakage(
         digest = CorpusHashBuilder(source.episode_count)
         seen_tokens: set[tuple[int, int]] = set()
         denominators: Counter[str] = Counter()
-        matched_groups: dict[int, list[tuple[EpisodeVariant, tuple[object, ...]]]] = defaultdict(
-            list
-        )
+        active_matched_block: int | None = None
+        active_matched_bundles: list[EpisodeBundle] = []
+
+        def flush_matched_group() -> None:
+            if active_matched_block is not None:
+                validate_cohort_invariants(tuple(active_matched_bundles), validation_config)  # type: ignore[arg-type]
+
         for index, example in enumerate(source.iter_examples()):
             if index % config.feature_batch_size == 0:
                 _resource_guard(config)
             if example.generation_mode != source.descriptor.generation_mode:
                 raise ValueError("example generation mode differs from source")
-            _validate_audit_coordinate(example, index)
+            _validate_audit_coordinate(example, index, source.descriptor)
+            validate_episode_invariants(example.bundle, validation_config)
+            if example.generation_mode == "matched":
+                if active_matched_block is None:
+                    active_matched_block = example.randomization_block_index
+                elif example.randomization_block_index != active_matched_block:
+                    flush_matched_group()
+                    active_matched_block = example.randomization_block_index
+                    active_matched_bundles.clear()
+                active_matched_bundles.append(example.bundle)
             solution = solve_public_episode(example.bundle.public)
             verify_oracle_truth(solution, example.bundle.truth)
             token = (example.randomization_block_index, example.episode_position)
@@ -1641,33 +1691,22 @@ def audit_leakage(
                     bundle.truth.relevant_hazard_type,
                     example.randomization_block_index,
                     example.episode_position,
+                    tuple(
+                        sorted(
+                            event.payload.hazard_type
+                            for event in _fact_events(bundle)
+                            if isinstance(event.payload, HazardFact)
+                        )
+                    ),
                 )
             )
             denominators[
                 f"{bundle.truth.key.suite.value}:{bundle.truth.recipe.requested_path_length}"
             ] += 1
-            if example.generation_mode == "matched":
-                matched_groups[example.randomization_block_index].append(
-                    (bundle.truth.recipe.variant, _matched_nuisance_signature(bundle))
-                )
         if len(rows) != source.episode_count:
             raise ValueError("audit source yielded the wrong number of examples")
         if source.descriptor.generation_mode == "matched":
-            expected = Counter(
-                {
-                    EpisodeVariant.POSITIVE: 2,
-                    EpisodeVariant.SAFE_NEGATIVE: 1,
-                    EpisodeVariant.DISCONNECTED_NEGATIVE: 1,
-                }
-            )
-            for members in matched_groups.values():
-                if (
-                    len(members) != 4
-                    or Counter(variant for variant, _signature in members) != expected
-                ):
-                    raise ValueError("matched audit group does not contain the declared cohort")
-                if len({signature for _variant, signature in members}) != 1:
-                    raise ValueError("matched audit cohort nuisance controls differ")
+            flush_matched_group()
         corpus_hash = digest.finalize()
         # Regeneration authentication includes source order, public ID, and digest.
         second = tuple(

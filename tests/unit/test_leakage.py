@@ -1,5 +1,6 @@
 """Contracts for the fail-closed public-feature leakage auditor."""
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -215,6 +216,60 @@ def test_hazard_task_physically_removes_combined_identity_channels_and_preserves
     assert np.array_equal(test[:, 0], (0.0, 0.0))
 
 
+def test_link_topology_mask_freezes_cycle_flag_and_combined_1560_bit_layout() -> None:
+    """A categorical topology flag must never be transformed as a continuous scalar."""
+    from silent_cascade.env.leakage import ShortcutFeatureGroup, _continuous_columns
+
+    topology = _continuous_columns(ShortcutFeatureGroup.LINK_TOPOLOGY, 33)
+    assert np.array_equal(
+        topology,
+        np.asarray(
+            (
+                True,
+                True,
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+            ),
+            dtype=bool,
+        ),
+    )
+    combined = _continuous_columns(ShortcutFeatureGroup.COMBINED, 1560)
+    assert combined.shape == (1560,)
+    assert not combined[1527 + 4]
+    assert hashlib.sha256(np.packbits(combined.astype(np.uint8)).tobytes()).hexdigest() == (
+        "6ca18896cbfa1cd90a65b0851758f769b5fd340c94ddfdb956f5517f5cebbe51"
+    )
+
+
 def test_group_permutations_select_only_complete_declared_assignments() -> None:
     """A per-position remap that changes a quartet class multiset must fail this null contract."""
     from silent_cascade.env.episode import EpisodeVariant
@@ -256,6 +311,72 @@ def test_group_permutations_select_only_complete_declared_assignments() -> None:
         ) == [0, 0, 1, 2]
 
 
+def test_hazard_permutations_swap_only_distinct_public_positive_classes() -> None:
+    """Leaving hazard targets unchanged makes the declared null distribution degenerate."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.leakage import ShortcutTask, _permuted_labels, _StoredExample
+
+    rows = tuple(
+        _StoredExample(
+            public_id=f"00000000-0000-4000-8000-{index:012d}",
+            digest="a" * 64,
+            group_id="independent:7",
+            suite=SuiteName.IID_PRIMARY,
+            path_length=3,
+            variant=EpisodeVariant.POSITIVE if index < 2 else EpisodeVariant.SAFE_NEGATIVE,
+            hazard_class=index if index < 2 else None,
+            block=7,
+            position=index,
+            public_hazard_classes=(0, 1) if index == 0 else ((2, 2) if index == 1 else ()),
+        )
+        for index in range(4)
+    )
+    labels = np.asarray((0, 2, -1, -1), dtype=np.int8)
+    permutations = {
+        tuple(_permuted_labels(rows, labels, ShortcutTask.POSITIVE_HAZARD_CLASS, rep, "b" * 64, 91))
+        for rep in range(64)
+    }
+    assert permutations <= {(0, 2, -1, -1), (1, 2, -1, -1)}
+    assert (1, 2, -1, -1) in permutations
+
+
+def test_independent_coordinate_rejects_forged_source_position() -> None:
+    """A quartet index alone does not authenticate an independent episode."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.generator import IndependentEpisodeRequest, generate_independent_episode
+    from silent_cascade.env.leakage import (
+        AuditExample,
+        AuditSourceDescriptor,
+        _validate_audit_coordinate,
+    )
+
+    config = _config()
+    request = IndependentEpisodeRequest(
+        split_namespace=SplitNamespace.DEBUG,
+        suite=SuiteName.IID_PRIMARY,
+        root_seed=41,
+        episode_index=7,
+        allocation_quartet_index=1,
+        requested_path_length=3,
+        variant=EpisodeVariant.POSITIVE,
+    )
+    bundle = generate_independent_episode(config, request, 91)
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="independent",
+        allocation_id="test-leakage-v1",
+        allocation_or_manifest_sha256="f" * 64,
+        split_namespace=SplitNamespace.DEBUG,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256="e" * 64,
+        generator_source_sha256="a" * 64,
+        episode_count=4,
+    )
+    with pytest.raises(ValueError, match="independent audit coordinate"):
+        _validate_audit_coordinate(AuditExample(bundle, 0, "independent", 1, 99), 0, descriptor)
+
+
 def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: Path) -> None:
     """Retaining bundles or omitting a report family must fail this bounded audit contract."""
     from silent_cascade.env.leakage import (
@@ -264,6 +385,7 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
         CounterfactualCheckId,
         InMemoryAuditSource,
         LeakageAuditProfileName,
+        _source_manifest_sha256,
         audit_leakage,
     )
 
@@ -296,7 +418,7 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
             schema_version="leakage-source-v1",
             generation_mode="matched",
             allocation_id="test-leakage-v1",
-            allocation_or_manifest_sha256="f" * 64,
+            allocation_or_manifest_sha256=_source_manifest_sha256(examples),
             split_namespace=SplitNamespace.DEBUG,
             root_seed=41,
             public_id_seed_sha256=public_id_seed_sha256(91),
@@ -305,6 +427,7 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
             episode_count=len(examples),
         ),
         examples,
+        config,
     )
 
     report = audit_leakage(
