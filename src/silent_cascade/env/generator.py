@@ -5,6 +5,7 @@ publicly stable allocation coordinates and cohort-scoped template recipe that
 later generator tasks consume without consulting the oracle or private truth.
 """
 
+import hashlib
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -14,13 +15,36 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
-from silent_cascade.env.episode import EpisodeVariant
+from silent_cascade.env.episode import (
+    EpisodeBundle,
+    EpisodeKey,
+    EpisodeRecipe,
+    EpisodeTruth,
+    EpisodeVariant,
+    MatchedEpisodeCoordinate,
+    PublicEpisode,
+)
+from silent_cascade.errors import GenerationError
+from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.rng import (
+    COHORT_SCOPED_STREAMS,
     AllocationLabelKey,
     CounterSeedKey,
+    PublicIdBatchKey,
     SeedStream,
     allocate_independent_variants,
+    allocate_public_ids,
+    derive_counter_seed,
     local_generator,
+)
+from silent_cascade.schemas import (
+    ActivationPayload,
+    AgentInit,
+    ExternalEvent,
+    ExternalEventKind,
+    HazardFact,
+    LinkFact,
+    SafeFact,
 )
 from silent_cascade.validation import StrictModel
 
@@ -380,6 +404,47 @@ class CohortTemplate:
         return tuple(source for source, _ in self.distractor_edges)
 
 
+@dataclass(frozen=True, slots=True)
+class RejectionDiagnostic:
+    """One aggregate, environment-private reason for a rejected cohort draw."""
+
+    reason: str
+    count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, str) or not self.reason:
+            raise ValueError("rejection reason must be a nonempty string")
+        _require_exact_int(self.count, "rejection count", minimum=1)
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationCohort:
+    """The four private bundles produced from one matched validation recipe."""
+
+    request: CohortRequest
+    accepted_attempt: int
+    episodes: tuple[EpisodeBundle, EpisodeBundle, EpisodeBundle, EpisodeBundle]
+    seed_tokens: tuple[str, ...]
+    rejections: tuple[RejectionDiagnostic, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, CohortRequest):
+            raise TypeError("request must be a CohortRequest")
+        _require_exact_int(self.accepted_attempt, "accepted_attempt")
+        if len(self.episodes) != 4 or not all(
+            isinstance(bundle, EpisodeBundle) for bundle in self.episodes
+        ):
+            raise ValueError("matched generation requires exactly four episode bundles")
+        if not isinstance(self.seed_tokens, tuple) or not all(
+            isinstance(token, str) for token in self.seed_tokens
+        ):
+            raise TypeError("seed_tokens must be a tuple of strings")
+        if not isinstance(self.rejections, tuple) or not all(
+            isinstance(item, RejectionDiagnostic) for item in self.rejections
+        ):
+            raise TypeError("rejections must be rejection diagnostics")
+
+
 VALIDATION_ALLOCATION = CohortAllocation(
     allocation_id="phase1-validation-v1",
     split_namespace=SplitNamespace.VALIDATION,
@@ -682,6 +747,391 @@ def sample_cohort_template(
         activation_gap=activation_gap,
         hazard_class_multiset=(hazard_class_multiset[0], hazard_class_multiset[1]),
     )
+
+
+_MATCHED_VARIANTS = (
+    EpisodeVariant.POSITIVE,
+    EpisodeVariant.POSITIVE,
+    EpisodeVariant.SAFE_NEGATIVE,
+    EpisodeVariant.DISCONNECTED_NEGATIVE,
+)
+
+
+def _member_stream(
+    request: CohortRequest,
+    member_index: int,
+    stream: SeedStream,
+    attempt: int,
+) -> np.random.Generator:
+    if stream in COHORT_SCOPED_STREAMS:
+        raise ValueError("member streams cannot use a cohort-scoped RNG domain")
+    return local_generator(
+        CounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=request.split_namespace,
+            suite=request.suite,
+            root_seed=request.root_seed,
+            cohort_index=request.cohort_index,
+            member_index=member_index,
+            stream=stream,
+            attempt=attempt,
+        )
+    )
+
+
+def _seed_token(
+    request: CohortRequest,
+    member_index: int,
+    stream: SeedStream,
+    attempt: int,
+) -> str:
+    return derive_counter_seed(
+        CounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=request.split_namespace,
+            suite=request.suite,
+            root_seed=request.root_seed,
+            cohort_index=request.cohort_index,
+            member_index=member_index,
+            stream=stream,
+            attempt=attempt,
+        )
+    ).token
+
+
+def _matched_seed_tokens(request: CohortRequest, attempt: int) -> tuple[str, ...]:
+    cohort_tokens = tuple(
+        _seed_token(request, -1, stream, attempt)
+        for stream in (
+            SeedStream.LABEL,
+            SeedStream.TEMPLATE,
+            SeedStream.STRUCTURE,
+            SeedStream.TIMESTAMPS,
+        )
+    )
+    member_tokens = tuple(
+        _seed_token(request, member_index, stream, attempt)
+        for member_index in range(4)
+        for stream in (
+            SeedStream.NODE_PERMUTATION,
+            SeedStream.TERMINALS,
+            SeedStream.PRESENTATION,
+        )
+    )
+    return (*cohort_tokens, *member_tokens)
+
+
+def _matched_variants(request: CohortRequest, attempt: int) -> tuple[EpisodeVariant, ...]:
+    label_rng = _cohort_stream(request, SeedStream.LABEL, attempt)
+    order = label_rng.permutation(len(_MATCHED_VARIANTS))
+    return tuple(_MATCHED_VARIANTS[int(index)] for index in order)
+
+
+def _build_matched_member(
+    config: Phase1Config,
+    request: CohortRequest,
+    template: CohortTemplate,
+    variant: EpisodeVariant,
+    member_index: int,
+    attempt: int,
+    rejection_reasons: tuple[str, ...],
+    public_id: str,
+) -> EpisodeBundle:
+    node_rng = _member_stream(request, member_index, SeedStream.NODE_PERMUTATION, attempt)
+    node_permutation = tuple(int(item) for item in node_rng.permutation(config.data.max_entities))
+    relabel = {
+        canonical: node_permutation[canonical] for canonical in range(config.data.max_entities)
+    }
+    relevant_nodes = tuple(relabel[node] for node in template.relevant_nodes)
+    facts: list[tuple[LinkFact | HazardFact | SafeFact, str]] = [
+        (LinkFact(relabel[source], relabel[target]), "relevant_link")
+        for source, target in template.relevant_edges
+    ]
+    facts.extend(
+        (LinkFact(relabel[source], relabel[target]), "distractor_link")
+        for source, target in template.distractor_edges
+    )
+
+    terminals_rng = _member_stream(request, member_index, SeedStream.TERMINALS, attempt)
+    hazard_types = tuple(
+        int(item) for item in terminals_rng.permutation(template.hazard_class_multiset)
+    )
+    unreachable_nodes = tuple(
+        relabel[template.unreachable_terminal_nodes[int(index)]]
+        for index in terminals_rng.permutation(_TERMINAL_RECORD_COUNT)
+    )
+    target = relevant_nodes[-1]
+    if variant is EpisodeVariant.POSITIVE:
+        facts.extend(
+            (
+                (HazardFact(target, hazard_types[0], template.episode_delay), "reachable_terminal"),
+                (
+                    HazardFact(unreachable_nodes[0], hazard_types[1], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (SafeFact(unreachable_nodes[1]), "decoy_terminal"),
+            )
+        )
+    elif variant is EpisodeVariant.SAFE_NEGATIVE:
+        facts.extend(
+            (
+                (SafeFact(target), "reachable_terminal"),
+                (
+                    HazardFact(unreachable_nodes[0], hazard_types[0], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (
+                    HazardFact(unreachable_nodes[1], hazard_types[1], template.episode_delay),
+                    "decoy_terminal",
+                ),
+            )
+        )
+    else:
+        facts.extend(
+            (
+                (
+                    HazardFact(unreachable_nodes[0], hazard_types[0], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (
+                    HazardFact(unreachable_nodes[1], hazard_types[1], template.episode_delay),
+                    "decoy_terminal",
+                ),
+                (SafeFact(unreachable_nodes[2]), "decoy_terminal"),
+            )
+        )
+
+    presentation_rng = _member_stream(request, member_index, SeedStream.PRESENTATION, attempt)
+    order = presentation_rng.permutation(len(facts))
+    presentation = tuple(facts[int(index)] for index in order)
+    if len(presentation) != len(template.fact_gap_sequence):
+        raise ValueError("fact presentation and timestamp template disagree")
+    timestamp = 0.0
+    events: list[ExternalEvent] = []
+    relevant_link_ids: dict[int, int] = {}
+    terminal_record_id: int | None = None
+    for event_id, ((payload, role), gap) in enumerate(
+        zip(presentation, template.fact_gap_sequence, strict=True)
+    ):
+        timestamp += gap
+        events.append(ExternalEvent(event_id, timestamp, ExternalEventKind.FACT, payload))
+        if role == "relevant_link":
+            assert isinstance(payload, LinkFact)
+            relevant_link_ids[payload.source_node] = event_id
+        elif role == "reachable_terminal":
+            terminal_record_id = event_id
+    activation_time = timestamp + template.activation_gap
+    fact_count = len(events)
+    events.append(
+        ExternalEvent(
+            fact_count,
+            activation_time,
+            ExternalEventKind.ACTIVATE,
+            ActivationPayload(relevant_nodes[0]),
+        )
+    )
+    relevant_record_ids = tuple(relevant_link_ids[node] for node in relevant_nodes[:-1])
+    if variant is not EpisodeVariant.DISCONNECTED_NEGATIVE:
+        if terminal_record_id is None:
+            raise ValueError("reachable terminal record was not constructed")
+        relevant_record_ids = (*relevant_record_ids, terminal_record_id)
+    relevant_hazard_type = hazard_types[0] if variant is EpisodeVariant.POSITIVE else None
+    private_terminal = ExternalEvent(
+        fact_count + 1,
+        activation_time + template.episode_delay,
+        ExternalEventKind.OUTCOME if variant is EpisodeVariant.POSITIVE else ExternalEventKind.END,
+        None,
+    )
+    action_start = (
+        private_terminal.timestamp - 0.25 * template.episode_delay
+        if variant is EpisodeVariant.POSITIVE
+        else None
+    )
+    action_end = (
+        private_terminal.timestamp - 0.10 * template.episode_delay
+        if variant is EpisodeVariant.POSITIVE
+        else None
+    )
+    action_target = (
+        private_terminal.timestamp - 0.175 * template.episode_delay
+        if variant is EpisodeVariant.POSITIVE
+        else None
+    )
+    truth = EpisodeTruth(
+        key=EpisodeKey(
+            "ofd-v1",
+            request.split_namespace,
+            request.suite,
+            request.root_seed,
+            MatchedEpisodeCoordinate("matched", request.cohort_index, member_index),
+        ),
+        recipe=EpisodeRecipe(
+            request.requested_path_length + 1,
+            variant,
+            len(template.distractor_edges),
+            request.suite,
+            attempt,
+        ),
+        relevant_node_path=relevant_nodes,
+        relevant_record_ids=relevant_record_ids,
+        terminal_record_id=terminal_record_id,
+        relevant_hazard_type=relevant_hazard_type,
+        private_terminal=private_terminal,
+        activation_time=activation_time,
+        episode_delay=template.episode_delay,
+        action_window_start=action_start,
+        action_window_end=action_end,
+        action_target=action_target,
+        rejection_count=attempt,
+        rejection_reasons=rejection_reasons,
+    )
+    return EpisodeBundle(
+        PublicEpisode(
+            AgentInit(
+                public_id,
+                config.data.primary_memory_capacity,
+                config.data.hazard_types,
+                0.0,
+            ),
+            tuple(events),
+        ),
+        truth,
+    )
+
+
+def _validate_matched_member_shape(bundle: EpisodeBundle, config: Phase1Config) -> None:
+    facts = bundle.public.events[:-1]
+    if len(facts) > config.data.primary_memory_capacity:
+        raise ValueError("primary fact capacity exceeded")
+    if any(event.kind is not ExternalEventKind.FACT for event in facts):
+        raise ValueError("public facts must precede activation")
+    if [event.event_id for event in facts] != list(range(len(facts))):
+        raise ValueError("FACT IDs must be contiguous after presentation")
+    if bundle.public.events[-1].event_id != len(facts):
+        raise ValueError("ACTIVATE ID must follow FACT IDs")
+    if bundle.truth.private_terminal.event_id != len(facts) + 1:
+        raise ValueError("private terminal ID must follow ACTIVATE")
+    fact_payloads = tuple(event.payload for event in facts)
+    if (
+        sum(isinstance(payload, HazardFact) for payload in fact_payloads) != 2
+        or sum(isinstance(payload, SafeFact) for payload in fact_payloads) != 1
+    ):
+        raise ValueError("primary members require two hazards and one safe fact")
+
+
+def _opaque_cohort_hash(request: CohortRequest) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "generator_version": "ofd-v1",
+                "split_namespace": request.split_namespace.value,
+                "suite": request.suite.value,
+                "root_seed": request.root_seed,
+                "cohort_index": request.cohort_index,
+                "requested_path_length": request.requested_path_length,
+            }
+        )
+    ).hexdigest()
+
+
+def generate_matched_cohort(
+    config: Phase1Config,
+    request: CohortRequest,
+    public_id_seed: int,
+) -> GenerationCohort:
+    """Generate one fully matched four-member validation cohort."""
+    if not isinstance(config, Phase1Config):
+        raise TypeError("config must be a Phase1Config")
+    if not isinstance(request, CohortRequest):
+        raise TypeError("request must be a CohortRequest")
+    rejection_counts: dict[str, int] = {}
+    for attempt in range(config.data.max_generation_attempts):
+        try:
+            template = sample_cohort_template(config, request, attempt)
+            variants = _matched_variants(request, attempt)
+            rejection_reasons = tuple(rejection_counts)
+            candidates = tuple(
+                _build_matched_member(
+                    config,
+                    request,
+                    template,
+                    variant,
+                    member_index,
+                    attempt,
+                    rejection_reasons,
+                    "pending-public-id",
+                )
+                for member_index, variant in enumerate(variants)
+            )
+            for candidate in candidates:
+                _validate_matched_member_shape(candidate, config)
+        except ValueError as error:
+            reason = str(error)
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            continue
+
+        public_ids = allocate_public_ids(
+            PublicIdBatchKey(
+                generator_version="ofd-v1",
+                split_namespace=request.split_namespace,
+                suite=request.suite,
+                public_id_seed=public_id_seed,
+                cohort_index=request.cohort_index,
+                accepted_attempt=attempt,
+            )
+        )
+        episodes = tuple(
+            EpisodeBundle(
+                PublicEpisode(
+                    AgentInit(
+                        public_id,
+                        candidate.public.init.memory_capacity,
+                        candidate.public.init.hazard_type_count,
+                        candidate.public.init.initial_time,
+                    ),
+                    candidate.public.events,
+                ),
+                candidate.truth,
+            )
+            for candidate, public_id in zip(candidates, public_ids, strict=True)
+        )
+        return GenerationCohort(
+            request=request,
+            accepted_attempt=attempt,
+            episodes=(episodes[0], episodes[1], episodes[2], episodes[3]),
+            seed_tokens=_matched_seed_tokens(request, attempt),
+            rejections=tuple(
+                RejectionDiagnostic(reason, count) for reason, count in rejection_counts.items()
+            ),
+        )
+    raise GenerationError(
+        "matched cohort generation exhausted",
+        context={
+            "cohort_hash": _opaque_cohort_hash(request),
+            "attempt_count": config.data.max_generation_attempts,
+            "rejection_reasons": rejection_counts,
+        },
+    )
+
+
+def regenerate_matched_episode(
+    config: Phase1Config,
+    request: CohortRequest,
+    public_id_seed: int,
+    expected_public_id: str,
+    expected_accepted_attempt: int,
+) -> EpisodeBundle:
+    """Rebuild a matched cohort and return only the authenticated requested member."""
+    _require_exact_int(expected_accepted_attempt, "expected_accepted_attempt")
+    if not isinstance(expected_public_id, str):
+        raise TypeError("expected_public_id must be a string")
+    cohort = generate_matched_cohort(config, request, public_id_seed)
+    if cohort.accepted_attempt != expected_accepted_attempt:
+        raise GenerationError("matched cohort regeneration attempt mismatch")
+    for bundle in cohort.episodes:
+        if bundle.public.init.episode_public_id == expected_public_id:
+            return bundle
+    raise GenerationError("matched cohort regeneration public ID mismatch")
 
 
 def _validate_template_topology(
