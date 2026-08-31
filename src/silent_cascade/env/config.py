@@ -40,6 +40,12 @@ def _yaml_list_to_tuple(value: object) -> object:
     return tuple(value) if isinstance(value, list) else value
 
 
+def _require_exact_numeric_type(value: object, expected_type: type[int] | type[float]) -> object:
+    if type(value) is not expected_type:
+        raise ValueError(f"value must be an exact {expected_type.__name__}")
+    return value
+
+
 def _strict_path_lengths(value: object) -> tuple[int, ...]:
     value = _yaml_list_to_tuple(value)
     if not isinstance(value, tuple):
@@ -103,6 +109,27 @@ class ManifestSizesConfig(StrictModel):
     compute_curve_subset_iid: Literal[2_500] = 2_500
     compute_curve_subset_ood_depth: Literal[2_500] = 2_500
 
+    @field_validator(
+        "validation",
+        "iid_primary",
+        "ood_depth",
+        "ood_short_delay",
+        "ood_long_delay",
+        "clock_scale_0_1x",
+        "clock_scale_10x",
+        "distractor_flood",
+        "branching_stress",
+        "cycles_stress",
+        "contradiction_stress",
+        "checkpoint_stress",
+        "compute_curve_subset_iid",
+        "compute_curve_subset_ood_depth",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, int)
+
 
 class Phase1GateAllocation(StrictModel):
     iid_primary: dict[Literal[2, 3, 4], int]
@@ -157,6 +184,29 @@ class LeakageAuditConfig(StrictModel):
     test: LeakageAuditProfileConfig
     phase1_gate: LeakageAuditProfileConfig
 
+    @field_validator(
+        "audit_seed",
+        "positive_control_seed",
+        "optimizer_max_iterations",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, int)
+
+    @field_validator(
+        "train_fraction",
+        "alpha",
+        "l2_penalty",
+        "optimizer_gradient_tolerance",
+        "optimizer_function_tolerance",
+        "positive_control_min_balanced_accuracy",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_float_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, float)
+
 
 class OFDDataConfig(StrictModel):
     generator_version: Literal["ofd-v1"] = "ofd-v1"
@@ -185,6 +235,29 @@ class OFDDataConfig(StrictModel):
     oracle_timing: OracleTimingConfig
     phase1_gate: Phase1GateAllocation
     leakage_audit: LeakageAuditConfig
+
+    @field_validator(
+        "max_entities",
+        "hazard_types",
+        "terminal_hazard_records",
+        "terminal_safe_records",
+        "primary_memory_capacity",
+        "max_eventflow_internal_events",
+        "max_fixed_grid_opportunities",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, int)
+
+    @field_validator(
+        "positive_fraction",
+        "safe_terminal_fraction_within_negatives",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_float_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, float)
 
     @field_validator(
         "train_path_lengths",
@@ -228,6 +301,27 @@ class StressDataConfig(StrictModel):
     null_near_miss_freeze_episodes: Literal[5_000] = 5_000
     minimum_duration_freeze_episodes: Literal[5_000] = 5_000
     checkpoint_freeze_episodes: Literal[2_000] = 2_000
+
+    @field_validator(
+        "near_miss_missing_edges",
+        "minimum_duration_monotonic_grid_points",
+        "branching_freeze_episodes",
+        "cycles_freeze_episodes",
+        "contradiction_freeze_episodes",
+        "memory_overflow_freeze_episodes",
+        "null_near_miss_freeze_episodes",
+        "minimum_duration_freeze_episodes",
+        "checkpoint_freeze_episodes",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, int)
+
+    @field_validator("minimum_duration_search_upper", mode="before")
+    @classmethod
+    def require_exact_float_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, float)
 
     @field_validator(
         "branching_records",
