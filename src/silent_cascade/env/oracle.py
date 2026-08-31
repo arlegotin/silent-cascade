@@ -351,7 +351,7 @@ def solve_public_episode(
         raise TypeError("public must be a PublicEpisode")
     if not isinstance(policy, OraclePolicy):
         raise TypeError("policy must be an OraclePolicy")
-    if policy is not OraclePolicy.PRIMARY:
+    if policy not in {OraclePolicy.PRIMARY, OraclePolicy.BRANCHING}:
         raise OracleError(f"oracle policy {policy.value!r} is not implemented in Phase 1 Task 5")
 
     links_by_source: dict[int, list[ExternalEvent]] = {}
@@ -377,6 +377,13 @@ def solve_public_episode(
         activation.payload, ActivationPayload
     ):
         raise OracleError("public episode must end in a valid activation")
+
+    if policy is OraclePolicy.BRANCHING:
+        return _solve_branching_public_episode(
+            activation.payload.start_node,
+            links_by_source,
+            terminals_by_node,
+        )
 
     current_node = activation.payload.start_node
     node_path: list[int] = [current_node]
@@ -434,6 +441,64 @@ def solve_public_episode(
         link_record_ids.append(link.event_id)
         current_node = payload.target_node
         node_path.append(current_node)
+
+
+def _solve_branching_public_episode(
+    start_node: int,
+    links_by_source: dict[int, list[ExternalEvent]],
+    terminals_by_node: dict[int, list[ExternalEvent]],
+) -> OracleSolution:
+    """Enumerate simple activation-rooted paths and retain exactly one terminal solution."""
+
+    solutions: list[OracleSolution] = []
+
+    def visit(node: int, nodes: tuple[int, ...], links: tuple[int, ...]) -> None:
+        if node in nodes[:-1]:
+            raise OracleError("branching graph contains a reachable cycle")
+        terminals = terminals_by_node.get(node, [])
+        outgoing = links_by_source.get(node, [])
+        if len(terminals) > 1:
+            raise OracleError("branching graph has multiple terminals at a reachable node")
+        if terminals:
+            if outgoing:
+                raise OracleError("reachable terminal has an outgoing continuation")
+            terminal = terminals[0]
+            payload = terminal.payload
+            if isinstance(payload, HazardFact):
+                solutions.append(
+                    OracleSolution(
+                        OracleTerminalKind.HAZARD,
+                        nodes,
+                        links,
+                        terminal.event_id,
+                        payload.hazard_type,
+                        payload.delay,
+                    )
+                )
+            elif isinstance(payload, SafeFact):
+                solutions.append(
+                    OracleSolution(
+                        OracleTerminalKind.SAFE,
+                        nodes,
+                        links,
+                        terminal.event_id,
+                        None,
+                        None,
+                    )
+                )
+            else:
+                raise OracleError("invalid reachable terminal payload")
+            return
+        for event in outgoing:
+            payload = event.payload
+            if not isinstance(payload, LinkFact):
+                raise OracleError("invalid reachable link payload")
+            visit(payload.target_node, (*nodes, payload.target_node), (*links, event.event_id))
+
+    visit(start_node, (start_node,), ())
+    if len(solutions) != 1:
+        raise OracleError("branching policy requires exactly one reachable terminal solution")
+    return solutions[0]
 
 
 def verify_oracle_truth(solution: OracleSolution, truth: EpisodeTruth) -> None:

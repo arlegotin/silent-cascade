@@ -66,6 +66,8 @@ _PRIMARY_SUITES = frozenset(
         SuiteName.DISTRACTOR_FLOOD,
     }
 )
+_STRUCTURAL_STRESS_SUITES = frozenset({SuiteName.BRANCHING_STRESS, SuiteName.CYCLES_STRESS})
+_STRESS_RESERVED_NODES = frozenset(range(49, 61))
 _OBSERVATION_GAP_RANGE = (0.1, 8.0)
 _TERMINAL_RECORD_COUNT = 3
 _MAX_ENTITY_ID = 63
@@ -157,6 +159,8 @@ _SUITE_SPECS = {
     SuiteName.OOD_SHORT_DELAY: SuiteSpec((2, 3, 4), (1.0, 8.0), (0, 12)),
     SuiteName.OOD_LONG_DELAY: SuiteSpec((2, 3, 4), (64.0, 1024.0), (0, 12)),
     SuiteName.DISTRACTOR_FLOOD: SuiteSpec((2, 3, 4), (8.0, 64.0), (16, 48)),
+    SuiteName.BRANCHING_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
+    SuiteName.CYCLES_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
 }
 
 
@@ -337,9 +341,11 @@ class IndependentEpisodeRequest:
         _require_root_seed(self.root_seed)
         _require_exact_int(self.episode_index, "episode_index")
         _require_exact_int(self.allocation_quartet_index, "allocation_quartet_index")
-        _validate_block_values(
-            self.suite, self.requested_path_length, self.episode_index, 1, "episode"
-        )
+        if self.suite not in _PRIMARY_SUITES | _STRUCTURAL_STRESS_SUITES:
+            raise ValueError("independent episode suite is not supported")
+        _require_exact_int(self.requested_path_length, "requested_path_length", minimum=1)
+        if self.requested_path_length not in suite_spec(self.suite).path_lengths:
+            raise ValueError("requested_path_length is unsupported for suite")
         if not isinstance(self.variant, EpisodeVariant):
             raise TypeError("variant must be an EpisodeVariant")
 
@@ -1151,6 +1157,7 @@ class _IndependentEpisodeTemplate:
     relevant_nodes: tuple[int, ...]
     relevant_edges: tuple[tuple[int, int], ...]
     distractor_edges: tuple[tuple[int, int], ...]
+    structural_edges: tuple[tuple[int, int], ...]
     unreachable_terminal_nodes: tuple[int, int, int]
     episode_delay: float
     fact_gap_sequence: tuple[float, ...]
@@ -1240,10 +1247,11 @@ def _sample_independent_template(
     relevant_nodes = tuple(range(request.requested_path_length + 1))
     relevant_edges = tuple(pairwise(relevant_nodes))
     unreachable_terminal_nodes = (61, 62, 63)
+    reserved_nodes = _STRESS_RESERVED_NODES if request.suite in _STRUCTURAL_STRESS_SUITES else ()
     distractor_nodes = tuple(
         node
         for node in range(request.requested_path_length + 1, config.data.max_entities - 3)
-        if node not in unreachable_terminal_nodes
+        if node not in unreachable_terminal_nodes and node not in reserved_nodes
     )
     candidates = tuple(
         (source, target)
@@ -1256,11 +1264,14 @@ def _sample_independent_template(
     structure_rng = _independent_stream(request, SeedStream.STRUCTURE, attempt)
     selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
     distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
+    structural_edges = _sample_structural_edges(config, request, structure_rng)
     _validate_template_topology(
         relevant_nodes, relevant_edges, distractor_edges, unreachable_terminal_nodes
     )
 
-    fact_count = len(relevant_edges) + len(distractor_edges) + _TERMINAL_RECORD_COUNT
+    fact_count = (
+        len(relevant_edges) + len(distractor_edges) + len(structural_edges) + _TERMINAL_RECORD_COUNT
+    )
     if fact_count > config.data.primary_memory_capacity:
         raise ValueError("independent facts exceed the fixed memory capacity")
     timestamps_rng = _independent_stream(request, SeedStream.TIMESTAMPS, attempt)
@@ -1272,12 +1283,47 @@ def _sample_independent_template(
         relevant_nodes,
         relevant_edges,
         distractor_edges,
+        structural_edges,
         unreachable_terminal_nodes,
         episode_delay,
         fact_gaps,
         activation_gap,
         (hazard_classes[0], hazard_classes[1]),
     )
+
+
+def _sample_structural_edges(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    structure_rng: np.random.Generator,
+) -> tuple[tuple[int, int], ...]:
+    """Derive only the declared structural stress shape from the local structure stream."""
+
+    if request.suite not in _STRUCTURAL_STRESS_SUITES:
+        return ()
+    if config.stress is None:
+        raise ValueError("structural stress suites require StressDataConfig")
+    if request.suite is SuiteName.BRANCHING_STRESS:
+        count = int(
+            structure_rng.integers(
+                config.stress.branching_records[0], config.stress.branching_records[1] + 1
+            )
+        )
+        targets = tuple(range(55, 61))[:count]
+        sources = tuple(
+            int(structure_rng.integers(0, request.requested_path_length)) for _ in targets
+        )
+        return tuple(zip(sources, targets, strict=True))
+    if request.suite is SuiteName.CYCLES_STRESS:
+        length = int(
+            structure_rng.integers(
+                config.stress.irrelevant_cycle_length[0],
+                config.stress.irrelevant_cycle_length[1] + 1,
+            )
+        )
+        nodes = tuple(range(49, 55))[:length]
+        return tuple((nodes[index], nodes[(index + 1) % length]) for index in range(length))
+    raise ValueError("unsupported structural stress suite")
 
 
 def _build_independent_candidate(
@@ -1300,6 +1346,10 @@ def _build_independent_candidate(
     facts.extend(
         (LinkFact(relabel[source], relabel[target]), "distractor_link")
         for source, target in template.distractor_edges
+    )
+    facts.extend(
+        (LinkFact(relabel[source], relabel[target]), "structural_link")
+        for source, target in template.structural_edges
     )
 
     terminals_rng = _independent_stream(request, SeedStream.TERMINALS, attempt)
@@ -1403,7 +1453,7 @@ def _build_independent_candidate(
         recipe=EpisodeRecipe(
             request.requested_path_length,
             request.variant,
-            len(template.distractor_edges),
+            len(template.distractor_edges) + len(template.structural_edges),
             request.suite,
             attempt,
             oracle_timing=config.data.oracle_timing,
@@ -1483,6 +1533,36 @@ def generate_independent_episode(
         raise TypeError("config must be a Phase1Config")
     if not isinstance(request, IndependentEpisodeRequest):
         raise TypeError("request must be an IndependentEpisodeRequest")
+    if request.suite not in _PRIMARY_SUITES:
+        raise ValueError("generate_independent_episode supports only primary suites")
+    return _generate_independent_bundle(config, request, public_id_seed)
+
+
+def generate_stress_episode(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    public_id_seed: int,
+) -> EpisodeBundle:
+    """Generate one declared structural stress episode from local RNG domains."""
+
+    if not isinstance(config, Phase1Config):
+        raise TypeError("config must be a Phase1Config")
+    if not isinstance(request, IndependentEpisodeRequest):
+        raise TypeError("request must be an IndependentEpisodeRequest")
+    if request.suite not in _STRUCTURAL_STRESS_SUITES:
+        raise ValueError("generate_stress_episode supports only structural stress suites")
+    if request.variant is not EpisodeVariant.POSITIVE:
+        raise ValueError("structural stress suites require a positive hazard path")
+    return _generate_independent_bundle(config, request, public_id_seed)
+
+
+def _generate_independent_bundle(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    public_id_seed: int,
+) -> EpisodeBundle:
+    """Execute the shared bounded local retry and public-ID binding path."""
+
     rejection_counts: dict[str, int] = {}
     for attempt in range(config.data.max_generation_attempts):
         try:
@@ -1545,6 +1625,26 @@ def regenerate_independent_episode(
         raise GenerationError("independent episode regeneration attempt mismatch")
     if bundle.public.init.episode_public_id != expected_public_id:
         raise GenerationError("independent episode regeneration public ID mismatch")
+    return bundle
+
+
+def regenerate_stress_episode(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    public_id_seed: int,
+    expected_public_id: str,
+    expected_accepted_attempt: int,
+) -> EpisodeBundle:
+    """Rebuild and authenticate one structural stress episode."""
+
+    _require_exact_int(expected_accepted_attempt, "expected_accepted_attempt")
+    if not isinstance(expected_public_id, str):
+        raise TypeError("expected_public_id must be a string")
+    bundle = generate_stress_episode(config, request, public_id_seed)
+    if bundle.truth.recipe.accepted_attempt != expected_accepted_attempt:
+        raise GenerationError("stress episode regeneration attempt mismatch")
+    if bundle.public.init.episode_public_id != expected_public_id:
+        raise GenerationError("stress episode regeneration public ID mismatch")
     return bundle
 
 

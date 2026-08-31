@@ -15,8 +15,10 @@ from silent_cascade.env.episode import canonical_episode_bytes, scale_episode_ti
 from silent_cascade.env.generator import (
     PHASE1_GATE_ALLOCATION,
     CohortRequest,
+    IndependentEpisodeRequest,
     generate_independent_episode,
     generate_matched_cohort,
+    generate_stress_episode,
     independent_seed_tokens,
     iter_independent_requests,
     iter_phase1_gate_requests,
@@ -31,12 +33,24 @@ PRIMARY_PATHS = {
     SuiteName.OOD_LONG_DELAY: (2, 3, 4),
     SuiteName.DISTRACTOR_FLOOD: (2, 3, 4),
 }
+STRUCTURAL_STRESS_SUITES = (SuiteName.BRANCHING_STRESS, SuiteName.CYCLES_STRESS)
 
 
 def _config() -> Phase1Config:
     return resolve_config(
         Phase1Config,
         [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+    ).config
+
+
+def _stress_config() -> Phase1Config:
+    return resolve_config(
+        Phase1Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/data/stress.yaml"),
+        ],
     ).config
 
 
@@ -298,3 +312,34 @@ def test_paired_clock_scaling_preserves_oracle_semantics_and_normalized_windows(
             (bundle.truth.action_window_start - bundle.truth.activation_time)
             * scaled.truth.recipe.clock_scale
         )
+
+
+@settings(max_examples=8, deadline=None)
+@given(
+    suite=st.sampled_from(STRUCTURAL_STRESS_SUITES),
+    root_seed=st.integers(min_value=0, max_value=2**32 - 1),
+    episode_index=st.integers(min_value=0, max_value=500),
+)
+def test_structural_stress_episodes_remain_independently_valid_and_private(
+    suite: SuiteName, root_seed: int, episode_index: int
+) -> None:
+    """Removing stress-specific graph checks would accept a branch or cycle in the wrong place."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.invariants import validate_episode_invariants
+    from silent_cascade.env.oracle import OraclePolicy, OracleTerminalKind, solve_public_episode
+
+    request = IndependentEpisodeRequest(
+        SplitNamespace.DEBUG,
+        suite,
+        root_seed,
+        episode_index,
+        3,
+        EpisodeVariant.POSITIVE,
+        episode_index // 4,
+    )
+    bundle = generate_stress_episode(_stress_config(), request, 91)
+    policy = OraclePolicy.BRANCHING if suite is SuiteName.BRANCHING_STRESS else OraclePolicy.PRIMARY
+
+    assert validate_episode_invariants(bundle, _stress_config()).valid
+    assert solve_public_episode(bundle.public, policy).terminal_kind is OracleTerminalKind.HAZARD
+    assert "stress_metadata" not in repr(bundle.public)

@@ -280,9 +280,43 @@ def test_solver_rejects_corrupt_fact_payload() -> None:
         solve_public_episode(public)
 
 
-def test_primary_solver_does_not_implement_future_stress_policies() -> None:
-    with pytest.raises(OracleError, match="not implemented"):
-        solve_public_episode(positive_public(), OraclePolicy.BRANCHING)
+def test_branching_policy_selects_the_only_terminal_reaching_path() -> None:
+    public = public_episode(
+        (
+            LinkFact(1, 2),
+            LinkFact(1, 9),
+            LinkFact(2, 3),
+            HazardFact(3, 1, 10.0),
+        )
+    )
+
+    with pytest.raises(OracleError, match="branch"):
+        solve_public_episode(public)
+    assert solve_public_episode(public, OraclePolicy.BRANCHING) == OracleSolution(
+        OracleTerminalKind.HAZARD,
+        (1, 2, 3),
+        (10, 12),
+        13,
+        1,
+        10.0,
+    )
+
+
+def test_branching_policy_fails_closed_when_two_terminal_paths_exist() -> None:
+    public = public_episode(
+        (
+            LinkFact(1, 2),
+            LinkFact(1, 9),
+            HazardFact(2, 1, 10.0),
+            SafeFact(9),
+        )
+    )
+
+    with pytest.raises(OracleError, match="exactly one"):
+        solve_public_episode(public, OraclePolicy.BRANCHING)
+
+
+def test_primary_solver_does_not_implement_future_contradiction_policy() -> None:
     with pytest.raises(OracleError, match="not implemented"):
         solve_public_episode(positive_public(), OraclePolicy.CONTRADICTION)
 

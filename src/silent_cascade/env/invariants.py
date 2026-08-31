@@ -51,6 +51,8 @@ _PRIMARY_SUITES = frozenset(
         SuiteName.DISTRACTOR_FLOOD,
     }
 )
+_STRUCTURAL_STRESS_SUITES = frozenset({SuiteName.BRANCHING_STRESS, SuiteName.CYCLES_STRESS})
+_STRESS_RESERVED_NODES = frozenset(range(49, 61))
 
 _INDEPENDENT_ALLOCATION_BLOCKS = (
     (SuiteName.IID_PRIMARY, 2, 0, 8_000, 0),
@@ -181,6 +183,12 @@ def _suite_parameters(
             data.iid_test_path_lengths,
             data.train_delay_log_uniform,
             data.ood_distractor_link_records,
+        )
+    if suite in _STRUCTURAL_STRESS_SUITES:
+        return (
+            data.iid_test_path_lengths,
+            data.train_delay_log_uniform,
+            data.train_distractor_link_records,
         )
     _fail("primary suite is not supported by invariant validation")
 
@@ -431,6 +439,41 @@ def _independent_generator(bundle: EpisodeBundle, stream: SeedStream):
     )
 
 
+def _expected_structural_edges(
+    bundle: EpisodeBundle,
+    config: Phase1Config,
+    structure_rng: object,
+) -> tuple[tuple[int, int], ...]:
+    """Reconstruct the declared stress shape without calling the generator."""
+
+    suite = bundle.truth.key.suite
+    if suite not in _STRUCTURAL_STRESS_SUITES:
+        return ()
+    if config.stress is None:
+        _fail("structural stress suite requires stress configuration")
+    length = bundle.truth.recipe.requested_path_length
+    if suite is SuiteName.BRANCHING_STRESS:
+        count = int(
+            structure_rng.integers(  # type: ignore[union-attr]
+                config.stress.branching_records[0], config.stress.branching_records[1] + 1
+            )
+        )
+        targets = tuple(range(55, 61))[:count]
+        sources = tuple(
+            int(structure_rng.integers(0, length))  # type: ignore[union-attr]
+            for _ in targets
+        )
+        return tuple(zip(sources, targets, strict=True))
+    cycle_length = int(
+        structure_rng.integers(  # type: ignore[union-attr]
+            config.stress.irrelevant_cycle_length[0],
+            config.stress.irrelevant_cycle_length[1] + 1,
+        )
+    )
+    nodes = tuple(range(49, 55))[:cycle_length]
+    return tuple((nodes[index], nodes[(index + 1) % cycle_length]) for index in range(cycle_length))
+
+
 def _expected_independent_payloads(
     bundle: EpisodeBundle, config: Phase1Config
 ) -> tuple[tuple[object, ...], tuple[float, ...], float, int]:
@@ -475,19 +518,21 @@ def _expected_independent_payloads(
         sorted(int(template_rng.integers(0, config.data.hazard_types)) for _ in range(2))
     )
     relevant_nodes = tuple(range(recipe.requested_path_length + 1))
+    reserved_nodes = _STRESS_RESERVED_NODES if key.suite in _STRUCTURAL_STRESS_SUITES else ()
     candidates = tuple(
         (source, target)
         for source in range(recipe.requested_path_length + 1, config.data.max_entities - 3)
         for target in range(recipe.requested_path_length + 1, config.data.max_entities - 3)
-        if source < target
+        if source < target and source not in reserved_nodes and target not in reserved_nodes
     )
     structure_rng = _independent_generator(bundle, SeedStream.STRUCTURE)
     selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
     distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
+    structural_edges = _expected_structural_edges(bundle, config, structure_rng)
     timestamps_rng = _independent_generator(bundle, SeedStream.TIMESTAMPS)
     fact_gaps = tuple(
         _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
-        for _ in range(recipe.requested_path_length + distractor_count + 3)
+        for _ in range(recipe.requested_path_length + distractor_count + len(structural_edges) + 3)
     )
     activation_gap = _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
     permutation = tuple(
@@ -501,6 +546,7 @@ def _expected_independent_payloads(
         LinkFact(relabel[source], relabel[target]) for source, target in pairwise(relevant_nodes)
     ]
     facts.extend(LinkFact(relabel[source], relabel[target]) for source, target in distractor_edges)
+    facts.extend(LinkFact(relabel[source], relabel[target]) for source, target in structural_edges)
     terminals_rng = _independent_generator(bundle, SeedStream.TERMINALS)
     hazard_types = tuple(int(value) for value in terminals_rng.permutation(hazard_classes))
     terminal_nodes = tuple(
@@ -538,7 +584,7 @@ def _expected_independent_payloads(
         tuple(facts[int(index)] for index in presentation),
         fact_gaps,
         activation_gap,
-        distractor_count,
+        distractor_count + len(structural_edges),
     )
 
 
@@ -563,6 +609,76 @@ def _require_acyclic_links(links: tuple[ExternalEvent, ...]) -> None:
 
     for node in tuple(adjacency):
         visit(node)
+
+
+def _directed_cycles(links: tuple[ExternalEvent, ...]) -> tuple[tuple[int, ...], ...]:
+    """Return canonical directed cycles so the cycle exception stays narrowly scoped."""
+
+    adjacency: dict[int, list[int]] = defaultdict(list)
+    for event in links:
+        assert isinstance(event.payload, LinkFact)
+        adjacency[event.payload.source_node].append(event.payload.target_node)
+    cycles: set[tuple[int, ...]] = set()
+
+    def visit(node: int, path: tuple[int, ...]) -> None:
+        for target in adjacency[node]:
+            if target in path:
+                cycle = path[path.index(target) :]
+                rotations = tuple(cycle[index:] + cycle[:index] for index in range(len(cycle)))
+                cycles.add(min(rotations))
+            else:
+                visit(target, (*path, target))
+
+    for node in tuple(adjacency):
+        visit(node, (node,))
+    return tuple(sorted(cycles))
+
+
+def _activation_reachable_nodes(
+    start: int, links_by_source: dict[int, list[ExternalEvent]]
+) -> set[int]:
+    reachable = {start}
+    pending = [start]
+    while pending:
+        node = pending.pop()
+        for event in links_by_source.get(node, []):
+            assert isinstance(event.payload, LinkFact)
+            target = event.payload.target_node
+            if target not in reachable:
+                reachable.add(target)
+                pending.append(target)
+    return reachable
+
+
+def _unique_branching_path(
+    start: int,
+    links_by_source: dict[int, list[ExternalEvent]],
+    terminals_by_node: dict[int, list[ExternalEvent]],
+) -> tuple[tuple[int, ...], tuple[ExternalEvent, ...], ExternalEvent]:
+    """Derive the sole terminal path while allowing terminal-free branches."""
+
+    solutions: list[tuple[tuple[int, ...], tuple[ExternalEvent, ...], ExternalEvent]] = []
+
+    def visit(node: int, nodes: tuple[int, ...], links: tuple[ExternalEvent, ...]) -> None:
+        if node in nodes[:-1]:
+            _fail("activation-reachable graph contains a cycle")
+        terminals = terminals_by_node.get(node, [])
+        outgoing = links_by_source.get(node, [])
+        if len(terminals) > 1:
+            _fail("activation-reachable graph has multiple terminals")
+        if terminals:
+            if outgoing:
+                _fail("reachable terminal has an outgoing continuation")
+            solutions.append((nodes, links, terminals[0]))
+            return
+        for event in outgoing:
+            assert isinstance(event.payload, LinkFact)
+            visit(event.payload.target_node, (*nodes, event.payload.target_node), (*links, event))
+
+    visit(start, (start,), ())
+    if len(solutions) != 1:
+        _fail("branching stress episode must have exactly one reachable terminal solution")
+    return solutions[0]
 
 
 def _link_signature(
@@ -693,7 +809,20 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         if endpoints in link_endpoints:
             _fail("LINK endpoints must be unique regardless of confidence")
         link_endpoints.add(endpoints)
-    _require_acyclic_links(tuple(links))
+    if truth.key.suite is SuiteName.CYCLES_STRESS:
+        cycles = _directed_cycles(tuple(links))
+        if (
+            config.stress is None
+            or len(cycles) != 1
+            or not (
+                config.stress.irrelevant_cycle_length[0]
+                <= len(cycles[0])
+                <= config.stress.irrelevant_cycle_length[1]
+            )
+        ):
+            _fail("cycles stress episode must contain one bounded directed cycle")
+    else:
+        _require_acyclic_links(tuple(links))
     for event in terminals:
         if isinstance(event.payload, HazardFact) and not _is_close(
             event.payload.delay, truth.episode_delay
@@ -734,7 +863,7 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
     ):
         _fail("member timing provenance disagrees")
 
-    if truth.key.suite in _PRIMARY_SUITES:
+    if truth.key.suite in _PRIMARY_SUITES | _STRUCTURAL_STRESS_SUITES:
         if len(facts) != len(links) + 3:
             _fail("primary episodes require exactly three terminal facts")
         if sum(isinstance(event.payload, HazardFact) for event in terminals) != 2:
@@ -753,41 +882,83 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         terminals_by_node[payload.node].append(event)
 
     current = activation.payload.start_node
-    path = [current]
-    selected_links: list[ExternalEvent] = []
-    terminal: ExternalEvent | None = None
-    seen: set[int] = set()
-    while True:
-        if current in seen:
-            _fail("activation-reachable graph contains a cycle")
-        seen.add(current)
-        current_terminals = terminals_by_node.get(current, [])
-        if len(current_terminals) > 1:
-            _fail("activation-reachable graph has multiple terminals")
-        outgoing = links_by_source.get(current, [])
-        if current_terminals:
-            if outgoing:
-                _fail("reachable terminal has an outgoing continuation")
-            terminal = current_terminals[0]
-            break
-        if len(outgoing) > 1:
-            _fail("activation-reachable graph branches")
-        if not outgoing:
-            break
-        selected = outgoing[0]
-        assert isinstance(selected.payload, LinkFact)
-        selected_links.append(selected)
-        current = selected.payload.target_node
-        path.append(current)
+    if truth.key.suite is SuiteName.BRANCHING_STRESS:
+        branch_path, branch_links, branch_terminal = _unique_branching_path(
+            current, links_by_source, terminals_by_node
+        )
+        path = list(branch_path)
+        selected_links = list(branch_links)
+        terminal: ExternalEvent | None = branch_terminal
+        seen = set(path)
+    else:
+        path = [current]
+        selected_links = []
+        terminal = None
+        seen = set()
+        while True:
+            if current in seen:
+                _fail("activation-reachable graph contains a cycle")
+            seen.add(current)
+            current_terminals = terminals_by_node.get(current, [])
+            if len(current_terminals) > 1:
+                _fail("activation-reachable graph has multiple terminals")
+            outgoing = links_by_source.get(current, [])
+            if current_terminals:
+                if outgoing:
+                    _fail("reachable terminal has an outgoing continuation")
+                terminal = current_terminals[0]
+                break
+            if len(outgoing) > 1:
+                _fail("activation-reachable graph branches")
+            if not outgoing:
+                break
+            selected = outgoing[0]
+            assert isinstance(selected.payload, LinkFact)
+            selected_links.append(selected)
+            current = selected.payload.target_node
+            path.append(current)
 
     selected_ids = {event.event_id for event in selected_links}
-    for event in links:
-        if event.event_id in selected_ids:
-            continue
-        payload = event.payload
-        assert isinstance(payload, LinkFact)
-        if payload.source_node in seen or payload.target_node in seen:
-            _fail("distractor link may not touch the reachable component")
+    if truth.key.suite is SuiteName.BRANCHING_STRESS:
+        if config.stress is None:
+            _fail("branching stress suite requires stress configuration")
+        branch_links = tuple(
+            event
+            for event in links
+            if event.event_id not in selected_ids and event.payload.source_node in seen
+        )
+        branch_targets = {event.payload.target_node for event in branch_links}
+        reachable = _activation_reachable_nodes(activation.payload.start_node, links_by_source)
+        if (
+            not (
+                config.stress.branching_records[0]
+                <= len(branch_links)
+                <= config.stress.branching_records[1]
+            )
+            or reachable != seen | branch_targets
+        ):
+            _fail("branching stress episode has an invalid reachable branch shape")
+        for event in branch_links:
+            payload = event.payload
+            assert isinstance(payload, LinkFact)
+            if (
+                payload.target_node in seen
+                or payload.target_node in terminals_by_node
+                or links_by_source.get(payload.target_node)
+            ):
+                _fail("branching stress branches must be terminal-free dead ends")
+    else:
+        for event in links:
+            if event.event_id in selected_ids:
+                continue
+            payload = event.payload
+            assert isinstance(payload, LinkFact)
+            if payload.source_node in seen or payload.target_node in seen:
+                _fail("distractor link may not touch the reachable component")
+        if truth.key.suite is SuiteName.CYCLES_STRESS:
+            cycles = _directed_cycles(tuple(links))
+            if any(node in seen for node in cycles[0]):
+                _fail("cycles stress cycle must be outside activation reachability")
 
     requested_length = _require_exact_int(
         truth.recipe.requested_path_length, "requested path length", minimum=1
