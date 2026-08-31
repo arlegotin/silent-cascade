@@ -5,11 +5,14 @@ facts.  It does not import the generator or the oracle: agreement between
 those three implementations is a meaningful correctness control.
 """
 
+import hashlib
 import math
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
-from itertools import pairwise
+from itertools import pairwise, permutations
+
+import numpy as np
 
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
@@ -20,6 +23,7 @@ from silent_cascade.env.episode import (
 )
 from silent_cascade.env.timing import action_window
 from silent_cascade.errors import EpisodeInvariantError
+from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.rng import (
     CounterSeedKey,
     IndependentCounterSeedKey,
@@ -46,6 +50,25 @@ _PRIMARY_SUITES = frozenset(
         SuiteName.OOD_LONG_DELAY,
         SuiteName.DISTRACTOR_FLOOD,
     }
+)
+
+_INDEPENDENT_ALLOCATION_BLOCKS = (
+    (SuiteName.IID_PRIMARY, 2, 0, 8_000, 0),
+    (SuiteName.IID_PRIMARY, 3, 8_000, 8_000, 2_000),
+    (SuiteName.IID_PRIMARY, 4, 16_000, 8_000, 4_000),
+    (SuiteName.OOD_DEPTH, 5, 0, 4_000, 6_000),
+    (SuiteName.OOD_DEPTH, 6, 4_000, 4_000, 7_000),
+    (SuiteName.OOD_DEPTH, 7, 8_000, 4_000, 8_000),
+    (SuiteName.OOD_DEPTH, 8, 12_000, 4_000, 9_000),
+    (SuiteName.OOD_SHORT_DELAY, 2, 0, 8_000, 10_000),
+    (SuiteName.OOD_SHORT_DELAY, 3, 8_000, 8_000, 12_000),
+    (SuiteName.OOD_SHORT_DELAY, 4, 16_000, 8_000, 14_000),
+    (SuiteName.OOD_LONG_DELAY, 2, 0, 4_000, 16_000),
+    (SuiteName.OOD_LONG_DELAY, 3, 4_000, 4_000, 17_000),
+    (SuiteName.OOD_LONG_DELAY, 4, 8_000, 4_000, 18_000),
+    (SuiteName.DISTRACTOR_FLOOD, 2, 0, 8_000, 19_000),
+    (SuiteName.DISTRACTOR_FLOOD, 3, 8_000, 8_000, 21_000),
+    (SuiteName.DISTRACTOR_FLOOD, 4, 16_000, 8_000, 23_000),
 )
 
 
@@ -160,6 +183,86 @@ def _suite_parameters(
             data.ood_distractor_link_records,
         )
     _fail("primary suite is not supported by invariant validation")
+
+
+def _allocation_variants(
+    split_namespace: SplitNamespace,
+    suite: SuiteName,
+    root_seed: int,
+    requested_path_length: int,
+    allocation_quartet_index: int,
+) -> tuple[EpisodeVariant, EpisodeVariant, EpisodeVariant, EpisodeVariant]:
+    """Independently reproduce the fixed four-label allocation contract."""
+
+    variants = tuple(
+        sorted(
+            (
+                EpisodeVariant.POSITIVE,
+                EpisodeVariant.POSITIVE,
+                EpisodeVariant.SAFE_NEGATIVE,
+                EpisodeVariant.DISCONNECTED_NEGATIVE,
+            ),
+            key=lambda variant: variant.value,
+        )
+    )
+    permutations_without_duplicates: list[
+        tuple[EpisodeVariant, EpisodeVariant, EpisodeVariant, EpisodeVariant]
+    ] = []
+    for candidate in permutations(variants):
+        typed_candidate = (candidate[0], candidate[1], candidate[2], candidate[3])
+        if typed_candidate not in permutations_without_duplicates:
+            permutations_without_duplicates.append(typed_candidate)
+    payload = canonical_json_bytes(
+        {
+            "domain": "silent-cascade/ofd-v1/allocation-label/v1",
+            "generator_version": "ofd-v1",
+            "split_namespace": split_namespace.value,
+            "suite": suite.value,
+            "root_seed": root_seed,
+            "requested_path_length": requested_path_length,
+            "allocation_quartet_index": allocation_quartet_index,
+        }
+    )
+    seed = int.from_bytes(hashlib.sha256(payload).digest()[:16], "big")
+    generator = np.random.Generator(np.random.PCG64DXSM(seed))
+    selected_index = int(generator.integers(len(permutations_without_duplicates)))
+    return permutations_without_duplicates[selected_index]
+
+
+def _validate_independent_allocation_provenance(bundle: EpisodeBundle) -> None:
+    """Authenticate fixed gate/frozen allocation position and its private label."""
+
+    truth = bundle.truth
+    key = truth.key
+    recipe = truth.recipe
+    coordinate = key.coordinate
+    if not isinstance(coordinate, IndependentEpisodeCoordinate):
+        _fail("invalid RNG provenance", check_id="rng_provenance")
+    if key.split_namespace not in {SplitNamespace.PHASE1_GATE, SplitNamespace.FROZEN}:
+        return
+    matching = tuple(
+        block
+        for block in _INDEPENDENT_ALLOCATION_BLOCKS
+        if block[0] is key.suite
+        and block[1] == recipe.requested_path_length
+        and block[2] <= coordinate.episode_index < block[2] + block[3]
+    )
+    if len(matching) != 1:
+        _fail("invalid RNG provenance", check_id="rng_provenance")
+    _, _, first_episode_index, _, first_quartet_index = matching[0]
+    within_block = coordinate.episode_index - first_episode_index
+    expected_quartet = first_quartet_index + within_block // 4
+    if coordinate.allocation_quartet_index != expected_quartet:
+        _fail("invalid RNG provenance", check_id="rng_provenance")
+    expected_variants = _allocation_variants(
+        key.split_namespace,
+        key.suite,
+        key.root_seed,
+        recipe.requested_path_length,
+        expected_quartet,
+    )
+    if recipe.variant is not expected_variants[within_block % 4]:
+        _fail("invalid RNG provenance", check_id="rng_provenance")
 
 
 def _member_generator(bundle: EpisodeBundle, stream: SeedStream):
@@ -361,6 +464,7 @@ def _expected_independent_payloads(
         or coordinate.mode != "independent"
     ):
         _fail("invalid RNG provenance", check_id="rng_provenance")
+    _validate_independent_allocation_provenance(bundle)
     path_lengths, delay_bounds, distractor_bounds = _suite_parameters(config, key.suite)
     if recipe.requested_path_length not in path_lengths:
         _fail("requested path length is invalid for the suite")

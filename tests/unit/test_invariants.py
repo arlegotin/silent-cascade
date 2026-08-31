@@ -12,10 +12,16 @@ from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
     EpisodeBundle,
     EpisodeVariant,
+    IndependentEpisodeCoordinate,
     MatchedEpisodeCoordinate,
     PublicEpisode,
 )
-from silent_cascade.env.generator import CohortRequest, generate_matched_cohort
+from silent_cascade.env.generator import (
+    CohortRequest,
+    generate_independent_episode,
+    generate_matched_cohort,
+    iter_phase1_gate_requests,
+)
 from silent_cascade.errors import EpisodeInvariantError
 from silent_cascade.rng import CounterSeedKey, SeedStream, local_generator
 from silent_cascade.schemas import (
@@ -47,6 +53,12 @@ def cohort(
         requested_path_length=3,
     )
     return generate_matched_cohort(config, request, public_id_seed=91).episodes
+
+
+@pytest.fixture
+def independent_bundle(config: Phase1Config) -> EpisodeBundle:
+    request = next(iter_phase1_gate_requests(41))
+    return generate_independent_episode(config, request, public_id_seed=91)
 
 
 def _bundle_with(
@@ -221,6 +233,53 @@ def test_valid_matched_members_have_hand_derived_reports(
     assert {report.reachable_terminal_count for report in reports} == {0, 1}
     assert {report.requested_path_length for report in reports} == {3}
     assert all(report.check_ids for report in reports)
+
+
+def test_independent_allocation_quartet_and_variant_provenance_fail_closed(
+    config: Phase1Config, independent_bundle: EpisodeBundle
+) -> None:
+    """Changing private label provenance must reject even when episode-local facts are unchanged."""
+    from silent_cascade.env.invariants import validate_episode_invariants
+
+    coordinate = independent_bundle.truth.key.coordinate
+    assert isinstance(coordinate, IndependentEpisodeCoordinate)
+    wrong_variant = next(
+        variant
+        for variant in EpisodeVariant
+        if variant is not independent_bundle.truth.recipe.variant
+    )
+    corruptions = (
+        _bundle_with(
+            independent_bundle,
+            key=replace(
+                independent_bundle.truth.key,
+                coordinate=IndependentEpisodeCoordinate(
+                    "independent", coordinate.episode_index, coordinate.allocation_quartet_index + 1
+                ),
+            ),
+        ),
+        _bundle_with(
+            independent_bundle,
+            key=replace(
+                independent_bundle.truth.key,
+                coordinate=IndependentEpisodeCoordinate(
+                    "independent", coordinate.episode_index, 999_999
+                ),
+            ),
+        ),
+        _bundle_with(
+            independent_bundle,
+            recipe=replace(independent_bundle.truth.recipe, variant=wrong_variant),
+        ),
+    )
+
+    for corrupted in corruptions:
+        with pytest.raises(EpisodeInvariantError) as raised:
+            validate_episode_invariants(corrupted, config)
+        assert raised.value.context == {}
+        report = validate_episode_invariants(corrupted, config, strict=False)
+        assert report.valid is False
+        assert "rng_provenance" in report.check_ids
 
 
 @pytest.mark.parametrize(

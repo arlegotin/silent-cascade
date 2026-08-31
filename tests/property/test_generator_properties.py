@@ -1,5 +1,7 @@
 """Property coverage for independent primary validation and deterministic cohorts."""
 
+from dataclasses import replace
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +10,17 @@ from hypothesis import strategies as st
 
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
-from silent_cascade.env.generator import CohortRequest, generate_matched_cohort
+from silent_cascade.env.episode import canonical_episode_bytes
+from silent_cascade.env.generator import (
+    PHASE1_GATE_ALLOCATION,
+    CohortRequest,
+    generate_independent_episode,
+    generate_matched_cohort,
+    independent_seed_tokens,
+    iter_independent_requests,
+    iter_phase1_gate_requests,
+    regenerate_independent_episode,
+)
 
 PRIMARY_PATHS = {
     SuiteName.VALIDATION: (2, 3, 4),
@@ -151,3 +163,105 @@ def test_primary_generation_is_chunk_equivalent_with_direct_matched_summaries(
         assert tuple(map(canonical_episode_bytes, actual.episodes)) == tuple(
             map(canonical_episode_bytes, expected.episodes)
         )
+
+
+def _allocation_quartet(
+    split_namespace: SplitNamespace, root_seed: int, block_index: int, quartet_offset: int
+) -> tuple[object, ...]:
+    first_request_index = (
+        sum(block.episode_count for block in PHASE1_GATE_ALLOCATION.blocks[:block_index])
+        + quartet_offset * 4
+    )
+    if split_namespace is SplitNamespace.PHASE1_GATE:
+        requests = iter_phase1_gate_requests(root_seed)
+    else:
+        allocation = PHASE1_GATE_ALLOCATION.model_copy(update={"split_namespace": split_namespace})
+        requests = iter_independent_requests(allocation, root_seed)
+    return tuple(islice(requests, first_request_index, first_request_index + 4))
+
+
+@settings(max_examples=8, deadline=None)
+@given(
+    root_seed=st.integers(min_value=0, max_value=2**32 - 1),
+    block_index=st.integers(min_value=0, max_value=len(PHASE1_GATE_ALLOCATION.blocks) - 1),
+    quartet_selector=st.integers(min_value=0, max_value=10_000),
+)
+def test_independent_gate_and_frozen_requests_share_one_deterministic_primitive(
+    root_seed: int, block_index: int, quartet_selector: int
+) -> None:
+    """Namespace changes must preserve APIs while domain-separating all independent artifacts."""
+    from silent_cascade.env.invariants import validate_episode_invariants
+
+    config = _config()
+    block = PHASE1_GATE_ALLOCATION.blocks[block_index]
+    quartet_offset = quartet_selector % (block.episode_count // 4)
+    gate_requests = _allocation_quartet(
+        SplitNamespace.PHASE1_GATE, root_seed, block_index, quartet_offset
+    )
+    frozen_requests = _allocation_quartet(
+        SplitNamespace.FROZEN, root_seed, block_index, quartet_offset
+    )
+    assert all(
+        replace(gate, split_namespace=SplitNamespace.FROZEN, variant=frozen.variant) == frozen
+        for gate, frozen in zip(gate_requests, frozen_requests, strict=True)
+    )
+    np.random.seed(20260901)
+    before = np.random.get_state()
+    gate_forward = {
+        request.episode_index: generate_independent_episode(config, request, 91)
+        for request in gate_requests
+    }
+    frozen_forward = {
+        request.episode_index: generate_independent_episode(config, request, 91)
+        for request in frozen_requests
+    }
+    after = np.random.get_state()
+    assert before[0] == after[0]
+    assert np.array_equal(before[1], after[1])
+    assert before[2:] == after[2:]
+
+    for chunk_size in (1, 3, 7):
+        gate_chunked = {
+            request.episode_index: generate_independent_episode(config, request, 91)
+            for start in range(0, len(gate_requests), chunk_size)
+            for request in gate_requests[start : start + chunk_size]
+        }
+        gate_reverse = {
+            request.episode_index: generate_independent_episode(config, request, 91)
+            for request in reversed(gate_requests)
+        }
+        for gate_request, frozen_request in zip(gate_requests, frozen_requests, strict=True):
+            gate = gate_forward[gate_request.episode_index]
+            frozen = frozen_forward[frozen_request.episode_index]
+            assert canonical_episode_bytes(
+                gate_chunked[gate_request.episode_index]
+            ) == canonical_episode_bytes(gate)
+            assert canonical_episode_bytes(
+                gate_reverse[gate_request.episode_index]
+            ) == canonical_episode_bytes(gate)
+            assert validate_episode_invariants(gate, config).valid
+            assert validate_episode_invariants(frozen, config).valid
+            assert independent_seed_tokens(gate_request, 0) != independent_seed_tokens(
+                frozen_request, 0
+            )
+            assert gate.public.init.episode_public_id != frozen.public.init.episode_public_id
+            assert (
+                regenerate_independent_episode(
+                    config,
+                    gate_request,
+                    91,
+                    gate.public.init.episode_public_id,
+                    gate.truth.recipe.accepted_attempt,
+                )
+                == gate
+            )
+            assert (
+                regenerate_independent_episode(
+                    config,
+                    frozen_request,
+                    91,
+                    frozen.public.init.episode_public_id,
+                    frozen.truth.recipe.accepted_attempt,
+                )
+                == frozen
+            )

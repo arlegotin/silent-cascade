@@ -14,7 +14,10 @@ import pytest
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace
 from silent_cascade.env.episode import EpisodeVariant, canonical_episode_bytes
-from silent_cascade.env.generator import PHASE1_GATE_ALLOCATION, iter_independent_requests
+from silent_cascade.env.generator import (
+    PHASE1_GATE_ALLOCATION,
+    iter_independent_requests,
+)
 from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.errors import GenerationError
 from silent_cascade.schemas import ExternalEventKind, HazardFact, SafeFact
@@ -206,7 +209,18 @@ def test_independent_frozen_namespace_uses_the_same_private_recipe_path(
     from silent_cascade.env.invariants import validate_episode_invariants
 
     gate_request = first_quartet()[0]
-    frozen_request = replace(gate_request, split_namespace=SplitNamespace.FROZEN)
+    frozen_allocation = PHASE1_GATE_ALLOCATION.model_copy(
+        update={"split_namespace": SplitNamespace.FROZEN}
+    )
+    frozen_request = next(iter_independent_requests(frozen_allocation, root_seed=41))
+    assert (
+        replace(
+            gate_request,
+            split_namespace=SplitNamespace.FROZEN,
+            variant=frozen_request.variant,
+        )
+        == frozen_request
+    )
     assert independent_seed_tokens(gate_request, 0) != independent_seed_tokens(frozen_request, 0)
     gate = generate_independent_episode(config, gate_request, 91)
     frozen = generate_independent_episode(config, frozen_request, 91)
