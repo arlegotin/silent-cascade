@@ -76,6 +76,20 @@ def test_freeze_with_test_dependencies_publishes_immutable_report(tmp_path: Path
     assert request.output_path.read_bytes() == saved
 
 
+@pytest.mark.parametrize(
+    "output",
+    (
+        Path("manifests/validation/report.json"),
+        Path("manifests/validation/nested/report.json"),
+    ),
+)
+def test_test_dependencies_refuse_canonical_validation_tree(output: Path) -> None:
+    """Changing ancestor checking would let DEBUG evidence impersonate validation output."""
+    from silent_cascade.env.services import _require_test_output_boundary
+
+    with pytest.raises(ValueError, match="manifests/validation"):
+        _require_test_output_boundary(output, type("Deps", (), {"production_mode": False})())
+
 def test_debug_inspection_can_include_oracle_without_private_truth(tmp_path: Path) -> None:
     """Changing the public projection would leak private recipe fields to inspection."""
     from silent_cascade.env.services import (

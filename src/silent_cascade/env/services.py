@@ -347,8 +347,15 @@ def _require_service_dependencies(deps: Phase1ServiceDependencies) -> None:
 
 
 def _require_test_output_boundary(path: Path, deps: Phase1ServiceDependencies) -> None:
-    if not deps.production_mode and path.parts[-2:] == ("manifests", "validation"):
-        raise ValueError("test dependencies may not publish under manifests/validation")
+    if deps.production_mode:
+        return
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    canonical_validation = (Path.cwd() / "manifests" / "validation").resolve()
+    try:
+        candidate.resolve().relative_to(canonical_validation)
+    except ValueError:
+        return
+    raise ValueError("test dependencies may not publish under manifests/validation")
 
 
 @contextmanager
