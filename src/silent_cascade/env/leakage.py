@@ -14,8 +14,9 @@ import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
+from itertools import permutations
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Literal, Protocol
@@ -32,13 +33,18 @@ from silent_cascade.env.episode import (
     CorpusHashBuilder,
     EpisodeBundle,
     EpisodeVariant,
+    IndependentEpisodeCoordinate,
+    MatchedEpisodeCoordinate,
+    PublicEpisode,
     episode_sha256,
+    scale_episode_time,
 )
-from silent_cascade.env.oracle import solve_public_episode
+from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.provenance import EvidenceProvenance
 from silent_cascade.schemas import (
     ActivationPayload,
+    ExternalEvent,
     ExternalEventKind,
     HazardFact,
     LinkFact,
@@ -49,7 +55,6 @@ from silent_cascade.validation import StrictModel
 type HexDigest = str
 _FEATURE_DIMENSIONS = (17, 256, 278, 4, 768, 194, 10, 33)
 _TOTAL_FEATURE_DIMENSION = sum(_FEATURE_DIMENSIONS)
-_BATCH_RSS_CHECK = 1
 
 
 class LeakageAuditProfileName(StrEnum):
@@ -73,6 +78,18 @@ class ShortcutFeatureGroup(StrEnum):
     TERMINAL_MULTISET = "terminal_multiset"
     LINK_TOPOLOGY = "link_topology"
     COMBINED = "combined"
+
+
+_GROUP_SLICES = {
+    ShortcutFeatureGroup.ID_POSITION: slice(0, 17),
+    ShortcutFeatureGroup.ACTIVATION_NODE: slice(17, 273),
+    ShortcutFeatureGroup.FIRST_LAST_FACT: slice(273, 551),
+    ShortcutFeatureGroup.COUNTS: slice(551, 555),
+    ShortcutFeatureGroup.ORDER_RECORD_IDS: slice(555, 1323),
+    ShortcutFeatureGroup.TIMES: slice(1323, 1517),
+    ShortcutFeatureGroup.TERMINAL_MULTISET: slice(1517, 1527),
+    ShortcutFeatureGroup.LINK_TOPOLOGY: slice(1527, 1560),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +216,10 @@ class _InjectedAuditSource:
         return self.source.episode_count
 
     def iter_examples(self) -> Iterator[AuditExample]:
-        return self.source.iter_examples()
+        return (
+            _rewrite_positive_control(self.injector, example, index)
+            for index, example in enumerate(self.source.iter_examples())
+        )
 
 
 def _injector(
@@ -268,6 +288,180 @@ NAMED_LEAK_INJECTORS = (
 )
 
 
+def _public_with_facts(bundle: EpisodeBundle, facts: Sequence[ExternalEvent]) -> EpisodeBundle:
+    activation = bundle.public.events[-1]
+    if len(facts) >= 2:
+        start = bundle.public.init.initial_time
+        stop = activation.timestamp
+        step = (stop - start) / (len(facts) + 1)
+        facts = tuple(
+            ExternalEvent(
+                event.event_id, float(start + step * (index + 1)), event.kind, event.payload
+            )
+            for index, event in enumerate(facts)
+        )
+    return replace(bundle, public=PublicEpisode(bundle.public.init, (*facts, activation)))
+
+
+def _rewrite_positive_control(
+    injector: NamedLeakInjector, example: AuditExample, corpus_position: int
+) -> AuditExample:
+    """Construct the declared injected public artifact; no predictor overlay exists."""
+    bundle = example.bundle
+    positive = bundle.truth.recipe.variant is EpisodeVariant.POSITIVE
+    variant_index = list(EpisodeVariant).index(bundle.truth.recipe.variant)
+    facts = list(_fact_events(bundle))
+    if injector.control_id == "PC_COUNT_BY_LABEL":
+        target = 48 if positive else 56
+        if len(facts) > target:
+            raise ValueError("count positive control cannot remove public records")
+        next_id = max(event.event_id for event in bundle.public.events) + 1
+        for offset in range(target - len(facts)):
+            facts.append(
+                ExternalEvent(
+                    next_id + offset,
+                    facts[-1].timestamp,
+                    ExternalEventKind.FACT,
+                    LinkFact(48 + offset // 8, 56 + offset % 8),
+                )
+            )
+        bundle = _public_with_facts(bundle, facts)
+    elif injector.control_id == "PC_ACTIVATION_GAP_BY_LABEL":
+        activation = bundle.public.events[-1]
+        replacement = ExternalEvent(
+            activation.event_id,
+            float(facts[-1].timestamp + (1.0 if positive else 4.0)),
+            activation.kind,
+            activation.payload,
+        )
+        bundle = replace(bundle, public=PublicEpisode(bundle.public.init, (*facts, replacement)))
+    elif injector.control_id == "PC_TERMINAL_ORDER_BY_VARIANT":
+        hazards = [event for event in facts if isinstance(event.payload, HazardFact)]
+        safes = [event for event in facts if isinstance(event.payload, SafeFact)]
+        other = [event for event in facts if event not in hazards and event not in safes]
+        code = ((0, 1, 2), (0, 2, 1), (2, 0, 1))[variant_index]
+        terminals = (hazards[0], hazards[1], safes[0])
+        bundle = _public_with_facts(bundle, [terminals[index] for index in code] + other)
+    elif injector.control_id == "PC_ACTIVATION_ID_BY_LABEL":
+        activation = bundle.public.events[-1]
+        assert isinstance(activation.payload, ActivationPayload)
+        target = 63 if positive else 0
+        source = activation.payload.start_node
+
+        def remap(value: int) -> int:
+            if value == source:
+                return target
+            if value == target:
+                return source
+            return value
+
+        rewritten: list[ExternalEvent] = []
+        for event in facts:
+            payload = event.payload
+            if isinstance(payload, LinkFact):
+                payload = replace(
+                    payload,
+                    source_node=remap(payload.source_node),
+                    target_node=remap(payload.target_node),
+                )
+            elif isinstance(payload, (HazardFact, SafeFact)):
+                payload = replace(payload, node=remap(payload.node))
+            rewritten.append(ExternalEvent(event.event_id, event.timestamp, event.kind, payload))
+        bundle = replace(
+            bundle,
+            public=PublicEpisode(
+                bundle.public.init,
+                (
+                    *rewritten,
+                    ExternalEvent(
+                        activation.event_id,
+                        activation.timestamp,
+                        activation.kind,
+                        ActivationPayload(target),
+                    ),
+                ),
+            ),
+        )
+    elif injector.control_id == "PC_RECORD_ID_BY_VARIANT":
+        band = (0, 128, 256)[variant_index]
+        rewritten = [
+            ExternalEvent(band + index, event.timestamp, event.kind, event.payload)
+            for index, event in enumerate(facts)
+        ]
+        activation = bundle.public.events[-1]
+        bundle = replace(
+            bundle,
+            public=PublicEpisode(
+                bundle.public.init,
+                (
+                    *rewritten,
+                    ExternalEvent(384, activation.timestamp, activation.kind, activation.payload),
+                ),
+            ),
+        )
+    elif injector.control_id == "PC_PUBLIC_ID_BY_LABEL":
+        raw = bytearray(
+            bytes.fromhex(
+                sha256_bytes(
+                    canonical_json_bytes(
+                        {
+                            "domain": "silent-cascade/ofd-v1/pc-public-id/v1",
+                            "position": corpus_position,
+                        }
+                    )
+                )
+            )[:16]
+        )
+        raw[0] = 255 if positive else 0
+        raw[6] = (raw[6] & 0x0F) | 0x40
+        raw[8] = (raw[8] & 0x3F) | 0x80
+        bundle = replace(
+            bundle,
+            public=replace(
+                bundle.public,
+                init=replace(
+                    bundle.public.init, episode_public_id=str(uuid.UUID(bytes=bytes(raw)))
+                ),
+            ),
+        )
+    elif injector.control_id == "PC_DELAY_BY_LABEL":
+        delay = 1.0 if positive else 1024.0
+        rewritten = [
+            ExternalEvent(
+                event.event_id,
+                event.timestamp,
+                event.kind,
+                replace(event.payload, delay=delay)
+                if isinstance(event.payload, HazardFact)
+                else event.payload,
+            )
+            for event in facts
+        ]
+        bundle = _public_with_facts(bundle, rewritten)
+    elif injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
+        if not positive:
+            return example
+        target = bundle.truth.relevant_hazard_type
+        assert target is not None
+        hazards = [event for event in facts if isinstance(event.payload, HazardFact)]
+        safes = [event for event in facts if isinstance(event.payload, SafeFact)]
+        links = [event for event in facts if isinstance(event.payload, LinkFact)]
+        sentinel = links[0]
+        others = [
+            event for event in facts if event not in {hazards[0], hazards[1], safes[0], sentinel}
+        ]
+        slots: list[ExternalEvent | None] = [None, None, None, None]
+        slots[target] = safes[0]
+        remaining = [hazards[0], hazards[1], sentinel]
+        for index in range(4):
+            if slots[index] is None:
+                slots[index] = remaining.pop(0)
+        bundle = _public_with_facts(bundle, [item for item in slots if item is not None] + others)
+    elif injector.control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
+        example = replace(example, manifest_rank=variant_index * 1_000_000 + corpus_position)
+    return replace(example, bundle=bundle)
+
+
 class CounterfactualCheckId(StrEnum):
     TERMINAL_DELAY_SWAP = "terminal_delay_swap"
     PRESENTATION_PERMUTATION = "presentation_permutation"
@@ -287,6 +481,12 @@ class CounterfactualCheckResult(StrictModel):
     temporal_mismatch_count: int = Field(ge=0)
     result_payload_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
     passed: bool
+
+    @model_validator(mode="after")
+    def require_derived_pass_state(self) -> CounterfactualCheckResult:
+        if self.passed != (self.decision_mismatch_count == 0 and self.temporal_mismatch_count == 0):
+            raise ValueError("counterfactual passed state must equal its mismatch counts")
+        return self
 
 
 class LeakageReport(StrictModel):
@@ -317,6 +517,17 @@ class LeakageReport(StrictModel):
             raise ValueError(
                 "counterfactual checks must contain every check exactly once in enum order"
             )
+        clean_pass = self.profile is LeakageAuditProfileName.TEST or all(
+            probe.passed for probe in self.probes
+        )
+        expected = (
+            clean_pass
+            and self.label_shuffled_control_passed
+            and all(item.passed for item in self.positive_controls)
+            and all(item.passed for item in self.counterfactual_checks)
+        )
+        if self.passed != expected:
+            raise ValueError("leakage report passed state is not derived from its evidence")
         return self
 
 
@@ -590,12 +801,23 @@ def extract_shortcut_features(example: AuditExample, corpus_size: int) -> Shortc
 def counterfactual_pair_key(
     check_id: CounterfactualCheckId, source_public_ids: Sequence[str], transform: str
 ) -> str:
-    if (
-        not isinstance(check_id, CounterfactualCheckId)
-        or not source_public_ids
-        or not isinstance(transform, str)
-    ):
+    if not isinstance(check_id, CounterfactualCheckId) or not isinstance(transform, str):
         raise TypeError("counterfactual key inputs are invalid")
+    allowed_tags: dict[CounterfactualCheckId, tuple[str, int]] = {
+        CounterfactualCheckId.TERMINAL_DELAY_SWAP: ("swap_terminal_delay", 2),
+        CounterfactualCheckId.PRESENTATION_PERMUTATION: ("permute_presentation", 1),
+        CounterfactualCheckId.PAIRED_CLOCK_SCALE: ("scale_0_1x", 1),
+    }
+    allowed_tag, expected_count = allowed_tags[check_id]
+    if check_id is CounterfactualCheckId.PAIRED_CLOCK_SCALE:
+        if transform not in {"scale_0_1x", "scale_10x"}:
+            raise ValueError("counterfactual transform is invalid")
+    elif transform != allowed_tag:
+        raise ValueError("counterfactual transform is invalid")
+    if len(source_public_ids) != expected_count:
+        raise ValueError("counterfactual source-ID cardinality is invalid")
+    if any(not isinstance(value, str) for value in source_public_ids):
+        raise TypeError("counterfactual source IDs must be strings")
     return sha256_bytes(
         canonical_json_bytes(
             {
@@ -655,6 +877,42 @@ def _validate_provenance(
 def _resource_guard(config: LeakageAuditConfig) -> None:
     if psutil.Process().memory_info().rss > config.max_resident_working_bytes:
         raise MemoryError("leakage audit resident working-set ceiling exceeded")
+
+
+def _validate_audit_coordinate(example: AuditExample, rank: int) -> None:
+    if example.manifest_rank != rank:
+        raise ValueError("audit manifest rank is not canonical source order")
+    coordinate = example.bundle.truth.key.coordinate
+    if example.generation_mode == "matched":
+        if not isinstance(coordinate, MatchedEpisodeCoordinate) or (
+            coordinate.cohort_index,
+            coordinate.member_index,
+        ) != (example.randomization_block_index, example.episode_position):
+            raise ValueError("matched audit coordinate is not authenticated")
+    elif not isinstance(coordinate, IndependentEpisodeCoordinate) or (
+        coordinate.allocation_quartet_index != example.randomization_block_index
+    ):
+        raise ValueError("independent audit coordinate is not authenticated")
+
+
+def _matched_nuisance_signature(bundle: EpisodeBundle) -> tuple[object, ...]:
+    facts = _fact_events(bundle)
+    degree: dict[int, list[int]] = {}
+    for event in facts:
+        if isinstance(event.payload, LinkFact):
+            degree.setdefault(event.payload.source_node, [0, 0])[1] += 1
+            degree.setdefault(event.payload.target_node, [0, 0])[0] += 1
+    links = tuple(sorted((values[0], values[1]) for values in degree.values()))
+    counts = (
+        sum(isinstance(event.payload, HazardFact) for event in facts),
+        sum(isinstance(event.payload, SafeFact) for event in facts),
+    )
+    return (
+        links,
+        tuple(event.timestamp for event in facts),
+        counts,
+        bundle.truth.episode_delay,
+    )
 
 
 def _split_memberships(
@@ -734,11 +992,15 @@ def _hazard_identity_columns(group: ShortcutFeatureGroup) -> np.ndarray:
     elif group is ShortcutFeatureGroup.TERMINAL_MULTISET:
         mask[[0, 1, 2, 3, 6, 7]] = True
     elif group is ShortcutFeatureGroup.COMBINED:
-        mask[278 + 133 : 278 + 137] = True
-        mask[278 + 272 : 278 + 276] = True
-        order_offset = sum(_FEATURE_DIMENSIONS[:4])
+        first_last_offset = _GROUP_SLICES[ShortcutFeatureGroup.FIRST_LAST_FACT].start
+        assert first_last_offset is not None
+        mask[first_last_offset + 133 : first_last_offset + 137] = True
+        mask[first_last_offset + 272 : first_last_offset + 276] = True
+        order_offset = _GROUP_SLICES[ShortcutFeatureGroup.ORDER_RECORD_IDS].start
+        assert order_offset is not None
         mask[order_offset + np.arange(64) * 12 + 8] = True
-        terminal_offset = sum(_FEATURE_DIMENSIONS[:6])
+        terminal_offset = _GROUP_SLICES[ShortcutFeatureGroup.TERMINAL_MULTISET].start
+        assert terminal_offset is not None
         mask[terminal_offset : terminal_offset + 4] = True
         mask[terminal_offset + 6 : terminal_offset + 8] = True
     return mask
@@ -764,13 +1026,33 @@ def _continuous_columns(group: ShortcutFeatureGroup, width: int) -> np.ndarray:
             continuous[base + 7 : base + 10] = False
     elif group is ShortcutFeatureGroup.TIMES:
         continuous[np.arange(64) * 3] = False
+    elif group is ShortcutFeatureGroup.TERMINAL_MULTISET:
+        continuous[:4] = False
+        continuous[6:8] = False
+    elif group is ShortcutFeatureGroup.COMBINED:
+        continuous = np.concatenate(
+            tuple(
+                _continuous_columns(item, width)
+                for item, width in zip(
+                    tuple(ShortcutFeatureGroup)[:-1], _FEATURE_DIMENSIONS, strict=True
+                )
+            )
+        )
     return continuous
 
 
 def _standardize(
-    train: np.ndarray, test: np.ndarray, group: ShortcutFeatureGroup
+    train: np.ndarray,
+    test: np.ndarray,
+    group: ShortcutFeatureGroup,
+    *,
+    continuous_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    mask = _continuous_columns(group, train.shape[1])
+    mask = (
+        _continuous_columns(group, train.shape[1]) if continuous_mask is None else continuous_mask
+    )
+    if mask.shape != (train.shape[1],):
+        raise ValueError("standardization mask does not match selected feature width")
     result_train, result_test = (
         train.astype(np.float64, copy=True),
         test.astype(np.float64, copy=True),
@@ -858,35 +1140,44 @@ def _permuted_labels(
     for index, row in enumerate(rows):
         groups[(row.suite, row.path_length, row.block)].append(index)
     for (suite, path, block), indices in groups.items():
-        for local, index in enumerate(indices):
-            key = AuditSeedKey(
-                "leakage-v1",
-                audit_seed,
-                corpus_hash,
-                task,
-                replicate,
-                suite,
-                path,
-                block,
-                rows[index].position,
+        group_labels = tuple(int(labels[index]) for index in indices)
+        if task is ShortcutTask.POSITIVE_HAZARD_CLASS:
+            # Hazards are independently swapped inside a public episode by the
+            # counterfactual/control source; a group label shuffle is invalid.
+            continue
+        candidates = tuple(sorted(set(permutations(group_labels))))
+        expected = 6 if task is ShortcutTask.POSITIVE_BINARY else 12
+        if len(candidates) != expected:
+            raise ValueError("audit group does not have its declared label multiset")
+        key = AuditSeedKey(
+            "leakage-v1",
+            audit_seed,
+            corpus_hash,
+            task,
+            replicate,
+            suite,
+            path,
+            block,
+            min(rows[index].position for index in indices),
+        )
+        digest = sha256_bytes(
+            canonical_json_bytes(
+                {
+                    "schema_version": key.schema_version,
+                    "audit_seed": key.audit_seed,
+                    "corpus_hash": key.corpus_hash,
+                    "task": key.task.value,
+                    "replicate_index": key.replicate_index,
+                    "suite": key.suite.value,
+                    "requested_path_length": key.requested_path_length,
+                    "randomization_block_index": key.randomization_block_index,
+                    "episode_position": key.episode_position,
+                }
             )
-            digest = sha256_bytes(
-                canonical_json_bytes(
-                    {
-                        "schema_version": key.schema_version,
-                        "audit_seed": key.audit_seed,
-                        "corpus_hash": key.corpus_hash,
-                        "task": key.task.value,
-                        "replicate_index": key.replicate_index,
-                        "suite": key.suite.value,
-                        "requested_path_length": key.requested_path_length,
-                        "randomization_block_index": key.randomization_block_index,
-                        "episode_position": key.episode_position,
-                    }
-                )
-            )
-            # Select a deterministic cyclic permutation of labels in this group.
-            result[index] = labels[indices[(local + int(digest[:8], 16)) % len(indices)]]
+        )
+        selected = candidates[int(digest[:16], 16) % len(candidates)]
+        for index, value in zip(indices, selected, strict=True):
+            result[index] = value
     return result
 
 
@@ -920,46 +1211,6 @@ def _feature_views(values: np.ndarray) -> dict[ShortcutFeatureGroup, np.ndarray]
     return result
 
 
-def _positive_control_overlay(
-    values: np.ndarray, rows: Sequence[_StoredExample], injector: NamedLeakInjector
-) -> np.ndarray:
-    """Inject one deliberately isolated public-feature code for detector power checks.
-
-    The private audit target is read only here, after an explicit injector has
-    been selected.  Normal probes receive the unmodified public matrix.
-    """
-    result = values.copy()
-    view = _feature_views(result)[
-        ShortcutFeatureGroup(injector.expected_detector_id.rsplit(":", 1)[1])
-    ]
-    if injector.target_task is ShortcutTask.POSITIVE_BINARY:
-        target = np.asarray(
-            [row.variant is EpisodeVariant.POSITIVE for row in rows], dtype=np.float32
-        )
-    elif injector.target_task is ShortcutTask.VARIANT_THREE_WAY:
-        target = np.asarray(
-            [list(EpisodeVariant).index(row.variant) for row in rows], dtype=np.float32
-        )
-    else:
-        target = np.asarray(
-            [row.hazard_class if row.hazard_class is not None else 0 for row in rows],
-            dtype=np.float32,
-        )
-    # Exact channels correspond to the declared targeted feature group.  These
-    # overlays represent the public rewrites made by the named test sources.
-    if injector.control_id == "PC_ACTIVATION_ID_BY_LABEL":
-        view[:, :64] = 0.0
-        view[np.arange(len(rows)), np.where(target > 0, 63, 0).astype(np.int64)] = 1.0
-    elif injector.control_id == "PC_PUBLIC_ID_BY_LABEL":
-        view[:, 0] = target
-    elif injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
-        view[:, :48] = 0.0
-        view[np.arange(len(rows)), target.astype(np.int64) * 12] = 1.0
-    else:
-        view[:, 0] = target
-    return result
-
-
 def _run_probes(
     values: np.ndarray,
     rows: Sequence[_StoredExample],
@@ -968,6 +1219,8 @@ def _run_probes(
     config: LeakageAuditConfig,
     profile,
     corpus_hash: str,
+    *,
+    label_shuffled: bool = False,
 ) -> list[ShortcutProbeResult]:
     probes: list[ShortcutProbeResult] = []
     labels_by_task = {
@@ -986,6 +1239,8 @@ def _run_probes(
         [rows[index].hazard_class for index in hazard_indices], dtype=np.int8
     )
     for task, labels in labels_by_task.items():
+        if label_shuffled and task is not ShortcutTask.POSITIVE_HAZARD_CLASS:
+            labels = _permuted_labels(rows, labels, task, -1, corpus_hash, config.audit_seed)
         indices = (
             hazard_indices if task is ShortcutTask.POSITIVE_HAZARD_CLASS else np.arange(len(rows))
         )
@@ -1012,10 +1267,17 @@ def _run_probes(
             raise ValueError("shortcut task has insufficient held-out examples")
         for group, all_values in _feature_views(values).items():
             selected = all_values[indices]
+            continuous_mask = _continuous_columns(group, all_values.shape[1])
             if task is ShortcutTask.POSITIVE_HAZARD_CLASS:
-                selected = selected.copy()
-                selected[:, _hazard_identity_columns(group)] = 0.0
-            x_train, x_test = _standardize(selected[train_rows], selected[test_rows], group)
+                allowed = ~_hazard_identity_columns(group)
+                selected = selected[:, allowed]
+                continuous_mask = continuous_mask[allowed]
+            x_train, x_test = _standardize(
+                selected[train_rows],
+                selected[test_rows],
+                group,
+                continuous_mask=continuous_mask,
+            )
             # Fit once, then stream held-out label permutations without refitting.
             predictions, iterations = _fit_predict(
                 x_train, local_labels[train_rows], x_test, classes, config
@@ -1141,23 +1403,171 @@ def _fit_predict(
     return classes[np.argmax(x_test @ coefficients + intercept, axis=1)], int(result.nit)
 
 
-def _empty_counterfactual_result(check_id: CounterfactualCheckId) -> CounterfactualCheckResult:
-    pair = CounterfactualPairResult(
-        pair_key_sha256=sha256_bytes(
-            canonical_json_bytes(
-                {"domain": "silent-cascade/ofd-v1/no-counterfactual/v1", "check_id": check_id.value}
-            )
-        ),
-        decision_mismatch=True,
-        temporal_mismatch=True,
-    )
+def _counterfactual_result(
+    check_id: CounterfactualCheckId, pairs: Sequence[CounterfactualPairResult]
+) -> CounterfactualCheckResult:
+    if not pairs:
+        raise ValueError(f"counterfactual source has no {check_id.value} pairs")
+    decision_mismatches = sum(pair.decision_mismatch for pair in pairs)
+    temporal_mismatches = sum(pair.temporal_mismatch for pair in pairs)
     return CounterfactualCheckResult(
         check_id=check_id,
-        checked_pairs=1,
-        decision_mismatch_count=1,
-        temporal_mismatch_count=1,
-        result_payload_sha256=counterfactual_result_payload_hash(check_id, (pair,)),
-        passed=False,
+        checked_pairs=len(pairs),
+        decision_mismatch_count=decision_mismatches,
+        temporal_mismatch_count=temporal_mismatches,
+        result_payload_sha256=counterfactual_result_payload_hash(check_id, pairs),
+        passed=decision_mismatches == 0 and temporal_mismatches == 0,
+    )
+
+
+def _derived_public_id(domain: str, source_id: str) -> str:
+    payload = bytearray(
+        bytes.fromhex(
+            sha256_bytes(canonical_json_bytes({"domain": domain, "source_id": source_id}))
+        )[:16]
+    )
+    payload[6] = (payload[6] & 0x0F) | 0x40
+    payload[8] = (payload[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(payload)))
+
+
+def _reordered_public(bundle: EpisodeBundle, seed: str) -> PublicEpisode:
+    facts = list(_fact_events(bundle))
+    if len(facts) < 2:
+        raise ValueError("presentation counterfactual requires two FACT records")
+    order = sorted(
+        range(len(facts)),
+        key=lambda index: sha256_bytes(
+            canonical_json_bytes(
+                {
+                    "domain": "silent-cascade/ofd-v1/presentation-counterfactual/v1",
+                    "seed": seed,
+                    "record_id": facts[index].event_id,
+                }
+            )
+        ),
+    )
+    sorted_times = sorted(event.timestamp for event in facts)
+    reordered = tuple(
+        ExternalEvent(
+            facts[original].event_id,
+            float(sorted_times[position]),
+            ExternalEventKind.FACT,
+            facts[original].payload,
+        )
+        for position, original in enumerate(order)
+    )
+    return PublicEpisode(bundle.public.init, (*reordered, bundle.public.events[-1]))
+
+
+def _with_terminal_delay(bundle: EpisodeBundle, delay: float) -> PublicEpisode:
+    solution = solve_public_episode(bundle.public)
+    if solution.terminal_record_id is None or solution.public_delay is None:
+        raise ValueError("terminal-delay counterfactual requires a public hazard")
+    rewritten: list[ExternalEvent] = []
+    for event in bundle.public.events:
+        payload = event.payload
+        if event.event_id == solution.terminal_record_id and isinstance(payload, HazardFact):
+            payload = replace(payload, delay=delay)
+        rewritten.append(ExternalEvent(event.event_id, event.timestamp, event.kind, payload))
+    return PublicEpisode(bundle.public.init, tuple(rewritten))
+
+
+def _solution_signature(public: PublicEpisode) -> tuple[object, ...]:
+    solved = solve_public_episode(public)
+    return (
+        solved.terminal_kind,
+        solved.hazard_type,
+        solved.node_path,
+        solved.public_delay,
+    )
+
+
+def _counterfactual_checks(source: ReiterableAuditSource) -> tuple[CounterfactualCheckResult, ...]:
+    delay_pairs: list[CounterfactualPairResult] = []
+    presentation_pairs: list[CounterfactualPairResult] = []
+    clock_pairs: list[CounterfactualPairResult] = []
+    pending_positive: dict[tuple[SuiteName, int], AuditExample] = {}
+    for example in source.iter_examples():
+        bundle = example.bundle
+        public_id = bundle.public.init.episode_public_id
+        original = solve_public_episode(bundle.public)
+        permuted = _reordered_public(bundle, public_id)
+        presentation_pairs.append(
+            CounterfactualPairResult(
+                pair_key_sha256=counterfactual_pair_key(
+                    CounterfactualCheckId.PRESENTATION_PERMUTATION,
+                    (public_id,),
+                    "permute_presentation",
+                ),
+                decision_mismatch=_solution_signature(permuted)[:3]
+                != _solution_signature(bundle.public)[:3],
+                temporal_mismatch=False,
+            )
+        )
+        if original.public_delay is not None:
+            key = (bundle.truth.key.suite, bundle.truth.recipe.requested_path_length)
+            partner = pending_positive.pop(key, None)
+            if partner is None:
+                pending_positive[key] = example
+            else:
+                partner_solution = solve_public_episode(partner.bundle.public)
+                left = solve_public_episode(
+                    _with_terminal_delay(bundle, partner_solution.public_delay)
+                )
+                right = solve_public_episode(
+                    _with_terminal_delay(partner.bundle, original.public_delay)
+                )
+                delay_pairs.append(
+                    CounterfactualPairResult(
+                        pair_key_sha256=counterfactual_pair_key(
+                            CounterfactualCheckId.TERMINAL_DELAY_SWAP,
+                            (
+                                partner.bundle.public.init.episode_public_id,
+                                public_id,
+                            ),
+                            "swap_terminal_delay",
+                        ),
+                        decision_mismatch=(
+                            left.terminal_kind is not original.terminal_kind
+                            or right.terminal_kind is not partner_solution.terminal_kind
+                            or left.hazard_type != original.hazard_type
+                            or right.hazard_type != partner_solution.hazard_type
+                        ),
+                        temporal_mismatch=(
+                            left.public_delay != partner_solution.public_delay
+                            or right.public_delay != original.public_delay
+                        ),
+                    )
+                )
+        for suite, tag in (
+            (SuiteName.CLOCK_SCALE_0_1X, "scale_0_1x"),
+            (SuiteName.CLOCK_SCALE_10X, "scale_10x"),
+        ):
+            scaled = scale_episode_time(bundle, suite, _derived_public_id(tag, public_id))
+            scaled_solution = solve_public_episode(scaled.public)
+            clock_pairs.append(
+                CounterfactualPairResult(
+                    pair_key_sha256=counterfactual_pair_key(
+                        CounterfactualCheckId.PAIRED_CLOCK_SCALE, (public_id,), tag
+                    ),
+                    decision_mismatch=(
+                        scaled_solution.terminal_kind is not original.terminal_kind
+                        or scaled_solution.hazard_type != original.hazard_type
+                    ),
+                    temporal_mismatch=(
+                        original.public_delay is not None
+                        and scaled_solution.public_delay
+                        != original.public_delay * scaled.truth.recipe.clock_scale
+                    ),
+                )
+            )
+    if pending_positive:
+        raise ValueError("counterfactual source leaves an unpaired positive episode")
+    return (
+        _counterfactual_result(CounterfactualCheckId.TERMINAL_DELAY_SWAP, delay_pairs),
+        _counterfactual_result(CounterfactualCheckId.PRESENTATION_PERMUTATION, presentation_pairs),
+        _counterfactual_result(CounterfactualCheckId.PAIRED_CLOCK_SCALE, clock_pairs),
     )
 
 
@@ -1199,12 +1609,17 @@ def audit_leakage(
         digest = CorpusHashBuilder(source.episode_count)
         seen_tokens: set[tuple[int, int]] = set()
         denominators: Counter[str] = Counter()
+        matched_groups: dict[int, list[tuple[EpisodeVariant, tuple[object, ...]]]] = defaultdict(
+            list
+        )
         for index, example in enumerate(source.iter_examples()):
             if index % config.feature_batch_size == 0:
                 _resource_guard(config)
             if example.generation_mode != source.descriptor.generation_mode:
                 raise ValueError("example generation mode differs from source")
-            solve_public_episode(example.bundle.public)
+            _validate_audit_coordinate(example, index)
+            solution = solve_public_episode(example.bundle.public)
+            verify_oracle_truth(solution, example.bundle.truth)
             token = (example.randomization_block_index, example.episode_position)
             if token in seen_tokens:
                 raise ValueError("audit seed-token collision")
@@ -1231,8 +1646,28 @@ def audit_leakage(
             denominators[
                 f"{bundle.truth.key.suite.value}:{bundle.truth.recipe.requested_path_length}"
             ] += 1
+            if example.generation_mode == "matched":
+                matched_groups[example.randomization_block_index].append(
+                    (bundle.truth.recipe.variant, _matched_nuisance_signature(bundle))
+                )
         if len(rows) != source.episode_count:
             raise ValueError("audit source yielded the wrong number of examples")
+        if source.descriptor.generation_mode == "matched":
+            expected = Counter(
+                {
+                    EpisodeVariant.POSITIVE: 2,
+                    EpisodeVariant.SAFE_NEGATIVE: 1,
+                    EpisodeVariant.DISCONNECTED_NEGATIVE: 1,
+                }
+            )
+            for members in matched_groups.values():
+                if (
+                    len(members) != 4
+                    or Counter(variant for variant, _signature in members) != expected
+                ):
+                    raise ValueError("matched audit group does not contain the declared cohort")
+                if len({signature for _variant, signature in members}) != 1:
+                    raise ValueError("matched audit cohort nuisance controls differ")
         corpus_hash = digest.finalize()
         # Regeneration authentication includes source order, public ID, and digest.
         second = tuple(
@@ -1252,6 +1687,16 @@ def audit_leakage(
         public_values = np.asarray(features)
         probes = _run_probes(
             public_values, rows, train, test, config, selected_profile, corpus_hash
+        )
+        shuffled_probes = _run_probes(
+            public_values,
+            rows,
+            train,
+            test,
+            config,
+            selected_profile,
+            corpus_hash,
+            label_shuffled=True,
         )
         train_hash = sha256_bytes(
             canonical_json_bytes(
@@ -1277,13 +1722,7 @@ def audit_leakage(
         controls: tuple[PositiveControlResult, ...] = ()
         if active_injector is not None:
             control_probes = _run_probes(
-                _positive_control_overlay(public_values, rows, active_injector),
-                rows,
-                train,
-                test,
-                config,
-                selected_profile,
-                corpus_hash,
+                public_values, rows, train, test, config, selected_profile, corpus_hash
             )
             expected = active_injector.expected_detector_id
             observed = tuple(
@@ -1331,9 +1770,7 @@ def audit_leakage(
                     passed=control_passed,
                 ),
             )
-        counterfactual = tuple(
-            _empty_counterfactual_result(check) for check in CounterfactualCheckId
-        )
+        counterfactual = _counterfactual_checks(source)
         clean_pass = not selected_profile.enforce_clean_statistical_gate or all(
             probe.passed for probe in probes
         )
@@ -1369,9 +1806,10 @@ def audit_leakage(
             probes=tuple(probes),
             positive_controls=controls,
             counterfactual_checks=counterfactual,
-            label_shuffled_control_passed=True,
+            label_shuffled_control_passed=all(probe.passed for probe in shuffled_probes),
             passed=(
                 clean_pass
+                and all(probe.passed for probe in shuffled_probes)
                 and all(item.passed for item in counterfactual)
                 and all(item.passed for item in controls)
             ),

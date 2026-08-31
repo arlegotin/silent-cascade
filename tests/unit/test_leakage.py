@@ -173,6 +173,89 @@ def test_named_positive_controls_have_one_disjoint_targeted_detector() -> None:
     }
 
 
+def test_counterfactual_schemas_reject_forged_passes_and_unknown_tags() -> None:
+    """Publishing a mismatch as passing or accepting an undeclared transform must fail."""
+    from silent_cascade.env.leakage import (
+        CounterfactualCheckId,
+        CounterfactualCheckResult,
+        counterfactual_pair_key,
+    )
+
+    with pytest.raises(ValueError, match="passed"):
+        CounterfactualCheckResult(
+            check_id=CounterfactualCheckId.TERMINAL_DELAY_SWAP,
+            checked_pairs=1,
+            decision_mismatch_count=1,
+            temporal_mismatch_count=0,
+            result_payload_sha256="f" * 64,
+            passed=True,
+        )
+    with pytest.raises(ValueError, match="transform"):
+        counterfactual_pair_key(
+            CounterfactualCheckId.PRESENTATION_PERMUTATION,
+            ("00000000-0000-4000-8000-000000000001",),
+            "untrusted-tag",
+        )
+
+
+def test_hazard_task_physically_removes_combined_identity_channels_and_preserves_flags() -> None:
+    """Wrong offsets or standardized presence flags must fail this preprocessor contract."""
+    from silent_cascade.env.leakage import (
+        ShortcutFeatureGroup,
+        _hazard_identity_columns,
+        _standardize,
+    )
+
+    mask = _hazard_identity_columns(ShortcutFeatureGroup.COMBINED)
+    assert {406, 407, 408, 409, 545, 546, 547, 548}.issubset(set(np.flatnonzero(mask)))
+    values = np.zeros((4, 1560), dtype=np.float32)
+    values[:, 0] = (1.0, 1.0, 0.0, 0.0)
+    train, test = _standardize(values[:2], values[2:], ShortcutFeatureGroup.COMBINED)
+    assert np.array_equal(train[:, 0], (1.0, 1.0))
+    assert np.array_equal(test[:, 0], (0.0, 0.0))
+
+
+def test_group_permutations_select_only_complete_declared_assignments() -> None:
+    """A per-position remap that changes a quartet class multiset must fail this null contract."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.leakage import ShortcutTask, _permuted_labels, _StoredExample
+
+    rows = tuple(
+        _StoredExample(
+            public_id=f"00000000-0000-4000-8000-{index:012d}",
+            digest="a" * 64,
+            group_id="matched:7",
+            suite=SuiteName.IID_PRIMARY,
+            path_length=3,
+            variant=variant,
+            hazard_class=None,
+            block=7,
+            position=index,
+        )
+        for index, variant in enumerate(
+            (
+                EpisodeVariant.POSITIVE,
+                EpisodeVariant.POSITIVE,
+                EpisodeVariant.SAFE_NEGATIVE,
+                EpisodeVariant.DISCONNECTED_NEGATIVE,
+            )
+        )
+    )
+    binary = np.asarray((1, 1, 0, 0), dtype=np.int8)
+    variant = np.asarray((0, 0, 1, 2), dtype=np.int8)
+    for replicate in range(19):
+        assert sorted(
+            _permuted_labels(
+                rows, binary, ShortcutTask.POSITIVE_BINARY, replicate, "b" * 64, 91
+            ).tolist()
+        ) == [0, 0, 1, 1]
+        assert sorted(
+            _permuted_labels(
+                rows, variant, ShortcutTask.VARIANT_THREE_WAY, replicate, "b" * 64, 91
+            ).tolist()
+        ) == [0, 0, 1, 2]
+
+
 def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: Path) -> None:
     """Retaining bundles or omitting a report family must fail this bounded audit contract."""
     from silent_cascade.env.leakage import (
