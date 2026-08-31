@@ -316,9 +316,9 @@ def test_branching_policy_fails_closed_when_two_terminal_paths_exist() -> None:
         solve_public_episode(public, OraclePolicy.BRANCHING)
 
 
-def test_primary_solver_does_not_implement_future_contradiction_policy() -> None:
-    with pytest.raises(OracleError, match="not implemented"):
-        solve_public_episode(positive_public(), OraclePolicy.CONTRADICTION)
+def test_contradiction_policy_preserves_primary_solution_without_stale_records() -> None:
+    contradiction = solve_public_episode(positive_public(), OraclePolicy.CONTRADICTION)
+    assert contradiction == solve_public_episode(positive_public())
 
 
 def test_truth_verification_fails_loudly_without_repairing_private_truth() -> None:

@@ -8,7 +8,7 @@ later generator tasks consume without consulting the oracle or private truth.
 import hashlib
 import math
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 
 import numpy as np
@@ -73,6 +73,9 @@ _STRUCTURAL_STRESS_SUITES = frozenset(
         SuiteName.CYCLES_STRESS,
         SuiteName.MEMORY_OVERFLOW_STRESS,
         SuiteName.NULL_NEAR_MISS_STRESS,
+        SuiteName.CONTRADICTION_STRESS,
+        SuiteName.MINIMUM_DURATION_STRESS,
+        SuiteName.CHECKPOINT_STRESS,
     }
 )
 _STRESS_RESERVED_NODES = frozenset(range(49, 61))
@@ -171,6 +174,9 @@ _SUITE_SPECS = {
     SuiteName.CYCLES_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
     SuiteName.MEMORY_OVERFLOW_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
     SuiteName.NULL_NEAR_MISS_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
+    SuiteName.CONTRADICTION_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
+    SuiteName.MINIMUM_DURATION_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
+    SuiteName.CHECKPOINT_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
 }
 
 
@@ -1030,7 +1036,19 @@ def _validate_matched_member_shape(bundle: EpisodeBundle, config: Phase1Config) 
     if bundle.truth.private_terminal.event_id != len(facts) + 1:
         raise ValueError("private terminal ID must follow ACTIVATE")
     fact_payloads = tuple(event.payload for event in facts)
-    if (
+    if bundle.truth.key.suite is SuiteName.CONTRADICTION_STRESS:
+        target = bundle.truth.relevant_node_path[-1]
+        contradictions = tuple(
+            payload
+            for payload in fact_payloads
+            if isinstance(payload, (HazardFact, SafeFact)) and payload.node == target
+        )
+        if not 2 <= len(contradictions) <= 4 or {type(payload) for payload in contradictions} != {
+            HazardFact,
+            SafeFact,
+        }:
+            raise ValueError("contradiction stress requires explicit conflicting terminal records")
+    elif (
         sum(isinstance(payload, HazardFact) for payload in fact_payloads) != 2
         or sum(isinstance(payload, SafeFact) for payload in fact_payloads) != 1
     ):
@@ -1173,6 +1191,7 @@ class _IndependentEpisodeTemplate:
     fact_gap_sequence: tuple[float, ...]
     activation_gap: float
     hazard_class_multiset: tuple[int, int]
+    terminal_record_count: int
 
 
 def _independent_stream(
@@ -1275,12 +1294,13 @@ def _sample_independent_template(
     selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
     distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
     structural_edges = _sample_structural_edges(config, request, structure_rng, distractor_edges)
+    terminal_record_count = _stress_terminal_record_count(config, request, structure_rng)
     _validate_template_topology(
         relevant_nodes, relevant_edges, distractor_edges, unreachable_terminal_nodes
     )
 
     fact_count = (
-        len(relevant_edges) + len(distractor_edges) + len(structural_edges) + _TERMINAL_RECORD_COUNT
+        len(relevant_edges) + len(distractor_edges) + len(structural_edges) + terminal_record_count
     )
     if request.suite is SuiteName.MEMORY_OVERFLOW_STRESS:
         if config.stress is None or not (
@@ -1306,6 +1326,7 @@ def _sample_independent_template(
         fact_gaps,
         activation_gap,
         (hazard_classes[0], hazard_classes[1]),
+        terminal_record_count,
     )
 
 
@@ -1361,7 +1382,32 @@ def _sample_structural_edges(
         return tuple(sorted(candidates[int(index)] for index in selected))
     if request.suite is SuiteName.NULL_NEAR_MISS_STRESS:
         return ()
+    if request.suite in {
+        SuiteName.CONTRADICTION_STRESS,
+        SuiteName.MINIMUM_DURATION_STRESS,
+        SuiteName.CHECKPOINT_STRESS,
+    }:
+        return ()
     raise ValueError("unsupported structural stress suite")
+
+
+def _stress_terminal_record_count(
+    config: Phase1Config,
+    request: IndependentEpisodeRequest,
+    structure_rng: np.random.Generator,
+) -> int:
+    """Draw the sole terminal-count deviation in the contradiction suite."""
+
+    if request.suite is not SuiteName.CONTRADICTION_STRESS:
+        return _TERMINAL_RECORD_COUNT
+    if config.stress is None:
+        raise ValueError("contradiction stress suites require StressDataConfig")
+    return int(
+        structure_rng.integers(
+            config.stress.contradiction_records[0],
+            config.stress.contradiction_records[1] + 1,
+        )
+    )
 
 
 def _build_independent_candidate(
@@ -1401,16 +1447,25 @@ def _build_independent_candidate(
     near_miss_hazard_node: int | None = None
     target = relevant_nodes[-1]
     if request.variant is EpisodeVariant.POSITIVE:
-        facts.extend(
-            (
-                (HazardFact(target, hazard_types[0], template.episode_delay), "reachable_terminal"),
-                (
-                    HazardFact(terminal_nodes[0], hazard_types[1], template.episode_delay),
-                    "decoy_terminal",
-                ),
-                (SafeFact(terminal_nodes[1]), "decoy_terminal"),
+        if request.suite is SuiteName.CONTRADICTION_STRESS:
+            facts.extend(
+                (SafeFact(target, confidence=0.01 * (index + 1)), "contradiction_terminal")
+                for index in range(template.terminal_record_count)
             )
-        )
+        else:
+            facts.extend(
+                (
+                    (
+                        HazardFact(target, hazard_types[0], template.episode_delay),
+                        "reachable_terminal",
+                    ),
+                    (
+                        HazardFact(terminal_nodes[0], hazard_types[1], template.episode_delay),
+                        "decoy_terminal",
+                    ),
+                    (SafeFact(terminal_nodes[1]), "decoy_terminal"),
+                )
+            )
     elif request.variant is EpisodeVariant.SAFE_NEGATIVE:
         facts.extend(
             (
@@ -1459,7 +1514,25 @@ def _build_independent_candidate(
         raise ValueError("independent request has an unsupported primary variant")
 
     presentation_rng = _independent_stream(request, SeedStream.PRESENTATION, attempt)
-    presentation = tuple(facts[int(index)] for index in presentation_rng.permutation(len(facts)))
+    presentation = [facts[int(index)] for index in presentation_rng.permutation(len(facts))]
+    contradiction_terminal_id: int | None = None
+    if request.suite is SuiteName.CONTRADICTION_STRESS:
+        contradiction_positions = tuple(
+            index
+            for index, (_, role) in enumerate(presentation)
+            if role == "contradiction_terminal"
+        )
+        replacement = _contradiction_terminal_payloads(
+            target,
+            template.terminal_record_count,
+            hazard_types[0],
+            template.episode_delay,
+        )
+        if len(contradiction_positions) != len(replacement):
+            raise ValueError("contradiction terminal presentation is incomplete")
+        for position, payload in zip(contradiction_positions, replacement, strict=True):
+            presentation[position] = (payload, "contradiction_terminal")
+        contradiction_terminal_id = contradiction_positions[-1]
     if len(presentation) != len(template.fact_gap_sequence):
         raise ValueError("independent presentation and timestamps disagree")
     timestamp = 0.0
@@ -1474,7 +1547,9 @@ def _build_independent_candidate(
         if role == "relevant_link":
             assert isinstance(payload, LinkFact)
             relevant_link_ids[payload.source_node] = event_id
-        elif role == "reachable_terminal":
+        elif role == "reachable_terminal" or (
+            role == "contradiction_terminal" and event_id == contradiction_terminal_id
+        ):
             terminal_record_id = event_id
     activation_time = timestamp + template.activation_gap
     fact_count = len(events)
@@ -1504,7 +1579,19 @@ def _build_independent_candidate(
                 near_miss_hazard_node=near_miss_hazard_node,
             )
             if request.suite is SuiteName.NULL_NEAR_MISS_STRESS
-            else None
+            else (
+                StressMetadata(minimum_feasible_delay=template.episode_delay)
+                if request.suite is SuiteName.MINIMUM_DURATION_STRESS
+                else (
+                    StressMetadata(
+                        proposed_checkpoint_pause_time=(
+                            activation_time + template.episode_delay / 2.0
+                        )
+                    )
+                    if request.suite is SuiteName.CHECKPOINT_STRESS
+                    else None
+                )
+            )
         )
     )
     truth = EpisodeTruth(
@@ -1544,7 +1631,7 @@ def _build_independent_candidate(
         rejection_reasons=rejection_reasons,
         stress_metadata=stress_metadata,
     )
-    return EpisodeBundle(
+    bundle = EpisodeBundle(
         PublicEpisode(
             AgentInit(
                 "pending-public-id",
@@ -1555,6 +1642,229 @@ def _build_independent_candidate(
             tuple(events),
         ),
         truth,
+    )
+    if request.suite is SuiteName.MINIMUM_DURATION_STRESS:
+        return _with_minimum_duration(bundle, config)
+    if request.suite is SuiteName.CHECKPOINT_STRESS:
+        return _with_checkpoint_pause(bundle)
+    return bundle
+
+
+def _contradiction_terminal_payloads(
+    target: int,
+    count: int,
+    current_hazard_type: int,
+    delay: float,
+) -> tuple[HazardFact | SafeFact, ...]:
+    """Keep stale terminal assertions explicit, with the latest assertion current."""
+
+    if not 2 <= count <= 4:
+        raise ValueError("contradiction stress requires two through four terminal records")
+    stale: list[HazardFact | SafeFact] = [SafeFact(target, confidence=0.10)]
+    for index in range(1, count - 1):
+        stale.append(
+            HazardFact(
+                target,
+                (current_hazard_type + index) % _HAZARD_TYPE_COUNT,
+                delay,
+                confidence=0.10 + 0.10 * index,
+            )
+        )
+    return (*stale, HazardFact(target, current_hazard_type, delay, confidence=0.90))
+
+
+def _stress_trace_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[float, ...]:
+    """Recompute the Task 5 urgency/difficulty intervals from a fixed jitter draw."""
+
+    if type(delay) is not float or not math.isfinite(delay) or delay <= 0.0:
+        return ()
+    truth = bundle.truth
+    timing = truth.recipe.oracle_timing
+    coordinate = truth.key.coordinate
+    if not isinstance(coordinate, IndependentEpisodeCoordinate):
+        raise ValueError("stress timing requires an independent episode coordinate")
+    facts_by_id = {
+        event.event_id: event
+        for event in bundle.public.events[:-1]
+        if event.kind is ExternalEventKind.FACT
+    }
+    selected = tuple(facts_by_id[record_id] for record_id in truth.relevant_record_ids)
+    facts = tuple(facts_by_id.values())
+    jitter_rng = _independent_stream(
+        IndependentEpisodeRequest(
+            truth.key.split_namespace,
+            truth.key.suite,
+            truth.key.root_seed,
+            coordinate.episode_index,
+            truth.recipe.requested_path_length,
+            truth.recipe.variant,
+            coordinate.allocation_quartet_index,
+        ),
+        SeedStream.TRACE_JITTER,
+        truth.recipe.accepted_attempt,
+    )
+    elapsed = 0.0
+    raw_intervals: list[float] = []
+    event_count = 2 * len(selected)
+    for index in range(event_count):
+        event = selected[index // 2]
+        payload = event.payload
+        if not isinstance(payload, (LinkFact, HazardFact, SafeFact)):
+            raise ValueError("stress trace selected record is invalid")
+        competitors = sum(
+            1
+            for candidate in facts
+            if candidate is not event and _stress_competes(payload, candidate.payload)
+        )
+        remaining_budget = timing.terminal_compose_fraction * delay - elapsed
+        remaining_count = event_count - index
+        urgency = min(
+            1.0,
+            remaining_count * timing.delta_0 / max(remaining_budget, timing.delta_min),
+        )
+        raw = timing.delta_0 * (1.0 + 0.15 * competitors) / (1.0 + 0.5 * urgency)
+        jittered = raw * math.exp(float(jitter_rng.normal(0.0, timing.jitter_log_std)))
+        if not math.isfinite(jittered) or jittered <= 0.0:
+            raise ValueError("stress trace jitter produced an invalid interval")
+        raw_intervals.append(jittered)
+        elapsed += min(timing.delta_max, max(timing.delta_min, jittered))
+    return tuple(raw_intervals)
+
+
+def _stress_competes(selected: LinkFact | HazardFact | SafeFact, candidate: object) -> bool:
+    if not isinstance(candidate, type(selected)):
+        return False
+    if isinstance(selected, LinkFact):
+        assert isinstance(candidate, LinkFact)
+        return (
+            selected.source_node == candidate.source_node
+            or selected.target_node == candidate.target_node
+        )
+    if isinstance(selected, HazardFact):
+        assert isinstance(candidate, HazardFact)
+        return (
+            selected.node == candidate.node
+            or selected.hazard_type == candidate.hazard_type
+            or math.floor(math.log2(selected.delay)) == math.floor(math.log2(candidate.delay))
+        )
+    assert isinstance(selected, SafeFact) and isinstance(candidate, SafeFact)
+    return selected.node == candidate.node
+
+
+def minimum_duration_is_feasible(bundle: EpisodeBundle, delay: float) -> bool:
+    """Return the fixed-jitter feasibility predicate used by minimum-duration stress."""
+
+    if not isinstance(bundle, EpisodeBundle):
+        raise TypeError("bundle must be an EpisodeBundle")
+    if type(delay) is not float or not math.isfinite(delay) or delay <= 0.0:
+        return False
+    raw = _stress_trace_raw_intervals(bundle, delay)
+    if not raw:
+        return False
+    timing = bundle.truth.recipe.oracle_timing
+    budget_required = timing.delta_min * sum(raw) / min(raw)
+    return timing.terminal_compose_fraction * delay >= budget_required
+
+
+def _minimum_duration_boundary(bundle: EpisodeBundle, config: Phase1Config) -> float:
+    if config.stress is None:
+        raise ValueError("minimum-duration stress suites require StressDataConfig")
+    timing = bundle.truth.recipe.oracle_timing
+    event_count = 2 * len(bundle.truth.relevant_record_ids)
+    floor = event_count * timing.delta_min / timing.terminal_compose_fraction
+    upper = floor
+    while not minimum_duration_is_feasible(bundle, upper):
+        upper *= 2.0
+        if upper > config.stress.minimum_duration_search_upper:
+            raise ValueError("minimum-duration feasibility exceeds configured search upper bound")
+    points = config.stress.minimum_duration_monotonic_grid_points
+    values = tuple(floor + (upper - floor) * index / (points - 1) for index in range(points))
+    feasible = tuple(minimum_duration_is_feasible(bundle, value) for value in values)
+    if any(left and not right for left, right in pairwise(feasible)):
+        raise ValueError("minimum-duration feasibility is not monotonic")
+    first = next(index for index, value in enumerate(feasible) if value)
+    if first == 0:
+        return floor
+    lo, hi = values[first - 1], values[first]
+    while math.nextafter(lo, math.inf) != hi:
+        midpoint = lo + (hi - lo) / 2.0
+        if minimum_duration_is_feasible(bundle, midpoint):
+            hi = midpoint
+        else:
+            lo = midpoint
+    return hi
+
+
+def _stress_trace_deltas(bundle: EpisodeBundle, delay: float) -> tuple[float, ...]:
+    raw = _stress_trace_raw_intervals(bundle, delay)
+    timing = bundle.truth.recipe.oracle_timing
+    deltas = [min(timing.delta_max, max(timing.delta_min, value)) for value in raw]
+    compose_budget = timing.terminal_compose_fraction * delay
+    elapsed = sum(deltas)
+    if elapsed > compose_budget:
+        scale = compose_budget / elapsed
+        deltas = [value * scale for value in deltas]
+    return tuple(deltas)
+
+
+def _with_minimum_duration(bundle: EpisodeBundle, config: Phase1Config) -> EpisodeBundle:
+    boundary = _minimum_duration_boundary(bundle, config)
+    epsilon = config.stress.minimum_duration_epsilon if config.stress is not None else 0.0
+    delay = math.nextafter(boundary + epsilon, math.inf)
+    deltas = _stress_trace_deltas(bundle, delay)
+    timing = bundle.truth.recipe.oracle_timing
+    if (
+        not deltas
+        or any(value < timing.delta_min for value in deltas)
+        or sum(deltas) > timing.terminal_compose_fraction * delay
+        or timing.action_target_fraction * delay < sum(deltas)
+    ):
+        raise ValueError("minimum-duration trace cannot satisfy the OFD timing contract")
+    events = tuple(
+        replace(event, payload=replace(event.payload, delay=delay))
+        if isinstance(event.payload, HazardFact)
+        else event
+        for event in bundle.public.events
+    )
+    truth = bundle.truth
+    window = action_window(truth.activation_time, delay, timing)
+    updated_truth = replace(
+        truth,
+        private_terminal=replace(truth.private_terminal, timestamp=truth.activation_time + delay),
+        episode_delay=delay,
+        action_window_start=window.start,
+        action_window_end=window.end,
+        action_target=window.target,
+        stress_metadata=StressMetadata(minimum_feasible_delay=boundary),
+    )
+    return EpisodeBundle(replace(bundle.public, events=events), updated_truth)
+
+
+def _with_checkpoint_pause(bundle: EpisodeBundle) -> EpisodeBundle:
+    if bundle.truth.recipe.variant is not EpisodeVariant.POSITIVE:
+        raise ValueError("checkpoint stress requires a positive hazard path")
+    delay = bundle.truth.episode_delay
+    deltas = _stress_trace_deltas(bundle, delay)
+    timestamps: list[float] = []
+    current = bundle.truth.activation_time
+    for delta in deltas:
+        current += delta
+        timestamps.append(current)
+    timestamps.append(
+        bundle.truth.activation_time
+        + bundle.truth.recipe.oracle_timing.action_target_fraction * delay
+    )
+    if len(timestamps) < 2:
+        raise ValueError("checkpoint stress requires adjacent oracle events")
+    coordinate = bundle.truth.key.coordinate
+    assert isinstance(coordinate, IndependentEpisodeCoordinate)
+    index = coordinate.episode_index % (len(timestamps) - 1)
+    pause = (timestamps[index] + timestamps[index + 1]) / 2.0
+    if not timestamps[index] < pause < timestamps[index + 1]:
+        raise ValueError("checkpoint pause must lie strictly between oracle events")
+    return EpisodeBundle(
+        bundle.public,
+        replace(bundle.truth, stress_metadata=StressMetadata(proposed_checkpoint_pause_time=pause)),
     )
 
 

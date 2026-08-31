@@ -351,7 +351,11 @@ def solve_public_episode(
         raise TypeError("public must be a PublicEpisode")
     if not isinstance(policy, OraclePolicy):
         raise TypeError("policy must be an OraclePolicy")
-    if policy not in {OraclePolicy.PRIMARY, OraclePolicy.BRANCHING}:
+    if policy not in {
+        OraclePolicy.PRIMARY,
+        OraclePolicy.BRANCHING,
+        OraclePolicy.CONTRADICTION,
+    }:
         raise OracleError(f"oracle policy {policy.value!r} is not implemented in Phase 1 Task 5")
 
     links_by_source: dict[int, list[ExternalEvent]] = {}
@@ -364,6 +368,8 @@ def solve_public_episode(
         if not isinstance(payload, (LinkFact, HazardFact, SafeFact)):
             raise OracleError("invalid FACT payload")
         identity = _fact_identity(payload)
+        if policy is OraclePolicy.CONTRADICTION and isinstance(payload, (HazardFact, SafeFact)):
+            identity = (*identity, payload.confidence)
         if identity in identities:
             raise OracleError("duplicate equivalent fact record")
         identities.add(identity)
@@ -395,12 +401,12 @@ def solve_public_episode(
         visited.add(current_node)
 
         terminals = terminals_by_node.get(current_node, [])
-        if len(terminals) > 1:
+        if policy is OraclePolicy.PRIMARY and len(terminals) > 1:
             raise OracleError("primary graph has multiple terminals at a reachable node")
         if terminals:
             if links_by_source.get(current_node):
                 raise OracleError("reachable terminal has an outgoing continuation")
-            terminal = terminals[0]
+            terminal, superseded = _select_terminal(terminals, policy)
             payload = terminal.payload
             if isinstance(payload, HazardFact):
                 return OracleSolution(
@@ -410,6 +416,7 @@ def solve_public_episode(
                     terminal.event_id,
                     payload.hazard_type,
                     payload.delay,
+                    superseded,
                 )
             if isinstance(payload, SafeFact):
                 return OracleSolution(
@@ -419,6 +426,7 @@ def solve_public_episode(
                     terminal.event_id,
                     None,
                     None,
+                    superseded,
                 )
             raise OracleError("invalid reachable terminal payload")
 
@@ -441,6 +449,44 @@ def solve_public_episode(
         link_record_ids.append(link.event_id)
         current_node = payload.target_node
         node_path.append(current_node)
+
+
+def _select_terminal(
+    terminals: list[ExternalEvent], policy: OraclePolicy
+) -> tuple[ExternalEvent, tuple[int, ...]]:
+    """Select one terminal under the explicitly authorized suite policy."""
+
+    if len(terminals) == 1:
+        return terminals[0], ()
+    if policy is not OraclePolicy.CONTRADICTION:
+        raise OracleError("primary graph has multiple terminals at a reachable node")
+    ranked = sorted(
+        terminals,
+        key=lambda event: (
+            event.timestamp,
+            _terminal_confidence(event),
+            event.event_id,
+        ),
+    )
+    selected = ranked[-1]
+    if len(ranked) > 1 and (
+        ranked[-2].timestamp,
+        _terminal_confidence(ranked[-2]),
+        ranked[-2].event_id,
+    ) == (
+        selected.timestamp,
+        _terminal_confidence(selected),
+        selected.event_id,
+    ):
+        raise OracleError("contradiction terminal selection is ambiguous")
+    return selected, tuple(event.event_id for event in terminals if event is not selected)
+
+
+def _terminal_confidence(event: ExternalEvent) -> float:
+    payload = event.payload
+    if not isinstance(payload, (HazardFact, SafeFact)):
+        raise OracleError("invalid reachable terminal payload")
+    return payload.confidence
 
 
 def _solve_branching_public_episode(

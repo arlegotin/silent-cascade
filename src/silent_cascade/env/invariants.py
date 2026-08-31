@@ -57,9 +57,13 @@ _STRUCTURAL_STRESS_SUITES = frozenset(
         SuiteName.CYCLES_STRESS,
         SuiteName.MEMORY_OVERFLOW_STRESS,
         SuiteName.NULL_NEAR_MISS_STRESS,
+        SuiteName.CONTRADICTION_STRESS,
+        SuiteName.MINIMUM_DURATION_STRESS,
+        SuiteName.CHECKPOINT_STRESS,
     }
 )
 _STRESS_RESERVED_NODES = frozenset(range(49, 61))
+_TERMINAL_RECORD_COUNT = 3
 
 _INDEPENDENT_ALLOCATION_BLOCKS = (
     (SuiteName.IID_PRIMARY, 2, 0, 8_000, 0),
@@ -491,7 +495,12 @@ def _expected_structural_edges(
             len(candidates), size=edge_count, replace=False
         )
         return tuple(sorted(candidates[int(index)] for index in selected))
-    if suite is SuiteName.NULL_NEAR_MISS_STRESS:
+    if suite in {
+        SuiteName.NULL_NEAR_MISS_STRESS,
+        SuiteName.CONTRADICTION_STRESS,
+        SuiteName.MINIMUM_DURATION_STRESS,
+        SuiteName.CHECKPOINT_STRESS,
+    }:
         return ()
     cycle_length = int(
         structure_rng.integers(  # type: ignore[union-attr]
@@ -546,6 +555,10 @@ def _expected_independent_payloads(
     hazard_classes = tuple(
         sorted(int(template_rng.integers(0, config.data.hazard_types)) for _ in range(2))
     )
+    if key.suite is SuiteName.MINIMUM_DURATION_STRESS:
+        # The sampled template delay is intentionally replaced by the separately
+        # searched boundary delay; validate that search below from public facts.
+        episode_delay = truth.episode_delay
     relevant_nodes = tuple(range(recipe.requested_path_length + 1))
     reserved_nodes = _STRESS_RESERVED_NODES if key.suite in _STRUCTURAL_STRESS_SUITES else ()
     candidates = tuple(
@@ -558,10 +571,25 @@ def _expected_independent_payloads(
     selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
     distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
     structural_edges = _expected_structural_edges(bundle, config, structure_rng, distractor_edges)
+    terminal_record_count = _TERMINAL_RECORD_COUNT
+    if key.suite is SuiteName.CONTRADICTION_STRESS:
+        if config.stress is None:
+            _fail("contradiction stress suite requires stress configuration")
+        terminal_record_count = int(
+            structure_rng.integers(
+                config.stress.contradiction_records[0],
+                config.stress.contradiction_records[1] + 1,
+            )
+        )
     timestamps_rng = _independent_generator(bundle, SeedStream.TIMESTAMPS)
     fact_gaps = tuple(
         _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
-        for _ in range(recipe.requested_path_length + distractor_count + len(structural_edges) + 3)
+        for _ in range(
+            recipe.requested_path_length
+            + distractor_count
+            + len(structural_edges)
+            + terminal_record_count
+        )
     )
     activation_gap = _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
     permutation = tuple(
@@ -583,13 +611,19 @@ def _expected_independent_payloads(
     )
     target = relabel[relevant_nodes[-1]]
     if recipe.variant is EpisodeVariant.POSITIVE:
-        facts.extend(
-            (
-                HazardFact(target, hazard_types[0], episode_delay),
-                HazardFact(terminal_nodes[0], hazard_types[1], episode_delay),
-                SafeFact(terminal_nodes[1]),
+        if key.suite is SuiteName.CONTRADICTION_STRESS:
+            facts.extend(
+                SafeFact(target, confidence=0.01 * (index + 1))
+                for index in range(terminal_record_count)
             )
-        )
+        else:
+            facts.extend(
+                (
+                    HazardFact(target, hazard_types[0], episode_delay),
+                    HazardFact(terminal_nodes[0], hazard_types[1], episode_delay),
+                    SafeFact(terminal_nodes[1]),
+                )
+            )
     elif recipe.variant is EpisodeVariant.SAFE_NEGATIVE:
         facts.extend(
             (
@@ -618,12 +652,49 @@ def _expected_independent_payloads(
     else:
         _fail("episode variant is invalid")
     presentation = _independent_generator(bundle, SeedStream.PRESENTATION).permutation(len(facts))
+    expected_payloads = [facts[int(index)] for index in presentation]
+    if key.suite is SuiteName.CONTRADICTION_STRESS:
+        positions = tuple(
+            index
+            for index, payload in enumerate(expected_payloads)
+            if isinstance(payload, (HazardFact, SafeFact)) and payload.node == target
+        )
+        replacement = _contradiction_terminal_payloads(
+            target, terminal_record_count, hazard_types[0], episode_delay
+        )
+        if len(positions) != len(replacement):
+            _fail("contradiction terminal presentation provenance is invalid")
+        for index, payload in zip(positions, replacement, strict=True):
+            expected_payloads[index] = payload
     return (
-        tuple(facts[int(index)] for index in presentation),
+        tuple(expected_payloads),
         fact_gaps,
         activation_gap,
         distractor_count + len(structural_edges),
     )
+
+
+def _contradiction_terminal_payloads(
+    target: int,
+    count: int,
+    current_hazard_type: int,
+    delay: float,
+) -> tuple[HazardFact | SafeFact, ...]:
+    """Independently reconstruct explicit stale/current terminal assertions."""
+
+    if not 2 <= count <= 4:
+        _fail("contradiction terminal count is outside the configured range")
+    stale: list[HazardFact | SafeFact] = [SafeFact(target, confidence=0.10)]
+    for index in range(1, count - 1):
+        stale.append(
+            HazardFact(
+                target,
+                (current_hazard_type + index) % 4,
+                delay,
+                confidence=0.10 + 0.10 * index,
+            )
+        )
+    return (*stale, HazardFact(target, current_hazard_type, delay, confidence=0.90))
 
 
 def _require_acyclic_links(links: tuple[ExternalEvent, ...]) -> None:
@@ -754,6 +825,121 @@ def _link_signature(
     )
 
 
+def _stress_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[float, ...]:
+    """Independently reproduce fixed-jitter Task 5 scheduling inputs."""
+
+    truth = bundle.truth
+    timing = truth.recipe.oracle_timing
+    facts_by_id = {event.event_id: event for event in bundle.public.events[:-1]}
+    selected = tuple(facts_by_id[record_id] for record_id in truth.relevant_record_ids)
+    if not isinstance(truth.key.coordinate, IndependentEpisodeCoordinate):
+        _fail("stress timing requires an independent coordinate")
+    rng = _independent_generator(bundle, SeedStream.TRACE_JITTER)
+    elapsed = 0.0
+    raw: list[float] = []
+    event_count = 2 * len(selected)
+    for index in range(event_count):
+        event = selected[index // 2]
+        payload = event.payload
+        if not isinstance(payload, (LinkFact, HazardFact, SafeFact)):
+            _fail("stress trace contains an invalid selected record")
+        competitors = sum(
+            1
+            for candidate in facts_by_id.values()
+            if candidate is not event and _stress_competes(payload, candidate.payload)
+        )
+        remaining = timing.terminal_compose_fraction * delay - elapsed
+        urgency = min(
+            1.0,
+            (event_count - index) * timing.delta_0 / max(remaining, timing.delta_min),
+        )
+        interval = (
+            timing.delta_0
+            * (1.0 + 0.15 * competitors)
+            / (1.0 + 0.5 * urgency)
+            * math.exp(float(rng.normal(0.0, timing.jitter_log_std)))
+        )
+        if not math.isfinite(interval) or interval <= 0.0:
+            _fail("stress trace jitter produced an invalid interval")
+        raw.append(interval)
+        elapsed += min(timing.delta_max, max(timing.delta_min, interval))
+    return tuple(raw)
+
+
+def _stress_competes(selected: object, candidate: object) -> bool:
+    if type(selected) is not type(candidate):
+        return False
+    if isinstance(selected, LinkFact):
+        assert isinstance(candidate, LinkFact)
+        return (
+            selected.source_node == candidate.source_node
+            or selected.target_node == candidate.target_node
+        )
+    if isinstance(selected, HazardFact):
+        assert isinstance(candidate, HazardFact)
+        return (
+            selected.node == candidate.node
+            or selected.hazard_type == candidate.hazard_type
+            or math.floor(math.log2(selected.delay)) == math.floor(math.log2(candidate.delay))
+        )
+    assert isinstance(selected, SafeFact) and isinstance(candidate, SafeFact)
+    return selected.node == candidate.node
+
+
+def _minimum_duration_feasible(bundle: EpisodeBundle, delay: float) -> bool:
+    raw = _stress_raw_intervals(bundle, delay)
+    timing = bundle.truth.recipe.oracle_timing
+    return timing.terminal_compose_fraction * delay >= timing.delta_min * sum(raw) / min(raw)
+
+
+def _minimum_duration_boundary(bundle: EpisodeBundle, config: Phase1Config) -> float:
+    if config.stress is None:
+        _fail("minimum-duration stress suite requires stress configuration")
+    timing = bundle.truth.recipe.oracle_timing
+    floor = 2 * len(bundle.truth.relevant_record_ids) * timing.delta_min
+    floor /= timing.terminal_compose_fraction
+    upper = floor
+    while not _minimum_duration_feasible(bundle, upper):
+        upper *= 2.0
+        if upper > config.stress.minimum_duration_search_upper:
+            _fail("minimum-duration search exceeded its configured upper bound")
+    points = config.stress.minimum_duration_monotonic_grid_points
+    grid = tuple(floor + (upper - floor) * index / (points - 1) for index in range(points))
+    feasibility = tuple(_minimum_duration_feasible(bundle, value) for value in grid)
+    if any(left and not right for left, right in pairwise(feasibility)):
+        _fail("minimum-duration feasibility is not monotonic")
+    first = next(index for index, value in enumerate(feasibility) if value)
+    if first == 0:
+        return floor
+    lo, hi = grid[first - 1], grid[first]
+    while math.nextafter(lo, math.inf) != hi:
+        midpoint = lo + (hi - lo) / 2.0
+        if _minimum_duration_feasible(bundle, midpoint):
+            hi = midpoint
+        else:
+            lo = midpoint
+    return hi
+
+
+def _stress_trace_timestamps(bundle: EpisodeBundle) -> tuple[float, ...]:
+    timing = bundle.truth.recipe.oracle_timing
+    raw = _stress_raw_intervals(bundle, bundle.truth.episode_delay)
+    deltas = [min(timing.delta_max, max(timing.delta_min, value)) for value in raw]
+    budget = timing.terminal_compose_fraction * bundle.truth.episode_delay
+    if sum(deltas) > budget:
+        scale = budget / sum(deltas)
+        deltas = [value * scale for value in deltas]
+    current = bundle.truth.activation_time
+    timestamps: list[float] = []
+    for delta in deltas:
+        current += delta
+        timestamps.append(current)
+    timestamps.append(
+        bundle.truth.activation_time + timing.action_target_fraction * bundle.truth.episode_delay
+    )
+    return tuple(timestamps)
+
+
 def _invalid_report(bundle: EpisodeBundle, check_id: str = "invalid") -> InvariantReport:
     facts = tuple(
         event
@@ -837,6 +1023,10 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
             _fail("FACT timestamps must be strictly increasing")
         previous_time = timestamp
         identity = _fact_identity(event.payload)
+        if truth.key.suite is SuiteName.CONTRADICTION_STRESS and isinstance(
+            event.payload, (HazardFact, SafeFact)
+        ):
+            identity = (*identity, event.payload.confidence)
         if identity in identities:
             _fail("duplicate equivalent FACT record")
         identities.add(identity)
@@ -923,13 +1113,29 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
     ):
         _fail("member timing provenance disagrees")
 
-    if truth.key.suite in _PRIMARY_SUITES | _STRUCTURAL_STRESS_SUITES:
+    if truth.key.suite in (_PRIMARY_SUITES | _STRUCTURAL_STRESS_SUITES) - {
+        SuiteName.CONTRADICTION_STRESS
+    }:
         if len(facts) != len(links) + 3:
             _fail("primary episodes require exactly three terminal facts")
         if sum(isinstance(event.payload, HazardFact) for event in terminals) != 2:
             _fail("primary episodes require exactly two hazard facts")
         if sum(isinstance(event.payload, SafeFact) for event in terminals) != 1:
             _fail("primary episodes require exactly one safe fact")
+    elif truth.key.suite is SuiteName.CONTRADICTION_STRESS:
+        if config.stress is None:
+            _fail("contradiction stress suite requires stress configuration")
+        target = truth.relevant_node_path[-1]
+        contradictions = tuple(event for event in terminals if event.payload.node == target)
+        if (
+            not config.stress.contradiction_records[0]
+            <= len(contradictions)
+            <= config.stress.contradiction_records[1]
+            or {type(event.payload) for event in contradictions} != {HazardFact, SafeFact}
+            or len({(event.timestamp, event.payload.confidence) for event in contradictions})
+            != len(contradictions)
+        ):
+            _fail("contradiction stress terminals are not explicit and distinct")
 
     links_by_source: dict[int, list[ExternalEvent]] = defaultdict(list)
     terminals_by_node: dict[int, list[ExternalEvent]] = defaultdict(list)
@@ -960,13 +1166,20 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
                 _fail("activation-reachable graph contains a cycle")
             seen.add(current)
             current_terminals = terminals_by_node.get(current, [])
-            if len(current_terminals) > 1:
+            if len(current_terminals) > 1 and truth.key.suite is not SuiteName.CONTRADICTION_STRESS:
                 _fail("activation-reachable graph has multiple terminals")
             outgoing = links_by_source.get(current, [])
             if current_terminals:
                 if outgoing:
                     _fail("reachable terminal has an outgoing continuation")
-                terminal = current_terminals[0]
+                terminal = max(
+                    current_terminals,
+                    key=lambda event: (
+                        event.timestamp,
+                        event.payload.confidence,
+                        event.event_id,
+                    ),
+                )
                 break
             if len(outgoing) > 1:
                 _fail("activation-reachable graph branches")
@@ -1111,6 +1324,34 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         )
     ):
         _fail("negative private truth must not contain action or hazard fields")
+
+    if truth.key.suite is SuiteName.MINIMUM_DURATION_STRESS:
+        metadata = truth.stress_metadata
+        if config.stress is None or metadata is None or metadata.minimum_feasible_delay is None:
+            _fail("minimum-duration stress metadata is missing")
+        boundary = _minimum_duration_boundary(bundle, config)
+        expected_delay = math.nextafter(
+            boundary + config.stress.minimum_duration_epsilon,
+            math.inf,
+        )
+        if (
+            metadata.minimum_feasible_delay != boundary
+            or delay != expected_delay
+            or not _minimum_duration_feasible(bundle, delay)
+            or _minimum_duration_feasible(bundle, math.nextafter(boundary, -math.inf))
+        ):
+            _fail("minimum-duration stress timing provenance is invalid")
+    if truth.key.suite is SuiteName.CHECKPOINT_STRESS:
+        metadata = truth.stress_metadata
+        if metadata is None or metadata.proposed_checkpoint_pause_time is None:
+            _fail("checkpoint stress metadata is missing")
+        timestamps = _stress_trace_timestamps(bundle)
+        coordinate = truth.key.coordinate
+        assert isinstance(coordinate, IndependentEpisodeCoordinate)
+        index = coordinate.episode_index % (len(timestamps) - 1)
+        expected_pause = (timestamps[index] + timestamps[index + 1]) / 2.0
+        if metadata.proposed_checkpoint_pause_time != expected_pause:
+            _fail("checkpoint pause provenance is invalid")
 
     hazard_signature = tuple(
         sorted(
