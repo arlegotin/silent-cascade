@@ -203,6 +203,28 @@ def test_reproducibility_rejects_empty_matrix_before_generation() -> None:
         check_reproducibility(request, resolved, deps=deps)
 
 
+def test_reproducibility_rejects_altered_production_matrix_before_generation() -> None:
+    """The production evidence matrix is a frozen protocol input, not a tuning flag."""
+    from silent_cascade.env.reproducibility import (
+        IndependentAllocationReproducibilitySource,
+        ReproducibilityRequest,
+        _require_execution_matrix,
+    )
+
+    request = ReproducibilityRequest(
+        source=IndependentAllocationReproducibilitySource(
+            allocation_id="phase1-independent-gate-v1", root_seed=41, public_id_seed=91
+        ),
+        sample_size=1_000,
+        chunk_sizes=(2,),
+        python_hash_seeds=(3,),
+        verify_all_source_entries=True,
+    )
+
+    with pytest.raises(ValueError, match="production matrix"):
+        _require_execution_matrix(request, production_mode=True)
+
+
 def test_manifest_source_executes_the_full_authenticated_matrix(tmp_path: Path) -> None:
     """Manifest mode must genuinely execute chunks and both fresh hash-seed runs."""
     from silent_cascade.env.generator import CohortAllocation, CohortBlock
@@ -315,3 +337,91 @@ def test_reproducibility_rejects_noncanonical_fresh_worker_output() -> None:
 
     with pytest.raises(ValueError, match="malformed"):
         check_reproducibility(request, resolved, deps=deps)
+
+
+def test_clean_worktree_manifest_runs_with_unmodified_production_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task-14 evidence has an exact available source scope before Task 15 exists."""
+    import subprocess
+
+    from silent_cascade.config import resolve_config
+    from silent_cascade.env.generator import CohortAllocation, CohortBlock
+    from silent_cascade.env.reproducibility import (
+        PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
+        ManifestReproducibilitySource,
+        ReproducibilityRequest,
+        check_reproducibility,
+    )
+    from silent_cascade.env.services import build_cohort_manifest
+    from silent_cascade.logging.manifest import ManifestAccessClass, publish_manifest
+    from silent_cascade.provenance import collect_evidence_provenance
+
+    repository = Path.cwd()
+    worktree = tmp_path / "clean"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    try:
+        monkeypatch.chdir(worktree)
+        resolved = resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+        )
+        allocation = CohortAllocation(
+            allocation_id="test-manifest-v1",
+            split_namespace=SplitNamespace.DEBUG,
+            blocks=(
+                CohortBlock(
+                    suite=SuiteName.IID_PRIMARY,
+                    requested_path_length=2,
+                    first_cohort_index=0,
+                    cohort_count=2,
+                ),
+            ),
+        )
+        provenance = collect_evidence_provenance(
+            resolved,
+            repo_root=worktree,
+            generation_mode="matched",
+            allocation_id=allocation.allocation_id,
+            split_namespace=allocation.split_namespace,
+            root_seed=41,
+            public_id_seed=91,
+            analysis_seeds={},
+        )
+        assert not provenance.source_dirty
+        manifest = build_cohort_manifest(
+            resolved.config,
+            allocation,
+            provenance,
+            41,
+            91,
+            access_class=ManifestAccessClass.DEBUG,
+        )
+        path = worktree / "debug-manifest.json"
+        publish_manifest(path, manifest)
+
+        report = check_reproducibility(
+            ReproducibilityRequest(
+                source=ManifestReproducibilitySource(manifest_path=path),
+                sample_size=8,
+                chunk_sizes=(1, 3, 7),
+                python_hash_seeds=(0, 1),
+                verify_all_source_entries=True,
+            ),
+            resolved,
+            deps=PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
+        )
+        assert report.passed
+    finally:
+        monkeypatch.chdir(repository)
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(worktree)],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )

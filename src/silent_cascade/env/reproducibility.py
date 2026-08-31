@@ -300,13 +300,22 @@ def _independent_sample(
     return tuple(selected)
 
 
-def _require_execution_matrix(request: ReproducibilityRequest) -> None:
+PRODUCTION_CHUNK_SIZES = (1, 3, 7)
+PRODUCTION_PYTHON_HASH_SEEDS = (0, 1)
+
+
+def _require_execution_matrix(request: ReproducibilityRequest, *, production_mode: bool) -> None:
     if not request.chunk_sizes or not request.python_hash_seeds:
         raise ValueError("reproducibility matrix must include chunks and Python hash seeds")
     if any(type(value) is not int or value <= 0 for value in request.chunk_sizes):
         raise ValueError("reproducibility matrix chunk sizes must be positive exact integers")
     if any(type(value) is not int or value < 0 for value in request.python_hash_seeds):
         raise ValueError("reproducibility matrix hash seeds must be nonnegative exact integers")
+    if production_mode and (
+        request.chunk_sizes != PRODUCTION_CHUNK_SIZES
+        or request.python_hash_seeds != PRODUCTION_PYTHON_HASH_SEEDS
+    ):
+        raise ValueError("production matrix must equal chunks (1, 3, 7) and hash seeds (0, 1)")
 
 
 def production_sample_quotas() -> tuple[int, ...]:
@@ -462,7 +471,7 @@ def check_reproducibility(
     deps: ReproducibilityDependencies = PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
 ) -> ReproducibilityReport:
     """Regenerate an authenticated independent allocation under every execution order."""
-    _require_execution_matrix(request)
+    _require_execution_matrix(request, production_mode=deps.production_mode)
     if isinstance(request.source, ManifestReproducibilitySource):
         manifest = deps.load_verified_manifest(request.source.manifest_path)
         embedded = manifest.provenance

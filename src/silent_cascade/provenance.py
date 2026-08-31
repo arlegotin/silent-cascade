@@ -42,6 +42,23 @@ PHASE1_ANALYSIS_SOURCE_PATHS = tuple(
         )
     )
 )
+# Task 14 ships before leakage, the final artifact verifier, and their source
+# modules exist.  Evidence produced at this phase therefore has its own exact,
+# versioned analysis scope; later phases retain the final Phase 1 scope above.
+TASK14_ANALYSIS_SOURCE_PATHS = tuple(
+    sorted(
+        (
+            *GENERATOR_SOURCE_PATHS,
+            "scripts/check_phase1_reproducibility.py",
+            "src/silent_cascade/env/reproducibility.py",
+            "src/silent_cascade/env/reward.py",
+            "src/silent_cascade/env/services.py",
+            "src/silent_cascade/io.py",
+            "src/silent_cascade/logging/manifest.py",
+            "src/silent_cascade/provenance.py",
+        )
+    )
+)
 PHASE1_PLAN_PATH = Path("docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SOURCE_FRAME = b"silent-cascade/source-tree/v1\0"
@@ -50,7 +67,7 @@ _PUBLIC_ID_SEED_FRAME = b"silent-cascade/ofd-v1/public-id-seed-fingerprint/v1\0"
 
 class SourceTreeFingerprint(StrictModel):
     frame_version: Literal["sc-source-tree-v1"]
-    scope: Literal["generator", "phase1_analysis"]
+    scope: Literal["generator", "phase1_analysis", "phase1_task14_analysis"]
     paths: tuple[str, ...]
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -63,9 +80,11 @@ class SourceTreeFingerprint(StrictModel):
 
     @model_validator(mode="after")
     def require_exact_declared_scope(self) -> "SourceTreeFingerprint":
-        expected_paths = (
-            GENERATOR_SOURCE_PATHS if self.scope == "generator" else PHASE1_ANALYSIS_SOURCE_PATHS
-        )
+        expected_paths = {
+            "generator": GENERATOR_SOURCE_PATHS,
+            "phase1_analysis": PHASE1_ANALYSIS_SOURCE_PATHS,
+            "phase1_task14_analysis": TASK14_ANALYSIS_SOURCE_PATHS,
+        }[self.scope]
         if self.paths != expected_paths:
             raise ValueError("source fingerprint paths must equal the exact frozen scope")
         return self
@@ -121,8 +140,12 @@ class EvidenceProvenance(StrictModel):
         if (
             self.generator_source.scope != "generator"
             or self.generator_source.paths != GENERATOR_SOURCE_PATHS
-            or self.analysis_source.scope != "phase1_analysis"
-            or self.analysis_source.paths != PHASE1_ANALYSIS_SOURCE_PATHS
+            or self.analysis_source.scope not in {"phase1_analysis", "phase1_task14_analysis"}
+            or self.analysis_source.paths
+            != {
+                "phase1_analysis": PHASE1_ANALYSIS_SOURCE_PATHS,
+                "phase1_task14_analysis": TASK14_ANALYSIS_SOURCE_PATHS,
+            }[self.analysis_source.scope]
         ):
             raise ValueError("evidence provenance requires exact frozen source fingerprints")
         return self
@@ -218,8 +241,10 @@ def _relative_tracked_path(repo_root: Path, path: Path) -> str:
         ) from error
 
 
-def _source_dirty(repo_root: Path, source_paths: tuple[Path, ...]) -> bool:
-    candidates = set(GENERATOR_SOURCE_PATHS) | set(PHASE1_ANALYSIS_SOURCE_PATHS)
+def _source_dirty(
+    repo_root: Path, source_paths: tuple[Path, ...], analysis_paths: tuple[str, ...]
+) -> bool:
+    candidates = set(GENERATOR_SOURCE_PATHS) | set(analysis_paths)
     candidates.update({"pyproject.toml", "uv.lock"})
     candidates.update(_relative_tracked_path(repo_root, path) for path in source_paths)
     for path in candidates:
@@ -240,6 +265,7 @@ def collect_evidence_provenance(
     root_seed: int,
     public_id_seed: int,
     analysis_seeds: Mapping[str, int],
+    analysis_scope: Literal["phase1_analysis", "phase1_task14_analysis"] = "phase1_task14_analysis",
 ) -> EvidenceProvenance:
     """Collect immutable scientific inputs without broad source discovery."""
     if not isinstance(resolved, ResolvedConfig) or not isinstance(repo_root, Path):
@@ -248,6 +274,10 @@ def collect_evidence_provenance(
         raise ProvenanceError("split_namespace must be a SplitNamespace")
     if generation_mode not in ("matched", "independent") or not allocation_id:
         raise ProvenanceError("generation mode and allocation ID are required")
+    analysis_paths = {
+        "phase1_analysis": PHASE1_ANALYSIS_SOURCE_PATHS,
+        "phase1_task14_analysis": TASK14_ANALYSIS_SOURCE_PATHS,
+    }[analysis_scope]
     if resolved.config.runtime.primary_foundation_model_calls != 0:
         raise ProvenanceError("primary execution must record zero foundation-model calls")
     source_commit = _git(repo_root, "rev-parse", "--verify", "HEAD")
@@ -263,7 +293,7 @@ def collect_evidence_provenance(
         schema_version="phase1-evidence-provenance-v1",
         plan_base_revision=plan_base_revision,
         source_commit=source_commit,
-        source_dirty=_source_dirty(repo_root, resolved.source_paths),
+        source_dirty=_source_dirty(repo_root, resolved.source_paths, analysis_paths),
         generator_version="ofd-v1",
         generation_mode=generation_mode,
         allocation_id=allocation_id,
@@ -277,9 +307,9 @@ def collect_evidence_provenance(
         ),
         analysis_source=SourceTreeFingerprint(
             frame_version="sc-source-tree-v1",
-            scope="phase1_analysis",
-            paths=PHASE1_ANALYSIS_SOURCE_PATHS,
-            sha256=source_tree_sha256(repo_root, PHASE1_ANALYSIS_SOURCE_PATHS),
+            scope=analysis_scope,
+            paths=analysis_paths,
+            sha256=source_tree_sha256(repo_root, analysis_paths),
         ),
         root_seed=root_seed,
         public_id_seed_sha256=public_id_seed_sha256(public_id_seed),

@@ -13,6 +13,7 @@ from silent_cascade.errors import ProvenanceError
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
+    TASK14_ANALYSIS_SOURCE_PATHS,
     EvidenceProvenance,
     SourceTreeFingerprint,
     collect_evidence_provenance,
@@ -90,6 +91,23 @@ def test_frozen_source_path_sets_are_exact_and_sorted() -> None:
     )
     assert tuple(sorted(PHASE1_ANALYSIS_SOURCE_PATHS)) == PHASE1_ANALYSIS_SOURCE_PATHS
     assert set(GENERATOR_SOURCE_PATHS) < set(PHASE1_ANALYSIS_SOURCE_PATHS)
+    assert (
+        tuple(
+            sorted(
+                (
+                    *GENERATOR_SOURCE_PATHS,
+                    "scripts/check_phase1_reproducibility.py",
+                    "src/silent_cascade/env/reproducibility.py",
+                    "src/silent_cascade/env/reward.py",
+                    "src/silent_cascade/env/services.py",
+                    "src/silent_cascade/io.py",
+                    "src/silent_cascade/logging/manifest.py",
+                    "src/silent_cascade/provenance.py",
+                )
+            )
+        )
+        == TASK14_ANALYSIS_SOURCE_PATHS
+    )
 
 
 @pytest.mark.parametrize(
