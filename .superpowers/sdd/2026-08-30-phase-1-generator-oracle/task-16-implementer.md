@@ -172,3 +172,44 @@
 - `f164d55` — `fix: authenticate oracle source recipes`
 - `8b3b8c1` — `test: complete Task 16 acceptance matrix`
 - `5f27637` — `test: bound Task 16 acceptance resources`
+
+## Fix round 4: sealed manifest source boundary
+
+- RED: `uv run pytest -q tests/integration/test_phase1_services.py -k
+  'default_production_manifest_services_refuse or
+  injected_manifest_services_refuse'` failed `10 failed, 35 deselected in
+  1.86s`. All six sealed-production cases reached regeneration for a valid
+  DEBUG/`test-` manifest, a wrong-identity manifest, or a short VALIDATION
+  manifest; all four injected cases reached work for a cross-allocation DEBUG
+  or VALIDATION-access manifest. This reproduced the review's exact P1-6 root
+  cause: manifests authenticated only their own declarations and were never
+  bound to the service dependency's allocation/access authority.
+- GREEN: one shared manifest boundary now requires sealed production sources to
+  be the exact 10,000-entry VALIDATION allocation recipe, including access
+  class, generation mode, allocation ID, namespace, suite, count, canonical
+  cohort coordinates, and path denominators. Injected services require DEBUG
+  and exact matched or independent dependency-bound allocation coordinates.
+  Oracle and leakage validate before work, leakage validates again at source
+  binding, and both reload, revalidate, and compare the source digest
+  immediately before publication.
+- GREEN: the ten negative regressions passed `10 passed, 35 deselected in
+  1.56s`; the complete Task 16 integration suite passed `46 passed in 5.31s`;
+  scoped Ruff check passed and both changed files were already formatted.
+- The production-positive regression constructs the exact metadata-only
+  10,000-entry validation recipe and passes the boundary without regenerating
+  deferred Task 18 episodes. Existing matched DEBUG and independent clock
+  fixtures remain accepted only after their allocation IDs were bound to their
+  injected dependencies.
+- `ce65f68` — `fix: seal production manifest sources`.
+
+### Round 4 final local verification
+
+- Scoped Ruff check passed with `All checks passed!`; scoped format verification
+  passed with `2 files already formatted`.
+- The Task 16 and upstream manifest/oracle/leakage suites passed `296 passed in
+  183.64s`.
+- `make verify` passed under normal local access: repository Ruff passed, all 60
+  files were formatted, pytest passed `757 passed in 205.12s`,
+  `silent-cascade doctor` reported Overall PASS, and `uv build` produced both
+  `dist/silent_cascade-0.1.0.tar.gz` and
+  `dist/silent_cascade-0.1.0-py3-none-any.whl`.
