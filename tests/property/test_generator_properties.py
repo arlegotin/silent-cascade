@@ -358,3 +358,31 @@ def test_structural_stress_episodes_remain_independently_valid_and_private(
     assert validate_episode_invariants(bundle, _stress_config()).valid
     assert solve_public_episode(bundle.public, policy).terminal_kind is expected_terminal
     assert "stress_metadata" not in repr(bundle.public)
+
+
+@settings(max_examples=8, deadline=None)
+@given(
+    root_seed=st.integers(min_value=0, max_value=2**32 - 1),
+    cohort_index=st.integers(min_value=0, max_value=500),
+)
+def test_public_shortcut_features_are_repeatable_and_finite(
+    root_seed: int, cohort_index: int
+) -> None:
+    """Changing extraction order or admitting nonfinite values must fail this property."""
+    from silent_cascade.env.leakage import AuditExample, extract_shortcut_features
+
+    cohort = generate_matched_cohort(
+        _config(),
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, root_seed, cohort_index, 3),
+        public_id_seed=91,
+    )
+    example = AuditExample(cohort.episodes[0], cohort_index, "matched", cohort_index, 0)
+    first = extract_shortcut_features(example, 32)
+    second = extract_shortcut_features(example, 32)
+
+    assert first.episode_public_id == second.episode_public_id
+    assert first.audit_group_id == second.audit_group_id
+    assert all(
+        np.array_equal(first.vectors[group], second.vectors[group]) for group in first.vectors
+    )
+    assert all(np.isfinite(vector).all() for vector in first.vectors.values())
