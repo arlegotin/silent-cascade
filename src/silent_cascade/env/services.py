@@ -24,6 +24,7 @@ from silent_cascade.env.episode import (
     CorpusHashBuilder,
     EpisodeBundle,
     EpisodeVariant,
+    MatchedEpisodeCoordinate,
     PublicEpisodeArtifact,
     episode_sha256,
     scale_episode_time,
@@ -45,6 +46,7 @@ from silent_cascade.env.generator import (
     validate_phase1_gate_allocation,
     validate_validation_allocation,
 )
+from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
 from silent_cascade.env.leakage import (
     AuditExample,
     AuditSourceAuthentication,
@@ -65,6 +67,7 @@ from silent_cascade.env.reward import (
     random_baseline_actions,
     score_actions,
 )
+from silent_cascade.env.timing import action_window
 from silent_cascade.errors import AtomicWriteError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.io import atomic_create_bytes
@@ -295,7 +298,7 @@ class Phase1ServiceDependencies:
                     suite=SuiteName.IID_PRIMARY,
                     requested_path_length=2,
                     first_episode_index=0,
-                    episode_count=4,
+                    episode_count=8,
                 ),
             ),
         )
@@ -323,6 +326,29 @@ class Phase1ServiceDependencies:
 def _unconfigured_audit_source(*args: object, **kwargs: object) -> ReiterableAuditSource:
     del args, kwargs
     raise ValueError("test dependencies require an explicit audit source builder")
+
+
+def _require_service_dependencies(deps: Phase1ServiceDependencies) -> None:
+    if deps is PRODUCTION_DEPENDENCIES:
+        return
+    if deps.production_mode:
+        raise ValueError("production services require sealed production dependencies")
+    validation_count = sum(block.cohort_count for block in deps.validation_allocation.blocks) * 4
+    independent_count = sum(block.episode_count for block in deps.independent_allocation.blocks)
+    if (
+        deps.validation_allocation.split_namespace is not SplitNamespace.DEBUG
+        or not deps.validation_allocation.allocation_id.startswith("test-")
+        or not 8 <= validation_count <= 16
+        or deps.independent_allocation.split_namespace is not SplitNamespace.DEBUG
+        or not deps.independent_allocation.allocation_id.startswith("test-")
+        or not 8 <= independent_count <= 16
+    ):
+        raise ValueError("test dependencies require exact 8-16 episode DEBUG allocations")
+
+
+def _require_test_output_boundary(path: Path, deps: Phase1ServiceDependencies) -> None:
+    if not deps.production_mode and path.parts[-2:] == ("manifests", "validation"):
+        raise ValueError("test dependencies may not publish under manifests/validation")
 
 
 @contextmanager
@@ -388,6 +414,8 @@ def freeze_validation(
     """Freeze the only publishable validation manifest and its report atomically."""
     if deps is None:
         deps = PRODUCTION_DEPENDENCIES
+    _require_service_dependencies(deps)
+    _require_test_output_boundary(request.output_path, deps)
     resolved = _resolve(request.config)
     allocation = deps.validation_allocation
     if deps.production_mode:
@@ -469,6 +497,7 @@ def inspect_episode(
     """Inspect a regenerated public episode; private oracle fields require access authority."""
     if deps is None:
         deps = PRODUCTION_DEPENDENCIES
+    _require_service_dependencies(deps)
     resolved = _resolve(request.config)
     manifest = load_manifest(request.manifest_path)
     if manifest.provenance.config_sha256 != resolved.sha256:
@@ -591,13 +620,38 @@ def evaluate_oracle(
     """Regenerate and score an authenticated source without retaining episode traces."""
     if deps is None:
         deps = PRODUCTION_DEPENDENCIES
+    _require_service_dependencies(deps)
+    if request.output_path is not None:
+        _require_test_output_boundary(request.output_path, deps)
     resolved = _resolve(request.config)
     source = request.source
     if isinstance(source, ManifestCorpusSource):
         manifest = load_manifest(source.manifest_path)
         if manifest.provenance.config_sha256 != resolved.sha256:
             raise ValueError("manifest config does not match resolved oracle config")
-        provenance = manifest.provenance
+        embedded = manifest.provenance
+        provenance = deps.collect_provenance(
+            resolved,
+            repo_root=Path.cwd(),
+            generation_mode=embedded.generation_mode,
+            allocation_id=embedded.allocation_id,
+            split_namespace=embedded.split_namespace,
+            root_seed=embedded.root_seed,
+            public_id_seed=manifest.public_id_seed,
+            analysis_seeds={},
+        )
+        if (
+            provenance.source_dirty
+            or provenance.foundation_model_calls != 0
+            or provenance.generation_mode != embedded.generation_mode
+            or provenance.allocation_id != embedded.allocation_id
+            or provenance.split_namespace is not embedded.split_namespace
+            or provenance.root_seed != embedded.root_seed
+            or provenance.public_id_seed_sha256 != embedded.public_id_seed_sha256
+            or provenance.config_sha256 != embedded.config_sha256
+            or provenance.generator_source != embedded.generator_source
+        ):
+            raise ValueError("current oracle provenance does not authenticate immutable manifest")
         ordered = (
             deps.regenerate_manifest_entry(resolved.config, manifest, entry)
             for entry in manifest.entries
@@ -649,6 +703,15 @@ def evaluate_oracle(
     verified = 0
     rejected_draws = 0
     generation_attempts = 0
+    active_cohort_index: int | None = None
+    active_cohort: list[EpisodeBundle] = []
+
+    def flush_cohort() -> None:
+        if active_cohort_index is not None:
+            if len(active_cohort) != 4:
+                raise ValueError("matched oracle source contains an incomplete cohort")
+            validate_cohort_invariants(tuple(active_cohort), resolved.config)  # type: ignore[arg-type]
+
     for bundle in ordered:
         key = bundle.truth.key
         coordinate = key.coordinate
@@ -661,6 +724,17 @@ def evaluate_oracle(
         if token in seed_tokens:
             raise ValueError("oracle source contains a seed-token collision")
         seed_tokens.add(token)
+        validate_episode_invariants(bundle, resolved.config)
+        if isinstance(coordinate, MatchedEpisodeCoordinate):
+            if active_cohort_index is None:
+                active_cohort_index = coordinate.cohort_index
+            elif coordinate.cohort_index != active_cohort_index:
+                flush_cohort()
+                active_cohort.clear()
+                active_cohort_index = coordinate.cohort_index
+            active_cohort.append(bundle)
+        elif active_cohort_index is not None:
+            raise ValueError("matched and independent oracle entries may not be interleaved")
         solution = solve_public_episode(
             bundle.public, _oracle_policy_for_suite(bundle.truth.recipe.evaluation_suite)
         )
@@ -700,6 +774,7 @@ def evaluate_oracle(
         rejected_draws += bundle.truth.rejection_count
         generation_attempts += bundle.truth.rejection_count + 1
         rejection_reasons.update(bundle.truth.rejection_reasons)
+    flush_cohort()
     if verified != expected_count or dict(sorted(denominators.items())) != dict(
         sorted(expected_denominators.items())
     ):
@@ -717,9 +792,7 @@ def evaluate_oracle(
     )
     verified_clock_counts: Counter[str] = Counter()
     for pair in clock_pairs:
-        parent_solution = solve_public_episode(pair.parent.bundle.public)
-        child_solution = solve_public_episode(pair.child.public)
-        if parent_solution != child_solution:
+        if not _clock_decision_matches(pair.parent.bundle, pair.child):
             raise ValueError("clock transform changes the oracle decision")
         verified_clock_counts[
             "scale_0_1x"
@@ -861,6 +934,51 @@ def _make_clock_pairs(
             ),
             child=scale_episode_time(parent, suite, child_id),
         )
+
+
+def _clock_decision_matches(parent: EpisodeBundle, child: EpisodeBundle) -> bool:
+    parent_solution = solve_public_episode(parent.public)
+    child_solution = solve_public_episode(child.public)
+    if (
+        parent_solution.terminal_kind,
+        parent_solution.node_path,
+        parent_solution.link_record_ids,
+        parent_solution.terminal_record_id,
+        parent_solution.hazard_type,
+    ) != (
+        child_solution.terminal_kind,
+        child_solution.node_path,
+        child_solution.link_record_ids,
+        child_solution.terminal_record_id,
+        child_solution.hazard_type,
+    ):
+        return False
+    if parent_solution.public_delay is None:
+        return child_solution.public_delay is None
+    if child_solution.public_delay is None:
+        return False
+    parent_window = action_window(
+        parent.public.events[-1].timestamp,
+        parent_solution.public_delay,
+        parent.truth.recipe.oracle_timing,
+    )
+    child_window = action_window(
+        child.public.events[-1].timestamp,
+        child_solution.public_delay,
+        child.truth.recipe.oracle_timing,
+    )
+    parent_ratios = tuple(
+        (value - parent.public.events[-1].timestamp) / parent_solution.public_delay
+        for value in (parent_window.start, parent_window.target, parent_window.end)
+    )
+    child_ratios = tuple(
+        (value - child.public.events[-1].timestamp) / child_solution.public_delay
+        for value in (child_window.start, child_window.target, child_window.end)
+    )
+    return all(
+        abs(left - right) <= 1.0e-12
+        for left, right in zip(parent_ratios, child_ratios, strict=True)
+    )
 
 
 def _bind_independent_audit_source(
@@ -1281,6 +1399,30 @@ def _production_audit_source(
     return bound
 
 
+def _collect_final_phase1_provenance(
+    resolved: ResolvedConfig[Phase1Config],
+    *,
+    repo_root: Path,
+    generation_mode: Literal["matched", "independent"],
+    allocation_id: str,
+    split_namespace: SplitNamespace,
+    root_seed: int,
+    public_id_seed: int,
+    analysis_seeds: dict[str, int],
+) -> EvidenceProvenance:
+    return collect_evidence_provenance(
+        resolved,
+        repo_root=repo_root,
+        generation_mode=generation_mode,
+        allocation_id=allocation_id,
+        split_namespace=split_namespace,
+        root_seed=root_seed,
+        public_id_seed=public_id_seed,
+        analysis_seeds=analysis_seeds,
+        analysis_scope="phase1_analysis",
+    )
+
+
 def _audit_provenance(
     resolved: ResolvedConfig[Phase1Config],
     source: CorpusSource,
@@ -1308,9 +1450,29 @@ def _audit_provenance(
         )
     elif isinstance(source, ManifestCorpusSource):
         manifest = load_manifest(source.manifest_path)
-        if manifest.provenance.config_sha256 != resolved.sha256:
+        embedded = manifest.provenance
+        if embedded.config_sha256 != resolved.sha256:
             raise ValueError("manifest config does not match resolved audit config")
-        provenance = manifest.provenance.model_copy(update={"analysis_seeds": seeds})
+        provenance = deps.collect_provenance(
+            resolved,
+            repo_root=Path.cwd(),
+            generation_mode=embedded.generation_mode,
+            allocation_id=embedded.allocation_id,
+            split_namespace=embedded.split_namespace,
+            root_seed=embedded.root_seed,
+            public_id_seed=manifest.public_id_seed,
+            analysis_seeds=seeds,
+        )
+        if (
+            provenance.generation_mode != embedded.generation_mode
+            or provenance.allocation_id != embedded.allocation_id
+            or provenance.split_namespace is not embedded.split_namespace
+            or provenance.root_seed != embedded.root_seed
+            or provenance.public_id_seed_sha256 != embedded.public_id_seed_sha256
+            or provenance.config_sha256 != embedded.config_sha256
+            or provenance.generator_source != embedded.generator_source
+        ):
+            raise ValueError("current audit provenance does not authenticate immutable manifest")
     else:
         raise TypeError("unsupported audit source")
     if (
@@ -1331,6 +1493,9 @@ def run_leakage_audit(
     """Bind a trusted source, run Task 15, and publish only its complete report."""
     if deps is None:
         deps = PRODUCTION_DEPENDENCIES
+    _require_service_dependencies(deps)
+    if request.output_path is not None:
+        _require_test_output_boundary(request.output_path, deps)
     resolved = _resolve(request.config)
     provenance = _audit_provenance(resolved, request.source, deps)
     source = deps.build_audit_source(resolved, request.source, provenance, request.profile)
@@ -1366,7 +1531,7 @@ PRODUCTION_DEPENDENCIES = Phase1ServiceDependencies(
     production_mode=True,
     validation_allocation=VALIDATION_ALLOCATION,
     independent_allocation=PHASE1_GATE_ALLOCATION,
-    collect_provenance=collect_evidence_provenance,
+    collect_provenance=_collect_final_phase1_provenance,
     build_manifest=build_validation_manifest,
     regenerate_manifest_entry=regenerate_entry,
     iter_independent=iter_independent_requests,

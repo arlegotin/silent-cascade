@@ -55,3 +55,17 @@
 ## Commit evidence
 
 - `f48b1b3` — `feat: orchestrate Phase 1 data services`.
+
+## Fix round 1 (in progress)
+
+- Reviewer RED root causes reproduced from `task-16-review.md`: oracle evaluation
+  did not call independent invariants; raw clock `OracleSolution` equality
+  rejected valid time scaling; caller-created `production_mode=True`
+  dependencies were accepted; manifest execution reused stale provenance.
+- Interim GREEN: `env UV_CACHE_DIR=/private/tmp/silent-cascade-task16-uv-cache uv run pytest -q tests/integration/test_phase1_services.py` — 8 passed.
+- Interim GREEN: scoped Ruff check and formatting are clean after adding
+  dependency entry guards, independent per-episode/matched-cohort validation,
+  normalized clock decision/window comparison, current manifest provenance
+  collection, and the final `phase1_analysis` provenance scope.
+- The required full reviewer acceptance matrix and full local `make verify` are
+  still pending; this round is not a completion claim.
