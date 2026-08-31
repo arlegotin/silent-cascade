@@ -267,6 +267,7 @@ class Phase1ServiceDependencies:
     iter_independent: Callable[..., Iterator[IndependentEpisodeRequest]]
     generate_independent: Callable[..., EpisodeBundle]
     build_audit_source: Callable[..., ReiterableAuditSource]
+    build_audit_anchor: Callable[..., LeakageAuditEvidenceAnchor]
     create_audit_workspace: Callable[[], AbstractContextManager[Path]]
 
     @classmethod
@@ -281,6 +282,7 @@ class Phase1ServiceDependencies:
         iter_independent: Callable[..., Iterator[IndependentEpisodeRequest]] | None = None,
         generate_independent: Callable[..., EpisodeBundle] | None = None,
         build_audit_source: Callable[..., ReiterableAuditSource] | None = None,
+        build_audit_anchor: Callable[..., LeakageAuditEvidenceAnchor] | None = None,
         create_audit_workspace: Callable[[], AbstractContextManager[Path]] | None = None,
     ) -> "Phase1ServiceDependencies":
         from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
@@ -319,6 +321,7 @@ class Phase1ServiceDependencies:
             iter_independent or iter_independent_requests,
             generate_independent or generate_independent_episode,
             build_audit_source or _unconfigured_audit_source,
+            build_audit_anchor or _unconfigured_audit_anchor,
             create_audit_workspace or _temporary_audit_workspace,
         )
 
@@ -326,6 +329,11 @@ class Phase1ServiceDependencies:
 def _unconfigured_audit_source(*args: object, **kwargs: object) -> ReiterableAuditSource:
     del args, kwargs
     raise ValueError("test dependencies require an explicit audit source builder")
+
+
+def _unconfigured_audit_anchor(*args: object, **kwargs: object) -> LeakageAuditEvidenceAnchor:
+    del args, kwargs
+    raise ValueError("test dependencies require an independent audit anchor authority")
 
 
 def _require_service_dependencies(deps: Phase1ServiceDependencies) -> None:
@@ -1135,6 +1143,8 @@ def _bind_manifest_audit_source(
 ) -> ReiterableAuditSource:
     """Bind a frozen manifest by its canonical bytes; never accept caller bundles."""
     provenance = manifest.provenance
+    if provenance.generation_mode != "matched":
+        raise ValueError("manifest leakage audit requires a matched base source")
 
     def examples() -> Iterator[AuditExample]:
         for rank, entry in enumerate(manifest.entries):
@@ -1148,43 +1158,33 @@ def _bind_manifest_audit_source(
                 mode = "independent"
             yield AuditExample(bundle, rank, mode, block, position)
 
-    # A manifest clock child carries a regenerated parent, which makes its
-    # counterfactual witness independent of caller-provided episode data.
     def clock_pairs() -> Iterator[PairedClockAuditPair]:
-        for _rank, entry in enumerate(manifest.entries):
-            if entry.suite not in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}:
-                continue
-            coordinate = entry.coordinate
-            if not isinstance(coordinate, IndependentManifestCoordinate):
-                raise ValueError("clock manifest entry has a non-independent coordinate")
-            child = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
-            if entry.parent_public_id is None:
-                raise ValueError("clock manifest entry is missing parent identity")
-            parent_entry = next(
-                (
-                    candidate
-                    for candidate in manifest.entries
-                    if candidate.episode_public_id == entry.parent_public_id
-                ),
-                None,
-            )
-            if parent_entry is None:
-                raise ValueError("clock manifest parent is absent")
-            parent = deps.regenerate_manifest_entry(resolved.config, manifest, parent_entry)
-            parent_coordinate = parent_entry.coordinate
-            if not isinstance(parent_coordinate, IndependentManifestCoordinate):
-                raise ValueError("clock manifest parent has a non-independent coordinate")
-            parent_rank = manifest.entries.index(parent_entry)
-            yield PairedClockAuditPair(
-                AuditExample(
-                    parent,
-                    parent_rank,
-                    "independent",
-                    parent_coordinate.allocation_quartet_index,
-                    parent_coordinate.episode_index,
-                ),
-                child,
-            )
+        for suite in (SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X):
+            for rank, entry in enumerate(manifest.entries):
+                coordinate = entry.coordinate
+                if not isinstance(coordinate, MatchedManifestCoordinate):
+                    raise ValueError("matched manifest entry has an invalid coordinate")
+                parent = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
+                child_id = allocate_independent_public_id(
+                    IndependentPublicIdKey(
+                        generator_version="ofd-v1",
+                        split_namespace=entry.split_namespace,
+                        suite=suite,
+                        public_id_seed=manifest.public_id_seed,
+                        episode_index=rank,
+                        accepted_attempt=entry.accepted_attempt,
+                    )
+                )
+                yield PairedClockAuditPair(
+                    AuditExample(
+                        parent,
+                        rank,
+                        "matched",
+                        coordinate.cohort_index,
+                        coordinate.member_index,
+                    ),
+                    scale_episode_time(parent, suite, child_id),
+                )
 
     descriptor = AuditSourceDescriptor(
         schema_version="leakage-source-v1",
@@ -1206,7 +1206,9 @@ def _bind_manifest_audit_source(
     for pair in clock_pairs():
         clock_manifest.add(pair)
         clock_counts[
-            "scale_0_1x" if pair.child.truth.recipe.clock_scale == 0.1 else "scale_10x"
+            "scale_0_1x"
+            if pair.child.truth.recipe.evaluation_suite is SuiteName.CLOCK_SCALE_0_1X
+            else "scale_10x"
         ] += 1
     denominators = Counter(
         f"{entry.suite.value}:{entry.requested_path_length}" for entry in manifest.entries
@@ -1472,14 +1474,76 @@ def _production_audit_source(
         )
     elif isinstance(source, ManifestCorpusSource):
         manifest = load_manifest(source.manifest_path)
-        if manifest.provenance != provenance:
-            raise ValueError("manifest audit provenance changed during source binding")
+        _require_current_provenance_authenticates_manifest(resolved, manifest, provenance)
         bound = _bind_manifest_audit_source(resolved, manifest, PRODUCTION_DEPENDENCIES)
     else:
         raise TypeError("unsupported audit source")
     if bound.authentication.profile is not profile:
         raise ValueError("audit source profile does not match request")
     return bound
+
+
+def _require_current_provenance_authenticates_manifest(
+    resolved: ResolvedConfig[Phase1Config],
+    manifest: EpisodeManifest,
+    current: EvidenceProvenance,
+) -> None:
+    """Compare immutable source identity without conflating it with execution provenance."""
+    embedded = manifest.provenance
+    if (
+        embedded.config_sha256 != resolved.sha256
+        or current.generation_mode != embedded.generation_mode
+        or current.allocation_id != embedded.allocation_id
+        or current.split_namespace is not embedded.split_namespace
+        or current.root_seed != embedded.root_seed
+        or current.public_id_seed_sha256 != embedded.public_id_seed_sha256
+        or current.config_sha256 != embedded.config_sha256
+        or current.generator_source != embedded.generator_source
+        or current.foundation_model_calls != 0
+    ):
+        raise ValueError("current audit provenance does not authenticate immutable manifest")
+
+
+def _anchor_for_bound_source(
+    source: ReiterableAuditSource, profile: LeakageAuditProfileName
+) -> LeakageAuditEvidenceAnchor:
+    descriptor = source.descriptor
+    authentication = source.authentication
+    if authentication.profile is not profile:
+        raise ValueError("audit anchor profile does not match authenticated source")
+    return LeakageAuditEvidenceAnchor(
+        schema_version="phase1-leakage-audit-anchor-v1",
+        profile=profile.value,
+        allocation_id=descriptor.allocation_id,
+        allocation_or_manifest_sha256=descriptor.allocation_or_manifest_sha256,
+        config_sha256=descriptor.config_sha256,
+        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
+        source_manifest_sha256=authentication.source_manifest_sha256,
+        suite_path_denominators=authentication.suite_path_denominators,
+        clock_pair_manifest_sha256=authentication.clock_pair_manifest_sha256,
+        clock_scale_pair_counts=authentication.clock_scale_pair_counts,
+        episode_count=descriptor.episode_count,
+    )
+
+
+def _production_audit_anchor(
+    resolved: ResolvedConfig[Phase1Config],
+    source: CorpusSource,
+    provenance: EvidenceProvenance,
+    profile: LeakageAuditProfileName,
+) -> LeakageAuditEvidenceAnchor:
+    """Independently regenerate the immutable source authority from frozen inputs."""
+    if isinstance(source, Phase1GateCorpusSource):
+        bound = _bind_independent_audit_source(
+            resolved, source, provenance, PRODUCTION_DEPENDENCIES
+        )
+    elif isinstance(source, ManifestCorpusSource):
+        manifest = load_manifest(source.manifest_path)
+        _require_current_provenance_authenticates_manifest(resolved, manifest, provenance)
+        bound = _bind_manifest_audit_source(resolved, manifest, PRODUCTION_DEPENDENCIES)
+    else:
+        raise TypeError("unsupported audit source")
+    return _anchor_for_bound_source(bound, profile)
 
 
 def _collect_final_phase1_provenance(
@@ -1581,22 +1645,10 @@ def run_leakage_audit(
         _require_test_output_boundary(request.output_path, deps)
     resolved = _resolve(request.config)
     provenance = _audit_provenance(resolved, request.source, deps)
+    anchor = deps.build_audit_anchor(resolved, request.source, provenance, request.profile)
+    if not isinstance(anchor, LeakageAuditEvidenceAnchor):
+        raise ValueError("audit anchor authority returned an invalid capability")
     source = deps.build_audit_source(resolved, request.source, provenance, request.profile)
-    descriptor = source.descriptor
-    authentication = source.authentication
-    anchor = LeakageAuditEvidenceAnchor(
-        schema_version="phase1-leakage-audit-anchor-v1",
-        profile=request.profile.value,
-        allocation_id=descriptor.allocation_id,
-        allocation_or_manifest_sha256=descriptor.allocation_or_manifest_sha256,
-        config_sha256=descriptor.config_sha256,
-        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
-        source_manifest_sha256=authentication.source_manifest_sha256,
-        suite_path_denominators=authentication.suite_path_denominators,
-        clock_pair_manifest_sha256=authentication.clock_pair_manifest_sha256,
-        clock_scale_pair_counts=authentication.clock_scale_pair_counts,
-        episode_count=descriptor.episode_count,
-    )
     provenance = provenance.model_copy(update={"leakage_audit": anchor})
     with deps.create_audit_workspace() as workspace:
         report = audit_leakage(
@@ -1620,5 +1672,6 @@ PRODUCTION_DEPENDENCIES = Phase1ServiceDependencies(
     iter_independent=iter_independent_requests,
     generate_independent=generate_independent_episode,
     build_audit_source=_production_audit_source,
+    build_audit_anchor=_production_audit_anchor,
     create_audit_workspace=_temporary_audit_workspace,
 )
