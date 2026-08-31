@@ -24,6 +24,7 @@ from silent_cascade.env.episode import (
     CorpusHashBuilder,
     EpisodeBundle,
     EpisodeVariant,
+    IndependentEpisodeCoordinate,
     MatchedEpisodeCoordinate,
     PublicEpisodeArtifact,
     episode_sha256,
@@ -627,6 +628,79 @@ def _independent_provenance(
     return provenance
 
 
+def _require_independent_bundle_matches_request(
+    bundle: EpisodeBundle,
+    request: IndependentEpisodeRequest,
+    public_id_seed: int,
+) -> None:
+    """Authenticate a generated bundle against its exact allocation recipe."""
+    truth = bundle.truth
+    key = truth.key
+    coordinate = key.coordinate
+    recipe = truth.recipe
+    expected_public_id = allocate_independent_public_id(
+        IndependentPublicIdKey(
+            generator_version="ofd-v1",
+            split_namespace=request.split_namespace,
+            suite=request.suite,
+            public_id_seed=public_id_seed,
+            episode_index=request.episode_index,
+            accepted_attempt=recipe.accepted_attempt,
+        )
+    )
+    if (
+        not isinstance(coordinate, IndependentEpisodeCoordinate)
+        or key.split_namespace is not request.split_namespace
+        or key.suite is not request.suite
+        or key.root_seed != request.root_seed
+        or coordinate.episode_index != request.episode_index
+        or coordinate.allocation_quartet_index != request.allocation_quartet_index
+        or recipe.requested_path_length != request.requested_path_length
+        or recipe.variant is not request.variant
+        or recipe.evaluation_suite is not request.suite
+        or recipe.parent_public_id is not None
+        or bundle.public.init.episode_public_id != expected_public_id
+    ):
+        raise ValueError("generated episode does not match its bound allocation request")
+
+
+def _require_manifest_bundle_matches_entry(
+    bundle: EpisodeBundle,
+    entry: EpisodeManifestEntry,
+) -> None:
+    """Authenticate regenerated content and its coordinate against one manifest entry."""
+    _assert_entry(bundle, entry)
+    key = bundle.truth.key
+    recipe = bundle.truth.recipe
+    coordinate = key.coordinate
+    manifest_coordinate = entry.coordinate
+    if isinstance(manifest_coordinate, MatchedManifestCoordinate):
+        coordinate_matches = (
+            isinstance(coordinate, MatchedEpisodeCoordinate)
+            and coordinate.cohort_index == manifest_coordinate.cohort_index
+            and coordinate.member_index == manifest_coordinate.member_index
+        )
+    else:
+        coordinate_matches = (
+            isinstance(coordinate, IndependentEpisodeCoordinate)
+            and coordinate.episode_index == manifest_coordinate.episode_index
+            and coordinate.allocation_quartet_index == manifest_coordinate.allocation_quartet_index
+        )
+    expected_key_suite = (
+        SuiteName.IID_PRIMARY
+        if entry.suite in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}
+        else entry.suite
+    )
+    if (
+        not coordinate_matches
+        or key.split_namespace is not entry.split_namespace
+        or key.suite is not expected_key_suite
+        or recipe.evaluation_suite is not entry.suite
+        or recipe.requested_path_length != entry.requested_path_length
+    ):
+        raise ValueError("regenerated episode does not match its manifest coordinate")
+
+
 def evaluate_oracle(
     request: OracleEvaluationRequest,
     *,
@@ -668,7 +742,7 @@ def evaluate_oracle(
         ):
             raise ValueError("current oracle provenance does not authenticate immutable manifest")
         ordered = (
-            deps.regenerate_manifest_entry(resolved.config, manifest, entry)
+            (deps.regenerate_manifest_entry(resolved.config, manifest, entry), entry)
             for entry in manifest.entries
         )
         expected_count = manifest.episode_count
@@ -688,7 +762,10 @@ def evaluate_oracle(
         provenance = _independent_provenance(resolved, source, deps)
         requests = deps.iter_independent(deps.independent_allocation, source.root_seed)
         ordered = (
-            deps.generate_independent(resolved.config, item, source.public_id_seed)
+            (
+                deps.generate_independent(resolved.config, item, source.public_id_seed),
+                item,
+            )
             for item in requests
         )
         expected_count = sum(block.episode_count for block in deps.independent_allocation.blocks)
@@ -733,7 +810,15 @@ def evaluate_oracle(
                 raise ValueError("matched oracle source contains an incomplete cohort")
             validate_cohort_invariants(tuple(active_cohort), resolved.config)  # type: ignore[arg-type]
 
-    for bundle in ordered:
+    for bundle, source_recipe in ordered:
+        if isinstance(source_recipe, EpisodeManifestEntry):
+            _require_manifest_bundle_matches_entry(bundle, source_recipe)
+        else:
+            _require_independent_bundle_matches_request(
+                bundle,
+                source_recipe,
+                source.public_id_seed,
+            )
         key = bundle.truth.key
         coordinate = key.coordinate
         token = (
@@ -947,6 +1032,7 @@ def _make_clock_pairs(
 ) -> Iterator[PairedClockAuditPair]:
     for suite, request in _clock_parent_requests(allocation, root_seed):
         parent = generate(config, request, public_id_seed)
+        _require_independent_bundle_matches_request(parent, request, public_id_seed)
         child_id = allocate_independent_public_id(
             IndependentPublicIdKey(
                 generator_version="ofd-v1",
@@ -995,6 +1081,7 @@ def _make_manifest_clock_pairs(
         expected = scale_episode_time(parent, entry.suite, entry.episode_public_id)
         if child != expected:
             raise ValueError("clock child is not the exact authenticated transform")
+        _require_manifest_bundle_matches_entry(child, entry)
         yield PairedClockAuditPair(
             parent=AuditExample(
                 bundle=parent,
@@ -1066,8 +1153,14 @@ def _bind_independent_audit_source(
 
     def examples() -> Iterator[AuditExample]:
         for rank, request in enumerate(deps.iter_independent(allocation, source.root_seed)):
+            bundle = deps.generate_independent(resolved.config, request, source.public_id_seed)
+            _require_independent_bundle_matches_request(
+                bundle,
+                request,
+                source.public_id_seed,
+            )
             yield AuditExample(
-                bundle=deps.generate_independent(resolved.config, request, source.public_id_seed),
+                bundle=bundle,
                 manifest_rank=rank,
                 generation_mode="independent",
                 randomization_block_index=request.allocation_quartet_index,
@@ -1149,6 +1242,7 @@ def _bind_manifest_audit_source(
     def examples() -> Iterator[AuditExample]:
         for rank, entry in enumerate(manifest.entries):
             bundle = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
+            _require_manifest_bundle_matches_entry(bundle, entry)
             coordinate = entry.coordinate
             if isinstance(coordinate, MatchedManifestCoordinate):
                 block, position = coordinate.cohort_index, coordinate.member_index
@@ -1165,6 +1259,7 @@ def _bind_manifest_audit_source(
                 if not isinstance(coordinate, MatchedManifestCoordinate):
                     raise ValueError("matched manifest entry has an invalid coordinate")
                 parent = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
+                _require_manifest_bundle_matches_entry(parent, entry)
                 child_id = allocate_independent_public_id(
                     IndependentPublicIdKey(
                         generator_version="ofd-v1",
@@ -1450,13 +1545,15 @@ def _regenerate_manifest_clock_parent(
         raise ValueError("manifest entry is not a clock child")
     if entry.parent_public_id is None or entry.parent_episode_sha256 is None:
         raise ValueError("clock manifest entry is missing its parent")
+    request = _independent_request_for_manifest_entry(manifest, entry)
     parent = regenerate_independent_episode(
         config,
-        _independent_request_for_manifest_entry(manifest, entry),
+        request,
         manifest.public_id_seed,
         entry.parent_public_id,
         entry.accepted_attempt,
     )
+    _require_independent_bundle_matches_request(parent, request, manifest.public_id_seed)
     if episode_sha256(parent) != entry.parent_episode_sha256:
         raise ValueError("clock parent hash does not match manifest entry")
     return parent

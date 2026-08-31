@@ -270,6 +270,44 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     assert result.report.corpus_sha256
 
 
+def test_oracle_refuses_episode_outside_the_bound_allocation_before_publication(
+    tmp_path: Path,
+) -> None:
+    """A valid episode from another seed is not evidence for the requested allocation."""
+    from silent_cascade.env.generator import generate_independent_episode
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        OracleEvaluationRequest,
+        Phase1GateCorpusSource,
+        evaluate_oracle,
+    )
+
+    allocation = _independent_allocation()
+
+    def generate_shifted(config: Phase1Config, request: object, public_id_seed: int):
+        return generate_independent_episode(
+            config,
+            replace(request, root_seed=request.root_seed + 1),  # type: ignore[attr-defined]
+            public_id_seed,
+        )
+
+    output = tmp_path / "wrong-allocation-must-not-exist.json"
+    with pytest.raises(ValueError, match=r"allocation|request|coordinate"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=Phase1GateCorpusSource(
+                    allocation_id=allocation.allocation_id,
+                    root_seed=41,
+                    public_id_seed=91,
+                ),
+                output_path=output,
+            ),
+            deps=_oracle_dependencies(allocation, generate_independent=generate_shifted),
+        )
+    assert not output.exists()
+
+
 def test_manifest_oracle_accepts_real_authenticated_clock_children(tmp_path: Path) -> None:
     """Treating a paired child as an unscaled draw would reject valid manifest evidence."""
     from silent_cascade.env.services import (
@@ -312,6 +350,63 @@ def test_manifest_oracle_accepts_real_authenticated_clock_children(tmp_path: Pat
     assert result.report.clock_0_1x_episode_count == 8
     assert result.report.clock_10x_episode_count == 0
     assert result.report.clock_decision_mismatches == 0
+
+
+def test_manifest_oracle_authenticates_every_regenerated_entry_before_publication(
+    tmp_path: Path,
+) -> None:
+    """A cohort-preserving permutation is valid data but not the requested manifest recipe."""
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+        regenerate_entry,
+    )
+    from silent_cascade.logging.manifest import MatchedManifestCoordinate, publish_manifest
+
+    manifest = _matched_manifest()
+    manifest_path = tmp_path / "matched-manifest.json"
+    output = tmp_path / "wrong-manifest-recipe-must-not-exist.json"
+    publish_manifest(manifest_path, manifest)
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        del kwargs
+        resolved = args[0]
+        return manifest.provenance.model_copy(
+            update={"config_sha256": resolved.sha256}  # type: ignore[attr-defined]
+        )
+
+    def permute(config: Phase1Config, current: object, entry: object):
+        coordinate = entry.coordinate  # type: ignore[attr-defined]
+        assert isinstance(coordinate, MatchedManifestCoordinate)
+        replacement = next(
+            candidate
+            for candidate in manifest.entries
+            if isinstance(candidate.coordinate, MatchedManifestCoordinate)
+            and candidate.coordinate.cohort_index == coordinate.cohort_index
+            and candidate.coordinate.member_index == (coordinate.member_index + 1) % 4
+        )
+        return regenerate_entry(config, current, replacement)  # type: ignore[arg-type]
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_audit_validation_allocation(),
+        independent_allocation=_independent_allocation(),
+        collect_provenance=collect,
+        build_manifest=lambda *args: pytest.fail("not used"),
+        regenerate_manifest_entry=permute,
+    )
+    with pytest.raises(ValueError, match=r"manifest|entry|coordinate"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=ManifestCorpusSource(manifest_path=manifest_path),
+                output_path=output,
+            ),
+            deps=deps,
+        )
+    assert not output.exists()
 
 
 def test_manifest_oracle_refuses_a_different_valid_clock_transform_before_publication(
@@ -942,6 +1037,40 @@ def _audit_independent_allocation():
                 scale_10x_episode_count=1,
             ),
         ),
+    )
+
+
+def _oracle_dependencies(
+    allocation: object,
+    *,
+    iter_independent=None,
+    generate_independent=None,
+):
+    from silent_cascade.env.generator import (
+        generate_independent_episode,
+        iter_independent_requests,
+    )
+    from silent_cascade.env.services import Phase1ServiceDependencies
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        resolved = args[0]
+        return _provenance(allocation_id=allocation.allocation_id).model_copy(  # type: ignore[attr-defined]
+            update={
+                "generation_mode": "independent",
+                "config_sha256": resolved.sha256,  # type: ignore[attr-defined]
+                "root_seed": kwargs["root_seed"],
+                "public_id_seed_sha256": public_id_seed_sha256(kwargs["public_id_seed"]),
+                "analysis_seeds": kwargs["analysis_seeds"],
+            }
+        )
+
+    return Phase1ServiceDependencies.for_test(
+        validation_allocation=_allocation(),
+        independent_allocation=allocation,  # type: ignore[arg-type]
+        collect_provenance=collect,
+        build_manifest=lambda *args: pytest.fail("not used"),
+        iter_independent=iter_independent or iter_independent_requests,
+        generate_independent=generate_independent or generate_independent_episode,
     )
 
 
