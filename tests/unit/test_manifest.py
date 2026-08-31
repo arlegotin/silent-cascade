@@ -11,6 +11,7 @@ from silent_cascade.errors import ManifestAccessError, ManifestError
 from silent_cascade.logging.manifest import (
     EpisodeManifest,
     EpisodeManifestEntry,
+    IndependentManifestCoordinate,
     ManifestAccessClass,
     ManifestEnvelope,
     MatchedManifestCoordinate,
@@ -19,7 +20,12 @@ from silent_cascade.logging.manifest import (
     require_oracle_inspection_allowed,
     verify_manifest,
 )
-from silent_cascade.provenance import EvidenceProvenance, SourceTreeFingerprint
+from silent_cascade.provenance import (
+    GENERATOR_SOURCE_PATHS,
+    PHASE1_ANALYSIS_SOURCE_PATHS,
+    EvidenceProvenance,
+    SourceTreeFingerprint,
+)
 
 _DIGEST = "a" * 64
 
@@ -37,22 +43,32 @@ def _publish_in_child(path: str, payload: dict[str, object], result_queue: objec
         result_queue.put(("collision", False))  # type: ignore[union-attr]
 
 
-def _provenance(*, split: SplitNamespace = SplitNamespace.VALIDATION) -> EvidenceProvenance:
+def _provenance(
+    *,
+    split: SplitNamespace = SplitNamespace.VALIDATION,
+    generation_mode: str = "matched",
+    allocation_id: str = "validation-v1",
+) -> EvidenceProvenance:
     fingerprint = SourceTreeFingerprint(
         frame_version="sc-source-tree-v1",
         scope="generator",
-        paths=("src/silent_cascade/env/generator.py",),
+        paths=GENERATOR_SOURCE_PATHS,
         sha256=_DIGEST,
     )
-    analysis = fingerprint.model_copy(update={"scope": "phase1_analysis"})
+    analysis = SourceTreeFingerprint(
+        frame_version="sc-source-tree-v1",
+        scope="phase1_analysis",
+        paths=PHASE1_ANALYSIS_SOURCE_PATHS,
+        sha256=_DIGEST,
+    )
     return EvidenceProvenance(
         schema_version="phase1-evidence-provenance-v1",
         plan_base_revision="b" * 40,
         source_commit="c" * 40,
         source_dirty=False,
         generator_version="ofd-v1",
-        generation_mode="matched",
-        allocation_id="validation-v1",
+        generation_mode=generation_mode,  # type: ignore[arg-type]
+        allocation_id=allocation_id,
         split_namespace=split,
         config_sha256="d" * 64,
         generator_source=fingerprint,
@@ -249,6 +265,89 @@ def test_entry_rejects_non_hex_paired_parent_digest() -> None:
             parent_episode_sha256="x" * 64,
             clock_scale=0.1,
         )
+
+
+@pytest.mark.parametrize("self_field", ["parent_public_id", "parent_episode_sha256"])
+def test_clock_entry_rejects_self_parent_identity_aliases(self_field: str) -> None:
+    values: dict[str, object] = {
+        "episode_public_id": "00000000-0000-4000-8000-000000000010",
+        "split_namespace": SplitNamespace.FROZEN,
+        "suite": SuiteName.CLOCK_SCALE_0_1X,
+        "coordinate": MatchedManifestCoordinate(cohort_index=1, member_index=0),
+        "requested_path_length": 2,
+        "accepted_attempt": 0,
+        "episode_sha256": "1" * 64,
+        "parent_public_id": "00000000-0000-4000-8000-000000000011",
+        "parent_episode_sha256": "2" * 64,
+        "clock_scale": 0.1,
+    }
+    values[self_field] = values[
+        "episode_public_id" if self_field == "parent_public_id" else "episode_sha256"
+    ]
+
+    with pytest.raises(ValueError, match="distinct"):
+        EpisodeManifestEntry(**values)  # type: ignore[arg-type]
+
+
+def test_unscaled_entry_rejects_parent_provenance_even_when_parent_is_distinct() -> None:
+    with pytest.raises(ValueError, match="only paired"):
+        EpisodeManifestEntry(
+            episode_public_id="00000000-0000-4000-8000-000000000010",
+            split_namespace=SplitNamespace.FROZEN,
+            suite=SuiteName.IID_PRIMARY,
+            coordinate=MatchedManifestCoordinate(cohort_index=1, member_index=0),
+            requested_path_length=2,
+            accepted_attempt=0,
+            episode_sha256="1" * 64,
+            parent_public_id="00000000-0000-4000-8000-000000000011",
+            parent_episode_sha256="2" * 64,
+        )
+
+
+def _frozen_manifest(allocation_id: str) -> EpisodeManifest:
+    entries = tuple(
+        EpisodeManifestEntry(
+            episode_public_id=f"00000000-0000-4000-8000-00000000002{member}",
+            split_namespace=SplitNamespace.FROZEN,
+            suite=SuiteName.IID_PRIMARY,
+            coordinate=IndependentManifestCoordinate(
+                episode_index=20 + member,
+                allocation_quartet_index=7,
+                quartet_member_index=member,
+            ),
+            requested_path_length=2,
+            accepted_attempt=0,
+            episode_sha256=f"{member + 4:x}" * 64,
+        )
+        for member in range(4)
+    )
+    return EpisodeManifest(
+        schema_version=1,
+        experiment_version="v1",
+        access_class=ManifestAccessClass.FROZEN_TEST,
+        provenance=_provenance(
+            split=SplitNamespace.FROZEN,
+            generation_mode="independent",
+            allocation_id=allocation_id,
+        ),
+        suite=SuiteName.IID_PRIMARY,
+        public_id_seed=91,
+        episode_count=4,
+        entries=entries,
+    )
+
+
+@pytest.mark.parametrize(
+    "allocation_id",
+    ["validation-v1", "phase1-independent-gate-v1", "test-frozen-v1", "debug-v1"],
+)
+def test_frozen_manifest_rejects_non_frozen_allocation_aliases(allocation_id: str) -> None:
+    with pytest.raises(ValueError, match="frozen"):
+        _frozen_manifest(allocation_id)
+
+
+def test_frozen_manifest_requires_distinct_frozen_allocation_identity() -> None:
+    assert _frozen_manifest("frozen-phase6-v1").provenance.allocation_id == "frozen-phase6-v1"
 
 
 def test_validation_manifest_rejects_wrong_namespace_mode_and_membership(

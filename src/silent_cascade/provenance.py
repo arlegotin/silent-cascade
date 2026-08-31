@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from silent_cascade.config import ResolvedConfig
 from silent_cascade.env.config import Phase1Config, SplitNamespace
@@ -61,6 +61,15 @@ class SourceTreeFingerprint(StrictModel):
             raise ValueError("source paths must be nonempty, sorted, and unique")
         return value
 
+    @model_validator(mode="after")
+    def require_exact_declared_scope(self) -> "SourceTreeFingerprint":
+        expected_paths = (
+            GENERATOR_SOURCE_PATHS if self.scope == "generator" else PHASE1_ANALYSIS_SOURCE_PATHS
+        )
+        if self.paths != expected_paths:
+            raise ValueError("source fingerprint paths must equal the exact frozen scope")
+        return self
+
 
 class EvidenceProvenance(StrictModel):
     schema_version: Literal["phase1-evidence-provenance-v1"]
@@ -78,6 +87,13 @@ class EvidenceProvenance(StrictModel):
     public_id_seed_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     analysis_seeds: dict[str, int] = Field(default_factory=dict)
     foundation_model_calls: Literal[0] = 0
+
+    @field_validator("foundation_model_calls", mode="before")
+    @classmethod
+    def require_exact_zero_foundation_calls(cls, value: object) -> object:
+        if type(value) is not int or value != 0:
+            raise ValueError("foundation_model_calls must be an exact integer zero")
+        return value
 
     @field_validator("plan_base_revision", "source_commit")
     @classmethod
@@ -99,6 +115,17 @@ class EvidenceProvenance(StrictModel):
         if any(not key or type(seed) is not int for key, seed in value.items()):
             raise ValueError("analysis_seeds must have nonempty keys and exact integer values")
         return dict(sorted(value.items()))
+
+    @model_validator(mode="after")
+    def require_exact_source_fingerprints(self) -> "EvidenceProvenance":
+        if (
+            self.generator_source.scope != "generator"
+            or self.generator_source.paths != GENERATOR_SOURCE_PATHS
+            or self.analysis_source.scope != "phase1_analysis"
+            or self.analysis_source.paths != PHASE1_ANALYSIS_SOURCE_PATHS
+        ):
+            raise ValueError("evidence provenance requires exact frozen source fingerprints")
+        return self
 
 
 class EvidenceProvenanceCollector(Protocol):
@@ -143,8 +170,8 @@ def source_tree_sha256(repo_root: Path, paths: tuple[str, ...]) -> str:
     """Hash an explicit source list with unambiguous path/content framing."""
     if not isinstance(repo_root, Path) or not isinstance(paths, tuple):
         raise TypeError("repo_root must be a Path and paths must be a tuple")
-    if not paths or len(set(paths)) != len(paths):
-        raise ProvenanceError("source paths must be nonempty and unique")
+    if not paths or len(set(paths)) != len(paths) or tuple(sorted(paths)) != paths:
+        raise ProvenanceError("source paths must be nonempty, unique, and sorted")
     digest = hashlib.sha256()
     digest.update(_SOURCE_FRAME)
     digest.update(len(paths).to_bytes(4, "big"))

@@ -94,8 +94,16 @@ class EpisodeManifestEntry(StrictModel):
         if expected is None:
             if self.clock_scale != 1.0 or self.parent_public_id is not None:
                 raise ValueError("only paired clock suites may carry parent provenance")
-        elif self.clock_scale != expected or self.parent_public_id is None:
-            raise ValueError("paired clock suites require exact factor and parent provenance")
+        else:
+            if self.clock_scale != expected or self.parent_public_id is None:
+                raise ValueError("paired clock suites require exact factor and parent provenance")
+            if (
+                self.parent_public_id == self.episode_public_id
+                or self.parent_episode_sha256 == self.episode_sha256
+            ):
+                raise ValueError(
+                    "paired clock parent identity and digest must be distinct from child"
+                )
         return self
 
 
@@ -187,10 +195,10 @@ class EpisodeManifest(StrictModel):
             if (
                 provenance.split_namespace is not SplitNamespace.FROZEN
                 or provenance.generation_mode != "independent"
-                or provenance.allocation_id.startswith("test-")
+                or not provenance.allocation_id.startswith("frozen-")
             ):
                 raise ValueError(
-                    "frozen-test manifests require non-test independent frozen provenance"
+                    "frozen-test manifests require a distinct frozen independent allocation"
                 )
         elif self.access_class is ManifestAccessClass.DEBUG:
             if (

@@ -1,5 +1,6 @@
 """Contracts for immutable Phase 1 evidence provenance."""
 
+import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -12,6 +13,8 @@ from silent_cascade.errors import ProvenanceError
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
+    EvidenceProvenance,
+    SourceTreeFingerprint,
     collect_evidence_provenance,
     source_tree_sha256,
 )
@@ -33,6 +36,14 @@ def test_source_tree_hash_distinguishes_naively_colliding_path_content_pairs(
     (tmp_path / "ab").write_bytes(b"c")
 
     assert source_tree_sha256(tmp_path, ("a",)) != source_tree_sha256(tmp_path, ("ab",))
+
+
+def test_source_tree_hash_rejects_unsorted_paths_before_hashing(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_bytes(b"x")
+    (tmp_path / "b.py").write_bytes(b"y")
+
+    with pytest.raises(ProvenanceError, match="sorted"):
+        source_tree_sha256(tmp_path, ("b.py", "a.py"))
 
 
 @pytest.mark.parametrize(
@@ -79,6 +90,91 @@ def test_frozen_source_path_sets_are_exact_and_sorted() -> None:
     )
     assert tuple(sorted(PHASE1_ANALYSIS_SOURCE_PATHS)) == PHASE1_ANALYSIS_SOURCE_PATHS
     assert set(GENERATOR_SOURCE_PATHS) < set(PHASE1_ANALYSIS_SOURCE_PATHS)
+
+
+@pytest.mark.parametrize(
+    ("scope", "paths"),
+    [
+        ("generator", GENERATOR_SOURCE_PATHS[:-1]),
+        ("generator", (*GENERATOR_SOURCE_PATHS, "unexpected.py")),
+        ("generator", PHASE1_ANALYSIS_SOURCE_PATHS),
+        ("phase1_analysis", GENERATOR_SOURCE_PATHS),
+        ("generator", tuple(reversed(GENERATOR_SOURCE_PATHS))),
+    ],
+)
+def test_source_tree_fingerprint_rejects_any_noncanonical_declared_scope(
+    scope: str, paths: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValueError, match=r"(sorted|exact frozen)"):
+        SourceTreeFingerprint(
+            frame_version="sc-source-tree-v1",
+            scope=scope,  # type: ignore[arg-type]
+            paths=paths,
+            sha256="a" * 64,
+        )
+
+
+def _evidence_payload() -> dict[str, object]:
+    return {
+        "schema_version": "phase1-evidence-provenance-v1",
+        "plan_base_revision": "b" * 40,
+        "source_commit": "c" * 40,
+        "source_dirty": False,
+        "generator_version": "ofd-v1",
+        "generation_mode": "matched",
+        "allocation_id": "validation-v1",
+        "split_namespace": "validation",
+        "config_sha256": "d" * 64,
+        "generator_source": {
+            "frame_version": "sc-source-tree-v1",
+            "scope": "generator",
+            "paths": GENERATOR_SOURCE_PATHS,
+            "sha256": "a" * 64,
+        },
+        "analysis_source": {
+            "frame_version": "sc-source-tree-v1",
+            "scope": "phase1_analysis",
+            "paths": PHASE1_ANALYSIS_SOURCE_PATHS,
+            "sha256": "a" * 64,
+        },
+        "root_seed": 17,
+        "public_id_seed_sha256": "e" * 64,
+        "foundation_model_calls": 0,
+    }
+
+
+@pytest.mark.parametrize("invalid", [False, 0.0, "0"])
+def test_evidence_provenance_rejects_non_exact_zero_foundation_counter_json(
+    invalid: object,
+) -> None:
+    payload = _evidence_payload()
+    payload["foundation_model_calls"] = invalid
+
+    with pytest.raises(ValueError, match="exact integer zero"):
+        EvidenceProvenance.model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("invalid", [False, 0.0, "0"])
+def test_evidence_provenance_rejects_non_exact_zero_foundation_counter_constructor(
+    invalid: object,
+) -> None:
+    payload = _evidence_payload()
+    payload["split_namespace"] = SplitNamespace.VALIDATION
+    payload["foundation_model_calls"] = invalid
+
+    with pytest.raises(ValueError, match="exact integer zero"):
+        EvidenceProvenance.model_validate(payload)
+
+
+def test_evidence_provenance_defensively_rejects_swapped_fingerprint_models() -> None:
+    payload = _evidence_payload()
+    payload["generator_source"], payload["analysis_source"] = (
+        payload["analysis_source"],
+        payload["generator_source"],
+    )
+
+    with pytest.raises(ValueError, match="exact frozen"):
+        EvidenceProvenance.model_validate_json(json.dumps(payload))
 
 
 def _git(repo: Path, *arguments: str) -> str:
