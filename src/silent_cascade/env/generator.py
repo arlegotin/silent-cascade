@@ -476,7 +476,7 @@ class GenerationCohort:
 
 
 VALIDATION_ALLOCATION = CohortAllocation(
-    allocation_id="phase1-validation-v1",
+    allocation_id="validation-v1",
     split_namespace=SplitNamespace.VALIDATION,
     blocks=(
         CohortBlock(
@@ -502,7 +502,7 @@ VALIDATION_ALLOCATION = CohortAllocation(
 
 
 PHASE1_GATE_ALLOCATION = IndependentAllocation(
-    allocation_id="phase1-gate-v1",
+    allocation_id="phase1-independent-gate-v1",
     split_namespace=SplitNamespace.PHASE1_GATE,
     blocks=(
         EpisodeBlock(
