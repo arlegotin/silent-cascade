@@ -645,3 +645,52 @@ def test_invalid_persisted_rng_coordinates_raise_safe_typed_invariant_errors(
     assert "-1" not in message
     assert "1000" not in message
     assert "malformed" not in message
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda bundle: object.__setattr__(bundle.truth, "rejection_count", False),
+        lambda bundle: object.__setattr__(bundle.truth, "rejection_count", -1),
+        lambda bundle: object.__setattr__(bundle.truth, "rejection_count", 1_000),
+        lambda bundle: object.__setattr__(bundle.truth, "rejection_count", "invalid"),
+        lambda bundle: object.__setattr__(bundle.truth, "rejection_count", 1),
+        lambda bundle: object.__setattr__(bundle.truth.key.coordinate, "mode", "wrong"),
+        lambda bundle: object.__setattr__(bundle.truth.key.coordinate, "mode", ""),
+        lambda bundle: object.__setattr__(bundle.truth.key.coordinate, "mode", True),
+        lambda bundle: object.__setattr__(bundle.truth.key.coordinate, "mode", None),
+    ],
+)
+def test_rejection_and_coordinate_provenance_is_strict_and_fail_closed(
+    config: Phase1Config,
+    cohort: tuple[EpisodeBundle, EpisodeBundle, EpisodeBundle, EpisodeBundle],
+    mutation: object,
+) -> None:
+    """Every persisted retry/mode corruption has one safe invariant failure surface."""
+    from silent_cascade.env.invariants import (
+        validate_cohort_invariants,
+        validate_episode_invariants,
+    )
+
+    assert callable(mutation)
+    corrupted = _bundle_with(cohort[0])
+    mutation(corrupted)  # type: ignore[operator]
+    with pytest.raises(EpisodeInvariantError) as raised:
+        validate_episode_invariants(corrupted, config)
+    assert raised.value.context == {}
+    assert raised.value.message == "invalid RNG provenance"
+
+    report = validate_episode_invariants(corrupted, config, strict=False)
+    assert not report.valid
+    assert "rng_provenance" in report.check_ids
+
+    corrupted_cohort = (corrupted, *cohort[1:])
+    with pytest.raises(EpisodeInvariantError) as raised:
+        validate_cohort_invariants(corrupted_cohort, config)
+    assert raised.value.context == {}
+    assert raised.value.message == "invalid RNG provenance"
+
+    reports = validate_cohort_invariants(corrupted_cohort, config, strict=False)
+    assert all(not item.valid for item in reports)
+    assert all("rng_provenance" in item.check_ids for item in reports)
+    assert all("cohort_matching" in item.check_ids for item in reports)

@@ -206,7 +206,6 @@ def _expected_member_payloads(
     if (
         recipe.evaluation_suite is not key.suite
         or key.generator_version != config.data.generator_version
-        or recipe.accepted_attempt != truth.rejection_count
         or not isinstance(key.split_namespace, SplitNamespace)
         or not isinstance(key.suite, SuiteName)
         or not isinstance(coordinate, MatchedEpisodeCoordinate)
@@ -221,6 +220,11 @@ def _expected_member_payloads(
         or coordinate.member_index not in range(4)
         or type(recipe.accepted_attempt) is not int
         or not 0 <= recipe.accepted_attempt < 1_000
+        or type(truth.rejection_count) is not int
+        or not 0 <= truth.rejection_count < 1_000
+        or truth.rejection_count != recipe.accepted_attempt
+        or type(coordinate.mode) is not str
+        or coordinate.mode != "matched"
     ):
         _fail("invalid RNG provenance", check_id="rng_provenance")
     path_lengths, delay_bounds, distractor_bounds = _suite_parameters(config, key.suite)
@@ -738,17 +742,18 @@ def validate_cohort_invariants(
             if len(values) != 1:
                 _fail(f"matched cohort must share the {name}")
         return (reports[0], reports[1], reports[2], reports[3])
-    except EpisodeInvariantError:
+    except EpisodeInvariantError as error:
         if strict:
             raise
         reports = tuple(
             validate_episode_invariants(bundle, config, strict=False) for bundle in episodes
         )
+        failure_check_id = getattr(error, "check_id", "invalid")
         invalid_reports = tuple(
             replace(
                 report,
                 valid=False,
-                check_ids=(*report.check_ids, "cohort_matching"),
+                check_ids=(*report.check_ids, failure_check_id, "cohort_matching"),
             )
             for report in reports
         )
