@@ -90,6 +90,39 @@ class SourceTreeFingerprint(StrictModel):
         return self
 
 
+class LeakageAuditEvidenceAnchor(StrictModel):
+    """Independently supplied identity for one publishable leakage experiment."""
+
+    schema_version: Literal["phase1-leakage-audit-anchor-v1"]
+    profile: Literal["test", "phase1_gate"]
+    allocation_id: str = Field(min_length=1)
+    allocation_or_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    descriptor_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    suite_path_denominators: dict[str, int]
+    clock_pair_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    clock_scale_pair_counts: dict[Literal["scale_0_1x", "scale_10x"], int]
+    episode_count: int = Field(gt=0, multiple_of=4)
+
+    @model_validator(mode="after")
+    def require_complete_profile(self) -> "LeakageAuditEvidenceAnchor":
+        if (
+            not self.suite_path_denominators
+            or any(
+                not key or type(value) is not int or value <= 0
+                for key, value in self.suite_path_denominators.items()
+            )
+            or set(self.clock_scale_pair_counts) != {"scale_0_1x", "scale_10x"}
+            or any(
+                type(value) is not int or value <= 0
+                for value in self.clock_scale_pair_counts.values()
+            )
+        ):
+            raise ValueError("leakage audit anchor counts must be complete positive integers")
+        return self
+
+
 class EvidenceProvenance(StrictModel):
     schema_version: Literal["phase1-evidence-provenance-v1"]
     plan_base_revision: str = Field(min_length=7)
@@ -105,6 +138,7 @@ class EvidenceProvenance(StrictModel):
     root_seed: int
     public_id_seed_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     analysis_seeds: dict[str, int] = Field(default_factory=dict)
+    leakage_audit: LeakageAuditEvidenceAnchor | None = None
     foundation_model_calls: Literal[0] = 0
 
     @field_validator("foundation_model_calls", mode="before")

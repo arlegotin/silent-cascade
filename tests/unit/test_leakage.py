@@ -26,7 +26,26 @@ def _config() -> Phase1Config:
     ).config
 
 
-def _provenance(config_sha256: str) -> EvidenceProvenance:
+def _provenance(config_sha256: str, source: object | None = None) -> EvidenceProvenance:
+    leakage_audit = None
+    if source is not None:
+        from silent_cascade.provenance import LeakageAuditEvidenceAnchor
+
+        descriptor = source.descriptor
+        authentication = source.authentication
+        leakage_audit = LeakageAuditEvidenceAnchor(
+            schema_version="phase1-leakage-audit-anchor-v1",
+            profile=authentication.profile.value,
+            allocation_id=descriptor.allocation_id,
+            allocation_or_manifest_sha256=descriptor.allocation_or_manifest_sha256,
+            config_sha256=descriptor.config_sha256,
+            descriptor_sha256=authentication.descriptor_sha256,
+            source_manifest_sha256=authentication.source_manifest_sha256,
+            suite_path_denominators=authentication.suite_path_denominators,
+            clock_pair_manifest_sha256=authentication.clock_pair_manifest_sha256,
+            clock_scale_pair_counts=authentication.clock_scale_pair_counts,
+            episode_count=descriptor.episode_count,
+        )
     return EvidenceProvenance(
         schema_version="phase1-evidence-provenance-v1",
         plan_base_revision="c" * 40,
@@ -52,6 +71,7 @@ def _provenance(config_sha256: str) -> EvidenceProvenance:
         root_seed=41,
         public_id_seed_sha256=public_id_seed_sha256(91),
         analysis_seeds={"audit_seed": 2026083091, "positive_control_seed": 2026083092},
+        leakage_audit=leakage_audit,
     )
 
 
@@ -643,7 +663,7 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
         source,
         audit_config,
         LeakageAuditProfileName.TEST,
-        _provenance(_config_sha256(config)),
+        _provenance(_config_sha256(config), source),
         tmp_path,
     )
 
@@ -685,7 +705,7 @@ def test_audit_fails_closed_when_workspace_cleanup_fails(
             source,
             audit_config,
             leakage.LeakageAuditProfileName.TEST,
-            _provenance(_config_sha256(config)),
+            _provenance(_config_sha256(config), source),
             tmp_path,
         )
 
@@ -728,7 +748,7 @@ def test_feature_store_ceiling_refuses_before_source_iteration(tmp_path: Path) -
             counting,
             audit_config,
             leakage.LeakageAuditProfileName.TEST,
-            _provenance(_config_sha256(config)),
+            _provenance(_config_sha256(config), source),
             tmp_path,
         )
     assert counting.iter_calls == 0
@@ -777,7 +797,7 @@ def test_second_pass_identity_failure_precedes_probe_fitting(
             TruncatingSource(),
             audit_config,
             leakage.LeakageAuditProfileName.TEST,
-            _provenance(_config_sha256(config)),
+            _provenance(_config_sha256(config), source),
             tmp_path,
         )
     assert not list(tmp_path.iterdir())
@@ -945,9 +965,88 @@ def test_audit_rejects_self_reordered_source_before_any_probe_fit(
             forged,
             audit_config,
             leakage.LeakageAuditProfileName.TEST,
-            _provenance(_config_sha256(config)),
+            _provenance(_config_sha256(config), source),
             tmp_path,
         )
+
+
+def test_audit_rejects_fully_reminted_reordered_source_before_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stream cannot replace itself and recompute every source-owned witness."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    trusted = _authenticated_test_source(config, groups_per_path=20)
+    reordered = tuple(
+        replace(example, manifest_rank=rank)
+        for rank, example in enumerate(reversed(trusted.examples))
+    )
+    forged_descriptor = trusted.descriptor.model_copy(
+        update={
+            "allocation_or_manifest_sha256": leakage._source_manifest_sha256(reordered),
+        }
+    )
+    forged_clock_pairs = tuple(
+        leakage.PairedClockAuditPair(
+            reordered[index],
+            leakage.scale_episode_time(
+                reordered[index].bundle,
+                suite,
+                f"00000000-0000-4000-8000-{suffix:012d}",
+            ),
+        )
+        for index, suite, suffix in (
+            (0, SuiteName.CLOCK_SCALE_0_1X, 101),
+            (80, SuiteName.CLOCK_SCALE_10X, 102),
+        )
+    )
+    forged_authentication = trusted.authentication.model_copy(
+        update={
+            "descriptor_sha256": leakage.audit_source_descriptor_sha256(forged_descriptor),
+            "source_manifest_sha256": leakage._source_manifest_sha256(reordered),
+            "clock_pair_manifest_sha256": leakage._clock_pair_manifest_sha256(forged_clock_pairs),
+        }
+    )
+
+    class RemintedSource:
+        descriptor = forged_descriptor
+        authentication = forged_authentication
+        validation_config = config
+        episode_count = len(reordered)
+        iter_calls = 0
+
+        def iter_examples(self):
+            self.iter_calls += 1
+            return iter(reordered)
+
+        def iter_clock_pairs(self):
+            self.iter_calls += 1
+            return iter(forged_clock_pairs)
+
+    source = RemintedSource()
+
+    def prohibited_fit(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("probe fitting began before independent trust validation")
+
+    monkeypatch.setattr(leakage, "_fit_predict_batched", prohibited_fit)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={"episode_count": len(reordered)}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="independent leakage trust anchor"):
+        leakage.audit_leakage(
+            source,
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), trusted),
+            tmp_path,
+        )
+    assert source.iter_calls == 0
 
 
 def test_terminal_delay_counterfactual_swaps_both_public_hazard_delays() -> None:
@@ -1073,6 +1172,101 @@ def test_counterfactual_engine_consumes_only_declared_paired_clock_children() ->
     assert all(item.passed for item in checks)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ("child", "order", "count", "hash", "parent", "scale"),
+)
+def test_clock_corruption_is_refused_before_every_probe_fit(
+    mutation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clock identity/order/count/manifest/parent/scale corruption prohibits all fitting."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    trusted = _authenticated_test_source(config, groups_per_path=20)
+    pairs = list(trusted.clock_pairs)
+    if mutation == "child":
+        child = pairs[0].child
+        pairs[0] = leakage.PairedClockAuditPair(
+            pairs[0].parent,
+            replace(
+                child,
+                public=replace(
+                    child.public,
+                    init=replace(child.public.init, memory_capacity=63),
+                ),
+            ),
+        )
+    elif mutation == "order":
+        pairs.reverse()
+    elif mutation == "count":
+        pairs.pop()
+    elif mutation == "hash":
+        pairs[0] = leakage.PairedClockAuditPair(
+            pairs[0].parent,
+            leakage.scale_episode_time(
+                pairs[0].parent.bundle,
+                SuiteName.CLOCK_SCALE_0_1X,
+                "00000000-0000-4000-8000-000000000103",
+            ),
+        )
+    elif mutation == "parent":
+        parent = replace(pairs[0].parent, manifest_rank=999)
+        pairs[0] = leakage.PairedClockAuditPair(parent, pairs[0].child)
+    elif mutation == "scale":
+        pairs[0] = leakage.PairedClockAuditPair(
+            pairs[0].parent,
+            leakage.scale_episode_time(
+                pairs[0].parent.bundle,
+                SuiteName.CLOCK_SCALE_10X,
+                "00000000-0000-4000-8000-000000000104",
+            ),
+        )
+
+    class CorruptedClockSource:
+        descriptor = trusted.descriptor
+        authentication = trusted.authentication
+        validation_config = config
+        episode_count = trusted.episode_count
+        publishable = False
+
+        def iter_examples(self):
+            return trusted.iter_examples()
+
+        def iter_clock_pairs(self):
+            return iter(pairs)
+
+    fit_calls = 0
+
+    def prohibited_fit(*_args: object, **_kwargs: object) -> object:
+        nonlocal fit_calls
+        fit_calls += 1
+        raise AssertionError("clock corruption reached a statistical fit")
+
+    monkeypatch.setattr(leakage, "_fit_predict_batched", prohibited_fit)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": trusted.episode_count,
+                    "permutation_replicates": 1,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError):
+        leakage.audit_leakage(
+            CorruptedClockSource(),
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), trusted),
+            tmp_path,
+        )
+    assert fit_calls == 0
+
+
 @pytest.mark.parametrize("control_index", range(9))
 def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
     control_index: int,
@@ -1106,7 +1300,7 @@ def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
         injector.apply(clean_source),
         audit_config,
         LeakageAuditProfileName.TEST,
-        _provenance(_config_sha256(config)),
+        _provenance(_config_sha256(config), clean_source),
         tmp_path,
         positive_control=injector.control_id,
     )

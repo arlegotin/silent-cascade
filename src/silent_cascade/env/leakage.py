@@ -44,7 +44,7 @@ from silent_cascade.env.invariants import validate_cohort_invariants, validate_e
 from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.env.timing import action_window
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.provenance import EvidenceProvenance
+from silent_cascade.provenance import EvidenceProvenance, LeakageAuditEvidenceAnchor
 from silent_cascade.schemas import (
     ActivationPayload,
     ExternalEvent,
@@ -218,6 +218,9 @@ class ReiterableAuditSource(Protocol):
     @property
     def authentication(self) -> AuditSourceAuthentication: ...
 
+    @property
+    def publishable(self) -> bool: ...
+
     def iter_examples(self) -> Iterator[AuditExample]: ...
 
     def iter_clock_pairs(self) -> Iterator[PairedClockAuditPair]: ...
@@ -293,6 +296,7 @@ class InMemoryAuditSource:
     validation_config: Phase1Config | None = None
     authentication: AuditSourceAuthentication | None = None
     clock_pairs: tuple[PairedClockAuditPair, ...] = ()
+    publishable: Literal[False] = False
 
     @property
     def episode_count(self) -> int:
@@ -391,6 +395,10 @@ class _InjectedAuditSource:
     @property
     def authentication(self) -> AuditSourceAuthentication:
         return self.source.authentication
+
+    @property
+    def publishable(self) -> bool:
+        return self.source.publishable
 
     def iter_clock_pairs(self) -> Iterator[PairedClockAuditPair]:
         return self.source.iter_clock_pairs()
@@ -1228,11 +1236,44 @@ def _validate_source_authentication(
     expected_clock = (
         {"scale_0_1x": 5_000, "scale_10x": 2_000}
         if profile is LeakageAuditProfileName.PHASE1_GATE
-        else authentication.clock_scale_pair_counts
+        else {"scale_0_1x": 1, "scale_10x": 1}
     )
     if authentication.clock_scale_pair_counts != expected_clock:
         raise ValueError("audit source clock-pair denominators are not exact")
     return authentication
+
+
+def _validate_independent_trust_anchor(
+    source: ReiterableAuditSource,
+    profile: LeakageAuditProfileName,
+    provenance: EvidenceProvenance,
+    authentication: AuditSourceAuthentication,
+) -> LeakageAuditEvidenceAnchor:
+    """Bind source-owned witnesses to the separately supplied evidence capability."""
+    anchor = provenance.leakage_audit
+    descriptor = source.descriptor
+    if not isinstance(anchor, LeakageAuditEvidenceAnchor):
+        raise ValueError("independent leakage trust anchor is required")
+    if (
+        anchor.profile != profile.value
+        or anchor.allocation_id != descriptor.allocation_id
+        or anchor.allocation_id != provenance.allocation_id
+        or anchor.allocation_or_manifest_sha256 != descriptor.allocation_or_manifest_sha256
+        or anchor.config_sha256 != descriptor.config_sha256
+        or anchor.config_sha256 != provenance.config_sha256
+        or anchor.descriptor_sha256 != audit_source_descriptor_sha256(descriptor)
+        or anchor.descriptor_sha256 != authentication.descriptor_sha256
+        or anchor.source_manifest_sha256 != authentication.source_manifest_sha256
+        or anchor.suite_path_denominators != authentication.suite_path_denominators
+        or anchor.clock_pair_manifest_sha256 != authentication.clock_pair_manifest_sha256
+        or anchor.clock_scale_pair_counts != authentication.clock_scale_pair_counts
+        or anchor.episode_count != descriptor.episode_count
+        or anchor.episode_count != source.episode_count
+    ):
+        raise ValueError("independent leakage trust anchor does not match the source")
+    if profile is LeakageAuditProfileName.PHASE1_GATE and not source.publishable:
+        raise ValueError("in-memory or test leakage sources are nonpublishable")
+    return anchor
 
 
 def _resource_guard(config: LeakageAuditConfig) -> None:
@@ -2686,6 +2727,7 @@ def audit_leakage(
         raise TypeError("leakage audit received invalid typed inputs")
     _validate_provenance(source, config, provenance)
     authentication = _validate_source_authentication(source, profile)
+    _validate_independent_trust_anchor(source, profile, provenance, authentication)
     validation_config = source.validation_config  # type: ignore[attr-defined]
     assert isinstance(validation_config, Phase1Config)
     selected_profile = _profile_config(config, profile)
@@ -2828,6 +2870,10 @@ def audit_leakage(
             shape=(source.episode_count, _TOTAL_FEATURE_DIMENSION),
         )
         public_values = features
+        # Every actual counterfactual stream is authenticated before the first
+        # statistical fit.  A corrupt clock child/order/count/manifest must not
+        # consume clean, shuffled, or control optimizer work.
+        counterfactual = _counterfactual_checks(source, profile, config)
         probes = _run_probes(
             public_values, rows, train, test, config, selected_profile, corpus_hash
         )
@@ -2876,7 +2922,6 @@ def audit_leakage(
                     work,
                 ),
             )
-        counterfactual = _counterfactual_checks(source, profile, config)
         clean_pass = not selected_profile.enforce_clean_statistical_gate or all(
             probe.passed for probe in probes
         )
