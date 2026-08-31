@@ -8,7 +8,8 @@ those three implementations is a meaningful correctness control.
 import math
 import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import pairwise
 
 from silent_cascade.env.config import Phase1Config, SuiteName
 from silent_cascade.env.episode import (
@@ -18,6 +19,7 @@ from silent_cascade.env.episode import (
 )
 from silent_cascade.env.timing import action_window
 from silent_cascade.errors import EpisodeInvariantError
+from silent_cascade.rng import CounterSeedKey, SeedStream, local_generator
 from silent_cascade.schemas import (
     ActivationPayload,
     ExternalEvent,
@@ -106,6 +108,192 @@ def _fact_identity(payload: object) -> tuple[object, ...]:
     if isinstance(payload, SafeFact):
         return ("safe", payload.node, payload.confidence)
     _fail("FACT payload must be a primary fact")
+
+
+def _suite_parameters(
+    config: Phase1Config, suite: SuiteName
+) -> tuple[tuple[int, ...], tuple[float, float], tuple[int, int]]:
+    data = config.data
+    if suite in {SuiteName.VALIDATION, SuiteName.IID_PRIMARY}:
+        return (
+            data.iid_test_path_lengths,
+            data.train_delay_log_uniform,
+            data.train_distractor_link_records,
+        )
+    if suite is SuiteName.OOD_DEPTH:
+        return (
+            data.ood_depth_path_lengths,
+            data.ood_depth_delay_log_uniform,
+            data.train_distractor_link_records,
+        )
+    if suite is SuiteName.OOD_SHORT_DELAY:
+        return (
+            data.ood_short_delay_path_lengths,
+            data.ood_short_delay_log_uniform,
+            data.train_distractor_link_records,
+        )
+    if suite is SuiteName.OOD_LONG_DELAY:
+        return (
+            data.iid_test_path_lengths,
+            data.ood_long_delay_log_uniform,
+            data.train_distractor_link_records,
+        )
+    if suite is SuiteName.DISTRACTOR_FLOOD:
+        return (
+            data.iid_test_path_lengths,
+            data.train_delay_log_uniform,
+            data.ood_distractor_link_records,
+        )
+    _fail("primary suite is not supported by invariant validation")
+
+
+def _member_generator(bundle: EpisodeBundle, stream: SeedStream):
+    coordinate = bundle.truth.key.coordinate
+    if not isinstance(coordinate, MatchedEpisodeCoordinate) or coordinate.member_index not in range(
+        4
+    ):
+        _fail("matched member coordinate is invalid")
+    return local_generator(
+        CounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=bundle.truth.key.split_namespace,
+            suite=bundle.truth.key.suite,
+            root_seed=bundle.truth.key.root_seed,
+            cohort_index=coordinate.cohort_index,
+            member_index=coordinate.member_index,
+            stream=stream,
+            attempt=bundle.truth.recipe.accepted_attempt,
+        )
+    )
+
+
+def _cohort_generator(bundle: EpisodeBundle, stream: SeedStream):
+    return local_generator(
+        CounterSeedKey(
+            generator_version="ofd-v1",
+            split_namespace=bundle.truth.key.split_namespace,
+            suite=bundle.truth.key.suite,
+            root_seed=bundle.truth.key.root_seed,
+            cohort_index=bundle.truth.key.coordinate.cohort_index,
+            member_index=-1,
+            stream=stream,
+            attempt=bundle.truth.recipe.accepted_attempt,
+        )
+    )
+
+
+def _log_uniform(generator: object, bounds: tuple[float, float]) -> float:
+    return float(math.exp(generator.uniform(math.log(bounds[0]), math.log(bounds[1]))))  # type: ignore[union-attr]
+
+
+def _expected_member_payloads(
+    bundle: EpisodeBundle, config: Phase1Config
+) -> tuple[tuple[object, ...], tuple[float, ...], float]:
+    """Reconstruct one member using only the stable RNG contract and public types."""
+
+    truth = bundle.truth
+    key = truth.key
+    recipe = truth.recipe
+    if (
+        recipe.evaluation_suite is not key.suite
+        or key.generator_version != config.data.generator_version
+        or recipe.accepted_attempt != truth.rejection_count
+        or not isinstance(key.coordinate, MatchedEpisodeCoordinate)
+    ):
+        _fail("private key and recipe provenance disagree")
+    path_lengths, delay_bounds, distractor_bounds = _suite_parameters(config, key.suite)
+    if recipe.requested_path_length not in path_lengths:
+        _fail("requested path length is invalid for the suite")
+    template_rng = _cohort_generator(bundle, SeedStream.TEMPLATE)
+    distractor_count = int(template_rng.integers(distractor_bounds[0], distractor_bounds[1] + 1))
+    episode_delay = _log_uniform(template_rng, delay_bounds)
+    hazard_classes = tuple(
+        sorted(int(template_rng.integers(0, config.data.hazard_types)) for _ in range(2))
+    )
+    relevant_nodes = tuple(range(recipe.requested_path_length + 1))
+    candidates = tuple(
+        (source, target)
+        for source in range(recipe.requested_path_length + 1, config.data.max_entities - 3)
+        for target in range(recipe.requested_path_length + 1, config.data.max_entities - 3)
+        if source < target
+    )
+    structure_rng = _cohort_generator(bundle, SeedStream.STRUCTURE)
+    selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
+    distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
+    timestamps_rng = _cohort_generator(bundle, SeedStream.TIMESTAMPS)
+    fact_gaps = tuple(
+        _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
+        for _ in range(recipe.requested_path_length + distractor_count + 3)
+    )
+    activation_gap = _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
+    permutation = tuple(
+        int(value)
+        for value in _member_generator(bundle, SeedStream.NODE_PERMUTATION).permutation(64)
+    )
+    relabel = {canonical: permutation[canonical] for canonical in range(64)}
+    if truth.relevant_node_path != tuple(relabel[node] for node in relevant_nodes):
+        _fail("member node permutation provenance disagrees")
+    facts: list[object] = [
+        LinkFact(relabel[source], relabel[target]) for source, target in pairwise(relevant_nodes)
+    ]
+    facts.extend(LinkFact(relabel[source], relabel[target]) for source, target in distractor_edges)
+    terminals_rng = _member_generator(bundle, SeedStream.TERMINALS)
+    hazard_types = tuple(int(value) for value in terminals_rng.permutation(hazard_classes))
+    terminal_nodes = tuple(
+        relabel[(61, 62, 63)[int(index)]] for index in terminals_rng.permutation(3)
+    )
+    target = relabel[relevant_nodes[-1]]
+    if recipe.variant is EpisodeVariant.POSITIVE:
+        facts.extend(
+            (
+                HazardFact(target, hazard_types[0], episode_delay),
+                HazardFact(terminal_nodes[0], hazard_types[1], episode_delay),
+                SafeFact(terminal_nodes[1]),
+            )
+        )
+    elif recipe.variant is EpisodeVariant.SAFE_NEGATIVE:
+        facts.extend(
+            (
+                SafeFact(target),
+                HazardFact(terminal_nodes[0], hazard_types[0], episode_delay),
+                HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
+            )
+        )
+    elif recipe.variant is EpisodeVariant.DISCONNECTED_NEGATIVE:
+        facts.extend(
+            (
+                HazardFact(terminal_nodes[0], hazard_types[0], episode_delay),
+                HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
+                SafeFact(terminal_nodes[2]),
+            )
+        )
+    else:
+        _fail("episode variant is invalid")
+    presentation = _member_generator(bundle, SeedStream.PRESENTATION).permutation(len(facts))
+    return tuple(facts[int(index)] for index in presentation), fact_gaps, activation_gap
+
+
+def _require_acyclic_links(links: tuple[ExternalEvent, ...]) -> None:
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for event in links:
+        assert isinstance(event.payload, LinkFact)
+        adjacency[event.payload.source_node].add(event.payload.target_node)
+    visiting: set[int] = set()
+    complete: set[int] = set()
+
+    def visit(node: int) -> None:
+        if node in visiting:
+            _fail("LINK topology contains a cycle")
+        if node in complete:
+            return
+        visiting.add(node)
+        for target in adjacency[node]:
+            visit(target)
+        visiting.remove(node)
+        complete.add(node)
+
+    for node in tuple(adjacency):
+        visit(node)
 
 
 def _link_signature(
@@ -218,6 +406,45 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         _fail("activation timestamp must follow FACT timestamps")
     if not _is_close(activation_time, truth.activation_time):
         _fail("truth activation time must match public activation")
+
+    observation_lower, observation_upper = config.data.observation_gap_log_uniform
+    fact_gaps = tuple(
+        event.timestamp - (initial_time if index == 0 else facts[index - 1].timestamp)
+        for index, event in enumerate(facts)
+    )
+    activation_gap = activation_time - previous_time
+    if any(
+        not observation_lower <= gap <= observation_upper for gap in (*fact_gaps, activation_gap)
+    ):
+        _fail("FACT and activation gaps must stay in the configured observation interval")
+    link_endpoints: set[tuple[int, int]] = set()
+    for event in links:
+        assert isinstance(event.payload, LinkFact)
+        endpoints = (event.payload.source_node, event.payload.target_node)
+        if endpoints in link_endpoints:
+            _fail("LINK endpoints must be unique regardless of confidence")
+        link_endpoints.add(endpoints)
+    _require_acyclic_links(tuple(links))
+    for event in terminals:
+        if isinstance(event.payload, HazardFact) and not _is_close(
+            event.payload.delay, truth.episode_delay
+        ):
+            _fail("every hazard terminal delay must match private episode delay")
+
+    expected_payloads, expected_fact_gaps, expected_activation_gap = _expected_member_payloads(
+        bundle, config
+    )
+    if tuple(event.payload for event in facts) != expected_payloads:
+        _fail("member presentation provenance disagrees")
+    if (
+        len(fact_gaps) != len(expected_fact_gaps)
+        or any(
+            not _is_close(actual, expected)
+            for actual, expected in zip(fact_gaps, expected_fact_gaps, strict=True)
+        )
+        or not _is_close(activation_gap, expected_activation_gap)
+    ):
+        _fail("member timing provenance disagrees")
 
     if truth.key.suite in _PRIMARY_SUITES:
         if len(facts) != len(links) + 3:
@@ -352,9 +579,6 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
             if isinstance(event.payload, HazardFact)
         )
     )
-    gaps = tuple(event.timestamp - initial_time for event in facts[:1]) + tuple(
-        facts[index].timestamp - facts[index - 1].timestamp for index in range(1, len(facts))
-    )
     report = InvariantReport(
         valid=True,
         fact_count=len(facts),
@@ -379,8 +603,8 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         path=tuple(path),
         link_record_ids=tuple(event.event_id for event in selected_links),
         terminal=terminal,
-        fact_gaps=gaps,
-        activation_gap=activation_time - previous_time,
+        fact_gaps=fact_gaps,
+        activation_gap=activation_gap,
         hazard_signature=hazard_signature,
         link_signature=_link_signature(tuple(links)),
     )
@@ -481,4 +705,17 @@ def validate_cohort_invariants(
         reports = tuple(
             validate_episode_invariants(bundle, config, strict=False) for bundle in episodes
         )
-        return (reports[0], reports[1], reports[2], reports[3])
+        invalid_reports = tuple(
+            replace(
+                report,
+                valid=False,
+                check_ids=(*report.check_ids, "cohort_matching"),
+            )
+            for report in reports
+        )
+        return (
+            invalid_reports[0],
+            invalid_reports[1],
+            invalid_reports[2],
+            invalid_reports[3],
+        )

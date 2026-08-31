@@ -50,3 +50,9 @@ def test_generator_and_invariants_do_not_import_oracle() -> None:
     assert "silent_cascade.env.oracle" not in imported_modules("silent_cascade.env.generator")
     assert "silent_cascade.env.oracle" not in imported_modules("silent_cascade.env.invariants")
     assert "silent_cascade.env.generator" not in imported_modules("silent_cascade.env.invariants")
+
+
+def test_oracle_does_not_import_generator_or_invariants() -> None:
+    modules = imported_modules("silent_cascade.env.oracle")
+    assert "silent_cascade.env.generator" not in modules
+    assert "silent_cascade.env.invariants" not in modules
