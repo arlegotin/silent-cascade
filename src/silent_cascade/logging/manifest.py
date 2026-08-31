@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 import uuid
 from enum import StrEnum
 from pathlib import Path
@@ -22,6 +23,9 @@ class ManifestAccessClass(StrEnum):
     DEBUG = "debug"
     VALIDATION = "validation"
     FROZEN_TEST = "frozen_test"
+
+
+_FROZEN_ALLOCATION_ID_PATTERN = re.compile(r"^frozen-[a-z0-9][a-z0-9-]*$")
 
 
 class MatchedManifestCoordinate(StrictModel):
@@ -195,7 +199,7 @@ class EpisodeManifest(StrictModel):
             if (
                 provenance.split_namespace is not SplitNamespace.FROZEN
                 or provenance.generation_mode != "independent"
-                or not provenance.allocation_id.startswith("frozen-")
+                or _FROZEN_ALLOCATION_ID_PATTERN.fullmatch(provenance.allocation_id) is None
             ):
                 raise ValueError(
                     "frozen-test manifests require a distinct frozen independent allocation"

@@ -346,8 +346,37 @@ def test_frozen_manifest_rejects_non_frozen_allocation_aliases(allocation_id: st
         _frozen_manifest(allocation_id)
 
 
-def test_frozen_manifest_requires_distinct_frozen_allocation_identity() -> None:
-    assert _frozen_manifest("frozen-phase6-v1").provenance.allocation_id == "frozen-phase6-v1"
+@pytest.mark.parametrize(
+    "allocation_id",
+    [
+        "frozen-",
+        "frozen- ",
+        "frozen-\t",
+        "frozen--phase6-v1",
+        "frozen-Phase6-v1",
+        "Frozen-phase6-v1",
+        "frozen_phase6_v1",
+    ],
+)
+def test_frozen_manifest_rejects_malformed_allocation_identity_direct(allocation_id: str) -> None:
+    with pytest.raises(ValueError, match="frozen independent allocation"):
+        _frozen_manifest(allocation_id)
+
+
+@pytest.mark.parametrize("allocation_id", ["frozen-", "frozen- ", "Frozen-phase6-v1"])
+def test_frozen_manifest_rejects_malformed_allocation_identity_json(allocation_id: str) -> None:
+    payload = _frozen_manifest("frozen-phase6-v1").model_dump(mode="json")
+    payload["provenance"]["allocation_id"] = allocation_id  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="frozen independent allocation"):
+        EpisodeManifest.model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("allocation_id", ["frozen-a", "frozen-0", "frozen-phase6-v1"])
+def test_frozen_manifest_accepts_only_approved_allocation_identity_grammar(
+    allocation_id: str,
+) -> None:
+    assert _frozen_manifest(allocation_id).provenance.allocation_id == allocation_id
 
 
 def test_validation_manifest_rejects_wrong_namespace_mode_and_membership(
