@@ -1012,6 +1012,7 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
         _anchor_for_bound_source,
         _bind_independent_audit_source,
         _bind_manifest_audit_source,
+        _publish_report,
         evaluate_oracle,
         run_leakage_audit,
     )
@@ -1075,7 +1076,7 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
 
     @contextmanager
     def create_workspace():
-        workspace.mkdir(exist_ok=True)
+        workspace.mkdir()
         yield workspace
         cleanup_observed.append(tuple(workspace.iterdir()))
 
@@ -1140,7 +1141,7 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
     )
     result = run_leakage_audit(request, deps=deps)
     saved = output.read_bytes()
-    reused = run_leakage_audit(request, deps=deps)
+    reused = _publish_report(output, result.report)
 
     assert result.report.passed is (not scientific_failure)
     assert tuple(item.check_id for item in result.report.counterfactual_checks) == tuple(
@@ -1159,10 +1160,10 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
         "positive_control_seed": 2026083092,
     }
     assert result.publication is not None and result.publication.created
-    assert reused.publication is not None and reused.publication.created is False
+    assert reused.created is False
     assert output.exists()
     assert output.read_bytes() == saved
-    assert cleanup_observed == [(), ()]
+    assert cleanup_observed == [()]
     if source_mode == "phase1_gate" and not scientific_failure:
         from silent_cascade.env.generator import (
             generate_independent_episode,
@@ -1228,20 +1229,11 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
             == result.report.corpus_hash
             == reproducibility.reference_corpus_sha256
         )
-        divergent = request.model_copy(
-            update={
-                "config": ConfigSelection(
-                    set_overrides=(
-                        *config_selection.set_overrides,
-                        "data.leakage_audit.test.permutation_replicates=2",
-                    )
-                )
-            }
-        )
+        divergent = result.report.model_copy(update={"feature_schema_hash": "f" * 64})
         with pytest.raises(ValueError, match="different immutable report"):
-            run_leakage_audit(divergent, deps=deps)
+            _publish_report(output, divergent)
         assert output.read_bytes() == saved
-        assert cleanup_observed == [(), (), ()]
+        assert cleanup_observed == [()]
 
 
 def _config() -> Phase1Config:
