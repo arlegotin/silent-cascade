@@ -135,6 +135,14 @@ def test_records_actions_hypotheses_and_events_are_frozen_with_immutable_tuples(
         action.timestamp = 2.0  # type: ignore[misc]
 
 
+@pytest.mark.parametrize("support_ids", [(), (3, 3)])
+def test_inferred_hypotheses_require_nonempty_unique_support_ids(
+    support_ids: tuple[int, ...],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        Hypothesis(1, 2.0, 1.0, Provenance.INFERRED, support_ids, False)
+
+
 def test_non_fact_event_cannot_become_memory_record() -> None:
     event = ExternalEvent(2, 0.0, ExternalEventKind.ACTIVATE, ActivationPayload(1))
 

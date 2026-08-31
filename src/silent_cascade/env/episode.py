@@ -14,10 +14,11 @@ from pydantic import field_validator
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.errors import EpisodeInvariantError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.schemas import AgentInit, ExternalEvent, ExternalEventKind
+from silent_cascade.schemas import AgentInit, ExternalEvent, ExternalEventKind, HazardFact
 from silent_cascade.validation import StrictModel
 
 _DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_TIME_TOLERANCE = 1.0e-9
 
 
 def _require_int(value: object, name: str, *, minimum: int = 0) -> None:
@@ -32,6 +33,10 @@ def _require_float(value: object, name: str, *, positive: bool = False) -> None:
         raise TypeError(f"{name} must be an exact float")
     if not math.isfinite(value) or (positive and value <= 0.0):
         raise ValueError(f"{name} must be finite" + (" and positive" if positive else ""))
+
+
+def _times_equal(left: float, right: float) -> bool:
+    return abs(left - right) <= _TIME_TOLERANCE
 
 
 class EpisodeVariant(StrEnum):
@@ -208,7 +213,9 @@ class EpisodeTruth:
             raise EpisodeInvariantError("private terminal must be OUTCOME or END")
         _require_float(self.activation_time, "activation_time")
         _require_float(self.episode_delay, "episode_delay", positive=True)
-        if self.private_terminal.timestamp != self.activation_time + self.episode_delay:
+        if not _times_equal(
+            self.private_terminal.timestamp, self.activation_time + self.episode_delay
+        ):
             raise EpisodeInvariantError("private terminal timestamp must match delay")
         _require_int(self.rejection_count, "rejection_count")
         if not isinstance(self.rejection_reasons, tuple) or not all(
@@ -232,8 +239,16 @@ class EpisodeTruth:
             _require_float(start, "action_window_start")
             _require_float(end, "action_window_end")
             _require_float(target, "action_target")
-            if not start < target < end < self.private_terminal.timestamp:
-                raise EpisodeInvariantError("action window must precede private terminal")
+            terminal_time = self.private_terminal.timestamp
+            expected_start = terminal_time - 0.25 * self.episode_delay
+            expected_end = terminal_time - 0.10 * self.episode_delay
+            expected_target = terminal_time - 0.175 * self.episode_delay
+            if not (
+                _times_equal(start, expected_start)
+                and _times_equal(end, expected_end)
+                and _times_equal(target, expected_target)
+            ):
+                raise EpisodeInvariantError("positive action window must match OFD timing")
         else:
             if self.private_terminal.kind is not ExternalEventKind.END:
                 raise EpisodeInvariantError("negative episodes require an END terminal")
@@ -312,9 +327,12 @@ class EpisodeBundle:
         public_ids = {event.event_id for event in self.public.events}
         if self.truth.private_terminal.event_id in public_ids:
             raise EpisodeInvariantError("private terminal ID must not be public")
-        fact_ids = {
-            event.event_id for event in self.public.events if event.kind is ExternalEventKind.FACT
+        facts_by_id = {
+            event.event_id: event
+            for event in self.public.events
+            if event.kind is ExternalEventKind.FACT
         }
+        fact_ids = set(facts_by_id)
         if not set(self.truth.relevant_record_ids).issubset(fact_ids):
             raise EpisodeInvariantError("relevant record IDs must refer to FACT events")
         if (
@@ -322,6 +340,26 @@ class EpisodeBundle:
             and self.truth.terminal_record_id not in fact_ids
         ):
             raise EpisodeInvariantError("terminal record ID must refer to a FACT event")
+        if self.truth.recipe.variant is EpisodeVariant.POSITIVE:
+            self._validate_positive_terminal(facts_by_id)
+
+    def _validate_positive_terminal(self, facts_by_id: dict[int, ExternalEvent]) -> None:
+        terminal_id = self.truth.terminal_record_id
+        hazard_type = self.truth.relevant_hazard_type
+        assert terminal_id is not None and hazard_type is not None
+        if terminal_id not in self.truth.relevant_record_ids:
+            raise EpisodeInvariantError("positive terminal hazard must be a relevant record")
+        payload = facts_by_id[terminal_id].payload
+        if not isinstance(payload, HazardFact):
+            raise EpisodeInvariantError("positive terminal hazard must select a HazardFact")
+        if (
+            payload.node != self.truth.relevant_node_path[-1]
+            or payload.hazard_type != hazard_type
+            or not _times_equal(payload.delay, self.truth.episode_delay)
+        ):
+            raise EpisodeInvariantError(
+                "positive terminal hazard must match node, type, and delay truth"
+            )
 
 
 def public_projection(bundle: EpisodeBundle) -> PublicEpisode:
@@ -369,7 +407,6 @@ class EpisodeArtifact(StrictModel):
         for field in ("relevant_node_path", "relevant_record_ids", "rejection_reasons"):
             normalized[field] = _tuple_from_list(normalized.get(field))
         return normalized
-        return value
 
     @classmethod
     def from_bundle(cls, bundle: EpisodeBundle) -> Self:

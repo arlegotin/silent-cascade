@@ -247,6 +247,10 @@ class Hypothesis:
         if not isinstance(self.provenance, Provenance):
             raise TypeError("provenance must be a Provenance")
         _require_ids(self.support_ids, "support_ids")
+        if self.provenance is Provenance.INFERRED and (
+            not self.support_ids or len(set(self.support_ids)) != len(self.support_ids)
+        ):
+            raise ValueError("inferred hypotheses require nonempty unique support_ids")
         if type(self.is_safe) is not bool:
             raise TypeError("is_safe must be a bool")
         if self.is_safe and (self.hazard_type is not None or self.deadline is not None):

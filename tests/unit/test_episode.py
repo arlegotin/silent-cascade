@@ -64,9 +64,9 @@ def positive_bundle() -> EpisodeBundle:
         private_terminal=ExternalEvent(99, 4.0, ExternalEventKind.OUTCOME, None),
         activation_time=1.0,
         episode_delay=3.0,
-        action_window_start=3.2,
-        action_window_end=3.8,
-        action_target=3.5,
+        action_window_start=3.25,
+        action_window_end=3.7,
+        action_target=3.475,
         rejection_count=0,
         rejection_reasons=(),
     )
@@ -95,14 +95,15 @@ def test_public_projection_has_no_private_truth_fields(positive_bundle: EpisodeB
 def test_public_artifact_and_public_error_payload_do_not_leak_private_sentinel(
     positive_bundle: EpisodeBundle,
 ) -> None:
-    sentinel = "PRIVATE-ROOT-SEED-998877"
+    string_sentinel = "PRIVATE-ROOT-SEED-998877"
+    numeric_sentinel = 918_273_645
     truth = positive_bundle.truth
     private = EpisodeTruth(
         key=EpisodeKey(
             truth.key.generator_version,
             truth.key.split_namespace,
             truth.key.suite,
-            998877,
+            numeric_sentinel,
             IndependentEpisodeCoordinate("independent", 987654, 123),
         ),
         recipe=truth.recipe,
@@ -116,18 +117,75 @@ def test_public_artifact_and_public_error_payload_do_not_leak_private_sentinel(
         action_window_start=truth.action_window_start,
         action_window_end=truth.action_window_end,
         action_target=truth.action_target,
-        rejection_count=998877,
-        rejection_reasons=(sentinel,),
+        rejection_count=numeric_sentinel,
+        rejection_reasons=(string_sentinel,),
     )
     bundle = EpisodeBundle(positive_bundle.public, private)
     public = public_projection(bundle)
     serialized = canonical_json_bytes(PublicEpisodeArtifact.from_public(public)).decode()
 
-    assert sentinel not in repr(public)
-    assert sentinel not in serialized
-    with pytest.raises(ValueError) as raised:
-        CorpusDigestEntry(sentinel, "11" * 32)
-    assert sentinel not in repr(raised.value)
+    for sentinel in (string_sentinel, str(numeric_sentinel)):
+        assert sentinel not in repr(public)
+        assert sentinel not in serialized
+
+    with pytest.raises(EpisodeInvariantError) as raised:
+        PublicEpisode(
+            public.init,
+            (*public.events, private.private_terminal),
+        )
+    public_error_payload = raised.value.to_payload()
+    for sentinel in (string_sentinel, str(numeric_sentinel)):
+        assert sentinel not in repr(public_error_payload)
+        assert sentinel not in canonical_json_bytes(public_error_payload).decode("utf-8")
+
+
+def test_positive_bundle_requires_exact_ofd_window_and_target(
+    positive_bundle: EpisodeBundle,
+) -> None:
+    with pytest.raises(EpisodeInvariantError, match="OFD"):
+        replace(
+            positive_bundle.truth,
+            action_window_start=1.1,
+            action_window_end=1.2,
+            action_target=1.15,
+        )
+
+
+@pytest.mark.parametrize(
+    ("node", "hazard_type", "delay"),
+    [
+        (3, 1, 3.0),
+        (2, 2, 3.0),
+        (2, 1, 2.0),
+    ],
+)
+def test_positive_terminal_record_requires_matching_relevant_hazard_fact(
+    positive_bundle: EpisodeBundle, node: int, hazard_type: int, delay: float
+) -> None:
+    extra_hazard = ExternalEvent(
+        13, 0.75, ExternalEventKind.FACT, HazardFact(node, hazard_type, delay)
+    )
+    public = PublicEpisode(
+        positive_bundle.public.init,
+        (*positive_bundle.public.events[:-1], extra_hazard, positive_bundle.public.events[-1]),
+    )
+    inconsistent_truth = replace(
+        positive_bundle.truth,
+        relevant_record_ids=(*positive_bundle.truth.relevant_record_ids, extra_hazard.event_id),
+        terminal_record_id=extra_hazard.event_id,
+    )
+
+    with pytest.raises(EpisodeInvariantError, match="terminal hazard"):
+        EpisodeBundle(public, inconsistent_truth)
+
+
+def test_positive_terminal_record_must_be_relevant_hazard_fact(
+    positive_bundle: EpisodeBundle,
+) -> None:
+    inconsistent_truth = replace(positive_bundle.truth, terminal_record_id=10)
+
+    with pytest.raises(EpisodeInvariantError, match="terminal hazard"):
+        EpisodeBundle(positive_bundle.public, inconsistent_truth)
 
 
 @pytest.mark.parametrize("variant", tuple(EpisodeVariant))
