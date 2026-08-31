@@ -1,6 +1,7 @@
 """Contracts for suite allocation and cohort-level sampling."""
 
 from collections import Counter
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from silent_cascade.env.generator import (
     ClockEpisodeBlock,
     CohortAllocation,
     CohortBlock,
+    CohortTemplate,
     EpisodeBlock,
     IndependentAllocation,
     iter_cohort_requests,
@@ -280,3 +282,95 @@ def test_frozen_guards_reject_config_drift(config: Phase1Config) -> None:
     )
     with pytest.raises(ValueError, match="frozen"):
         validate_validation_allocation(VALIDATION_ALLOCATION, altered)
+
+
+def valid_cohort_template(**changes: object) -> CohortTemplate:
+    values: dict[str, object] = {
+        "requested_path_length": 2,
+        "relevant_nodes": (0, 1, 2),
+        "relevant_edges": ((0, 1), (1, 2)),
+        "distractor_edges": ((3, 4),),
+        "unreachable_terminal_nodes": (61, 62, 63),
+        "episode_delay": 8.0,
+        "fact_gap_sequence": (0.1, 0.2, 0.3, 0.4, 0.5, 0.6),
+        "activation_gap": 0.7,
+        "hazard_class_multiset": (0, 1),
+    }
+    values.update(changes)
+    return CohortTemplate(**values)  # type: ignore[arg-type]
+
+
+def test_cohort_template_is_deeply_immutable_and_sampler_output_is_valid(
+    config: Phase1Config,
+) -> None:
+    template = valid_cohort_template()
+    with pytest.raises(FrozenInstanceError):
+        template.episode_delay = 9.0  # type: ignore[misc]
+
+    with pytest.raises(TypeError, match="tuple"):
+        valid_cohort_template(
+            relevant_nodes=[0, 1, 2],
+            relevant_edges=[(0, 1), (1, 2)],
+            distractor_edges=[],
+            unreachable_terminal_nodes=[61, 62, 63],
+            fact_gap_sequence=[0.1],
+            hazard_class_multiset=[0, 1],
+        )
+
+    request = next(iter_cohort_requests(VALIDATION_ALLOCATION, root_seed=41))
+    sampled = sample_cohort_template(config, request, attempt=0)
+    assert sampled == CohortTemplate(
+        requested_path_length=sampled.requested_path_length,
+        relevant_nodes=sampled.relevant_nodes,
+        relevant_edges=sampled.relevant_edges,
+        distractor_edges=sampled.distractor_edges,
+        unreachable_terminal_nodes=sampled.unreachable_terminal_nodes,
+        episode_delay=sampled.episode_delay,
+        fact_gap_sequence=sampled.fact_gap_sequence,
+        activation_gap=sampled.activation_gap,
+        hazard_class_multiset=sampled.hazard_class_multiset,
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({"requested_path_length": True}, "exact integer"),
+        ({"relevant_nodes": (0, True, 2)}, "exact integer"),
+        ({"episode_delay": 8}, "exact float"),
+        ({"activation_gap": 1}, "exact float"),
+        ({"fact_gap_sequence": (0.1, 1, 0.3, 0.4, 0.5, 0.6)}, "exact float"),
+        ({"episode_delay": float("nan")}, "positive and finite"),
+        ({"activation_gap": float("inf")}, "positive and finite"),
+        ({"relevant_nodes": (0, 2, 3)}, "canonical"),
+        ({"relevant_edges": ((0, 1), (1, 3))}, "canonical"),
+        ({"relevant_edges": ((0, 1, 2),)}, "edge"),
+        (
+            {
+                "distractor_edges": ((3, 4), (3, 4)),
+                "fact_gap_sequence": (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7),
+            },
+            "duplicate",
+        ),
+        (
+            {
+                "distractor_edges": ((3, 4), (4, 3)),
+                "fact_gap_sequence": (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7),
+            },
+            "acyclic",
+        ),
+        ({"distractor_edges": ((2, 3),)}, "touch"),
+        ({"unreachable_terminal_nodes": (61, 62)}, "exactly 3"),
+        ({"unreachable_terminal_nodes": (61, 61, 63)}, "distinct"),
+        ({"unreachable_terminal_nodes": (2, 62, 63)}, "distinct"),
+        ({"hazard_class_multiset": (0,)}, "exactly 2"),
+        ({"hazard_class_multiset": (0, True)}, "exact integer"),
+        ({"hazard_class_multiset": (0, 4)}, "hazard"),
+        ({"hazard_class_multiset": (1, 0)}, "canonical"),
+    ],
+)
+def test_cohort_template_rejects_malformed_or_non_strict_values(
+    changes: dict[str, object], error: str
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=error):
+        valid_cohort_template(**changes)

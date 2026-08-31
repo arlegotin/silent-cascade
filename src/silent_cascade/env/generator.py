@@ -36,6 +36,8 @@ _PRIMARY_SUITES = frozenset(
 )
 _OBSERVATION_GAP_RANGE = (0.1, 8.0)
 _TERMINAL_RECORD_COUNT = 3
+_MAX_ENTITY_ID = 63
+_HAZARD_TYPE_COUNT = 4
 
 
 def _require_exact_int(value: object, name: str, *, minimum: int = 0) -> None:
@@ -50,6 +52,56 @@ def _require_root_seed(root_seed: object) -> int:
     if root_seed >= 2**128:
         raise ValueError("root_seed must be below 2**128")
     return root_seed
+
+
+def _require_positive_float(value: object, name: str) -> float:
+    if type(value) is not float:
+        raise TypeError(f"{name} must be an exact float")
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be positive and finite")
+    return value
+
+
+def _require_int_tuple(
+    value: object,
+    name: str,
+    *,
+    length: int | None = None,
+    minimum: int = 0,
+    maximum: int = _MAX_ENTITY_ID,
+) -> tuple[int, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple")
+    if length is not None and len(value) != length:
+        raise ValueError(f"{name} must contain exactly {length} items")
+    for item in value:
+        _require_exact_int(item, name, minimum=minimum)
+        if item > maximum:
+            raise ValueError(f"{name} is out of bounds")
+    return value
+
+
+def _require_edge_tuple(value: object, name: str) -> tuple[tuple[int, int], ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple")
+    for edge in value:
+        if not isinstance(edge, tuple) or len(edge) != 2:
+            raise TypeError(f"{name} must contain two-item tuple edges")
+        _require_exact_int(edge[0], name)
+        _require_exact_int(edge[1], name)
+        if edge[0] > _MAX_ENTITY_ID or edge[1] > _MAX_ENTITY_ID:
+            raise ValueError(f"{name} is out of bounds")
+    return value
+
+
+def _require_positive_float_tuple(value: object, name: str, *, length: int) -> tuple[float, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple")
+    if len(value) != length:
+        raise ValueError(f"{name} must contain exactly {length} items")
+    for item in value:
+        _require_positive_float(item, name)
+    return value
 
 
 def _log_uniform(generator: np.random.Generator, bounds: tuple[float, float]) -> float:
@@ -271,6 +323,55 @@ class CohortTemplate:
     fact_gap_sequence: tuple[float, ...]
     activation_gap: float
     hazard_class_multiset: tuple[int, int]
+
+    def __post_init__(self) -> None:
+        _require_exact_int(self.requested_path_length, "requested_path_length", minimum=1)
+        relevant_nodes = _require_int_tuple(
+            self.relevant_nodes,
+            "relevant_nodes",
+            length=self.requested_path_length + 1,
+        )
+        relevant_edges = _require_edge_tuple(self.relevant_edges, "relevant_edges")
+        distractor_edges = _require_edge_tuple(self.distractor_edges, "distractor_edges")
+        unreachable_terminal_nodes = _require_int_tuple(
+            self.unreachable_terminal_nodes,
+            "unreachable_terminal_nodes",
+            length=_TERMINAL_RECORD_COUNT,
+        )
+        _require_positive_float(self.episode_delay, "episode_delay")
+        fact_count = len(relevant_edges) + len(distractor_edges) + _TERMINAL_RECORD_COUNT
+        if fact_count > 64:
+            raise ValueError("template facts exceed the fixed memory capacity")
+        _require_positive_float_tuple(
+            self.fact_gap_sequence, "fact_gap_sequence", length=fact_count
+        )
+        _require_positive_float(self.activation_gap, "activation_gap")
+        hazard_class_multiset = _require_int_tuple(
+            self.hazard_class_multiset,
+            "hazard_class_multiset",
+            length=2,
+            maximum=_HAZARD_TYPE_COUNT - 1,
+        )
+        if relevant_nodes != tuple(range(self.requested_path_length + 1)):
+            raise ValueError("relevant_nodes must be one canonical path")
+        if relevant_edges != tuple(pairwise(relevant_nodes)):
+            raise ValueError("relevant_edges must be one canonical path")
+        if len(set(unreachable_terminal_nodes)) != _TERMINAL_RECORD_COUNT:
+            raise ValueError("unreachable terminal nodes must be distinct")
+        if set(unreachable_terminal_nodes) & set(relevant_nodes):
+            raise ValueError("unreachable terminal nodes must be distinct from relevant nodes")
+        if hazard_class_multiset != tuple(sorted(hazard_class_multiset)):
+            raise ValueError("hazard_class_multiset must be canonical")
+        _validate_template_topology(
+            relevant_nodes,
+            relevant_edges,
+            distractor_edges,
+            (
+                unreachable_terminal_nodes[0],
+                unreachable_terminal_nodes[1],
+                unreachable_terminal_nodes[2],
+            ),
+        )
 
     @property
     def distractor_source_nodes(self) -> tuple[int, ...]:
