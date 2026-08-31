@@ -5,12 +5,13 @@ from itertools import islice
 from pathlib import Path
 
 import numpy as np
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
-from silent_cascade.env.episode import canonical_episode_bytes
+from silent_cascade.env.episode import canonical_episode_bytes, scale_episode_time
 from silent_cascade.env.generator import (
     PHASE1_GATE_ALLOCATION,
     CohortRequest,
@@ -265,3 +266,35 @@ def test_independent_gate_and_frozen_requests_share_one_deterministic_primitive(
                 )
                 == frozen
             )
+
+
+@settings(max_examples=8, deadline=None)
+@given(
+    root_seed=st.integers(min_value=0, max_value=2**32 - 1),
+    episode_index=st.integers(min_value=0, max_value=7_999),
+    target_suite=st.sampled_from((SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X)),
+)
+def test_paired_clock_scaling_preserves_oracle_semantics_and_normalized_windows(
+    root_seed: int, episode_index: int, target_suite: SuiteName
+) -> None:
+    """Scaling a paired IID source must not change its decision or normalized window."""
+    request = next(islice(iter_phase1_gate_requests(root_seed), episode_index, episode_index + 1))
+    bundle = generate_independent_episode(_config(), request, 91)
+    scaled = scale_episode_time(
+        bundle,
+        target_suite,
+        "10000000-0000-4000-8000-000000000001",
+    )
+
+    assert scaled.truth.key == bundle.truth.key
+    assert scaled.truth.recipe.variant is bundle.truth.recipe.variant
+    assert scaled.truth.relevant_node_path == bundle.truth.relevant_node_path
+    assert scaled.truth.relevant_record_ids == bundle.truth.relevant_record_ids
+    if bundle.truth.action_window_start is not None:
+        assert scaled.truth.action_window_start is not None
+        assert scaled.truth.action_window_end is not None
+        assert scaled.truth.action_target is not None
+        assert scaled.truth.action_window_start - scaled.truth.activation_time == pytest.approx(
+            (bundle.truth.action_window_start - bundle.truth.activation_time)
+            * scaled.truth.recipe.clock_scale
+        )

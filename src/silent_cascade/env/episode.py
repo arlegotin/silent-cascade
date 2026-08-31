@@ -5,7 +5,7 @@ import math
 import re
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from enum import StrEnum
 from typing import Literal, Self
@@ -156,6 +156,16 @@ class EpisodeRecipe:
         if self.parent_public_id is not None:
             _validate_public_id(self.parent_public_id)
             _validate_digest(self.parent_episode_sha256)
+        clock_factors = {
+            SuiteName.CLOCK_SCALE_0_1X: 0.1,
+            SuiteName.CLOCK_SCALE_10X: 10.0,
+        }
+        expected_factor = clock_factors.get(self.evaluation_suite)
+        if expected_factor is None:
+            if self.clock_scale != 1.0 or self.parent_public_id is not None:
+                raise ValueError("only paired clock suites may carry clock transform provenance")
+        elif self.clock_scale != expected_factor or self.parent_public_id is None:
+            raise ValueError("paired clock suite must carry its exact factor and parent provenance")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,8 +204,14 @@ class EpisodeTruth:
     def __post_init__(self) -> None:
         if not isinstance(self.key, EpisodeKey) or not isinstance(self.recipe, EpisodeRecipe):
             raise TypeError("key and recipe must be episode values")
-        if self.key.suite is not self.recipe.evaluation_suite:
-            raise EpisodeInvariantError("recipe suite must match episode key")
+        if self.recipe.parent_public_id is None:
+            if self.key.suite is not self.recipe.evaluation_suite:
+                raise EpisodeInvariantError("recipe suite must match episode key")
+        elif self.key.suite is not SuiteName.IID_PRIMARY or self.recipe.evaluation_suite not in (
+            SuiteName.CLOCK_SCALE_0_1X,
+            SuiteName.CLOCK_SCALE_10X,
+        ):
+            raise EpisodeInvariantError("paired clock recipe must retain an IID source key")
         if not isinstance(self.relevant_node_path, tuple) or not self.relevant_node_path:
             raise ValueError("relevant_node_path must be a nonempty tuple")
         if len(self.relevant_node_path) != self.recipe.requested_path_length + 1:
@@ -428,6 +444,107 @@ def canonical_episode_bytes(bundle: EpisodeBundle) -> bytes:
 
 def episode_sha256(bundle: EpisodeBundle) -> str:
     return sha256_bytes(canonical_episode_bytes(bundle))
+
+
+_CLOCK_FACTORS = {
+    SuiteName.CLOCK_SCALE_0_1X: 0.1,
+    SuiteName.CLOCK_SCALE_10X: 10.0,
+}
+
+
+def _scaled_time(value: float, factor: float) -> float:
+    scaled = value * factor
+    if not math.isfinite(scaled):
+        raise EpisodeInvariantError("scaled episode contains nonfinite time values")
+    return scaled
+
+
+def _scale_optional_time(value: float | None, factor: float) -> float | None:
+    return None if value is None else _scaled_time(value, factor)
+
+
+def _scale_timing_provenance(timing: OracleTimingConfig, factor: float) -> OracleTimingConfig:
+    return OracleTimingConfig(
+        delta_0=_scaled_time(timing.delta_0, factor),
+        delta_min=_scaled_time(timing.delta_min, factor),
+        delta_max=_scaled_time(timing.delta_max, factor),
+        jitter_log_std=timing.jitter_log_std,
+        terminal_compose_fraction=timing.terminal_compose_fraction,
+        action_window_start_fraction=timing.action_window_start_fraction,
+        action_target_fraction=timing.action_target_fraction,
+        action_window_end_fraction=timing.action_window_end_fraction,
+    )
+
+
+def _scale_fact_delay(event: ExternalEvent, factor: float) -> ExternalEvent:
+    payload = event.payload
+    if isinstance(payload, HazardFact):
+        payload = replace(payload, delay=_scaled_time(payload.delay, factor))
+    return replace(event, timestamp=_scaled_time(event.timestamp, factor), payload=payload)
+
+
+def scale_episode_time(
+    bundle: EpisodeBundle,
+    target_suite: SuiteName,
+    paired_public_id: str,
+) -> EpisodeBundle:
+    """Create an immutable paired clock child from one unscaled IID source."""
+    if not isinstance(bundle, EpisodeBundle):
+        raise TypeError("bundle must be an EpisodeBundle")
+    if not isinstance(target_suite, SuiteName):
+        raise TypeError("target_suite must be a clock scaling SuiteName")
+    try:
+        factor = _CLOCK_FACTORS[target_suite]
+    except KeyError as error:
+        raise ValueError("target_suite must be a clock scaling suite") from error
+    _validate_public_id(paired_public_id)
+
+    recipe = bundle.truth.recipe
+    if (
+        bundle.truth.key.suite is not SuiteName.IID_PRIMARY
+        or recipe.evaluation_suite is not SuiteName.IID_PRIMARY
+        or recipe.clock_scale != 1.0
+        or recipe.parent_public_id is not None
+    ):
+        raise EpisodeInvariantError("clock transform requires an unscaled IID parent")
+    if paired_public_id == bundle.public.init.episode_public_id:
+        raise EpisodeInvariantError("paired clock child must have a new public ID")
+
+    scaled_events = tuple(_scale_fact_delay(event, factor) for event in bundle.public.events)
+    scaled_terminal = replace(
+        bundle.truth.private_terminal,
+        timestamp=_scaled_time(bundle.truth.private_terminal.timestamp, factor),
+    )
+    scaled_recipe = replace(
+        recipe,
+        evaluation_suite=target_suite,
+        clock_scale=factor,
+        parent_public_id=bundle.public.init.episode_public_id,
+        parent_episode_sha256=episode_sha256(bundle),
+        oracle_timing=_scale_timing_provenance(recipe.oracle_timing, factor),
+    )
+    scaled_truth = replace(
+        bundle.truth,
+        recipe=scaled_recipe,
+        private_terminal=scaled_terminal,
+        activation_time=_scaled_time(bundle.truth.activation_time, factor),
+        episode_delay=_scaled_time(bundle.truth.episode_delay, factor),
+        action_window_start=_scale_optional_time(bundle.truth.action_window_start, factor),
+        action_window_end=_scale_optional_time(bundle.truth.action_window_end, factor),
+        action_target=_scale_optional_time(bundle.truth.action_target, factor),
+    )
+    return EpisodeBundle(
+        PublicEpisode(
+            AgentInit(
+                paired_public_id,
+                bundle.public.init.memory_capacity,
+                bundle.public.init.hazard_type_count,
+                _scaled_time(bundle.public.init.initial_time, factor),
+            ),
+            scaled_events,
+        ),
+        scaled_truth,
+    )
 
 
 def episode_from_bytes(payload: bytes) -> EpisodeBundle:
