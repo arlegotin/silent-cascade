@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import mmap
 import shutil
 import uuid
 from collections import Counter, defaultdict
@@ -20,7 +19,7 @@ from enum import StrEnum
 from itertools import pairwise, permutations
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Literal, Protocol
+from typing import Literal, NoReturn, Protocol
 
 import numpy as np
 import psutil
@@ -481,6 +480,8 @@ def _rebuild_control_bundle(
     relevant_node_path: tuple[int, ...] | None = None,
     hazard_type: int | None = None,
     delay: float | None = None,
+    preserve_fact_timestamps: bool = False,
+    fact_timestamps: Sequence[float] | None = None,
 ) -> EpisodeBundle:
     """Rebind private auditor truth to one deliberately rewritten public artifact."""
     original_facts = _fact_events(bundle)
@@ -490,7 +491,13 @@ def _rebuild_control_bundle(
     ids = tuple(range(len(facts))) if event_ids is None else tuple(event_ids)
     if len(ids) != len(facts) or len(set(ids)) != len(ids):
         raise ValueError("positive-control FACT IDs must be complete and unique")
-    if len(facts) == len(original_facts):
+    if fact_timestamps is not None:
+        if len(fact_timestamps) != len(facts):
+            raise ValueError("positive-control FACT timestamps must be complete")
+        timestamps = tuple(float(timestamp) for timestamp in fact_timestamps)
+    elif preserve_fact_timestamps:
+        timestamps = tuple(event.timestamp for event in facts)
+    elif len(facts) == len(original_facts):
         timestamps = tuple(sorted(event.timestamp for event in original_facts))
     else:
         start = initial_time
@@ -623,31 +630,45 @@ def _rewrite_positive_control(
             event.event_id for event in facts if isinstance(event.payload, (HazardFact, SafeFact))
         }
         essential = required | terminals
-        optional = [event for event in facts if event.event_id not in essential]
-        retained_ids = essential | {
-            event.event_id for event in optional[: max(0, target - len(essential))]
-        }
-        kept = [event for event in facts if event.event_id in retained_ids]
+        removable = [
+            event
+            for event in facts
+            if event.event_id not in essential and isinstance(event.payload, LinkFact)
+        ]
+        remove_count = max(0, len(facts) - target)
+        if remove_count > len(removable):
+            raise ValueError("count control cannot remove a relevant FACT record")
+        removed_ids = (
+            {event.event_id for event in removable[-remove_count:]} if remove_count else set()
+        )
+        kept = [event for event in facts if event.event_id not in removed_ids]
         forbidden = set(bundle.truth.relevant_node_path)
-        while len(kept) < target:
+        padding_count = target - len(kept)
+        for _ in range(padding_count):
             payload = _unused_link(kept, forbidden)
             kept.append(
                 ExternalEvent(
                     max(event.event_id for event in kept) + 1,
-                    facts[-1].timestamp,
+                    0.0,
                     ExternalEventKind.FACT,
                     payload,
                 )
             )
-        padded_gap = minimum_observation_gap * 1.001
-        control_initial_time = min(
-            bundle.public.init.initial_time,
-            bundle.public.events[-1].timestamp - padded_gap * (target + 1),
-        )
+        if padding_count:
+            last_timestamp = facts[-1].timestamp
+            activation_timestamp = bundle.public.events[-1].timestamp
+            first_padding = len(kept) - padding_count
+            for offset in range(padding_count):
+                timestamp = last_timestamp + (
+                    (activation_timestamp - last_timestamp) * (offset + 1) / (padding_count + 1)
+                )
+                kept[first_padding + offset] = replace(
+                    kept[first_padding + offset], timestamp=float(timestamp)
+                )
         bundle = _rebuild_control_bundle(
             bundle,
-            kept[:target],
-            initial_time=control_initial_time,
+            kept,
+            preserve_fact_timestamps=True,
         )
     elif injector.control_id == "PC_ACTIVATION_GAP_BY_LABEL":
         bundle = _rebuild_control_bundle(
@@ -771,7 +792,15 @@ def _rewrite_positive_control(
             None,
         )
         if sentinel is None:
-            sentinel = next(event for event in facts if isinstance(event.payload, LinkFact))
+            last_timestamp = facts[-1].timestamp
+            activation_timestamp = bundle.public.events[-1].timestamp
+            sentinel = ExternalEvent(
+                max(event.event_id for event in facts) + 1,
+                float(last_timestamp + (activation_timestamp - last_timestamp) / 2.0),
+                ExternalEventKind.FACT,
+                _unused_link(facts, set(bundle.truth.relevant_node_path)),
+            )
+            facts.append(sentinel)
         replaced = {event.event_id: event for event in rewritten_hazards}
         facts = [replaced.get(event.event_id, event) for event in facts]
         safe = next(event for event in facts if isinstance(event.payload, SafeFact))
@@ -790,6 +819,7 @@ def _rewrite_positive_control(
             bundle,
             prefix,
             hazard_type=target,
+            fact_timestamps=tuple(sorted(event.timestamp for event in facts)),
         )
     elif injector.control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
         if encoded_manifest_rank is None:
@@ -1268,12 +1298,15 @@ def _validate_source_authentication(
     expected = _expected_profile_denominators(profile, source.episode_count)
     if authentication.suite_path_denominators != expected:
         raise ValueError("audit source profile denominators are not exact")
-    expected_clock = (
-        {"scale_0_1x": 5_000, "scale_10x": 2_000}
-        if profile is LeakageAuditProfileName.PHASE1_GATE
-        else {"scale_0_1x": 1, "scale_10x": 1}
-    )
-    if authentication.clock_scale_pair_counts != expected_clock:
+    clock_counts = authentication.clock_scale_pair_counts
+    if (
+        set(clock_counts) != {"scale_0_1x", "scale_10x"}
+        or any(type(value) is not int or value <= 0 for value in clock_counts.values())
+        or (
+            profile is LeakageAuditProfileName.PHASE1_GATE
+            and clock_counts != {"scale_0_1x": 5_000, "scale_10x": 2_000}
+        )
+    ):
         raise ValueError("audit source clock-pair denominators are not exact")
     return authentication
 
@@ -1311,16 +1344,10 @@ def _validate_independent_trust_anchor(
     return anchor
 
 
-def _resource_guard(config: LeakageAuditConfig) -> None:
+def _resource_guard(config: LeakageAuditConfig, phase: str = "unspecified") -> None:
+    del phase
     if psutil.Process().memory_info().rss > config.max_resident_working_bytes:
         raise MemoryError("leakage audit resident working-set ceiling exceeded")
-
-
-def _release_memmap_pages(values: np.ndarray) -> None:
-    """Release clean mapped pages after copying one bounded working batch."""
-    mapping = getattr(values, "_mmap", None)
-    if mapping is not None and hasattr(mapping, "madvise"):
-        mapping.madvise(mmap.MADV_DONTNEED)
 
 
 def _allocate_feature_store(path: Path, rows: int) -> None:
@@ -1348,7 +1375,7 @@ def _write_feature_batch(
         or not 0 <= start < start + len(batch) <= total_rows
     ):
         raise ValueError("feature-store batch coordinates are invalid")
-    _resource_guard(config)
+    _resource_guard(config, "extraction")
     mapped = np.memmap(
         path,
         dtype=np.float32,
@@ -1360,7 +1387,7 @@ def _write_feature_batch(
         mapped.flush()
     finally:
         mapped._mmap.close()
-    _resource_guard(config)
+    _resource_guard(config, "extraction")
 
 
 def _validate_audit_coordinate(
@@ -1403,34 +1430,16 @@ def _validate_independent_quartets(rows: Sequence[_StoredExample]) -> None:
         )
     )
     for block, quartet in by_block.items():
+        positions = sorted(row.position for row in quartet)
         if (
             len(quartet) != 4
-            or {row.position for row in quartet} != set(range(block * 4, block * 4 + 4))
+            or positions != list(range(positions[0], positions[0] + 4))
+            or positions[0] % 4
             or Counter(row.variant for row in quartet) != expected_variants
             or len({(row.suite, row.path_length) for row in quartet}) != 1
             or {row.group_id for row in quartet} != {f"independent:{block}"}
         ):
             raise ValueError("independent allocation quartet is incomplete or corrupted")
-
-
-def _matched_nuisance_signature(bundle: EpisodeBundle) -> tuple[object, ...]:
-    facts = _fact_events(bundle)
-    degree: dict[int, list[int]] = {}
-    for event in facts:
-        if isinstance(event.payload, LinkFact):
-            degree.setdefault(event.payload.source_node, [0, 0])[1] += 1
-            degree.setdefault(event.payload.target_node, [0, 0])[0] += 1
-    links = tuple(sorted((values[0], values[1]) for values in degree.values()))
-    counts = (
-        sum(isinstance(event.payload, HazardFact) for event in facts),
-        sum(isinstance(event.payload, SafeFact) for event in facts),
-    )
-    return (
-        links,
-        tuple(event.timestamp for event in facts),
-        counts,
-        bundle.truth.episode_delay,
-    )
 
 
 def _split_memberships(
@@ -1635,7 +1644,7 @@ class _BatchedFeatureReader:
         if indices.ndim != 1:
             raise ValueError("feature reader indices must be one-dimensional")
         for offset in range(0, len(indices), self.batch_size):
-            _resource_guard(self.config)
+            _resource_guard(self.config, "batch_read")
             batch_indices = indices[offset : offset + self.batch_size]
             self.max_batch_seen = max(self.max_batch_seen, len(batch_indices))
             temporary: np.memmap | None = None
@@ -1683,7 +1692,7 @@ def _batched_moments(
         second += batch_second + np.square(delta) * count * batch_count / total
         mean += delta * batch_count / total
         count = total
-        _resource_guard(reader.config)
+        _resource_guard(reader.config, "moments")
     if count != len(train) or count == 0:
         raise ValueError("batched moments did not consume the complete training set")
     std = np.sqrt(second / count)
@@ -1748,7 +1757,7 @@ def _fit_predict_batched(
             loss -= float(np.sum(weights * log_probs[np.arange(len(batch_indices)), batch_targets]))
             coefficient_gradient += values.T @ residual
             intercept_gradient += residual.sum(axis=0)
-            _resource_guard(config)
+            _resource_guard(config, "optimization")
         loss += 0.5 * config.l2_penalty * float(np.sum(coefficients * coefficients))
         coefficient_gradient += config.l2_penalty * coefficients
         return loss, np.concatenate((coefficient_gradient.ravel(), intercept_gradient))
@@ -1777,7 +1786,7 @@ def _fit_predict_batched(
             np.argmax(values @ coefficients + intercept, axis=1)
         ]
         offset += count
-        _resource_guard(config)
+        _resource_guard(config, "optimization")
     if offset != len(test):
         raise ValueError("batched prediction did not consume the complete test set")
     return predictions, int(result.nit)
@@ -1918,16 +1927,6 @@ def _holm(probes: list[ShortcutProbeResult], alpha: float) -> list[ShortcutProbe
     ]
 
 
-def _feature_views(values: np.ndarray) -> dict[ShortcutFeatureGroup, np.ndarray]:
-    result: dict[ShortcutFeatureGroup, np.ndarray] = {}
-    start = 0
-    for group, width in zip(tuple(ShortcutFeatureGroup)[:-1], _FEATURE_DIMENSIONS, strict=True):
-        result[group] = values[:, start : start + width]
-        start += width
-    result[ShortcutFeatureGroup.COMBINED] = values
-    return result
-
-
 def _feature_bounds(group: ShortcutFeatureGroup) -> tuple[int, int]:
     if group is ShortcutFeatureGroup.COMBINED:
         return 0, _TOTAL_FEATURE_DIMENSION
@@ -2015,7 +2014,7 @@ def _run_probes(
             for replicate_start in range(
                 0, profile.permutation_replicates, config.permutation_batch_size
             ):
-                _resource_guard(config)
+                _resource_guard(config, "permutation")
                 for replicate in range(
                     replicate_start,
                     min(
@@ -2267,7 +2266,7 @@ def _counterfactual_checks(
     prior_order: tuple[int, int] | None = None
     for pair_index, pair in enumerate(source.iter_clock_pairs()):
         if config is not None and pair_index % config.feature_batch_size == 0:
-            _resource_guard(config)
+            _resource_guard(config, "counterfactual")
         clock_manifest.add(pair)
         parent = pair.parent
         child = pair.child
@@ -2314,7 +2313,7 @@ def _counterfactual_checks(
     matched_parent_ranks: set[int] = set()
     for source_index, example in enumerate(source.iter_examples()):
         if config is not None and source_index % config.feature_batch_size == 0:
-            _resource_guard(config)
+            _resource_guard(config, "counterfactual")
         bundle = example.bundle
         public_id = bundle.public.init.episode_public_id
         expected_parent = parent_identities.get(example.manifest_rank)
@@ -2575,7 +2574,7 @@ def _run_positive_control_probe(
     exceed = 0
     for replicate in range(profile.positive_control_permutation_replicates):
         if replicate % config.permutation_batch_size == 0:
-            _resource_guard(config)
+            _resource_guard(config, "control")
         permuted = _permuted_labels(
             rows,
             labels,
@@ -2627,12 +2626,341 @@ _EXPECTED_CONTROL_FAILURE_ID: dict[str, str | None] = {
 }
 
 
-def _expected_control_failure_id(injector: NamedLeakInjector, row: _StoredExample) -> str | None:
+def _control_mutation_error(control_id: str) -> NoReturn:
+    raise ValueError(f"positive-control public mutation was not exactly declared: {control_id}")
+
+
+def _event_without_id(event: ExternalEvent) -> tuple[float, ExternalEventKind, object]:
+    return (event.timestamp, event.kind, event.payload)
+
+
+def _links_are_acyclic(events: Sequence[ExternalEvent]) -> bool:
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for event in events:
+        if isinstance(event.payload, LinkFact):
+            adjacency[event.payload.source_node].add(event.payload.target_node)
+
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(node: int) -> bool:
+        if node in visiting:
+            return False
+        if node in visited:
+            return True
+        visiting.add(node)
+        if any(not visit(child) for child in adjacency[node]):
+            return False
+        visiting.remove(node)
+        visited.add(node)
+        return True
+
+    return all(visit(node) for node in tuple(adjacency))
+
+
+def _require_exact_control_public_mutation(
+    injector: NamedLeakInjector,
+    original: AuditExample,
+    transformed: AuditExample,
+    *,
+    encoded_manifest_rank: int,
+    injected_hazard_target: int | None,
+) -> None:
+    """Reject every public change outside one control's frozen encoding fields."""
+    before = original.bundle.public
+    after = transformed.bundle.public
+    original_facts = _fact_events(original.bundle)
+    facts = _fact_events(transformed.bundle)
+    original_activation = before.events[-1]
+    activation = after.events[-1]
+    control_id = injector.control_id
+
+    if control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
+        if after != before or transformed.manifest_rank != encoded_manifest_rank:
+            _control_mutation_error(control_id)
+        return
+    if transformed.manifest_rank != original.manifest_rank:
+        _control_mutation_error(control_id)
+
+    if control_id == "PC_COUNT_BY_LABEL":
+        positive = original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE
+        target = 48 if positive else 56
+        if (
+            after.init != before.init
+            or len(facts) != target
+            or activation.kind is not original_activation.kind
+            or activation.timestamp != original_activation.timestamp
+            or activation.payload != original_activation.payload
+            or activation.event_id != target
+            or tuple(event.event_id for event in facts) != tuple(range(target))
+        ):
+            _control_mutation_error(control_id)
+        if len(original_facts) <= target:
+            if facts[: len(original_facts)] != original_facts:
+                _control_mutation_error(control_id)
+            padding = facts[len(original_facts) :]
+            if any(
+                not isinstance(event.payload, LinkFact)
+                or event.payload.source_node in original.bundle.truth.relevant_node_path
+                or event.payload.target_node in original.bundle.truth.relevant_node_path
+                for event in padding
+            ):
+                _control_mutation_error(control_id)
+        else:
+            before_signatures = tuple(_event_without_id(event) for event in original_facts)
+            after_signatures = tuple(_event_without_id(event) for event in facts)
+            cursor = 0
+            retained: list[int] = []
+            for signature in after_signatures:
+                while cursor < len(before_signatures) and before_signatures[cursor] != signature:
+                    cursor += 1
+                if cursor == len(before_signatures):
+                    _control_mutation_error(control_id)
+                retained.append(cursor)
+                cursor += 1
+            removed = [
+                event for index, event in enumerate(original_facts) if index not in set(retained)
+            ]
+            if any(
+                not isinstance(event.payload, LinkFact)
+                or event.event_id in original.bundle.truth.relevant_record_ids
+                for event in removed
+            ):
+                _control_mutation_error(control_id)
+        if not _links_are_acyclic(facts):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_ACTIVATION_GAP_BY_LABEL":
+        expected_gap = (
+            1.0 if original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE else 4.0
+        )
+        if (
+            after.init != before.init
+            or facts != original_facts
+            or activation.event_id != original_activation.event_id
+            or activation.kind is not original_activation.kind
+            or activation.payload != original_activation.payload
+            or activation.timestamp != original_facts[-1].timestamp + expected_gap
+        ):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_TERMINAL_ORDER_BY_VARIANT":
+        if (
+            after.init != before.init
+            or activation != original_activation
+            or len(facts) != len(original_facts)
+            or tuple((event.event_id, event.timestamp, event.kind) for event in facts)
+            != tuple((event.event_id, event.timestamp, event.kind) for event in original_facts)
+            or sorted(repr(event.payload) for event in facts)
+            != sorted(repr(event.payload) for event in original_facts)
+        ):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_ACTIVATION_ID_BY_LABEL":
+        original_start = original_activation.payload
+        if not isinstance(original_start, ActivationPayload):
+            _control_mutation_error(control_id)
+        target = 0 if original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE else 63
+        swaps = {original_start.start_node: target, target: original_start.start_node}
+        if original_start.start_node == target:
+            left, right = original.bundle.truth.relevant_node_path[1:3]
+            swaps.update({left: right, right: left})
+
+        def remap(value: int) -> int:
+            return swaps.get(value, value)
+
+        expected_facts: list[ExternalEvent] = []
+        for event in original_facts:
+            payload = event.payload
+            if isinstance(payload, LinkFact):
+                payload = replace(
+                    payload,
+                    source_node=remap(payload.source_node),
+                    target_node=remap(payload.target_node),
+                )
+            elif isinstance(payload, (HazardFact, SafeFact)):
+                payload = replace(payload, node=remap(payload.node))
+            expected_facts.append(replace(event, payload=payload))
+        if (
+            after.init != before.init
+            or facts != tuple(expected_facts)
+            or activation
+            != replace(
+                original_activation,
+                payload=ActivationPayload(remap(original_start.start_node)),
+            )
+        ):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_RECORD_ID_BY_VARIANT":
+        band = (0, 128, 256)[list(EpisodeVariant).index(original.bundle.truth.recipe.variant)]
+        if (
+            after.init != before.init
+            or tuple(_event_without_id(event) for event in facts)
+            != tuple(_event_without_id(event) for event in original_facts)
+            or tuple(event.event_id for event in facts)
+            != tuple(band + index for index in range(len(facts)))
+            or _event_without_id(activation) != _event_without_id(original_activation)
+            or activation.event_id != 384
+        ):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_PUBLIC_ID_BY_LABEL":
+        before_init = before.init
+        if (
+            after.events != before.events
+            or replace(after.init, episode_public_id=before_init.episode_public_id) != before_init
+        ):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_DELAY_BY_LABEL":
+        delay = 1.0 if original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE else 1024.0
+        expected_facts = tuple(
+            replace(
+                event,
+                payload=(
+                    replace(event.payload, delay=delay)
+                    if isinstance(event.payload, HazardFact)
+                    else event.payload
+                ),
+            )
+            for event in original_facts
+        )
+        if (
+            after.init != before.init
+            or facts != expected_facts
+            or activation != original_activation
+        ):
+            _control_mutation_error(control_id)
+        return
+
+    if control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
+        if original.bundle.truth.recipe.variant is not EpisodeVariant.POSITIVE:
+            if after != before:
+                _control_mutation_error(control_id)
+            return
+        if injected_hazard_target not in range(4):
+            _control_mutation_error(control_id)
+        target = int(injected_hazard_target)
+        if (
+            after.init != before.init
+            or activation.timestamp != original_activation.timestamp
+            or activation.kind is not original_activation.kind
+            or activation.payload != original_activation.payload
+            or activation.event_id != len(facts)
+            or tuple(event.event_id for event in facts) != tuple(range(len(facts)))
+            or len(facts) not in {len(original_facts), len(original_facts) + 1}
+            or not isinstance(facts[target].payload, SafeFact)
+        ):
+            _control_mutation_error(control_id)
+        original_links = [
+            event.payload for event in original_facts if isinstance(event.payload, LinkFact)
+        ]
+        new_links = [event.payload for event in facts if isinstance(event.payload, LinkFact)]
+        if any(link not in new_links for link in original_links) or len(new_links) not in {
+            len(original_links),
+            len(original_links) + 1,
+        }:
+            _control_mutation_error(control_id)
+        extras = [link for link in new_links if link not in original_links]
+        if any(
+            link.source_node in original.bundle.truth.relevant_node_path
+            or link.target_node in original.bundle.truth.relevant_node_path
+            for link in extras
+        ) or not _links_are_acyclic(facts):
+            _control_mutation_error(control_id)
+        sentinel_candidates = [
+            facts[index]
+            for index in range(4)
+            if index != target and isinstance(facts[index].payload, LinkFact)
+        ]
+        if len(sentinel_candidates) != 1:
+            _control_mutation_error(control_id)
+        sentinel = sentinel_candidates[0]
+        if not isinstance(sentinel.payload, LinkFact) or sentinel.payload in {
+            event.payload
+            for event in original_facts
+            if event.event_id in original.bundle.truth.relevant_record_ids
+        }:
+            _control_mutation_error(control_id)
+        original_safe = next(
+            event.payload for event in original_facts if isinstance(event.payload, SafeFact)
+        )
+        if facts[target].payload != original_safe:
+            _control_mutation_error(control_id)
+        original_hazards = [
+            event for event in original_facts if isinstance(event.payload, HazardFact)
+        ]
+        new_hazards = [event for event in facts if isinstance(event.payload, HazardFact)]
+        terminal_id = original.bundle.truth.terminal_record_id
+        expected_hazards = sorted(
+            (
+                event.payload.node,
+                target if event.event_id == terminal_id else (target + 1) % 4,
+                event.payload.delay,
+                event.payload.confidence,
+            )
+            for event in original_hazards
+        )
+        actual_hazards = sorted(
+            (
+                event.payload.node,
+                event.payload.hazard_type,
+                event.payload.delay,
+                event.payload.confidence,
+            )
+            for event in new_hazards
+        )
+        if actual_hazards != expected_hazards:
+            _control_mutation_error(control_id)
+        return
+
+    _control_mutation_error(control_id)
+
+
+def _has_control_observation_gap_consequence(
+    bundle: EpisodeBundle, validation_config: Phase1Config
+) -> bool:
+    facts = _fact_events(bundle)
+    lower, upper = validation_config.data.observation_gap_log_uniform
+    previous = bundle.public.init.initial_time
+    for event in (*facts, bundle.public.events[-1]):
+        gap = event.timestamp - previous
+        if not lower <= gap <= upper:
+            return True
+        previous = event.timestamp
+    return False
+
+
+def _expected_control_failure_id(
+    injector: NamedLeakInjector,
+    row: _StoredExample,
+    original: AuditExample,
+    transformed: AuditExample,
+    validation_config: Phase1Config,
+) -> str | None:
+    changed_fact_count = len(_fact_events(original.bundle)) != len(_fact_events(transformed.bundle))
+    if (
+        injector.control_id in {"PC_COUNT_BY_LABEL", "PC_HAZARD_LAYOUT_BY_CLASS"}
+        and changed_fact_count
+        and _has_control_observation_gap_consequence(transformed.bundle, validation_config)
+    ):
+        return "observation_gap"
+    if injector.control_id == "PC_COUNT_BY_LABEL":
+        return "recipe_distractor_count"
     if (
         injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
         and row.variant is not EpisodeVariant.POSITIVE
     ):
         return None
+    if injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS" and changed_fact_count:
+        return "recipe_distractor_count"
     return _EXPECTED_CONTROL_FAILURE_ID[injector.control_id]
 
 
@@ -2787,7 +3115,7 @@ def _execute_positive_control(
             if local is None:
                 continue
             if local % config.feature_batch_size == 0:
-                _resource_guard(config)
+                _resource_guard(config, "control")
             transformed = _rewrite_positive_control(
                 injector,
                 example,
@@ -2796,10 +3124,23 @@ def _execute_positive_control(
                 injected_hazard_target=hazard_targets.get(local),
                 minimum_observation_gap=validation_config.data.observation_gap_log_uniform[0],
             )
+            _require_exact_control_public_mutation(
+                injector,
+                example,
+                transformed,
+                encoded_manifest_rank=encoded_ranks[local],
+                injected_hazard_target=hazard_targets.get(local),
+            )
             report = validate_episode_invariants(
                 transformed.bundle, validation_config, strict=False
             )
-            expected_failure = _expected_control_failure_id(injector, selected_rows[local])
+            expected_failure = _expected_control_failure_id(
+                injector,
+                selected_rows[local],
+                example,
+                transformed,
+                validation_config,
+            )
             actual_failure = (
                 None
                 if report.valid
@@ -2959,7 +3300,7 @@ def audit_leakage(
 
         for index, example in enumerate(source.iter_examples()):
             if index % config.feature_batch_size == 0:
-                _resource_guard(config)
+                _resource_guard(config, "extraction")
             if example.generation_mode != source.descriptor.generation_mode:
                 raise ValueError("example generation mode differs from source")
             _validate_audit_coordinate(example, index, source.descriptor)
@@ -3042,7 +3383,7 @@ def audit_leakage(
         second_count = 0
         for second_count, example in enumerate(source.iter_examples(), start=1):
             if (second_count - 1) % config.feature_batch_size == 0:
-                _resource_guard(config)
+                _resource_guard(config, "extraction")
             index = second_count - 1
             if index >= len(rows) or (
                 example.bundle.public.init.episode_public_id,
@@ -3170,3 +3511,4 @@ def audit_leakage(
             shutil.rmtree(work)
         except OSError as error:
             raise RuntimeError("leakage audit workspace cleanup failed") from error
+        _resource_guard(config, "cleanup")

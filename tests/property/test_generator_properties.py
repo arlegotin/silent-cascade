@@ -1,7 +1,7 @@
 """Property coverage for independent primary validation and deterministic cohorts."""
 
 from dataclasses import replace
-from itertools import islice
+from itertools import groupby, islice
 from pathlib import Path
 
 import numpy as np
@@ -198,6 +198,39 @@ def _allocation_quartet(
         allocation = PHASE1_GATE_ALLOCATION.model_copy(update={"split_namespace": split_namespace})
         requests = iter_independent_requests(allocation, root_seed)
     return tuple(islice(requests, first_request_index, first_request_index + 4))
+
+
+def test_every_frozen_gate_request_forms_a_valid_audit_quartet() -> None:
+    """All 100k real requests obey the suite-scoped Task 15 quartet contract."""
+    from silent_cascade.env.leakage import _StoredExample, _validate_independent_quartets
+
+    quartet_count = 0
+    episode_count = 0
+    for quartet_index, grouped in groupby(
+        iter_phase1_gate_requests(41),
+        key=lambda request: request.allocation_quartet_index,
+    ):
+        requests = tuple(grouped)
+        rows = tuple(
+            _StoredExample(
+                public_id=f"00000000-0000-4000-8000-{request.episode_index:012d}",
+                digest=f"{position + 1:064x}",
+                group_id=f"independent:{quartet_index}",
+                suite=request.suite,
+                path_length=request.requested_path_length,
+                variant=request.variant,
+                hazard_class=0 if request.variant.value == "positive" else None,
+                block=quartet_index,
+                position=request.episode_index,
+            )
+            for position, request in enumerate(requests)
+        )
+        _validate_independent_quartets(rows)
+        quartet_count += 1
+        episode_count += len(rows)
+
+    assert quartet_count == 25_000
+    assert episode_count == 100_000
 
 
 @settings(max_examples=8, deadline=None)

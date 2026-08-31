@@ -1054,7 +1054,10 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
     if any(
         not observation_lower <= gap <= observation_upper for gap in (*fact_gaps, activation_gap)
     ):
-        _fail("FACT and activation gaps must stay in the configured observation interval")
+        _fail(
+            "FACT and activation gaps must stay in the configured observation interval",
+            check_id="observation_gap",
+        )
     link_endpoints: set[tuple[int, int]] = set()
     for event in links:
         assert isinstance(event.payload, LinkFact)

@@ -79,7 +79,11 @@ def _config_sha256(config: Phase1Config) -> str:
     return sha256_bytes(canonical_json_bytes(config))
 
 
-def _authenticated_test_source(config: Phase1Config, groups_per_path: int = 100):
+def _authenticated_test_source(
+    config: Phase1Config,
+    groups_per_path: int = 100,
+    clock_counts: tuple[int, int] = (1, 1),
+):
     from silent_cascade.env.episode import scale_episode_time
     from silent_cascade.env.leakage import (
         AuditExample,
@@ -113,23 +117,21 @@ def _authenticated_test_source(config: Phase1Config, groups_per_path: int = 100)
         )
         for rank in ((path_index * groups_per_path + local_group) * 4 + member_index,)
     )
-    clock_pairs = (
+    clock_pairs = tuple(
         PairedClockAuditPair(
-            examples[0],
+            examples[parent_rank],
             scale_episode_time(
-                examples[0].bundle,
-                SuiteName.CLOCK_SCALE_0_1X,
-                "00000000-0000-4000-8000-000000000001",
+                examples[parent_rank].bundle,
+                suite,
+                f"00000000-0000-4000-8000-{identifier:012x}",
             ),
-        ),
-        PairedClockAuditPair(
-            examples[groups_per_path * 4],
-            scale_episode_time(
-                examples[groups_per_path * 4].bundle,
-                SuiteName.CLOCK_SCALE_10X,
-                "00000000-0000-4000-8000-000000000002",
-            ),
-        ),
+        )
+        for suite, count, first_parent, first_identifier in (
+            (SuiteName.CLOCK_SCALE_0_1X, clock_counts[0], 0, 1),
+            (SuiteName.CLOCK_SCALE_10X, clock_counts[1], groups_per_path * 4, 2),
+        )
+        for local in range(count)
+        for parent_rank, identifier in ((first_parent + local, first_identifier + 2 * local),)
     )
     descriptor = AuditSourceDescriptor(
         schema_version="leakage-source-v1",
@@ -150,7 +152,10 @@ def _authenticated_test_source(config: Phase1Config, groups_per_path: int = 100)
         source_manifest_sha256=_source_manifest_sha256(examples),
         suite_path_denominators={f"iid_primary:{path}": groups_per_path * 4 for path in (2, 3, 4)},
         clock_pair_manifest_sha256=_clock_pair_manifest_sha256(clock_pairs),
-        clock_scale_pair_counts={"scale_0_1x": 1, "scale_10x": 1},
+        clock_scale_pair_counts={
+            "scale_0_1x": clock_counts[0],
+            "scale_10x": clock_counts[1],
+        },
     )
     return InMemoryAuditSource(
         descriptor,
@@ -294,6 +299,38 @@ def test_shortcut_features_have_fixed_public_only_dimensions() -> None:
         ShortcutFeatureGroup.COMBINED: (1560,),
     }
     assert all(vector.dtype == np.float32 for vector in features.vectors.values())
+    assert {
+        group: hashlib.sha256(vector.tobytes()).hexdigest()
+        for group, vector in features.vectors.items()
+    } == {
+        ShortcutFeatureGroup.ID_POSITION: (
+            "775d241019fbf62e480f652e3ed5b251f44a09e7cb0eac31fec3878ab6e303e2"
+        ),
+        ShortcutFeatureGroup.ACTIVATION_NODE: (
+            "aaefc8ee7169331756b5ac8d16815f8d89898d44ec000a0caf7b73deb74cf34f"
+        ),
+        ShortcutFeatureGroup.FIRST_LAST_FACT: (
+            "a9303ef175356511290714bfdd202e9eb04af319f19362f370d8a39b91210eaa"
+        ),
+        ShortcutFeatureGroup.COUNTS: (
+            "b6b1e7da7520d24132d49e193135f085758738d67b32a47af877d1d162a875cd"
+        ),
+        ShortcutFeatureGroup.ORDER_RECORD_IDS: (
+            "d56ef376688172a240ff4fbae1cf0364957192b2a3fe4da859184cd4801fcc83"
+        ),
+        ShortcutFeatureGroup.TIMES: (
+            "666e935fced16b57bd17d603c3ec9b9e3418f96d8b99e2b1dd211118083a905a"
+        ),
+        ShortcutFeatureGroup.TERMINAL_MULTISET: (
+            "64cb3f6e3b13d2a942bd9e78c479ce4b318fe956c24f8d50c06f048493ef85db"
+        ),
+        ShortcutFeatureGroup.LINK_TOPOLOGY: (
+            "2bf69b460adc292b2ac0fe745c81a5337557f8955a9278c841359f0b57deb153"
+        ),
+        ShortcutFeatureGroup.COMBINED: (
+            "cc0e5c1a40857b6b8458a21ed2d001081e42012325ea27b1500aa5d09ff05484"
+        ),
+    }
     assert np.array_equal(
         features.vectors[ShortcutFeatureGroup.COMBINED],
         np.concatenate(
@@ -338,6 +375,94 @@ def test_feature_extraction_ignores_private_targets_and_rejects_unknown_payloads
 
     with pytest.raises(ValueError, match="payload"):
         replace(bundle.public.events[0], payload=object())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_changed"),
+    (
+        ("public_id", {"id_position"}),
+        ("manifest_rank", {"id_position"}),
+        ("activation", {"activation_node"}),
+        ("timestamp", {"times"}),
+    ),
+)
+def test_public_feature_mutations_change_only_the_declared_vocabulary_family(
+    mutation: str,
+    expected_changed: set[str],
+) -> None:
+    """Targeted public changes must not leak into unrelated feature vocabularies."""
+    from silent_cascade.env.leakage import (
+        AuditExample,
+        ShortcutFeatureGroup,
+        extract_shortcut_features,
+    )
+    from silent_cascade.schemas import ActivationPayload
+
+    bundle = generate_matched_cohort(
+        _config(),
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 7, 3),
+        91,
+    ).episodes[0]
+    example = AuditExample(bundle, 3, "matched", 7, 0)
+    if mutation == "public_id":
+        mutated = replace(
+            example,
+            bundle=replace(
+                bundle,
+                public=replace(
+                    bundle.public,
+                    init=replace(
+                        bundle.public.init,
+                        episode_public_id="ffffffff-ffff-4fff-bfff-ffffffffffff",
+                    ),
+                ),
+            ),
+        )
+    elif mutation == "manifest_rank":
+        mutated = replace(example, manifest_rank=4)
+    elif mutation == "activation":
+        activation = bundle.public.events[-1]
+        assert isinstance(activation.payload, ActivationPayload)
+        mutated = replace(
+            example,
+            bundle=replace(
+                bundle,
+                public=replace(
+                    bundle.public,
+                    events=(
+                        *bundle.public.events[:-1],
+                        replace(
+                            activation,
+                            payload=ActivationPayload((activation.payload.start_node + 1) % 64),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    else:
+        first = bundle.public.events[0]
+        mutated = replace(
+            example,
+            bundle=replace(
+                bundle,
+                public=replace(
+                    bundle.public,
+                    events=(
+                        replace(first, timestamp=first.timestamp + 1.0e-6),
+                        *bundle.public.events[1:],
+                    ),
+                ),
+            ),
+        )
+    baseline = extract_shortcut_features(example, corpus_size=8)
+    changed = extract_shortcut_features(mutated, corpus_size=8)
+
+    assert {
+        group.value
+        for group in ShortcutFeatureGroup
+        if group is not ShortcutFeatureGroup.COMBINED
+        and not np.array_equal(baseline.vectors[group], changed.vectors[group])
+    } == expected_changed
 
 
 def test_audit_rejects_unauthenticated_source_before_iteration(tmp_path: Path) -> None:
@@ -571,6 +696,246 @@ def test_named_positive_controls_write_the_exact_declared_public_codes() -> None
         for index, example in enumerate(examples)
     ]
     assert [item.manifest_rank for item in ordered] == [100, 101, 102, 103]
+
+
+def test_count_control_preserves_existing_records_activation_and_initial_time() -> None:
+    """Count encodings may add only unreachable padding LINKs to a short episode."""
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _rewrite_positive_control,
+    )
+    from silent_cascade.schemas import ActivationPayload, LinkFact
+
+    config = _config()
+    bundles = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 0, 0, 2),
+        91,
+    ).episodes
+    from silent_cascade.env.episode import EpisodeVariant
+
+    bundle = next(item for item in bundles if item.truth.recipe.variant is EpisodeVariant.POSITIVE)
+    assert bundle.truth.recipe.distractor_link_count == 0
+    example = AuditExample(bundle, 0, "matched", 0, 0)
+    injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
+
+    transformed = _rewrite_positive_control(injector, example, 0)
+
+    original_facts = _fact_events(bundle)
+    transformed_facts = _fact_events(transformed.bundle)
+    assert transformed.bundle.public.init == bundle.public.init
+    assert transformed.bundle.public.events[-1].timestamp == bundle.public.events[-1].timestamp
+    assert transformed.bundle.public.events[-1].payload == bundle.public.events[-1].payload
+    assert isinstance(transformed.bundle.public.events[-1].payload, ActivationPayload)
+    assert transformed_facts[: len(original_facts)] == original_facts
+    padding = transformed_facts[len(original_facts) :]
+    assert len(transformed_facts) == 48
+    assert all(isinstance(event.payload, LinkFact) for event in padding)
+    assert all(
+        event.payload.source_node not in bundle.truth.relevant_node_path
+        and event.payload.target_node not in bundle.truth.relevant_node_path
+        for event in padding
+        if isinstance(event.payload, LinkFact)
+    )
+    assert all(
+        left.timestamp < right.timestamp
+        for left, right in zip(
+            (*original_facts[-1:], *padding),
+            (*padding, transformed.bundle.public.events[-1]),
+            strict=True,
+        )
+    )
+
+
+def test_hazard_layout_adds_an_unreachable_sentinel_for_zero_distractors() -> None:
+    """The sentinel must never borrow a relevant path LINK."""
+    from silent_cascade.env.invariants import validate_episode_invariants
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _rewrite_positive_control,
+    )
+    from silent_cascade.schemas import LinkFact, SafeFact
+
+    config = _config()
+    bundles = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 0, 0, 2),
+        91,
+    ).episodes
+    from silent_cascade.env.episode import EpisodeVariant
+
+    bundle = next(item for item in bundles if item.truth.recipe.variant is EpisodeVariant.POSITIVE)
+    assert bundle.truth.recipe.distractor_link_count == 0
+    example = AuditExample(bundle, 0, "matched", 0, 0)
+    injector = next(
+        item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
+    )
+
+    transformed = _rewrite_positive_control(injector, example, 0, injected_hazard_target=3)
+
+    original_links = {
+        event.payload for event in _fact_events(bundle) if isinstance(event.payload, LinkFact)
+    }
+    first_four = _fact_events(transformed.bundle)[:4]
+    sentinels = [
+        event.payload
+        for event in first_four
+        if isinstance(event.payload, LinkFact) and event.payload not in original_links
+    ]
+    assert isinstance(first_four[3].payload, SafeFact)
+    assert len(sentinels) == 1
+    sentinel = sentinels[0]
+    assert sentinel.source_node not in bundle.truth.relevant_node_path
+    assert sentinel.target_node not in bundle.truth.relevant_node_path
+    report = validate_episode_invariants(transformed.bundle, config, strict=False)
+    assert report.check_ids == ("recipe_distractor_count",)
+
+
+def test_count_control_minimum_duration_keeps_the_original_time_boundary() -> None:
+    """Short windows use increasing padding times and one precise admitted consequence."""
+    from silent_cascade.config import resolve_config
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.generator import IndependentEpisodeRequest, generate_stress_episode
+    from silent_cascade.env.invariants import validate_episode_invariants
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _rewrite_positive_control,
+    )
+
+    config = resolve_config(
+        Phase1Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/data/stress.yaml"),
+        ],
+    ).config
+    bundle = generate_stress_episode(
+        config,
+        IndependentEpisodeRequest(
+            split_namespace=SplitNamespace.DEBUG,
+            suite=SuiteName.MINIMUM_DURATION_STRESS,
+            root_seed=20260831,
+            episode_index=41,
+            requested_path_length=3,
+            variant=EpisodeVariant.POSITIVE,
+            allocation_quartet_index=10,
+        ),
+        91,
+    )
+    injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
+
+    transformed = _rewrite_positive_control(
+        injector, AuditExample(bundle, 0, "independent", 10, 41), 0
+    )
+
+    assert transformed.bundle.public.init == bundle.public.init
+    assert transformed.bundle.public.events[-1].timestamp == bundle.public.events[-1].timestamp
+    assert all(
+        left.timestamp < right.timestamp
+        for left, right in zip(
+            _fact_events(transformed.bundle),
+            transformed.bundle.public.events[1:],
+            strict=True,
+        )
+    )
+    report = validate_episode_invariants(transformed.bundle, config, strict=False)
+    assert report.check_ids == ("observation_gap",)
+
+
+def test_count_control_short_observation_window_has_one_precise_admission() -> None:
+    """Sub-minimum inserted gaps are explicit; existing timestamps never move."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.invariants import validate_episode_invariants
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _rewrite_positive_control,
+    )
+
+    config = _config()
+    bundles = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 83, 0, 2),
+        91,
+    ).episodes
+    bundle = next(item for item in bundles if item.truth.recipe.variant is EpisodeVariant.POSITIVE)
+    original_facts = _fact_events(bundle)
+    assert bundle.public.events[-1].timestamp - original_facts[-1].timestamp < 0.11
+    injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
+
+    transformed = _rewrite_positive_control(injector, AuditExample(bundle, 0, "matched", 0, 0), 0)
+
+    assert _fact_events(transformed.bundle)[: len(original_facts)] == original_facts
+    report = validate_episode_invariants(transformed.bundle, config, strict=False)
+    assert report.check_ids == ("observation_gap",)
+
+
+@pytest.mark.parametrize("control_index", range(9))
+def test_every_control_preflight_rejects_an_undeclared_public_field(
+    control_index: int,
+) -> None:
+    """Every control has an exact mutation-field contract before feature extraction."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _require_exact_control_public_mutation,
+        _rewrite_positive_control,
+    )
+
+    bundles = generate_matched_cohort(
+        _config(),
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 17, 3),
+        91,
+    ).episodes
+    injector = NAMED_LEAK_INJECTORS[control_index]
+    bundle = (
+        next(item for item in bundles if item.truth.recipe.variant is EpisodeVariant.POSITIVE)
+        if injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
+        else bundles[0]
+    )
+    original = AuditExample(bundle, 0, "matched", 17, 0)
+    transformed = _rewrite_positive_control(
+        injector,
+        original,
+        0,
+        encoded_manifest_rank=100,
+        injected_hazard_target=2,
+    )
+    _require_exact_control_public_mutation(
+        injector,
+        original,
+        transformed,
+        encoded_manifest_rank=100,
+        injected_hazard_target=2,
+    )
+    corrupted = replace(
+        transformed,
+        bundle=replace(
+            transformed.bundle,
+            public=replace(
+                transformed.bundle.public,
+                init=replace(transformed.bundle.public.init, memory_capacity=63),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="not exactly declared"):
+        _require_exact_control_public_mutation(
+            injector,
+            original,
+            corrupted,
+            encoded_manifest_rank=100,
+            injected_hazard_target=2,
+        )
 
 
 def test_counterfactual_schemas_reject_forged_passes_and_unknown_tags() -> None:
@@ -931,6 +1296,52 @@ def test_independent_quartet_aggregate_rejects_corruption(mutation: str) -> None
 
     with pytest.raises(ValueError, match="independent allocation quartet"):
         _validate_independent_quartets(rows)
+
+
+def test_all_frozen_gate_block_boundaries_are_valid_suite_scoped_quartets() -> None:
+    """Every frozen block boundary, including suite resets, is authoritative."""
+    from itertools import islice
+
+    from silent_cascade.env.generator import (
+        PHASE1_GATE_ALLOCATION,
+        iter_phase1_gate_requests,
+    )
+    from silent_cascade.env.leakage import _StoredExample, _validate_independent_quartets
+
+    requests = iter_phase1_gate_requests(41)
+    observed = []
+    for block in PHASE1_GATE_ALLOCATION.blocks:
+        quartet = tuple(islice(requests, 4))
+        rows = tuple(
+            _StoredExample(
+                public_id=f"00000000-0000-4000-8000-{request.episode_index:012d}",
+                digest=f"{index + 1:064x}",
+                group_id=f"independent:{request.allocation_quartet_index}",
+                suite=request.suite,
+                path_length=request.requested_path_length,
+                variant=request.variant,
+                hazard_class=0 if request.variant.value == "positive" else None,
+                block=request.allocation_quartet_index,
+                position=request.episode_index,
+            )
+            for index, request in enumerate(quartet)
+        )
+        _validate_independent_quartets(rows)
+        observed.append(
+            (
+                quartet[0].suite,
+                quartet[0].requested_path_length,
+                quartet[0].episode_index,
+                quartet[0].allocation_quartet_index,
+            )
+        )
+        tuple(islice(requests, block.episode_count - 4))
+
+    assert len(observed) == 16
+    assert observed[3] == (SuiteName.OOD_DEPTH, 5, 0, 6_000)
+    assert observed[7] == (SuiteName.OOD_SHORT_DELAY, 2, 0, 10_000)
+    assert observed[10] == (SuiteName.OOD_LONG_DELAY, 2, 0, 16_000)
+    assert observed[13] == (SuiteName.DISTRACTOR_FLOOD, 2, 0, 19_000)
 
 
 def test_independently_authenticated_source_executes_all_fits_with_frozen_config(
@@ -1625,7 +2036,7 @@ def test_presentation_counterfactual_forces_a_nonidentity_permutation(
 
 @pytest.mark.parametrize(
     "mutation",
-    ("child", "order", "count", "hash", "parent", "scale"),
+    ("child", "order", "count", "extra", "zero", "hash", "parent", "scale"),
 )
 def test_clock_corruption_is_refused_before_every_probe_fit(
     mutation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1636,6 +2047,7 @@ def test_clock_corruption_is_refused_before_every_probe_fit(
     config = _config()
     trusted = _authenticated_test_source(config, groups_per_path=20)
     pairs = list(trusted.clock_pairs)
+    source_authentication = trusted.authentication
     if mutation == "child":
         child = pairs[0].child
         pairs[0] = leakage.PairedClockAuditPair(
@@ -1652,6 +2064,22 @@ def test_clock_corruption_is_refused_before_every_probe_fit(
         pairs.reverse()
     elif mutation == "count":
         pairs.pop()
+    elif mutation == "extra":
+        parent = tuple(trusted.iter_examples())[20 * 4 + 1]
+        pairs.append(
+            leakage.PairedClockAuditPair(
+                parent,
+                leakage.scale_episode_time(
+                    parent.bundle,
+                    SuiteName.CLOCK_SCALE_10X,
+                    "00000000-0000-4000-8000-000000000105",
+                ),
+            )
+        )
+    elif mutation == "zero":
+        source_authentication = trusted.authentication.model_copy(
+            update={"clock_scale_pair_counts": {"scale_0_1x": 0, "scale_10x": 1}}
+        )
     elif mutation == "hash":
         pairs[0] = leakage.PairedClockAuditPair(
             pairs[0].parent,
@@ -1676,7 +2104,7 @@ def test_clock_corruption_is_refused_before_every_probe_fit(
 
     class CorruptedClockSource:
         descriptor = trusted.descriptor
-        authentication = trusted.authentication
+        authentication = source_authentication
         validation_config = config
         episode_count = trusted.episode_count
         publishable = False
@@ -1718,6 +2146,42 @@ def test_clock_corruption_is_refused_before_every_probe_fit(
     assert fit_calls == 0
 
 
+@pytest.mark.parametrize("clock_counts", ((1, 1), (2, 2), (2, 1)))
+def test_test_profile_consumes_all_authenticated_positive_clock_pairs(
+    clock_counts: tuple[int, int],
+) -> None:
+    """TEST clock denominators come from independent authentication, not a 1/1 shortcut."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(
+        config,
+        groups_per_path=20,
+        clock_counts=clock_counts,
+    )
+
+    authentication = leakage._validate_source_authentication(
+        source, leakage.LeakageAuditProfileName.TEST
+    )
+    leakage._validate_independent_trust_anchor(
+        source,
+        leakage.LeakageAuditProfileName.TEST,
+        _provenance(_config_sha256(config), source),
+        authentication,
+    )
+    result = next(
+        item
+        for item in leakage._counterfactual_checks(source, leakage.LeakageAuditProfileName.TEST)
+        if item.check_id is leakage.CounterfactualCheckId.PAIRED_CLOCK_SCALE
+    )
+
+    assert authentication.clock_scale_pair_counts == {
+        "scale_0_1x": clock_counts[0],
+        "scale_10x": clock_counts[1],
+    }
+    assert result.checked_pairs == sum(clock_counts)
+
+
 @pytest.mark.parametrize("control_index", range(9))
 def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
     control_index: int,
@@ -1740,7 +2204,6 @@ def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
                     "episode_count": clean_source.episode_count,
                     "permutation_replicates": 1,
                     "positive_control_episode_count": clean_source.episode_count,
-                    "positive_control_permutation_replicates": 19,
                     "minimum_test_examples_per_class": 1,
                 }
             )
@@ -1759,6 +2222,7 @@ def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
     assert not report.passed
     assert len(report.positive_controls) == 1
     result = report.positive_controls[0]
+    assert audit_config.test.positive_control_permutation_replicates == 199
     assert result.control_id == injector.control_id
     assert result.target_task is injector.target_task
     assert injector.expected_detector_id in result.observed_detector_ids, result
@@ -1953,6 +2417,11 @@ def test_positive_control_overlapping_code_is_refused_before_control_fit(
         leakage,
         "_rewrite_positive_control",
         lambda _injector, example, _position, **_kwargs: example,
+    )
+    monkeypatch.setattr(
+        leakage,
+        "_require_exact_control_public_mutation",
+        lambda *_args, **_kwargs: None,
     )
     real_validate = leakage.validate_episode_invariants
 
@@ -2240,3 +2709,88 @@ def test_full_profile_phases_stream_under_resident_ceiling_and_cleanup(tmp_path:
     rss_by_phase["cleanup"] = psutil.Process().memory_info().rss
     assert not feature_path.exists()
     assert rss_by_phase["cleanup"] <= config.max_resident_working_bytes
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (
+        "extraction",
+        "moments",
+        "optimization",
+        "permutation",
+        "control",
+        "counterfactual",
+        "cleanup",
+    ),
+)
+def test_over_rss_at_every_audit_phase_cleans_without_a_partial_report(
+    phase: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every production phase fails closed, and cleanup precedes its own RSS check."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    clean_source = _authenticated_test_source(config, groups_per_path=20)
+    source = leakage.leak_record_count.apply(clean_source) if phase == "control" else clean_source
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": clean_source.episode_count,
+                    "permutation_replicates": 1,
+                    "positive_control_episode_count": clean_source.episode_count,
+                    "positive_control_permutation_replicates": 1,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+    observed: list[str] = []
+
+    def injected_guard(_config: object, current_phase: str = "unspecified") -> None:
+        observed.append(current_phase)
+        if current_phase == phase:
+            raise MemoryError("leakage audit resident working-set ceiling exceeded")
+
+    monkeypatch.setattr(leakage, "_resource_guard", injected_guard)
+    if phase in {"moments", "optimization", "permutation", "control"}:
+        monkeypatch.setattr(leakage, "_counterfactual_checks", lambda *_args: ())
+    if phase in {"control", "cleanup"}:
+        monkeypatch.setattr(leakage, "_run_probes", lambda *_args, **_kwargs: [])
+    if phase == "permutation":
+
+        def exact_fit(
+            _reader: object,
+            _train: object,
+            labels: np.ndarray,
+            test: np.ndarray,
+            _classes: object,
+            _continuous: object,
+            _config: object,
+        ) -> tuple[np.ndarray, int]:
+            return labels[test].copy(), 1
+
+        monkeypatch.setattr(leakage, "_fit_predict_batched", exact_fit)
+    if phase == "counterfactual":
+        monkeypatch.setattr(
+            leakage,
+            "_run_probes",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("counterfactual RSS failure reached a fit")
+            ),
+        )
+
+    with pytest.raises(MemoryError, match="resident working-set ceiling"):
+        leakage.audit_leakage(
+            source,
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), clean_source),
+            tmp_path,
+            positive_control=("PC_COUNT_BY_LABEL" if phase == "control" else None),
+        )
+
+    assert phase in observed
+    assert not list(tmp_path.iterdir())
