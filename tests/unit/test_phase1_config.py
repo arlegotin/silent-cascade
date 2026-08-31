@@ -1,9 +1,10 @@
+import math
 from pathlib import Path
 
 import pytest
 
 from silent_cascade.config import resolve_config
-from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
+from silent_cascade.env.config import OracleTimingConfig, Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.errors import ConfigurationError
 
 
@@ -120,6 +121,53 @@ def test_primary_data_config_resolves_exact_frozen_values() -> None:
             "enforce_clean_statistical_gate": True,
         },
     }
+
+
+_ORACLE_TIMING_FLOAT_FIELDS = (
+    "delta_0",
+    "delta_min",
+    "delta_max",
+    "jitter_log_std",
+    "terminal_compose_fraction",
+    "action_window_start_fraction",
+    "action_target_fraction",
+    "action_window_end_fraction",
+)
+
+
+@pytest.mark.parametrize("field", _ORACLE_TIMING_FLOAT_FIELDS)
+def test_oracle_timing_config_accepts_each_exact_float_field(field: str) -> None:
+    """Changing exact floats to reject their own type must fail this constructor contract."""
+    values = OracleTimingConfig().model_dump()
+    values[field] = float(values[field])
+
+    timing = OracleTimingConfig(**values)
+
+    assert type(getattr(timing, field)) is float
+
+
+@pytest.mark.parametrize("field", _ORACLE_TIMING_FLOAT_FIELDS)
+@pytest.mark.parametrize(
+    ("invalid", "error"),
+    (
+        (1, "exact float"),
+        (True, "exact float"),
+        ("0.5", "exact float"),
+        (math.nan, "finite number"),
+        (math.inf, "finite number"),
+    ),
+)
+def test_oracle_timing_config_rejects_non_exact_float_fields(
+    field: str,
+    invalid: object,
+    error: str,
+) -> None:
+    """Changing timing validation to coerce JSON-like values must fail this contract."""
+    values = OracleTimingConfig().model_dump()
+    values[field] = invalid
+
+    with pytest.raises(ValueError, match=error):
+        OracleTimingConfig(**values)
 
 
 def test_phase1_config_resolves_stress_ranges_as_tuples() -> None:

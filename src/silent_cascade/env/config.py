@@ -78,6 +78,21 @@ class OracleTimingConfig(StrictModel):
     action_target_fraction: float = Field(default=0.825, gt=0.0, lt=1.0)
     action_window_end_fraction: float = Field(default=0.90, gt=0.0, le=1.0)
 
+    @field_validator(
+        "delta_0",
+        "delta_min",
+        "delta_max",
+        "jitter_log_std",
+        "terminal_compose_fraction",
+        "action_window_start_fraction",
+        "action_target_fraction",
+        "action_window_end_fraction",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_float_type(cls, value: object) -> object:
+        return _require_exact_numeric_type(value, float)
+
     @model_validator(mode="after")
     def validate_timing_order(self) -> Self:
         if not self.delta_min <= self.delta_0 <= self.delta_max:

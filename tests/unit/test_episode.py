@@ -250,6 +250,32 @@ def test_private_episode_artifact_is_byte_identical_after_round_trip(
     assert decoded["generator_version"] == "ofd-v1"
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "delta_0",
+        "delta_min",
+        "delta_max",
+        "jitter_log_std",
+        "terminal_compose_fraction",
+        "action_window_start_fraction",
+        "action_target_fraction",
+        "action_window_end_fraction",
+    ),
+)
+def test_private_episode_artifact_rejects_integer_timing_provenance(
+    positive_bundle: EpisodeBundle,
+    field: str,
+) -> None:
+    """Changing private timing parsing to normalize integers must fail this contract."""
+    decoded = json.loads(canonical_episode_bytes(positive_bundle))
+    decoded["truth"]["recipe"]["oracle_timing"][field] = 0
+    mutated = json.dumps(decoded).encode("utf-8")
+
+    with pytest.raises(ValueError, match="exact float"):
+        episode_from_bytes(mutated)
+
+
 @pytest.mark.parametrize("mutation", ["unknown", "event_order", "duplicate_id", "nonfinite"])
 def test_episode_artifact_rejects_invalid_serialized_data(
     positive_bundle: EpisodeBundle, mutation: str
