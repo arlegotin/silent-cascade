@@ -1,0 +1,16 @@
+stress:
+  branching_records: [2, 6]
+  irrelevant_cycle_length: [2, 6]
+  contradiction_records: [2, 4]
+  overflow_record_count: [65, 80]
+  near_miss_missing_edges: 1
+  minimum_duration_epsilon: 1.0e-6
+  minimum_duration_search_upper: 64.0
+  minimum_duration_monotonic_grid_points: 257
+  branching_freeze_episodes: 5000
+  cycles_freeze_episodes: 5000
+  contradiction_freeze_episodes: 5000
+  memory_overflow_freeze_episodes: 5000
+  null_near_miss_freeze_episodes: 5000
+  minimum_duration_freeze_episodes: 5000
+  checkpoint_freeze_episodes: 2000

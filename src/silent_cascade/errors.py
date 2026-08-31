@@ -87,3 +87,35 @@ class ProvenanceError(SilentCascadeError):
 
 class ReplayError(SilentCascadeError):
     code = "replay_error"
+
+
+class EpisodeError(SilentCascadeError):
+    code = "episode_error"
+
+
+class EpisodeInvariantError(EpisodeError):
+    code = "episode_invariant_error"
+
+
+class GenerationError(EpisodeError):
+    code = "generation_error"
+
+
+class OracleError(EpisodeError):
+    code = "oracle_error"
+
+
+class ScoringError(EpisodeError):
+    code = "scoring_error"
+
+
+class LeakageError(EpisodeError):
+    code = "leakage_error"
+
+
+class ManifestError(ArtifactError):
+    code = "manifest_error"
+
+
+class ManifestAccessError(ManifestError):
+    code = "manifest_access_error"
