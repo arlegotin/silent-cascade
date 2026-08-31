@@ -1,0 +1,99 @@
+[
+  {
+    "name": "positive_length_3",
+    "variant": "positive",
+    "facts": [
+      ["link", 7, 2],
+      ["hazard", 5, 3, 24.0],
+      ["link", 1, 6],
+      ["safe", 4],
+      ["link", 2, 5],
+      ["link", 9, 7],
+      ["hazard", 6, 1, 24.0]
+    ],
+    "activation_node": 9,
+    "activation_time": 100.0,
+    "terminal_time": 124.0,
+    "trace_root_seed": 5001,
+    "expected_path": [9, 7, 2, 5],
+    "expected_record_fact_indexes": [5, 0, 4, 1],
+    "expected_terminal_fact_index": 1,
+    "expected_terminal": "hazard",
+    "expected_hazard_type": 3,
+    "expected_window": [118.0, 121.6],
+    "expected_target": 119.8,
+    "expected_event_count": 9,
+    "expected_non_action_deltas": [
+      0.20768986349969512,
+      0.26916932198584803,
+      0.2254318808916972,
+      0.21111336196431027,
+      0.22463934538737773,
+      0.2416550449650744,
+      0.30401145817415753,
+      0.3001069242872625
+    ]
+  },
+  {
+    "name": "safe_negative_length_2",
+    "variant": "safe_negative",
+    "facts": [
+      ["hazard", 31, 0, 12.0],
+      ["link", 21, 22],
+      ["safe", 22],
+      ["link", 40, 41],
+      ["safe", 41],
+      ["link", 20, 21],
+      ["hazard", 50, 2, 12.0],
+      ["link", 51, 52]
+    ],
+    "activation_node": 20,
+    "activation_time": 100.0,
+    "terminal_time": 112.0,
+    "trace_root_seed": 5002,
+    "expected_path": [20, 21, 22],
+    "expected_record_fact_indexes": [5, 1, 2],
+    "expected_terminal_fact_index": 2,
+    "expected_terminal": "safe",
+    "expected_hazard_type": null,
+    "expected_window": null,
+    "expected_target": null,
+    "expected_event_count": 6,
+    "expected_non_action_deltas": [
+      0.23503232191395257,
+      0.23183277149102896,
+      0.19166841627625822,
+      0.25314681195289657,
+      0.23737646340976715,
+      0.23257257860732514
+    ]
+  },
+  {
+    "name": "disconnected_negative_length_2",
+    "variant": "disconnected_negative",
+    "facts": [
+      ["link", 30, 31],
+      ["hazard", 50, 1, 8.0],
+      ["link", 31, 32],
+      ["safe", 51]
+    ],
+    "activation_node": 30,
+    "activation_time": 100.0,
+    "terminal_time": 108.0,
+    "trace_root_seed": 5003,
+    "expected_path": [30, 31, 32],
+    "expected_record_fact_indexes": [0, 2],
+    "expected_terminal_fact_index": null,
+    "expected_terminal": "disconnected",
+    "expected_hazard_type": null,
+    "expected_window": null,
+    "expected_target": null,
+    "expected_event_count": 4,
+    "expected_non_action_deltas": [
+      0.24727433737184723,
+      0.2481925629915504,
+      0.27574552377405454,
+      0.21950160853418985
+    ]
+  }
+]
