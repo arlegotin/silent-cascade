@@ -670,7 +670,12 @@ def evaluate_oracle(
         )
         clock_01 = sum(entry.suite is SuiteName.CLOCK_SCALE_0_1X for entry in manifest.entries)
         clock_10 = sum(entry.suite is SuiteName.CLOCK_SCALE_10X for entry in manifest.entries)
-        clock_pairs: Iterator[PairedClockAuditPair] = iter(())
+        clock_pairs = _make_manifest_clock_pairs(
+            resolved.config,
+            manifest,
+            deps.regenerate_manifest_entry,
+        )
+        manifest_entries_by_id = {entry.episode_public_id: entry for entry in manifest.entries}
     elif isinstance(source, Phase1GateCorpusSource):
         provenance = _independent_provenance(resolved, source, deps)
         requests = deps.iter_independent(deps.independent_allocation, source.root_seed)
@@ -699,6 +704,7 @@ def evaluate_oracle(
             source.public_id_seed,
             deps.generate_independent,
         )
+        manifest_entries_by_id = {}
     else:
         raise TypeError("unsupported oracle source")
     corpus = CorpusHashBuilder(expected_count)
@@ -731,7 +737,16 @@ def evaluate_oracle(
         if token in seed_tokens:
             raise ValueError("oracle source contains a seed-token collision")
         seed_tokens.add(token)
-        validate_episode_invariants(bundle, resolved.config)
+        if bundle.truth.recipe.parent_public_id is None:
+            validate_episode_invariants(bundle, resolved.config)
+        else:
+            entry = manifest_entries_by_id.get(bundle.public.init.episode_public_id)
+            if entry is None:
+                raise ValueError("clock child is absent from its manifest")
+            validate_episode_invariants(
+                _regenerate_manifest_clock_parent(resolved.config, manifest, entry),
+                resolved.config,
+            )
         if isinstance(coordinate, MatchedEpisodeCoordinate):
             if active_cohort_index is None:
                 active_cohort_index = coordinate.cohort_index
@@ -798,19 +813,22 @@ def evaluate_oracle(
         RANDOM_BASELINE_NEGATIVE_SUCCESS_PROBABILITY,
     )
     verified_clock_counts: Counter[str] = Counter()
+    clock_decision_mismatches = 0
     for pair in clock_pairs:
         if not _clock_decision_matches(pair.parent.bundle, pair.child):
-            raise ValueError("clock transform changes the oracle decision")
+            clock_decision_mismatches += 1
         verified_clock_counts[
             "scale_0_1x"
             if pair.child.truth.recipe.evaluation_suite is SuiteName.CLOCK_SCALE_0_1X
             else "scale_10x"
         ] += 1
-    if verified_clock_counts and (
+    if (
         verified_clock_counts["scale_0_1x"] != clock_01
         or verified_clock_counts["scale_10x"] != clock_10
     ):
         raise ValueError("clock source count does not match the frozen allocation")
+    if clock_decision_mismatches:
+        raise ValueError("clock transform changes the oracle decision")
     pooled = (random_successes["positive"] + random_successes["negative"]) / verified
     report = OracleEvaluationReport(
         schema_version="oracle-evaluation-report-v1",
@@ -834,7 +852,7 @@ def evaluate_oracle(
         random_pooled_expected_rate=0.3125,
         clock_0_1x_episode_count=clock_01,
         clock_10x_episode_count=clock_10,
-        clock_decision_mismatches=0,
+        clock_decision_mismatches=clock_decision_mismatches,
         rejection_reason_counts=dict(sorted(rejection_reasons.items())),
         generation_attempt_count=generation_attempts,
         rejected_draw_count=rejected_draws,
@@ -940,6 +958,44 @@ def _make_clock_pairs(
                 episode_position=request.episode_index,
             ),
             child=scale_episode_time(parent, suite, child_id),
+        )
+
+
+def _make_manifest_clock_pairs(
+    config: Phase1Config,
+    manifest: EpisodeManifest,
+    regenerate: Callable[..., EpisodeBundle],
+) -> Iterator[PairedClockAuditPair]:
+    """Regenerate every declared manifest parent and exact child in canonical order."""
+    prior_coordinate: tuple[int, int, int] | None = None
+    for rank, entry in enumerate(manifest.entries):
+        if entry.suite not in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}:
+            continue
+        coordinate = entry.coordinate
+        if not isinstance(coordinate, IndependentManifestCoordinate):
+            raise ValueError("clock manifest entry has a non-independent coordinate")
+        current_coordinate = (
+            coordinate.episode_index,
+            coordinate.allocation_quartet_index,
+            coordinate.quartet_member_index,
+        )
+        if prior_coordinate is not None and current_coordinate <= prior_coordinate:
+            raise ValueError("clock manifest entries are not in canonical order")
+        prior_coordinate = current_coordinate
+        parent = _regenerate_manifest_clock_parent(config, manifest, entry)
+        child = regenerate(config, manifest, entry)
+        expected = scale_episode_time(parent, entry.suite, entry.episode_public_id)
+        if child != expected:
+            raise ValueError("clock child is not the exact authenticated transform")
+        yield PairedClockAuditPair(
+            parent=AuditExample(
+                bundle=parent,
+                manifest_rank=rank,
+                generation_mode="independent",
+                randomization_block_index=coordinate.allocation_quartet_index,
+                episode_position=coordinate.episode_index,
+            ),
+            child=child,
         )
 
 
@@ -1321,42 +1377,11 @@ def regenerate_entry(
         )
     if not isinstance(coordinate, IndependentManifestCoordinate):
         raise TypeError("unsupported manifest coordinate")
-    source_suite = (
-        SuiteName.IID_PRIMARY
-        if entry.suite
-        in {
-            SuiteName.CLOCK_SCALE_0_1X,
-            SuiteName.CLOCK_SCALE_10X,
-        }
-        else entry.suite
-    )
-    variants = allocate_independent_variants(
-        AllocationLabelKey(
-            generator_version="ofd-v1",
-            split_namespace=entry.split_namespace,
-            suite=source_suite,
-            root_seed=manifest.provenance.root_seed,
-            requested_path_length=entry.requested_path_length,
-            allocation_quartet_index=coordinate.allocation_quartet_index,
-        )
-    )
-    request = IndependentEpisodeRequest(
-        split_namespace=entry.split_namespace,
-        suite=source_suite,
-        root_seed=manifest.provenance.root_seed,
-        episode_index=coordinate.episode_index,
-        requested_path_length=entry.requested_path_length,
-        variant=variants[coordinate.quartet_member_index],
-        allocation_quartet_index=coordinate.allocation_quartet_index,
-    )
+    request = _independent_request_for_manifest_entry(manifest, entry)
+    source_suite = request.suite
+
     if entry.suite in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}:
-        if entry.parent_public_id is None or entry.parent_episode_sha256 is None:
-            raise ValueError("clock manifest entry is missing its parent")
-        parent = regenerate_independent_episode(
-            config, request, manifest.public_id_seed, entry.parent_public_id, entry.accepted_attempt
-        )
-        if episode_sha256(parent) != entry.parent_episode_sha256:
-            raise ValueError("clock parent hash does not match manifest entry")
+        parent = _regenerate_manifest_clock_parent(config, manifest, entry)
         return _assert_entry(
             scale_episode_time(parent, entry.suite, entry.episode_public_id), entry
         )
@@ -1382,6 +1407,57 @@ def regenerate_entry(
         ),
         entry,
     )
+
+
+def _independent_request_for_manifest_entry(
+    manifest: EpisodeManifest, entry: EpisodeManifestEntry
+) -> IndependentEpisodeRequest:
+    coordinate = entry.coordinate
+    if not isinstance(coordinate, IndependentManifestCoordinate):
+        raise ValueError("clock manifest entry has a non-independent coordinate")
+    source_suite = (
+        SuiteName.IID_PRIMARY
+        if entry.suite in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}
+        else entry.suite
+    )
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            generator_version="ofd-v1",
+            split_namespace=entry.split_namespace,
+            suite=source_suite,
+            root_seed=manifest.provenance.root_seed,
+            requested_path_length=entry.requested_path_length,
+            allocation_quartet_index=coordinate.allocation_quartet_index,
+        )
+    )
+    return IndependentEpisodeRequest(
+        split_namespace=entry.split_namespace,
+        suite=source_suite,
+        root_seed=manifest.provenance.root_seed,
+        episode_index=coordinate.episode_index,
+        requested_path_length=entry.requested_path_length,
+        variant=variants[coordinate.quartet_member_index],
+        allocation_quartet_index=coordinate.allocation_quartet_index,
+    )
+
+
+def _regenerate_manifest_clock_parent(
+    config: Phase1Config, manifest: EpisodeManifest, entry: EpisodeManifestEntry
+) -> EpisodeBundle:
+    if entry.suite not in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}:
+        raise ValueError("manifest entry is not a clock child")
+    if entry.parent_public_id is None or entry.parent_episode_sha256 is None:
+        raise ValueError("clock manifest entry is missing its parent")
+    parent = regenerate_independent_episode(
+        config,
+        _independent_request_for_manifest_entry(manifest, entry),
+        manifest.public_id_seed,
+        entry.parent_public_id,
+        entry.accepted_attempt,
+    )
+    if episode_sha256(parent) != entry.parent_episode_sha256:
+        raise ValueError("clock parent hash does not match manifest entry")
+    return parent
 
 
 def _production_audit_source(

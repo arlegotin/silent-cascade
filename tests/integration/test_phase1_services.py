@@ -200,6 +200,109 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     assert result.report.corpus_sha256
 
 
+def test_manifest_oracle_accepts_real_authenticated_clock_children(tmp_path: Path) -> None:
+    """Treating a paired child as an unscaled draw would reject valid manifest evidence."""
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest, _parents = _clock_manifest()
+    path = tmp_path / "clock-manifest.json"
+    output = tmp_path / "oracle.json"
+    publish_manifest(path, manifest)
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        del kwargs
+        resolved = args[0]
+        return manifest.provenance.model_copy(
+            update={"config_sha256": resolved.sha256}  # type: ignore[attr-defined]
+        )
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_allocation(),
+        independent_allocation=_independent_allocation(8),
+        collect_provenance=collect,
+        build_manifest=lambda *args: pytest.fail("not used"),
+    )
+
+    result = evaluate_oracle(
+        OracleEvaluationRequest(
+            config=ConfigSelection(),
+            source=ManifestCorpusSource(manifest_path=path),
+            output_path=output,
+        ),
+        deps=deps,
+    )
+
+    assert result.report.clock_0_1x_episode_count == 8
+    assert result.report.clock_10x_episode_count == 0
+    assert result.report.clock_decision_mismatches == 0
+
+
+def test_manifest_oracle_refuses_a_different_valid_clock_transform_before_publication(
+    tmp_path: Path,
+) -> None:
+    """Removing the independent clock pass would trust the corpus regenerator twice."""
+    from silent_cascade.env.episode import scale_episode_time
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+        regenerate_entry,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest, parents = _clock_manifest()
+    path = tmp_path / "clock-manifest.json"
+    output = tmp_path / "oracle.json"
+    publish_manifest(path, manifest)
+    calls: dict[str, int] = {}
+
+    def regenerate(config: Phase1Config, current: object, entry: object) -> object:
+        public_id = entry.episode_public_id  # type: ignore[attr-defined]
+        calls[public_id] = calls.get(public_id, 0) + 1
+        if calls[public_id] == 2 and entry == manifest.entries[0]:
+            return scale_episode_time(
+                parents[1],
+                entry.suite,
+                entry.episode_public_id,  # type: ignore[attr-defined]
+            )
+        return regenerate_entry(config, current, entry)  # type: ignore[arg-type]
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        del kwargs
+        resolved = args[0]
+        return manifest.provenance.model_copy(
+            update={"config_sha256": resolved.sha256}  # type: ignore[attr-defined]
+        )
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_allocation(),
+        independent_allocation=_independent_allocation(8),
+        collect_provenance=collect,
+        build_manifest=lambda *args: pytest.fail("not used"),
+        regenerate_manifest_entry=regenerate,
+    )
+
+    with pytest.raises(ValueError, match="clock"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=ManifestCorpusSource(manifest_path=path),
+                output_path=output,
+            ),
+            deps=deps,
+        )
+    assert not output.exists()
+
+
 def _config() -> Phase1Config:
     return resolve_config(
         Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
@@ -261,6 +364,92 @@ def _allocation() -> CohortAllocation:
                 cohort_count=2,
             ),
         ),
+    )
+
+
+def _independent_allocation(episode_count: int = 12):
+    from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
+
+    blocks = tuple(
+        EpisodeBlock(
+            suite=SuiteName.IID_PRIMARY,
+            requested_path_length=path,
+            first_episode_index=(path - 2) * 4,
+            episode_count=4,
+        )
+        for path in (2, 3, 4)
+    )
+    return IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=blocks[: episode_count // 4],
+    )
+
+
+def _clock_manifest():
+    from silent_cascade.env.episode import episode_sha256, scale_episode_time
+    from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
+    from silent_cascade.logging.manifest import (
+        EpisodeManifest,
+        EpisodeManifestEntry,
+        IndependentManifestCoordinate,
+    )
+    from silent_cascade.rng import IndependentPublicIdKey, allocate_independent_public_id
+
+    allocation = _independent_allocation(8)
+    resolved = resolve_config(
+        Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
+    )
+    provenance = _provenance(allocation_id="test-clock-v1").model_copy(
+        update={"generation_mode": "independent", "config_sha256": resolved.sha256}
+    )
+    parents = tuple(
+        generate_independent_episode(resolved.config, request, 91)
+        for request in iter_independent_requests(allocation, 41)
+    )
+    entries = []
+    for request, parent in zip(iter_independent_requests(allocation, 41), parents, strict=True):
+        child_id = allocate_independent_public_id(
+            IndependentPublicIdKey(
+                generator_version="ofd-v1",
+                split_namespace=SplitNamespace.DEBUG,
+                suite=SuiteName.CLOCK_SCALE_0_1X,
+                public_id_seed=91,
+                episode_index=request.episode_index,
+                accepted_attempt=parent.truth.recipe.accepted_attempt,
+            )
+        )
+        child = scale_episode_time(parent, SuiteName.CLOCK_SCALE_0_1X, child_id)
+        entries.append(
+            EpisodeManifestEntry(
+                episode_public_id=child_id,
+                split_namespace=SplitNamespace.DEBUG,
+                suite=SuiteName.CLOCK_SCALE_0_1X,
+                coordinate=IndependentManifestCoordinate(
+                    episode_index=request.episode_index,
+                    allocation_quartet_index=request.allocation_quartet_index,
+                    quartet_member_index=request.episode_index % 4,
+                ),
+                requested_path_length=request.requested_path_length,
+                accepted_attempt=parent.truth.recipe.accepted_attempt,
+                episode_sha256=episode_sha256(child),
+                parent_public_id=parent.public.init.episode_public_id,
+                parent_episode_sha256=episode_sha256(parent),
+                clock_scale=0.1,
+            )
+        )
+    return (
+        EpisodeManifest(
+            schema_version=1,
+            experiment_version="v1",
+            access_class=ManifestAccessClass.DEBUG,
+            provenance=provenance,
+            suite=SuiteName.CLOCK_SCALE_0_1X,
+            public_id_seed=91,
+            episode_count=len(entries),
+            entries=tuple(entries),
+        ),
+        parents,
     )
 
 
