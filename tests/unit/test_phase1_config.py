@@ -95,7 +95,7 @@ def test_primary_data_config_resolves_exact_frozen_values() -> None:
         "positive_control_seed": 2_026_083_092,
         "train_fraction": 0.80,
         "alpha": 0.01,
-        "l2_penalty": 1.0,
+        "l2_penalty": 0.03,
         "optimizer_max_iterations": 500,
         "optimizer_gradient_tolerance": 1.0e-8,
         "optimizer_function_tolerance": 1.0e-12,

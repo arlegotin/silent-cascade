@@ -187,7 +187,7 @@ class LeakageAuditConfig(StrictModel):
     positive_control_seed: Literal[2026083092] = 2026083092
     train_fraction: Literal[0.8] = 0.8
     alpha: Literal[0.01] = 0.01
-    l2_penalty: Literal[1.0] = 1.0
+    l2_penalty: Literal[0.03] = 0.03
     optimizer_max_iterations: Literal[500] = 500
     optimizer_gradient_tolerance: Literal[1.0e-8] = 1.0e-8
     optimizer_function_tolerance: Literal[1.0e-12] = 1.0e-12

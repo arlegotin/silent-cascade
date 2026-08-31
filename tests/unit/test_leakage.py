@@ -9,6 +9,7 @@ import pytest
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.generator import CohortRequest, generate_matched_cohort
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
@@ -50,6 +51,92 @@ def _provenance(config_sha256: str) -> EvidenceProvenance:
         root_seed=41,
         public_id_seed_sha256=public_id_seed_sha256(91),
         analysis_seeds={"audit_seed": 2026083091, "positive_control_seed": 2026083092},
+    )
+
+
+def _config_sha256(config: Phase1Config) -> str:
+    return sha256_bytes(canonical_json_bytes(config))
+
+
+def _authenticated_test_source(config: Phase1Config, groups_per_path: int = 100):
+    from silent_cascade.env.episode import scale_episode_time
+    from silent_cascade.env.leakage import (
+        AuditExample,
+        AuditSourceAuthentication,
+        AuditSourceDescriptor,
+        InMemoryAuditSource,
+        LeakageAuditProfileName,
+        PairedClockAuditPair,
+        _clock_pair_manifest_sha256,
+        _source_manifest_sha256,
+        audit_source_descriptor_sha256,
+    )
+
+    examples = tuple(
+        AuditExample(bundle, rank, "matched", cohort_index, member_index)
+        for path_index, path in enumerate((2, 3, 4))
+        for local_group in range(groups_per_path)
+        for cohort_index in (path_index * groups_per_path + local_group,)
+        for member_index, bundle in enumerate(
+            generate_matched_cohort(
+                config,
+                CohortRequest(
+                    SplitNamespace.DEBUG,
+                    SuiteName.IID_PRIMARY,
+                    41,
+                    cohort_index,
+                    path,
+                ),
+                91,
+            ).episodes
+        )
+        for rank in ((path_index * groups_per_path + local_group) * 4 + member_index,)
+    )
+    clock_pairs = (
+        PairedClockAuditPair(
+            examples[0],
+            scale_episode_time(
+                examples[0].bundle,
+                SuiteName.CLOCK_SCALE_0_1X,
+                "00000000-0000-4000-8000-000000000001",
+            ),
+        ),
+        PairedClockAuditPair(
+            examples[groups_per_path * 4],
+            scale_episode_time(
+                examples[groups_per_path * 4].bundle,
+                SuiteName.CLOCK_SCALE_10X,
+                "00000000-0000-4000-8000-000000000002",
+            ),
+        ),
+    )
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="matched",
+        allocation_id="test-leakage-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=SplitNamespace.DEBUG,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256=_config_sha256(config),
+        generator_source_sha256="a" * 64,
+        episode_count=len(examples),
+    )
+    authentication = AuditSourceAuthentication(
+        schema_version="leakage-source-auth-v1",
+        profile=LeakageAuditProfileName.TEST,
+        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
+        source_manifest_sha256=_source_manifest_sha256(examples),
+        suite_path_denominators={f"iid_primary:{path}": groups_per_path * 4 for path in (2, 3, 4)},
+        clock_pair_manifest_sha256=_clock_pair_manifest_sha256(clock_pairs),
+        clock_scale_pair_counts={"scale_0_1x": 1, "scale_10x": 1},
+    )
+    return InMemoryAuditSource(
+        descriptor,
+        examples,
+        validation_config=config,
+        authentication=authentication,
+        clock_pairs=clock_pairs,
     )
 
 
@@ -380,67 +467,418 @@ def test_independent_coordinate_rejects_forged_source_position() -> None:
 def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: Path) -> None:
     """Retaining bundles or omitting a report family must fail this bounded audit contract."""
     from silent_cascade.env.leakage import (
-        AuditExample,
-        AuditSourceDescriptor,
         CounterfactualCheckId,
-        InMemoryAuditSource,
         LeakageAuditProfileName,
-        _source_manifest_sha256,
         audit_leakage,
     )
 
     config = _config()
-    examples = tuple(
-        AuditExample(bundle, rank, "matched", cohort_index, member_index)
-        for cohort_index in range(16)
-        for member_index, bundle in enumerate(
-            generate_matched_cohort(
-                config,
-                CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, cohort_index, 3),
-                91,
-            ).episodes
-        )
-        for rank in (cohort_index * 4 + member_index,)
-    )
+    source = _authenticated_test_source(config, groups_per_path=20)
     audit_config = config.data.leakage_audit.model_copy(
         update={
             "test": config.data.leakage_audit.test.model_copy(
                 update={
-                    "episode_count": len(examples),
+                    "episode_count": source.episode_count,
                     "permutation_replicates": 1,
                     "minimum_test_examples_per_class": 1,
                 }
             )
         }
     )
-    source = InMemoryAuditSource(
-        AuditSourceDescriptor(
-            schema_version="leakage-source-v1",
-            generation_mode="matched",
-            allocation_id="test-leakage-v1",
-            allocation_or_manifest_sha256=_source_manifest_sha256(examples),
-            split_namespace=SplitNamespace.DEBUG,
-            root_seed=41,
-            public_id_seed_sha256=public_id_seed_sha256(91),
-            config_sha256="e" * 64,
-            generator_source_sha256="a" * 64,
-            episode_count=len(examples),
-        ),
-        examples,
-        config,
-    )
 
     report = audit_leakage(
         source,
         audit_config,
         LeakageAuditProfileName.TEST,
-        _provenance("e" * 64),
+        _provenance(_config_sha256(config)),
         tmp_path,
     )
 
-    assert report.episode_count == 64
+    assert report.episode_count == 240
     assert len(report.probes) == 27
     assert tuple(item.check_id for item in report.counterfactual_checks) == tuple(
         CounterfactualCheckId
     )
     assert not list(tmp_path.iterdir())
+
+
+def test_audit_rejects_validation_config_digest_before_source_iteration(tmp_path: Path) -> None:
+    """Trusting a typed config without hashing it would fit against unauthenticated inputs."""
+    from silent_cascade.env.leakage import (
+        AuditSourceAuthentication,
+        AuditSourceDescriptor,
+        LeakageAuditProfileName,
+        audit_leakage,
+        audit_source_descriptor_sha256,
+    )
+
+    config = _config()
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="matched",
+        allocation_id="test-leakage-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=SplitNamespace.DEBUG,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256="e" * 64,
+        generator_source_sha256="a" * 64,
+        episode_count=1_200,
+    )
+    authentication = AuditSourceAuthentication(
+        schema_version="leakage-source-auth-v1",
+        profile=LeakageAuditProfileName.TEST,
+        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
+        source_manifest_sha256="2" * 64,
+        suite_path_denominators={
+            "iid_primary:2": 400,
+            "iid_primary:3": 400,
+            "iid_primary:4": 400,
+        },
+        clock_pair_manifest_sha256="3" * 64,
+        clock_scale_pair_counts={"scale_0_1x": 1, "scale_10x": 1},
+    )
+
+    class CountingSource:
+        validation_config = config
+        episode_count = 1_200
+        iter_calls = 0
+
+        def __init__(self) -> None:
+            self.descriptor = descriptor
+            self.authentication = authentication
+
+        def iter_examples(self):
+            self.iter_calls += 1
+            return iter(())
+
+        def iter_clock_pairs(self):
+            self.iter_calls += 1
+            return iter(())
+
+    source = CountingSource()
+    with pytest.raises(ValueError, match="configuration digest"):
+        audit_leakage(
+            source,
+            config.data.leakage_audit,
+            LeakageAuditProfileName.TEST,
+            _provenance("e" * 64),
+            tmp_path,
+        )
+    assert source.iter_calls == 0
+
+
+def test_audit_rejects_forged_authenticated_profile_before_source_iteration(
+    tmp_path: Path,
+) -> None:
+    """A missing TEST stratum in the authentication record must fail before fitting."""
+    from silent_cascade.env.leakage import (
+        AuditSourceAuthentication,
+        AuditSourceDescriptor,
+        LeakageAuditProfileName,
+        audit_leakage,
+        audit_source_descriptor_sha256,
+    )
+
+    config = _config()
+    config_sha256 = _config_sha256(config)
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="matched",
+        allocation_id="test-leakage-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=SplitNamespace.DEBUG,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256=config_sha256,
+        generator_source_sha256="a" * 64,
+        episode_count=1_200,
+    )
+    authentication = AuditSourceAuthentication(
+        schema_version="leakage-source-auth-v1",
+        profile=LeakageAuditProfileName.TEST,
+        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
+        source_manifest_sha256="2" * 64,
+        suite_path_denominators={"iid_primary:2": 1_200},
+        clock_pair_manifest_sha256="3" * 64,
+        clock_scale_pair_counts={"scale_0_1x": 1, "scale_10x": 1},
+    )
+
+    class CountingSource:
+        validation_config = config
+        episode_count = 1_200
+        iter_calls = 0
+
+        def __init__(self) -> None:
+            self.descriptor = descriptor
+            self.authentication = authentication
+
+        def iter_examples(self):
+            self.iter_calls += 1
+            return iter(())
+
+        def iter_clock_pairs(self):
+            self.iter_calls += 1
+            return iter(())
+
+    source = CountingSource()
+    with pytest.raises(ValueError, match="profile denominators"):
+        audit_leakage(
+            source,
+            config.data.leakage_audit,
+            LeakageAuditProfileName.TEST,
+            _provenance(config_sha256),
+            tmp_path,
+        )
+    assert source.iter_calls == 0
+
+
+def test_terminal_delay_counterfactual_swaps_both_public_hazard_delays() -> None:
+    """Rewriting only the reachable hazard would not implement the common-delay swap."""
+    from silent_cascade.env.leakage import _fact_events, _with_terminal_delay
+    from silent_cascade.env.oracle import solve_public_episode
+    from silent_cascade.schemas import HazardFact
+
+    config = _config()
+    left = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 1, 2),
+        91,
+    ).episodes[0]
+    right = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 2, 2),
+        91,
+    ).episodes[0]
+    right_delay = solve_public_episode(right.public).public_delay
+    assert right_delay is not None
+
+    swapped = _with_terminal_delay(left, right_delay)
+
+    assert {
+        event.payload.delay
+        for event in _fact_events(type("BundleView", (), {"public": swapped})())
+        if isinstance(event.payload, HazardFact)
+    } == {right_delay}
+    assert solve_public_episode(swapped).public_delay == right_delay
+
+
+def test_counterfactual_engine_consumes_only_declared_paired_clock_children() -> None:
+    """Synthesizing two clock children per base row violates the authenticated pair profile."""
+    from silent_cascade.env.episode import scale_episode_time
+    from silent_cascade.env.leakage import (
+        AuditExample,
+        AuditSourceAuthentication,
+        AuditSourceDescriptor,
+        CounterfactualCheckId,
+        InMemoryAuditSource,
+        LeakageAuditProfileName,
+        PairedClockAuditPair,
+        _clock_pair_manifest_sha256,
+        _counterfactual_checks,
+        _source_manifest_sha256,
+        audit_source_descriptor_sha256,
+    )
+
+    config = _config()
+    examples = tuple(
+        AuditExample(bundle, rank, "matched", path_index, member_index)
+        for path_index, path in enumerate((2, 3, 4))
+        for member_index, bundle in enumerate(
+            generate_matched_cohort(
+                config,
+                CohortRequest(
+                    SplitNamespace.DEBUG,
+                    SuiteName.IID_PRIMARY,
+                    41,
+                    path_index,
+                    path,
+                ),
+                91,
+            ).episodes
+        )
+        for rank in (path_index * 4 + member_index,)
+    )
+    clock_pairs = (
+        PairedClockAuditPair(
+            examples[0],
+            scale_episode_time(
+                examples[0].bundle,
+                SuiteName.CLOCK_SCALE_0_1X,
+                "00000000-0000-4000-8000-000000000001",
+            ),
+        ),
+        PairedClockAuditPair(
+            examples[4],
+            scale_episode_time(
+                examples[4].bundle,
+                SuiteName.CLOCK_SCALE_10X,
+                "00000000-0000-4000-8000-000000000002",
+            ),
+        ),
+    )
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="matched",
+        allocation_id="test-leakage-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=SplitNamespace.DEBUG,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256=_config_sha256(config),
+        generator_source_sha256="a" * 64,
+        episode_count=len(examples),
+    )
+    authentication = AuditSourceAuthentication(
+        schema_version="leakage-source-auth-v1",
+        profile=LeakageAuditProfileName.TEST,
+        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
+        source_manifest_sha256=_source_manifest_sha256(examples),
+        suite_path_denominators={f"iid_primary:{path}": 4 for path in (2, 3, 4)},
+        clock_pair_manifest_sha256=_clock_pair_manifest_sha256(clock_pairs),
+        clock_scale_pair_counts={"scale_0_1x": 1, "scale_10x": 1},
+    )
+    source = InMemoryAuditSource(
+        descriptor,
+        examples,
+        validation_config=config,
+        authentication=authentication,
+        clock_pairs=clock_pairs,
+    )
+
+    checks = _counterfactual_checks(source, LeakageAuditProfileName.TEST)
+
+    assert {item.check_id: item.checked_pairs for item in checks} == {
+        CounterfactualCheckId.TERMINAL_DELAY_SWAP: 3,
+        CounterfactualCheckId.PRESENTATION_PERMUTATION: 12,
+        CounterfactualCheckId.PAIRED_CLOCK_SCALE: 2,
+    }
+    assert all(item.passed for item in checks)
+
+
+@pytest.mark.parametrize("control_index", range(9))
+def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
+    control_index: int,
+    tmp_path: Path,
+) -> None:
+    """A registry-only or pre-injected malformed control would never test detector power."""
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        LeakageAuditProfileName,
+        audit_leakage,
+    )
+
+    config = _config()
+    clean_source = _authenticated_test_source(config)
+    injector = NAMED_LEAK_INJECTORS[control_index]
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": clean_source.episode_count,
+                    "permutation_replicates": 1,
+                    "positive_control_episode_count": clean_source.episode_count,
+                    "positive_control_permutation_replicates": 19,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+
+    report = audit_leakage(
+        injector.apply(clean_source),
+        audit_config,
+        LeakageAuditProfileName.TEST,
+        _provenance(_config_sha256(config)),
+        tmp_path,
+        positive_control=injector.control_id,
+    )
+
+    assert not report.passed
+    assert len(report.positive_controls) == 1
+    result = report.positive_controls[0]
+    assert result.control_id == injector.control_id
+    assert result.target_task is injector.target_task
+    assert result.observed_detector_ids == (injector.expected_detector_id,), result
+    assert result.base_subset_corpus_sha256 != result.injected_corpus_sha256
+    assert result.balanced_accuracy is not None and result.balanced_accuracy >= 0.95
+    assert result.passed
+
+
+def test_frozen_optimizer_fits_three_standardized_contiguous_rank_blocks() -> None:
+    """The manifest-order KAT isolates weighting, preprocessing, and the frozen L2 fit."""
+    from silent_cascade.env.leakage import (
+        ShortcutFeatureGroup,
+        _balanced_accuracy,
+        _fit_predict,
+        _standardize,
+    )
+
+    count = 1_200
+    values = np.zeros((count, 17), dtype=np.float32)
+    values[:, -1] = np.arange(count, dtype=np.float32) / (count - 1)
+    labels = np.repeat(np.arange(3, dtype=np.int8), count // 3)
+    test = np.arange(0, count, 5, dtype=np.int64)
+    train = np.setdiff1d(np.arange(count, dtype=np.int64), test, assume_unique=True)
+    x_train, x_test = _standardize(values[train], values[test], ShortcutFeatureGroup.ID_POSITION)
+
+    predictions, _iterations = _fit_predict(
+        x_train,
+        labels[train],
+        x_test,
+        np.arange(3, dtype=np.int8),
+        _config().data.leakage_audit,
+    )
+
+    assert _balanced_accuracy(labels[test], predictions, np.arange(3)) >= 0.95
+
+
+def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
+    """A full-row advanced-index or float64 materialization would violate this KAT."""
+    from silent_cascade.env.leakage import (
+        ShortcutFeatureGroup,
+        _BatchedFeatureReader,
+        _fit_predict,
+        _fit_predict_batched,
+        _standardize,
+    )
+
+    row_count = 60
+    values = np.asarray(
+        [
+            (
+                float(index % 2),
+                float((index // 2) % 3),
+                float(index) / row_count,
+                float((index * index) % 11),
+            )
+            for index in range(row_count)
+        ],
+        dtype=np.float32,
+    )
+    labels = np.asarray([index % 3 for index in range(row_count)], dtype=np.int8)
+    train = np.arange(0, 48, dtype=np.int64)
+    test = np.arange(48, row_count, dtype=np.int64)
+    classes = np.arange(3, dtype=np.int8)
+    config = _config().data.leakage_audit.model_copy(update={"feature_batch_size": 7})
+    continuous = np.ones(values.shape[1], dtype=bool)
+    dense_train, dense_test = _standardize(
+        values[train],
+        values[test],
+        ShortcutFeatureGroup.COUNTS,
+        continuous_mask=continuous,
+    )
+    expected, _ = _fit_predict(dense_train, labels[train], dense_test, classes, config)
+    reader = _BatchedFeatureReader(
+        values,
+        0,
+        values.shape[1],
+        None,
+        config.feature_batch_size,
+        config,
+    )
+
+    actual, _ = _fit_predict_batched(reader, train, labels, test, classes, continuous, config)
+
+    assert np.array_equal(actual, expected)
+    assert reader.max_batch_seen <= config.feature_batch_size

@@ -797,7 +797,7 @@ class LeakageAuditConfig(StrictModel):
     positive_control_seed: Literal[2026083092] = 2026083092
     train_fraction: Literal[0.8] = 0.8
     alpha: Literal[0.01] = 0.01
-    l2_penalty: Literal[1.0] = 1.0
+    l2_penalty: Literal[0.03] = 0.03
     optimizer_max_iterations: Literal[500] = 500
     optimizer_gradient_tolerance: Literal[1.0e-8] = 1.0e-8
     optimizer_function_tolerance: Literal[1.0e-12] = 1.0e-12
@@ -964,7 +964,7 @@ data:
     positive_control_seed: 2026083092
     train_fraction: 0.80
     alpha: 0.01
-    l2_penalty: 1.0
+    l2_penalty: 0.03
     optimizer_max_iterations: 500
     optimizer_gradient_tolerance: 1.0e-8
     optimizer_function_tolerance: 1.0e-12
@@ -4091,7 +4091,7 @@ Standardize only continuous columns with train-set population mean/std; map a
 zero-variance column to zero and do not standardize one-hot/presence columns.
 Fit multinomial logistic regression with zero initialization, an unpenalized
 intercept, and objective `mean class-balanced cross-entropy +
-0.5 * 1.0 * ||W||^2`, using `scipy.optimize.minimize(method="L-BFGS-B")`, at
+0.5 * 0.03 * ||W||^2`, using `scipy.optimize.minimize(method="L-BFGS-B")`, at
 most 500 iterations, gradient tolerance `1e-8`, and function tolerance
 `1e-12`. Prediction ties choose the lowest enum value. There is no tuning.
 
