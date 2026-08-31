@@ -18,6 +18,7 @@ from silent_cascade.env.generator import (
     iter_cohort_requests,
     regenerate_independent_episode,
     regenerate_matched_episode,
+    regenerate_stress_episode,
     validate_validation_allocation,
 )
 from silent_cascade.logging.manifest import (
@@ -222,8 +223,20 @@ def regenerate_entry(
         return _assert_entry(
             scale_episode_time(parent, entry.suite, entry.episode_public_id), entry
         )
+    regenerate = (
+        regenerate_independent_episode
+        if source_suite
+        in {
+            SuiteName.IID_PRIMARY,
+            SuiteName.OOD_DEPTH,
+            SuiteName.OOD_SHORT_DELAY,
+            SuiteName.OOD_LONG_DELAY,
+            SuiteName.DISTRACTOR_FLOOD,
+        }
+        else regenerate_stress_episode
+    )
     return _assert_entry(
-        regenerate_independent_episode(
+        regenerate(
             config,
             request,
             manifest.public_id_seed,

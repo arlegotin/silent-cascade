@@ -1,6 +1,9 @@
 """Task 14 deterministic order/chunk/fresh-process contracts."""
 
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
@@ -97,3 +100,218 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
     assert report.passed and report.mismatch_count == 0
     assert report.verified_source_entries == 8
     assert report.provenance == provenance
+
+
+def test_independent_rejects_dirty_provenance_before_generation() -> None:
+    """A dirty scientific source is not reproducible evidence and must fail closed."""
+    from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
+    from silent_cascade.env.reproducibility import (
+        IndependentAllocationReproducibilitySource,
+        ReproducibilityDependencies,
+        ReproducibilityRequest,
+        check_reproducibility,
+    )
+    from silent_cascade.logging.manifest import load_manifest
+
+    resolved = _resolved()
+    allocation = IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=5,
+                episode_count=8,
+            ),
+        ),
+    )
+    dirty = _provenance(resolved).model_copy(update={"source_dirty": True})
+    calls = 0
+
+    def never_generate(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return generate_independent_episode(*args, **kwargs)
+
+    deps = ReproducibilityDependencies.for_test(
+        allocation,
+        _provenance(resolved),
+        collect_provenance=lambda *_args, **_kwargs: dirty,
+        load_verified_manifest=load_manifest,
+        iter_independent=iter_independent_requests,
+        generate_independent=never_generate,  # type: ignore[arg-type]
+    )
+    request = ReproducibilityRequest(
+        source=IndependentAllocationReproducibilitySource(
+            allocation_id=allocation.allocation_id, root_seed=41, public_id_seed=91
+        ),
+        sample_size=8,
+        chunk_sizes=(1,),
+        python_hash_seeds=(0,),
+        verify_all_source_entries=True,
+    )
+
+    with pytest.raises(ValueError, match="provenance"):
+        check_reproducibility(request, resolved, deps=deps)
+    assert calls == 0
+
+
+def test_reproducibility_rejects_empty_matrix_before_generation() -> None:
+    """A report cannot claim order/process coverage it did not execute."""
+    from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
+    from silent_cascade.env.reproducibility import (
+        IndependentAllocationReproducibilitySource,
+        ReproducibilityDependencies,
+        ReproducibilityRequest,
+        check_reproducibility,
+    )
+    from silent_cascade.logging.manifest import load_manifest
+
+    resolved = _resolved()
+    allocation = IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=5,
+                episode_count=8,
+            ),
+        ),
+    )
+    deps = ReproducibilityDependencies.for_test(
+        allocation,
+        _provenance(resolved),
+        collect_provenance=lambda *_args, **_kwargs: _provenance(resolved),
+        load_verified_manifest=load_manifest,
+        iter_independent=iter_independent_requests,
+        generate_independent=generate_independent_episode,
+    )
+    request = ReproducibilityRequest(
+        source=IndependentAllocationReproducibilitySource(
+            allocation_id=allocation.allocation_id, root_seed=41, public_id_seed=91
+        ),
+        sample_size=8,
+        chunk_sizes=(),
+        python_hash_seeds=(),
+        verify_all_source_entries=True,
+    )
+
+    with pytest.raises(ValueError, match="matrix"):
+        check_reproducibility(request, resolved, deps=deps)
+
+
+def test_manifest_source_executes_the_full_authenticated_matrix(tmp_path: Path) -> None:
+    """Manifest mode must genuinely execute chunks and both fresh hash-seed runs."""
+    from silent_cascade.env.generator import CohortAllocation, CohortBlock
+    from silent_cascade.env.reproducibility import (
+        PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
+        ManifestReproducibilitySource,
+        ReproducibilityRequest,
+        _run_fresh_process,
+        check_reproducibility,
+    )
+    from silent_cascade.env.services import build_cohort_manifest, regenerate_entry
+    from silent_cascade.logging.manifest import ManifestAccessClass, load_manifest, publish_manifest
+
+    resolved = _resolved()
+    provenance = _provenance(resolved).model_copy(
+        update={"generation_mode": "matched", "allocation_id": "test-manifest-v1"}
+    )
+    allocation = CohortAllocation(
+        allocation_id="test-manifest-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            CohortBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_cohort_index=0,
+                cohort_count=2,
+            ),
+        ),
+    )
+    manifest = build_cohort_manifest(
+        resolved.config, allocation, provenance, 41, 91, access_class=ManifestAccessClass.DEBUG
+    )
+    path = tmp_path / "debug-manifest.json"
+    publish_manifest(path, manifest)
+    runs: list[int] = []
+
+    def runner(work_order: bytes, hash_seed: int) -> bytes:
+        runs.append(hash_seed)
+        return _run_fresh_process(work_order, hash_seed)
+
+    deps = replace(
+        PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
+        production_mode=False,
+        collect_provenance=lambda *_args, **_kwargs: provenance,
+        load_verified_manifest=load_manifest,
+        regenerate_manifest_entry=regenerate_entry,
+        run_fresh_process=runner,
+    )
+    report = check_reproducibility(
+        ReproducibilityRequest(
+            source=ManifestReproducibilitySource(manifest_path=path),
+            sample_size=8,
+            chunk_sizes=(1, 3, 7),
+            python_hash_seeds=(0, 1),
+            verify_all_source_entries=True,
+        ),
+        resolved,
+        deps=deps,
+    )
+
+    assert report.modes == ("forward", "reverse", "chunked", "fresh_process")
+    assert runs == [0, 1]
+
+
+def test_reproducibility_rejects_noncanonical_fresh_worker_output() -> None:
+    """A parseable result with leaked fields cannot become evidence."""
+    from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
+    from silent_cascade.env.reproducibility import (
+        IndependentAllocationReproducibilitySource,
+        ReproducibilityDependencies,
+        ReproducibilityRequest,
+        check_reproducibility,
+    )
+    from silent_cascade.logging.manifest import load_manifest
+
+    resolved = _resolved()
+    allocation = IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=5,
+                episode_count=8,
+            ),
+        ),
+    )
+    deps = ReproducibilityDependencies.for_test(
+        allocation,
+        _provenance(resolved),
+        collect_provenance=lambda *_args, **_kwargs: _provenance(resolved),
+        load_verified_manifest=load_manifest,
+        iter_independent=iter_independent_requests,
+        generate_independent=generate_independent_episode,
+    )
+    deps = replace(
+        deps,
+        run_fresh_process=lambda *_args, **_kwargs: b'{"leaked":true}',
+    )
+    request = ReproducibilityRequest(
+        source=IndependentAllocationReproducibilitySource(
+            allocation_id=allocation.allocation_id, root_seed=41, public_id_seed=91
+        ),
+        sample_size=8,
+        chunk_sizes=(1,),
+        python_hash_seeds=(0,),
+        verify_all_source_entries=True,
+    )
+
+    with pytest.raises(ValueError, match="malformed"):
+        check_reproducibility(request, resolved, deps=deps)
