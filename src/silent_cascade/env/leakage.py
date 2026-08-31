@@ -2630,150 +2630,199 @@ def _control_mutation_error(control_id: str) -> NoReturn:
     raise ValueError(f"positive-control public mutation was not exactly declared: {control_id}")
 
 
-def _event_without_id(event: ExternalEvent) -> tuple[float, ExternalEventKind, object]:
-    return (event.timestamp, event.kind, event.payload)
-
-
-def _links_are_acyclic(events: Sequence[ExternalEvent]) -> bool:
+def _expected_control_unused_link(
+    facts: Sequence[ExternalEvent], forbidden_nodes: set[int]
+) -> LinkFact:
+    """Independently derive the first unique off-path DAG-safe padding edge."""
+    edges = {
+        (event.payload.source_node, event.payload.target_node)
+        for event in facts
+        if isinstance(event.payload, LinkFact)
+    }
     adjacency: dict[int, set[int]] = defaultdict(set)
-    for event in events:
-        if isinstance(event.payload, LinkFact):
-            adjacency[event.payload.source_node].add(event.payload.target_node)
+    for source, target in edges:
+        adjacency[source].add(target)
 
-    visiting: set[int] = set()
-    visited: set[int] = set()
+    def reaches(source: int, target: int) -> bool:
+        pending = [source]
+        visited: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if node == target:
+                return True
+            if node not in visited:
+                visited.add(node)
+                pending.extend(adjacency[node])
+        return False
 
-    def visit(node: int) -> bool:
-        if node in visiting:
-            return False
-        if node in visited:
-            return True
-        visiting.add(node)
-        if any(not visit(child) for child in adjacency[node]):
-            return False
-        visiting.remove(node)
-        visited.add(node)
-        return True
-
-    return all(visit(node) for node in tuple(adjacency))
+    for source in range(64):
+        for target in range(64):
+            if (
+                source != target
+                and source not in forbidden_nodes
+                and target not in forbidden_nodes
+                and (source, target) not in edges
+                and not reaches(target, source)
+            ):
+                return LinkFact(source, target)
+    raise ValueError("control preflight cannot derive its expected unreachable LINK")
 
 
-def _require_exact_control_public_mutation(
+def _assemble_expected_control_public(
+    original: EpisodeBundle,
+    ordered_facts: Sequence[ExternalEvent],
+    *,
+    event_ids: Sequence[int] | None = None,
+    fact_timestamps: Sequence[float] | None = None,
+    activation_id: int | None = None,
+    activation_time: float | None = None,
+    activation_payload: ActivationPayload | None = None,
+    public_id: str | None = None,
+) -> PublicEpisode:
+    """Build the exact expected public artifact without the production rewriter."""
+    source_facts = _fact_events(original)
+    activation = original.public.events[-1]
+    ids = tuple(range(len(ordered_facts))) if event_ids is None else tuple(event_ids)
+    timestamps = (
+        tuple(sorted(event.timestamp for event in source_facts))
+        if fact_timestamps is None
+        else tuple(float(value) for value in fact_timestamps)
+    )
+    if len(ids) != len(ordered_facts) or len(timestamps) != len(ordered_facts):
+        raise ValueError("control preflight expected FACT coordinates are incomplete")
+    expected_facts = tuple(
+        ExternalEvent(event_id, timestamp, ExternalEventKind.FACT, source.payload)
+        for event_id, timestamp, source in zip(ids, timestamps, ordered_facts, strict=True)
+    )
+    expected_activation = ExternalEvent(
+        len(ordered_facts) if activation_id is None else activation_id,
+        activation.timestamp if activation_time is None else float(activation_time),
+        activation.kind,
+        activation.payload if activation_payload is None else activation_payload,
+    )
+    return PublicEpisode(
+        replace(
+            original.public.init,
+            episode_public_id=(
+                original.public.init.episode_public_id if public_id is None else public_id
+            ),
+        ),
+        (*expected_facts, expected_activation),
+    )
+
+
+def _expected_control_artifact(
     injector: NamedLeakInjector,
     original: AuditExample,
-    transformed: AuditExample,
     *,
+    corpus_position: int,
     encoded_manifest_rank: int,
     injected_hazard_target: int | None,
-) -> None:
-    """Reject every public change outside one control's frozen encoding fields."""
-    before = original.bundle.public
-    after = transformed.bundle.public
-    original_facts = _fact_events(original.bundle)
-    facts = _fact_events(transformed.bundle)
-    original_activation = before.events[-1]
-    activation = after.events[-1]
+) -> tuple[PublicEpisode, int]:
+    """Derive one canonical overlay solely from clean inputs and frozen coordinates."""
+    bundle = original.bundle
+    facts = list(_fact_events(bundle))
+    activation = bundle.public.events[-1]
+    positive = bundle.truth.recipe.variant is EpisodeVariant.POSITIVE
     control_id = injector.control_id
-
-    if control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
-        if after != before or transformed.manifest_rank != encoded_manifest_rank:
-            _control_mutation_error(control_id)
-        return
-    if transformed.manifest_rank != original.manifest_rank:
-        _control_mutation_error(control_id)
+    expected_rank = original.manifest_rank
 
     if control_id == "PC_COUNT_BY_LABEL":
-        positive = original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE
         target = 48 if positive else 56
-        if (
-            after.init != before.init
-            or len(facts) != target
-            or activation.kind is not original_activation.kind
-            or activation.timestamp != original_activation.timestamp
-            or activation.payload != original_activation.payload
-            or activation.event_id != target
-            or tuple(event.event_id for event in facts) != tuple(range(target))
-        ):
-            _control_mutation_error(control_id)
-        if len(original_facts) <= target:
-            if facts[: len(original_facts)] != original_facts:
-                _control_mutation_error(control_id)
-            padding = facts[len(original_facts) :]
-            if any(
-                not isinstance(event.payload, LinkFact)
-                or event.payload.source_node in original.bundle.truth.relevant_node_path
-                or event.payload.target_node in original.bundle.truth.relevant_node_path
-                for event in padding
-            ):
-                _control_mutation_error(control_id)
-        else:
-            before_signatures = tuple(_event_without_id(event) for event in original_facts)
-            after_signatures = tuple(_event_without_id(event) for event in facts)
-            cursor = 0
-            retained: list[int] = []
-            for signature in after_signatures:
-                while cursor < len(before_signatures) and before_signatures[cursor] != signature:
-                    cursor += 1
-                if cursor == len(before_signatures):
-                    _control_mutation_error(control_id)
-                retained.append(cursor)
-                cursor += 1
-            removed = [
-                event for index, event in enumerate(original_facts) if index not in set(retained)
-            ]
-            if any(
-                not isinstance(event.payload, LinkFact)
-                or event.event_id in original.bundle.truth.relevant_record_ids
-                for event in removed
-            ):
-                _control_mutation_error(control_id)
-        if not _links_are_acyclic(facts):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_ACTIVATION_GAP_BY_LABEL":
-        expected_gap = (
-            1.0 if original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE else 4.0
+        protected_ids = set(bundle.truth.relevant_record_ids)
+        protected_ids.update(
+            event.event_id for event in facts if isinstance(event.payload, (HazardFact, SafeFact))
         )
-        if (
-            after.init != before.init
-            or facts != original_facts
-            or activation.event_id != original_activation.event_id
-            or activation.kind is not original_activation.kind
-            or activation.payload != original_activation.payload
-            or activation.timestamp != original_facts[-1].timestamp + expected_gap
+        removable = [
+            event
+            for event in facts
+            if event.event_id not in protected_ids and isinstance(event.payload, LinkFact)
+        ]
+        remove_count = max(0, len(facts) - target)
+        if remove_count > len(removable):
+            raise ValueError("control preflight cannot remove a protected FACT record")
+        removed_ids = (
+            {event.event_id for event in removable[-remove_count:]} if remove_count else set()
+        )
+        expected_facts = [event for event in facts if event.event_id not in removed_ids]
+        padding_count = target - len(expected_facts)
+        for _ in range(padding_count):
+            expected_facts.append(
+                ExternalEvent(
+                    max(event.event_id for event in expected_facts) + 1,
+                    0.0,
+                    ExternalEventKind.FACT,
+                    _expected_control_unused_link(
+                        expected_facts, set(bundle.truth.relevant_node_path)
+                    ),
+                )
+            )
+        if padding_count:
+            last_source_time = facts[-1].timestamp
+            first_padding = len(expected_facts) - padding_count
+            for offset in range(padding_count):
+                expected_facts[first_padding + offset] = replace(
+                    expected_facts[first_padding + offset],
+                    timestamp=float(
+                        last_source_time
+                        + (activation.timestamp - last_source_time)
+                        * (offset + 1)
+                        / (padding_count + 1)
+                    ),
+                )
+        public = _assemble_expected_control_public(
+            bundle,
+            expected_facts,
+            fact_timestamps=tuple(event.timestamp for event in expected_facts),
+        )
+    elif control_id == "PC_ACTIVATION_GAP_BY_LABEL":
+        public = _assemble_expected_control_public(
+            bundle,
+            facts,
+            activation_time=facts[-1].timestamp + (1.0 if positive else 4.0),
+        )
+    elif control_id == "PC_TERMINAL_ORDER_BY_VARIANT":
+        hazards = [event for event in facts if isinstance(event.payload, HazardFact)]
+        safe = next(event for event in facts if isinstance(event.payload, SafeFact))
+        terminals = (hazards[0], hazards[1], safe)
+        code_by_variant = {
+            EpisodeVariant.POSITIVE: (0, 1, 2),
+            EpisodeVariant.SAFE_NEGATIVE: (0, 2, 1),
+            EpisodeVariant.DISCONNECTED_NEGATIVE: (2, 0, 1),
+        }
+        expected_facts = [
+            terminals[index] for index in code_by_variant[bundle.truth.recipe.variant]
+        ]
+        expected_facts.extend(event for event in facts if event not in terminals)
+        if tuple(event.payload for event in expected_facts) == tuple(
+            event.payload for event in facts
         ):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_TERMINAL_ORDER_BY_VARIANT":
-        if (
-            after.init != before.init
-            or activation != original_activation
-            or len(facts) != len(original_facts)
-            or tuple((event.event_id, event.timestamp, event.kind) for event in facts)
-            != tuple((event.event_id, event.timestamp, event.kind) for event in original_facts)
-            or sorted(repr(event.payload) for event in facts)
-            != sorted(repr(event.payload) for event in original_facts)
-        ):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_ACTIVATION_ID_BY_LABEL":
-        original_start = original_activation.payload
-        if not isinstance(original_start, ActivationPayload):
-            _control_mutation_error(control_id)
-        target = 0 if original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE else 63
-        swaps = {original_start.start_node: target, target: original_start.start_node}
-        if original_start.start_node == target:
-            left, right = original.bundle.truth.relevant_node_path[1:3]
-            swaps.update({left: right, right: left})
+            link_positions = [
+                index
+                for index, event in enumerate(expected_facts)
+                if isinstance(event.payload, LinkFact)
+            ]
+            left, right = link_positions[:2]
+            expected_facts[left], expected_facts[right] = (
+                expected_facts[right],
+                expected_facts[left],
+            )
+        public = _assemble_expected_control_public(bundle, expected_facts)
+    elif control_id == "PC_ACTIVATION_ID_BY_LABEL":
+        if not isinstance(activation.payload, ActivationPayload):
+            raise ValueError("control preflight expected an activation payload")
+        target = 0 if positive else 63
+        source = activation.payload.start_node
+        replacements = {source: target, target: source}
+        if source == target:
+            left, right = bundle.truth.relevant_node_path[1:3]
+            replacements.update({left: right, right: left})
 
         def remap(value: int) -> int:
-            return swaps.get(value, value)
+            return replacements.get(value, value)
 
-        expected_facts: list[ExternalEvent] = []
-        for event in original_facts:
+        expected_facts = []
+        for event in facts:
             payload = event.payload
             if isinstance(payload, LinkFact):
                 payload = replace(
@@ -2784,44 +2833,46 @@ def _require_exact_control_public_mutation(
             elif isinstance(payload, (HazardFact, SafeFact)):
                 payload = replace(payload, node=remap(payload.node))
             expected_facts.append(replace(event, payload=payload))
-        if (
-            after.init != before.init
-            or facts != tuple(expected_facts)
-            or activation
-            != replace(
-                original_activation,
-                payload=ActivationPayload(remap(original_start.start_node)),
-            )
-        ):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_RECORD_ID_BY_VARIANT":
-        band = (0, 128, 256)[list(EpisodeVariant).index(original.bundle.truth.recipe.variant)]
-        if (
-            after.init != before.init
-            or tuple(_event_without_id(event) for event in facts)
-            != tuple(_event_without_id(event) for event in original_facts)
-            or tuple(event.event_id for event in facts)
-            != tuple(band + index for index in range(len(facts)))
-            or _event_without_id(activation) != _event_without_id(original_activation)
-            or activation.event_id != 384
-        ):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_PUBLIC_ID_BY_LABEL":
-        before_init = before.init
-        if (
-            after.events != before.events
-            or replace(after.init, episode_public_id=before_init.episode_public_id) != before_init
-        ):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_DELAY_BY_LABEL":
-        delay = 1.0 if original.bundle.truth.recipe.variant is EpisodeVariant.POSITIVE else 1024.0
-        expected_facts = tuple(
+        public = _assemble_expected_control_public(
+            bundle,
+            expected_facts,
+            activation_payload=ActivationPayload(remap(source)),
+        )
+    elif control_id == "PC_RECORD_ID_BY_VARIANT":
+        band_by_variant = {
+            EpisodeVariant.POSITIVE: 0,
+            EpisodeVariant.SAFE_NEGATIVE: 128,
+            EpisodeVariant.DISCONNECTED_NEGATIVE: 256,
+        }
+        band = band_by_variant[bundle.truth.recipe.variant]
+        public = _assemble_expected_control_public(
+            bundle,
+            facts,
+            event_ids=tuple(band + index for index in range(len(facts))),
+            activation_id=384,
+        )
+    elif control_id == "PC_PUBLIC_ID_BY_LABEL":
+        derived = bytearray(
+            bytes.fromhex(
+                sha256_bytes(
+                    canonical_json_bytes(
+                        {
+                            "domain": "silent-cascade/ofd-v1/pc-public-id/v1",
+                            "position": corpus_position,
+                        }
+                    )
+                )
+            )[:16]
+        )
+        derived[0] = 0 if positive else 255
+        derived[6] = (derived[6] & 0x0F) | 0x40
+        derived[8] = (derived[8] & 0x3F) | 0x80
+        public = _assemble_expected_control_public(
+            bundle, facts, public_id=str(uuid.UUID(bytes=bytes(derived)))
+        )
+    elif control_id == "PC_DELAY_BY_LABEL":
+        delay = 1.0 if positive else 1024.0
+        expected_facts = [
             replace(
                 event,
                 payload=(
@@ -2830,98 +2881,98 @@ def _require_exact_control_public_mutation(
                     else event.payload
                 ),
             )
-            for event in original_facts
-        )
-        if (
-            after.init != before.init
-            or facts != expected_facts
-            or activation != original_activation
-        ):
-            _control_mutation_error(control_id)
-        return
-
-    if control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
-        if original.bundle.truth.recipe.variant is not EpisodeVariant.POSITIVE:
-            if after != before:
-                _control_mutation_error(control_id)
-            return
-        if injected_hazard_target not in range(4):
-            _control_mutation_error(control_id)
-        target = int(injected_hazard_target)
-        if (
-            after.init != before.init
-            or activation.timestamp != original_activation.timestamp
-            or activation.kind is not original_activation.kind
-            or activation.payload != original_activation.payload
-            or activation.event_id != len(facts)
-            or tuple(event.event_id for event in facts) != tuple(range(len(facts)))
-            or len(facts) not in {len(original_facts), len(original_facts) + 1}
-            or not isinstance(facts[target].payload, SafeFact)
-        ):
-            _control_mutation_error(control_id)
-        original_links = [
-            event.payload for event in original_facts if isinstance(event.payload, LinkFact)
+            for event in facts
         ]
-        new_links = [event.payload for event in facts if isinstance(event.payload, LinkFact)]
-        if any(link not in new_links for link in original_links) or len(new_links) not in {
-            len(original_links),
-            len(original_links) + 1,
-        }:
-            _control_mutation_error(control_id)
-        extras = [link for link in new_links if link not in original_links]
-        if any(
-            link.source_node in original.bundle.truth.relevant_node_path
-            or link.target_node in original.bundle.truth.relevant_node_path
-            for link in extras
-        ) or not _links_are_acyclic(facts):
-            _control_mutation_error(control_id)
-        sentinel_candidates = [
-            facts[index]
-            for index in range(4)
-            if index != target and isinstance(facts[index].payload, LinkFact)
-        ]
-        if len(sentinel_candidates) != 1:
-            _control_mutation_error(control_id)
-        sentinel = sentinel_candidates[0]
-        if not isinstance(sentinel.payload, LinkFact) or sentinel.payload in {
-            event.payload
-            for event in original_facts
-            if event.event_id in original.bundle.truth.relevant_record_ids
-        }:
-            _control_mutation_error(control_id)
-        original_safe = next(
-            event.payload for event in original_facts if isinstance(event.payload, SafeFact)
-        )
-        if facts[target].payload != original_safe:
-            _control_mutation_error(control_id)
-        original_hazards = [
-            event for event in original_facts if isinstance(event.payload, HazardFact)
-        ]
-        new_hazards = [event for event in facts if isinstance(event.payload, HazardFact)]
-        terminal_id = original.bundle.truth.terminal_record_id
-        expected_hazards = sorted(
-            (
-                event.payload.node,
-                target if event.event_id == terminal_id else (target + 1) % 4,
-                event.payload.delay,
-                event.payload.confidence,
+        public = _assemble_expected_control_public(bundle, expected_facts)
+    elif control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
+        if not positive:
+            public = bundle.public
+        else:
+            if injected_hazard_target not in range(4):
+                raise ValueError("control preflight requires its frozen hazard target")
+            target = int(injected_hazard_target)
+            terminal_id = bundle.truth.terminal_record_id
+            if terminal_id is None:
+                raise ValueError("control preflight expected a terminal hazard record")
+            sentinel = next(
+                (
+                    event
+                    for event in facts
+                    if isinstance(event.payload, LinkFact)
+                    and event.event_id not in bundle.truth.relevant_record_ids
+                ),
+                None,
             )
-            for event in original_hazards
-        )
-        actual_hazards = sorted(
-            (
-                event.payload.node,
-                event.payload.hazard_type,
-                event.payload.delay,
-                event.payload.confidence,
+            if sentinel is None:
+                sentinel = ExternalEvent(
+                    max(event.event_id for event in facts) + 1,
+                    float(facts[-1].timestamp + (activation.timestamp - facts[-1].timestamp) / 2.0),
+                    ExternalEventKind.FACT,
+                    _expected_control_unused_link(facts, set(bundle.truth.relevant_node_path)),
+                )
+                facts.append(sentinel)
+            expected_facts = [
+                replace(
+                    event,
+                    payload=(
+                        replace(
+                            event.payload,
+                            hazard_type=(
+                                target if event.event_id == terminal_id else (target + 1) % 4
+                            ),
+                        )
+                        if isinstance(event.payload, HazardFact)
+                        else event.payload
+                    ),
+                )
+                for event in facts
+            ]
+            safe = next(event for event in expected_facts if isinstance(event.payload, SafeFact))
+            hazards = [event for event in expected_facts if isinstance(event.payload, HazardFact)]
+            sentinel = next(
+                event for event in expected_facts if event.event_id == sentinel.event_id
             )
-            for event in new_hazards
-        )
-        if actual_hazards != expected_hazards:
-            _control_mutation_error(control_id)
-        return
+            reserved: list[ExternalEvent | None] = [None, None, None, None]
+            reserved[target] = safe
+            stable_fill = [*hazards, sentinel]
+            for index in range(4):
+                if reserved[index] is None:
+                    reserved[index] = stable_fill.pop(0)
+            prefix = [event for event in reserved if event is not None]
+            reserved_ids = {event.event_id for event in prefix}
+            prefix.extend(event for event in expected_facts if event.event_id not in reserved_ids)
+            public = _assemble_expected_control_public(
+                bundle,
+                prefix,
+                fact_timestamps=tuple(sorted(event.timestamp for event in expected_facts)),
+            )
+    elif control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
+        public = bundle.public
+        expected_rank = encoded_manifest_rank
+    else:
+        _control_mutation_error(control_id)
+    return public, expected_rank
 
-    _control_mutation_error(control_id)
+
+def _require_exact_control_public_mutation(
+    injector: NamedLeakInjector,
+    original: AuditExample,
+    transformed: AuditExample,
+    *,
+    corpus_position: int,
+    encoded_manifest_rank: int,
+    injected_hazard_target: int | None,
+) -> None:
+    """Reject any public artifact other than the independently reconstructed overlay."""
+    expected_public, expected_rank = _expected_control_artifact(
+        injector,
+        original,
+        corpus_position=corpus_position,
+        encoded_manifest_rank=encoded_manifest_rank,
+        injected_hazard_target=injected_hazard_target,
+    )
+    if transformed.bundle.public != expected_public or transformed.manifest_rank != expected_rank:
+        _control_mutation_error(injector.control_id)
 
 
 def _has_control_observation_gap_consequence(
@@ -3128,6 +3179,7 @@ def _execute_positive_control(
                 injector,
                 example,
                 transformed,
+                corpus_position=local,
                 encoded_manifest_rank=encoded_ranks[local],
                 injected_hazard_target=hazard_targets.get(local),
             )

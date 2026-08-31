@@ -878,6 +878,576 @@ def test_count_control_short_observation_window_has_one_precise_admission() -> N
     assert report.check_ids == ("observation_gap",)
 
 
+@pytest.mark.parametrize(
+    "attack",
+    ("public_id_suffix", "terminal_alternate_code", "hazard_alternate_fill"),
+)
+def test_exact_control_preflight_rejects_round_six_reviewer_attacks(attack: str) -> None:
+    """Alternate but still decodable interventions are not the declared controls."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _require_exact_control_public_mutation,
+        _rewrite_positive_control,
+    )
+
+    config = _config()
+    bundles = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 17, 3),
+        91,
+    ).episodes
+    encoded_rank = 100
+    hazard_target = None
+    corpus_position = 7
+    if attack == "public_id_suffix":
+        injector = next(
+            item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_PUBLIC_ID_BY_LABEL"
+        )
+        bundle = next(
+            item for item in bundles if item.truth.recipe.variant is EpisodeVariant.SAFE_NEGATIVE
+        )
+        original = AuditExample(bundle, 0, "matched", 17, 0)
+        transformed = _rewrite_positive_control(injector, original, corpus_position)
+        corrupted = replace(
+            transformed,
+            bundle=replace(
+                transformed.bundle,
+                public=replace(
+                    transformed.bundle.public,
+                    init=replace(
+                        transformed.bundle.public.init,
+                        episode_public_id="aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+                    ),
+                ),
+            ),
+        )
+    elif attack == "terminal_alternate_code":
+        injector = next(
+            item
+            for item in NAMED_LEAK_INJECTORS
+            if item.control_id == "PC_TERMINAL_ORDER_BY_VARIANT"
+        )
+        bundle = next(
+            item for item in bundles if item.truth.recipe.variant is EpisodeVariant.SAFE_NEGATIVE
+        )
+        original = AuditExample(bundle, 0, "matched", 17, 0)
+        transformed = _rewrite_positive_control(injector, original, corpus_position)
+        events = list(transformed.bundle.public.events)
+        events[1], events[2] = (
+            replace(events[1], payload=events[2].payload),
+            replace(events[2], payload=events[1].payload),
+        )
+        corrupted = replace(
+            transformed,
+            bundle=replace(
+                transformed.bundle,
+                public=replace(transformed.bundle.public, events=tuple(events)),
+            ),
+        )
+    else:
+        injector = next(
+            item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
+        )
+        zero_distractor = generate_matched_cohort(
+            config,
+            CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 0, 0, 2),
+            91,
+        ).episodes
+        bundle = next(
+            item for item in zero_distractor if item.truth.recipe.variant is EpisodeVariant.POSITIVE
+        )
+        original = AuditExample(bundle, 0, "matched", 0, 0)
+        hazard_target = 3
+        transformed = _rewrite_positive_control(
+            injector,
+            original,
+            corpus_position,
+            injected_hazard_target=hazard_target,
+        )
+        assert [type(event.payload).__name__ for event in _fact_events(transformed.bundle)[:4]] == [
+            "HazardFact",
+            "HazardFact",
+            "LinkFact",
+            "SafeFact",
+        ]
+        events = list(transformed.bundle.public.events)
+        events[1], events[2] = (
+            replace(events[1], payload=events[2].payload),
+            replace(events[2], payload=events[1].payload),
+        )
+        corrupted = replace(
+            transformed,
+            bundle=replace(
+                transformed.bundle,
+                public=replace(transformed.bundle.public, events=tuple(events)),
+            ),
+        )
+
+    _require_exact_control_public_mutation(
+        injector,
+        original,
+        transformed,
+        corpus_position=corpus_position,
+        encoded_manifest_rank=encoded_rank,
+        injected_hazard_target=hazard_target,
+    )
+    with pytest.raises(ValueError, match="not exactly declared"):
+        _require_exact_control_public_mutation(
+            injector,
+            original,
+            corrupted,
+            corpus_position=corpus_position,
+            encoded_manifest_rank=encoded_rank,
+            injected_hazard_target=hazard_target,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "control_id", "variant_name", "hazard_target"),
+    (
+        ("count_add_padding", "PC_COUNT_BY_LABEL", "positive", None),
+        ("count_add_retained", "PC_COUNT_BY_LABEL", "positive", None),
+        ("count_remove_identity", "PC_COUNT_BY_LABEL", "flood_positive", None),
+        ("count_remove_retained", "PC_COUNT_BY_LABEL", "flood_positive", None),
+        ("gap_positive_target", "PC_ACTIVATION_GAP_BY_LABEL", "positive", None),
+        ("gap_negative_target", "PC_ACTIVATION_GAP_BY_LABEL", "safe_negative", None),
+        ("gap_preserved_fact", "PC_ACTIVATION_GAP_BY_LABEL", "positive", None),
+        ("terminal_positive_alternate", "PC_TERMINAL_ORDER_BY_VARIANT", "positive", None),
+        ("terminal_safe_alternate", "PC_TERMINAL_ORDER_BY_VARIANT", "safe_negative", None),
+        (
+            "terminal_disconnected_alternate",
+            "PC_TERMINAL_ORDER_BY_VARIANT",
+            "disconnected_negative",
+            None,
+        ),
+        ("terminal_positive_identity", "PC_TERMINAL_ORDER_BY_VARIANT", "positive", None),
+        ("terminal_safe_identity", "PC_TERMINAL_ORDER_BY_VARIANT", "safe_negative", None),
+        (
+            "terminal_disconnected_identity",
+            "PC_TERMINAL_ORDER_BY_VARIANT",
+            "disconnected_negative",
+            None,
+        ),
+        ("terminal_suffix", "PC_TERMINAL_ORDER_BY_VARIANT", "positive", None),
+        ("activation_positive_target", "PC_ACTIVATION_ID_BY_LABEL", "positive", None),
+        ("activation_negative_target", "PC_ACTIVATION_ID_BY_LABEL", "safe_negative", None),
+        ("activation_partial_bijection", "PC_ACTIVATION_ID_BY_LABEL", "positive", None),
+        ("record_positive_band", "PC_RECORD_ID_BY_VARIANT", "positive", None),
+        ("record_safe_band", "PC_RECORD_ID_BY_VARIANT", "safe_negative", None),
+        (
+            "record_disconnected_band",
+            "PC_RECORD_ID_BY_VARIANT",
+            "disconnected_negative",
+            None,
+        ),
+        ("record_local_rank", "PC_RECORD_ID_BY_VARIANT", "safe_negative", None),
+        ("record_preserved_time", "PC_RECORD_ID_BY_VARIANT", "positive", None),
+        ("public_positive_byte", "PC_PUBLIC_ID_BY_LABEL", "positive", None),
+        ("public_negative_byte", "PC_PUBLIC_ID_BY_LABEL", "safe_negative", None),
+        ("public_suffix", "PC_PUBLIC_ID_BY_LABEL", "safe_negative", None),
+        ("public_collision", "PC_PUBLIC_ID_BY_LABEL", "safe_negative", None),
+        ("public_preserved_event", "PC_PUBLIC_ID_BY_LABEL", "positive", None),
+        ("delay_positive_first", "PC_DELAY_BY_LABEL", "positive", None),
+        ("delay_positive_second", "PC_DELAY_BY_LABEL", "positive", None),
+        ("delay_negative_first", "PC_DELAY_BY_LABEL", "safe_negative", None),
+        ("delay_negative_second", "PC_DELAY_BY_LABEL", "safe_negative", None),
+        ("delay_preserved_safe", "PC_DELAY_BY_LABEL", "positive", None),
+        ("hazard_hlh_0", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 0),
+        ("hazard_hlh_1", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 1),
+        ("hazard_hlh_2", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 2),
+        ("hazard_hlh_3", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_lhh_0", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 0),
+        ("hazard_lhh_1", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 1),
+        ("hazard_lhh_2", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 2),
+        ("hazard_lhh_3", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_relevant_sentinel", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_sentinel_identity", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_timestamp", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_suffix", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_class", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("hazard_activation_parent", "PC_HAZARD_LAYOUT_BY_CLASS", "zero_positive", 3),
+        ("manifest_rank", "PC_MANIFEST_ORDER_BY_VARIANT", "positive", None),
+        ("manifest_public_order", "PC_MANIFEST_ORDER_BY_VARIANT", "positive", None),
+    ),
+)
+def test_control_value_mutation_table_refuses_before_fit(
+    case: str,
+    control_id: str,
+    variant_name: str,
+    hazard_target: int | None,
+) -> None:
+    """Every declared target and preserved public family is authenticated by value."""
+    import uuid
+
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.generator import IndependentEpisodeRequest, generate_independent_episode
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _fact_events,
+        _require_exact_control_public_mutation,
+        _rewrite_positive_control,
+    )
+    from silent_cascade.env.timing import action_window
+    from silent_cascade.schemas import ActivationPayload, HazardFact, LinkFact
+
+    config = _config()
+    bundles = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 17, 3),
+        91,
+    ).episodes
+    variant_by_name = {
+        "positive": EpisodeVariant.POSITIVE,
+        "safe_negative": EpisodeVariant.SAFE_NEGATIVE,
+        "disconnected_negative": EpisodeVariant.DISCONNECTED_NEGATIVE,
+    }
+    if variant_name == "flood_positive":
+        bundle = generate_independent_episode(
+            config,
+            IndependentEpisodeRequest(
+                SplitNamespace.DEBUG,
+                SuiteName.DISTRACTOR_FLOOD,
+                41,
+                1,
+                4,
+                EpisodeVariant.POSITIVE,
+                0,
+            ),
+            91,
+        )
+        assert len(_fact_events(bundle)) == 55
+        original = AuditExample(bundle, 0, "independent", 0, 1)
+    elif variant_name == "zero_positive":
+        zero_distractor = generate_matched_cohort(
+            config,
+            CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 0, 0, 2),
+            91,
+        ).episodes
+        bundle = next(
+            item for item in zero_distractor if item.truth.recipe.variant is EpisodeVariant.POSITIVE
+        )
+        assert bundle.truth.recipe.distractor_link_count == 0
+        original = AuditExample(bundle, 0, "matched", 0, 0)
+    else:
+        variant = variant_by_name[variant_name]
+        bundle = next(item for item in bundles if item.truth.recipe.variant is variant)
+        original = AuditExample(bundle, 0, "matched", 17, 0)
+    injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == control_id)
+    corpus_position = 7
+    encoded_rank = 100
+    transformed = _rewrite_positive_control(
+        injector,
+        original,
+        corpus_position,
+        encoded_manifest_rank=encoded_rank,
+        injected_hazard_target=hazard_target,
+    )
+    _require_exact_control_public_mutation(
+        injector,
+        original,
+        transformed,
+        corpus_position=corpus_position,
+        encoded_manifest_rank=encoded_rank,
+        injected_hazard_target=hazard_target,
+    )
+
+    def with_events(events: list[object], *, truth: object | None = None) -> object:
+        return replace(
+            transformed,
+            bundle=replace(
+                transformed.bundle,
+                public=replace(transformed.bundle.public, events=tuple(events)),
+                truth=transformed.bundle.truth if truth is None else truth,
+            ),
+        )
+
+    def truth_for_payload_permutation(before: list[object], after: list[object]) -> object:
+        """Rebind private record references so the corrupt public bundle stays valid."""
+        destinations: dict[int, int] = {}
+        unmatched = list(after[:-1])
+        for source in before[:-1]:
+            destination = next(event for event in unmatched if event.payload == source.payload)
+            unmatched.remove(destination)
+            destinations[source.event_id] = destination.event_id
+        truth = transformed.bundle.truth
+        return replace(
+            truth,
+            relevant_record_ids=tuple(
+                destinations[event_id] for event_id in truth.relevant_record_ids
+            ),
+            terminal_record_id=(
+                None if truth.terminal_record_id is None else destinations[truth.terminal_record_id]
+            ),
+        )
+
+    def truth_with_timing(*, activation_time: float, delay: float) -> object:
+        truth = transformed.bundle.truth
+        window = (
+            action_window(activation_time, delay, truth.recipe.oracle_timing)
+            if truth.recipe.variant is EpisodeVariant.POSITIVE
+            else None
+        )
+        return replace(
+            truth,
+            private_terminal=replace(truth.private_terminal, timestamp=activation_time + delay),
+            activation_time=activation_time,
+            episode_delay=delay,
+            action_window_start=None if window is None else window.start,
+            action_window_end=None if window is None else window.end,
+            action_target=None if window is None else window.target,
+        )
+
+    events = list(transformed.bundle.public.events)
+    if case == "count_add_padding":
+        padding = events[-2]
+        assert isinstance(padding.payload, LinkFact)
+        events[-2] = replace(padding, payload=replace(padding.payload, confidence=0.5))
+        corrupted = with_events(events)
+    elif case in {"count_add_retained", "count_remove_retained"}:
+        events[0] = replace(events[0], timestamp=events[0].timestamp + 1.0e-6)
+        corrupted = with_events(events)
+    elif case == "count_remove_identity":
+        events[0], events[1] = (
+            replace(events[0], payload=events[1].payload),
+            replace(events[1], payload=events[0].payload),
+        )
+        corrupted = with_events(events)
+    elif case in {"gap_positive_target", "gap_negative_target"}:
+        activation_time = events[-1].timestamp + 0.5
+        events[-1] = replace(events[-1], timestamp=activation_time)
+        corrupted = with_events(
+            events,
+            truth=truth_with_timing(
+                activation_time=activation_time,
+                delay=transformed.bundle.truth.episode_delay,
+            ),
+        )
+    elif case == "gap_preserved_fact":
+        events[0] = replace(events[0], timestamp=events[0].timestamp + 1.0e-6)
+        corrupted = with_events(events)
+    elif case.startswith("terminal_") and case.endswith("_alternate"):
+        before = list(events)
+        safe_slot = next(
+            index for index in range(3) if type(events[index].payload).__name__ == "SafeFact"
+        )
+        hazard_slot = next(index for index in range(3) if index != safe_slot)
+        events[safe_slot], events[hazard_slot] = (
+            replace(events[safe_slot], payload=events[hazard_slot].payload),
+            replace(events[hazard_slot], payload=events[safe_slot].payload),
+        )
+        corrupted = with_events(events, truth=truth_for_payload_permutation(before, events))
+    elif case.startswith("terminal_") and case.endswith("_identity"):
+        corrupted = replace(transformed, bundle=original.bundle)
+    elif case == "terminal_suffix":
+        events[3], events[4] = (
+            replace(events[3], payload=events[4].payload),
+            replace(events[4], payload=events[3].payload),
+        )
+        corrupted = with_events(events)
+    elif case in {"activation_positive_target", "activation_negative_target"}:
+        activation = events[-1]
+        assert isinstance(activation.payload, ActivationPayload)
+        wrong = 1 if case == "activation_positive_target" else 62
+        events[-1] = replace(activation, payload=ActivationPayload(wrong))
+        corrupted = with_events(events)
+    elif case == "activation_partial_bijection":
+        original_events = original.bundle.public.events
+        changed_index = next(
+            index
+            for index, (before, after) in enumerate(
+                zip(original_events[:-1], events[:-1], strict=True)
+            )
+            if before.payload != after.payload
+        )
+        events[changed_index] = replace(
+            events[changed_index], payload=original_events[changed_index].payload
+        )
+        corrupted = with_events(events)
+    elif case.startswith("record_") and case.endswith("_band"):
+        mutable_index = next(
+            index
+            for index, event in enumerate(events[:-1])
+            if event.event_id not in transformed.bundle.truth.relevant_record_ids
+        )
+        events[mutable_index] = replace(
+            events[mutable_index], event_id=events[mutable_index].event_id + 64
+        )
+        corrupted = with_events(events)
+    elif case == "record_local_rank":
+        events[0], events[1] = (
+            replace(events[0], event_id=events[1].event_id),
+            replace(events[1], event_id=events[0].event_id),
+        )
+        corrupted = with_events(events)
+    elif case == "record_preserved_time":
+        events[0] = replace(events[0], timestamp=events[0].timestamp + 1.0e-6)
+        corrupted = with_events(events)
+    elif case.startswith("public_") and case != "public_preserved_event":
+        raw = bytearray(uuid.UUID(transformed.bundle.public.init.episode_public_id).bytes)
+        if case == "public_positive_byte":
+            raw[0] = 1
+        elif case == "public_negative_byte":
+            raw[0] = 254
+        elif case == "public_suffix":
+            raw[-1] ^= 1
+        else:
+            collision = _rewrite_positive_control(
+                injector, original, corpus_position + 1
+            ).bundle.public.init.episode_public_id
+            raw = bytearray(uuid.UUID(collision).bytes)
+        corrupted = replace(
+            transformed,
+            bundle=replace(
+                transformed.bundle,
+                public=replace(
+                    transformed.bundle.public,
+                    init=replace(
+                        transformed.bundle.public.init,
+                        episode_public_id=str(uuid.UUID(bytes=bytes(raw))),
+                    ),
+                ),
+            ),
+        )
+    elif case == "public_preserved_event":
+        events[0] = replace(events[0], timestamp=events[0].timestamp + 1.0e-6)
+        corrupted = with_events(events)
+    elif case.startswith("delay_") and case != "delay_preserved_safe":
+        hazard_indices = [
+            index for index, event in enumerate(events) if isinstance(event.payload, HazardFact)
+        ]
+        selected = hazard_indices[0 if case.endswith("first") else 1]
+        payload = events[selected].payload
+        assert isinstance(payload, HazardFact)
+        events[selected] = replace(
+            events[selected], payload=replace(payload, delay=payload.delay + 1.0)
+        )
+        if events[selected].event_id == transformed.bundle.truth.terminal_record_id:
+            corrupted = with_events(
+                events,
+                truth=truth_with_timing(
+                    activation_time=transformed.bundle.truth.activation_time,
+                    delay=payload.delay + 1.0,
+                ),
+            )
+        else:
+            corrupted = with_events(events)
+    elif case == "delay_preserved_safe":
+        safe_index = next(
+            index
+            for index, event in enumerate(events)
+            if type(event.payload).__name__ == "SafeFact"
+        )
+        events[safe_index] = replace(
+            events[safe_index],
+            payload=replace(events[safe_index].payload, confidence=0.5),
+        )
+        corrupted = with_events(events)
+    elif case.startswith("hazard_hlh_") or case.startswith("hazard_lhh_"):
+        assert hazard_target is not None
+        before = list(events)
+        other = [index for index in range(4) if index != hazard_target]
+        payloads = [events[index].payload for index in other]
+        if case.startswith("hazard_hlh_"):
+            payloads[1], payloads[2] = payloads[2], payloads[1]
+        else:
+            payloads = [payloads[2], payloads[0], payloads[1]]
+        for index, payload in zip(other, payloads, strict=True):
+            events[index] = replace(events[index], payload=payload)
+        corrupted = with_events(events, truth=truth_for_payload_permutation(before, events))
+    elif case in {"hazard_relevant_sentinel", "hazard_sentinel_identity"}:
+        assert hazard_target is not None
+        sentinel_index = next(
+            index
+            for index in range(4)
+            if index != hazard_target and isinstance(events[index].payload, LinkFact)
+        )
+        if case == "hazard_relevant_sentinel":
+            relevant_id = original.bundle.truth.relevant_record_ids[0]
+            replacement = next(
+                event.payload
+                for event in _fact_events(original.bundle)
+                if event.event_id == relevant_id
+            )
+        else:
+            sentinel = events[sentinel_index].payload
+            assert isinstance(sentinel, LinkFact)
+            replacement = replace(sentinel, confidence=0.5)
+        events[sentinel_index] = replace(events[sentinel_index], payload=replacement)
+        corrupted = with_events(events)
+    elif case == "hazard_timestamp":
+        events[0] = replace(events[0], timestamp=events[0].timestamp + 1.0e-6)
+        corrupted = with_events(events)
+    elif case == "hazard_suffix":
+        events[4] = replace(events[4], payload=replace(events[4].payload, confidence=0.5))
+        corrupted = with_events(events)
+    elif case == "hazard_class":
+        hazard_index = next(
+            index
+            for index in range(4)
+            if isinstance(events[index].payload, HazardFact)
+            and events[index].event_id != transformed.bundle.truth.terminal_record_id
+        )
+        payload = events[hazard_index].payload
+        assert isinstance(payload, HazardFact)
+        events[hazard_index] = replace(
+            events[hazard_index],
+            payload=replace(payload, hazard_type=(payload.hazard_type + 2) % 4),
+        )
+        corrupted = with_events(events)
+    elif case == "hazard_activation_parent":
+        activation = events[-1]
+        assert isinstance(activation.payload, ActivationPayload)
+        events[-1] = replace(
+            activation,
+            payload=ActivationPayload((activation.payload.start_node + 1) % 64),
+        )
+        truth = transformed.bundle.truth
+        corrupted = with_events(
+            events,
+            truth=replace(
+                truth,
+                relevant_node_path=(
+                    events[-1].payload.start_node,
+                    *truth.relevant_node_path[1:],
+                ),
+            ),
+        )
+    elif case == "manifest_rank":
+        corrupted = replace(transformed, manifest_rank=encoded_rank + 1)
+    else:
+        before = list(events)
+        events[0], events[1] = (
+            replace(events[0], payload=events[1].payload),
+            replace(events[1], payload=events[0].payload),
+        )
+        corrupted = with_events(events, truth=truth_for_payload_permutation(before, events))
+
+    fit_calls = 0
+
+    def fit_spy() -> None:
+        nonlocal fit_calls
+        fit_calls += 1
+
+    def preflight_then_fit() -> None:
+        _require_exact_control_public_mutation(
+            injector,
+            original,
+            corrupted,
+            corpus_position=corpus_position,
+            encoded_manifest_rank=encoded_rank,
+            injected_hazard_target=hazard_target,
+        )
+        fit_spy()
+
+    with pytest.raises(ValueError, match="not exactly declared"):
+        preflight_then_fit()
+    assert fit_calls == 0
+
+
 @pytest.mark.parametrize("control_index", range(9))
 def test_every_control_preflight_rejects_an_undeclared_public_field(
     control_index: int,
@@ -914,6 +1484,7 @@ def test_every_control_preflight_rejects_an_undeclared_public_field(
         injector,
         original,
         transformed,
+        corpus_position=0,
         encoded_manifest_rank=100,
         injected_hazard_target=2,
     )
@@ -933,6 +1504,7 @@ def test_every_control_preflight_rejects_an_undeclared_public_field(
             injector,
             original,
             corrupted,
+            corpus_position=0,
             encoded_manifest_rank=100,
             injected_hazard_target=2,
         )
