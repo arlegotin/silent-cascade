@@ -701,6 +701,111 @@ def _require_manifest_bundle_matches_entry(
         raise ValueError("regenerated episode does not match its manifest coordinate")
 
 
+def _manifest_matches_matched_allocation(
+    manifest: EpisodeManifest,
+    allocation: CohortAllocation,
+) -> bool:
+    expected_count = sum(block.cohort_count for block in allocation.blocks) * 4
+    if (
+        manifest.provenance.generation_mode != "matched"
+        or manifest.provenance.allocation_id != allocation.allocation_id
+        or manifest.provenance.split_namespace is not allocation.split_namespace
+        or manifest.episode_count != expected_count
+        or len({block.suite for block in allocation.blocks}) != 1
+        or manifest.suite is not allocation.blocks[0].suite
+    ):
+        return False
+    expected = tuple(
+        (block.suite, block.requested_path_length, cohort_index, member_index)
+        for block in allocation.blocks
+        for cohort_index in range(
+            block.first_cohort_index,
+            block.first_cohort_index + block.cohort_count,
+        )
+        for member_index in range(4)
+    )
+    actual = tuple(
+        (
+            entry.suite,
+            entry.requested_path_length,
+            entry.coordinate.cohort_index,
+            entry.coordinate.member_index,
+        )
+        for entry in manifest.entries
+        if isinstance(entry.coordinate, MatchedManifestCoordinate)
+    )
+    return actual == expected
+
+
+def _manifest_matches_independent_allocation(
+    manifest: EpisodeManifest,
+    allocation: IndependentAllocation,
+) -> bool:
+    expected_count = sum(block.episode_count for block in allocation.blocks)
+    if (
+        manifest.provenance.generation_mode != "independent"
+        or manifest.provenance.allocation_id != allocation.allocation_id
+        or manifest.provenance.split_namespace is not allocation.split_namespace
+        or manifest.episode_count != expected_count
+    ):
+        return False
+    requests = tuple(iter_independent_requests(allocation, manifest.provenance.root_seed))
+    if len(requests) != len(manifest.entries):
+        return False
+    for rank, (entry, request) in enumerate(zip(manifest.entries, requests, strict=True)):
+        coordinate = entry.coordinate
+        suite_matches = entry.suite is request.suite or (
+            request.suite is SuiteName.IID_PRIMARY
+            and entry.suite in {SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X}
+        )
+        if (
+            not isinstance(coordinate, IndependentManifestCoordinate)
+            or not suite_matches
+            or entry.requested_path_length != request.requested_path_length
+            or coordinate.episode_index != request.episode_index
+            or coordinate.allocation_quartet_index != request.allocation_quartet_index
+            or coordinate.quartet_member_index != rank % 4
+        ):
+            return False
+    return True
+
+
+def _require_manifest_source_boundary(
+    manifest: EpisodeManifest,
+    deps: Phase1ServiceDependencies,
+) -> None:
+    """Bind a manifest source to the exact sealed production or injected allocation."""
+    if deps.production_mode:
+        valid = (
+            manifest.access_class is ManifestAccessClass.VALIDATION
+            and deps.validation_allocation == VALIDATION_ALLOCATION
+            and _manifest_matches_matched_allocation(manifest, VALIDATION_ALLOCATION)
+        )
+        message = "production manifest source is not the canonical validation allocation"
+    else:
+        valid = manifest.access_class is ManifestAccessClass.DEBUG and (
+            _manifest_matches_matched_allocation(manifest, deps.validation_allocation)
+            or _manifest_matches_independent_allocation(manifest, deps.independent_allocation)
+        )
+        message = "test manifest source does not match its bound DEBUG allocation"
+    if not valid:
+        raise ValueError(message)
+
+
+def _bound_manifest_sha256(
+    path: Path,
+    deps: Phase1ServiceDependencies,
+    *,
+    expected_sha256: str | None = None,
+) -> tuple[EpisodeManifest, str]:
+    manifest = load_manifest(path)
+    _require_manifest_source_boundary(manifest, deps)
+    digest = sha256_bytes(canonical_json_bytes(manifest))
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise ValueError("manifest source changed before evidence publication")
+    return manifest, digest
+
+
 def evaluate_oracle(
     request: OracleEvaluationRequest,
     *,
@@ -714,8 +819,12 @@ def evaluate_oracle(
         _require_test_output_boundary(request.output_path, deps)
     resolved = _resolve(request.config)
     source = request.source
+    manifest_source_sha256: str | None = None
     if isinstance(source, ManifestCorpusSource):
-        manifest = load_manifest(source.manifest_path)
+        manifest, manifest_source_sha256 = _bound_manifest_sha256(
+            source.manifest_path,
+            deps,
+        )
         if manifest.provenance.config_sha256 != resolved.sha256:
             raise ValueError("manifest config does not match resolved oracle config")
         embedded = manifest.provenance
@@ -953,6 +1062,13 @@ def evaluate_oracle(
         corpus_sha256=corpus.finalize(),
         passed=random_positive.passed and random_negative.passed,
     )
+    if request.output_path is not None and isinstance(source, ManifestCorpusSource):
+        assert manifest_source_sha256 is not None
+        _bound_manifest_sha256(
+            source.manifest_path,
+            deps,
+            expected_sha256=manifest_source_sha256,
+        )
     publication = _publish_report(request.output_path, report) if request.output_path else None
     return OracleEvaluationResult(report=report, publication=publication)
 
@@ -1235,6 +1351,7 @@ def _bind_manifest_audit_source(
     deps: Phase1ServiceDependencies,
 ) -> ReiterableAuditSource:
     """Bind a frozen manifest by its canonical bytes; never accept caller bundles."""
+    _require_manifest_source_boundary(manifest, deps)
     provenance = manifest.provenance
     if provenance.generation_mode != "matched":
         raise ValueError("manifest leakage audit requires a matched base source")
@@ -1694,6 +1811,7 @@ def _audit_provenance(
         )
     elif isinstance(source, ManifestCorpusSource):
         manifest = load_manifest(source.manifest_path)
+        _require_manifest_source_boundary(manifest, deps)
         embedded = manifest.provenance
         if embedded.config_sha256 != resolved.sha256:
             raise ValueError("manifest config does not match resolved audit config")
@@ -1741,6 +1859,12 @@ def run_leakage_audit(
     if request.output_path is not None:
         _require_test_output_boundary(request.output_path, deps)
     resolved = _resolve(request.config)
+    manifest_source_sha256: str | None = None
+    if isinstance(request.source, ManifestCorpusSource):
+        _, manifest_source_sha256 = _bound_manifest_sha256(
+            request.source.manifest_path,
+            deps,
+        )
     provenance = _audit_provenance(resolved, request.source, deps)
     anchor = deps.build_audit_anchor(resolved, request.source, provenance, request.profile)
     if not isinstance(anchor, LeakageAuditEvidenceAnchor):
@@ -1754,6 +1878,13 @@ def run_leakage_audit(
             request.profile,
             provenance,
             workspace,
+        )
+    if request.output_path is not None and isinstance(request.source, ManifestCorpusSource):
+        assert manifest_source_sha256 is not None
+        _bound_manifest_sha256(
+            request.source.manifest_path,
+            deps,
+            expected_sha256=manifest_source_sha256,
         )
     publication = _publish_report(request.output_path, report) if request.output_path else None
     return LeakageAuditResult(report=report, publication=publication)

@@ -216,6 +216,176 @@ def test_default_freeze_selects_the_sealed_production_adapter_without_running_ta
     assert observed[0][2:] == (41, 91)
 
 
+@pytest.mark.parametrize("service", ("oracle", "leakage"))
+@pytest.mark.parametrize(
+    "manifest_kind",
+    ("debug_test", "wrong_identity", "short_validation"),
+)
+def test_default_production_manifest_services_refuse_noncanonical_sources_before_work(
+    service: str,
+    manifest_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Removing the service-entry guard would let test evidence reach production work."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.leakage import LeakageAuditProfileName
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        LeakageAuditRequest,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    if manifest_kind == "debug_test":
+        manifest = _matched_manifest()
+    elif manifest_kind == "wrong_identity":
+        debug = _matched_manifest()
+        manifest = debug.model_copy(
+            update={
+                "access_class": ManifestAccessClass.FIXTURE,
+                "provenance": debug.provenance.model_copy(
+                    update={"allocation_id": "wrong-production-v1"}
+                ),
+            }
+        )
+    else:
+        manifest = _small_access_manifest(
+            SplitNamespace.VALIDATION,
+            ManifestAccessClass.VALIDATION,
+            "validation-v1",
+            SuiteName.VALIDATION,
+        )
+    manifest_path = tmp_path / f"{manifest_kind}.json"
+    output = tmp_path / f"{service}-must-not-exist.json"
+    publish_manifest(manifest_path, manifest)
+
+    def forbidden_regeneration(*args: object, **kwargs: object):
+        del args, kwargs
+        raise RuntimeError("production regeneration reached")
+
+    monkeypatch.setattr(
+        services,
+        "PRODUCTION_DEPENDENCIES",
+        replace(
+            services.PRODUCTION_DEPENDENCIES,
+            collect_provenance=_manifest_current_collector(manifest),
+            regenerate_manifest_entry=forbidden_regeneration,
+        ),
+    )
+
+    if service == "oracle":
+        with pytest.raises(ValueError, match=r"production|canonical|manifest"):
+            services.evaluate_oracle(
+                OracleEvaluationRequest(
+                    config=ConfigSelection(),
+                    source=ManifestCorpusSource(manifest_path=manifest_path),
+                    output_path=output,
+                )
+            )
+    else:
+        monkeypatch.setattr(
+            services,
+            "audit_leakage",
+            lambda *args, **kwargs: pytest.fail("Task 15 must not run"),
+        )
+        with pytest.raises(ValueError, match=r"production|canonical|manifest"):
+            services.run_leakage_audit(
+                LeakageAuditRequest(
+                    config=ConfigSelection(),
+                    source=ManifestCorpusSource(manifest_path=manifest_path),
+                    profile=LeakageAuditProfileName.TEST,
+                    output_path=output,
+                )
+            )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("service", ("oracle", "leakage"))
+@pytest.mark.parametrize("manifest_kind", ("cross_allocation", "validation_access"))
+def test_injected_manifest_services_refuse_unbound_access_and_allocation(
+    service: str,
+    manifest_kind: str,
+    tmp_path: Path,
+) -> None:
+    """Injected DEBUG authority is limited to its exact bound allocation."""
+    from silent_cascade.env.leakage import LeakageAuditProfileName
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        LeakageAuditRequest,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+        run_leakage_audit,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest = (
+        _matched_manifest()
+        if manifest_kind == "cross_allocation"
+        else _small_access_manifest(
+            SplitNamespace.VALIDATION,
+            ManifestAccessClass.VALIDATION,
+            "validation-v1",
+            SuiteName.VALIDATION,
+        )
+    )
+    path = tmp_path / f"{manifest_kind}.json"
+    output = tmp_path / f"{service}-must-not-exist.json"
+    publish_manifest(path, manifest)
+
+    def forbidden(*args: object, **kwargs: object):
+        del args, kwargs
+        raise RuntimeError("unbound manifest reached work")
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_allocation(),
+        independent_allocation=_independent_allocation(8),
+        collect_provenance=_manifest_current_collector(manifest),
+        build_manifest=lambda *args: pytest.fail("not used"),
+        regenerate_manifest_entry=forbidden,
+        build_audit_source=forbidden,
+        build_audit_anchor=forbidden,
+    )
+    if service == "oracle":
+        with pytest.raises(ValueError, match=r"test|bound|manifest|DEBUG"):
+            evaluate_oracle(
+                OracleEvaluationRequest(
+                    config=ConfigSelection(),
+                    source=ManifestCorpusSource(manifest_path=path),
+                    output_path=output,
+                ),
+                deps=deps,
+            )
+    else:
+        with pytest.raises(ValueError, match=r"test|bound|manifest|DEBUG"):
+            run_leakage_audit(
+                LeakageAuditRequest(
+                    config=ConfigSelection(),
+                    source=ManifestCorpusSource(manifest_path=path),
+                    profile=LeakageAuditProfileName.TEST,
+                    output_path=output,
+                ),
+                deps=deps,
+            )
+    assert not output.exists()
+
+
+def test_production_manifest_boundary_accepts_the_exact_validation_recipe() -> None:
+    """The boundary guard must not turn Task 18's canonical source into a false refusal."""
+    from silent_cascade.env.services import (
+        PRODUCTION_DEPENDENCIES,
+        _require_manifest_source_boundary,
+    )
+
+    _require_manifest_source_boundary(
+        _canonical_validation_manifest_recipe(),
+        PRODUCTION_DEPENDENCIES,
+    )
+
+
 def test_request_models_reject_unknown_source_modes_and_ambiguous_selectors() -> None:
     """Permissive request parsing would let invalid mode combinations reach generation."""
     from silent_cascade.env.services import ConfigSelection, OracleEvaluationRequest
@@ -1331,6 +1501,60 @@ def _audit_validation_allocation() -> CohortAllocation:
     )
 
 
+def _canonical_validation_manifest_recipe():
+    from uuid import UUID
+
+    from silent_cascade.env.generator import VALIDATION_ALLOCATION
+    from silent_cascade.logging.manifest import (
+        EpisodeManifest,
+        EpisodeManifestEntry,
+        MatchedManifestCoordinate,
+    )
+
+    resolved = resolve_config(
+        Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
+    )
+    provenance = _provenance(allocation_id=VALIDATION_ALLOCATION.allocation_id).model_copy(
+        update={
+            "split_namespace": SplitNamespace.VALIDATION,
+            "config_sha256": resolved.sha256,
+        }
+    )
+    entries = []
+    rank = 0
+    for block in VALIDATION_ALLOCATION.blocks:
+        for cohort_index in range(
+            block.first_cohort_index,
+            block.first_cohort_index + block.cohort_count,
+        ):
+            for member_index in range(4):
+                rank += 1
+                entries.append(
+                    EpisodeManifestEntry(
+                        episode_public_id=str(UUID(int=rank, version=4)),
+                        split_namespace=SplitNamespace.VALIDATION,
+                        suite=SuiteName.VALIDATION,
+                        coordinate=MatchedManifestCoordinate(
+                            cohort_index=cohort_index,
+                            member_index=member_index,
+                        ),
+                        requested_path_length=block.requested_path_length,
+                        accepted_attempt=0,
+                        episode_sha256=f"{rank:064x}",
+                    )
+                )
+    return EpisodeManifest(
+        schema_version=1,
+        experiment_version=resolved.config.experiment_version,
+        access_class=ManifestAccessClass.VALIDATION,
+        provenance=provenance,
+        suite=SuiteName.VALIDATION,
+        public_id_seed=91,
+        episode_count=len(entries),
+        entries=tuple(entries),
+    )
+
+
 def _matched_manifest(resolved=None):
     from silent_cascade.env.services import build_cohort_manifest
 
@@ -1388,6 +1612,19 @@ def _audit_independent_allocation():
             ),
         ),
     )
+
+
+def _manifest_current_collector(manifest: object):
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        resolved = args[0]
+        return manifest.provenance.model_copy(  # type: ignore[attr-defined]
+            update={
+                "config_sha256": resolved.sha256,  # type: ignore[attr-defined]
+                "analysis_seeds": kwargs["analysis_seeds"],
+            }
+        )
+
+    return collect
 
 
 def _oracle_dependencies(
@@ -1547,7 +1784,7 @@ def _clock_manifest():
     resolved = resolve_config(
         Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
     )
-    provenance = _provenance(allocation_id="test-clock-v1").model_copy(
+    provenance = _provenance(allocation_id=allocation.allocation_id).model_copy(
         update={"generation_mode": "independent", "config_sha256": resolved.sha256}
     )
     parents = tuple(
