@@ -10,6 +10,8 @@ from silent_cascade.env.config import OracleTimingConfig
 from silent_cascade.env.episode import EpisodeTruth, EpisodeVariant, PublicEpisode
 from silent_cascade.errors import OracleError
 from silent_cascade.schemas import (
+    MAX_ENTITY_ID,
+    MAX_HAZARD_TYPE,
     Action,
     ActivationPayload,
     ExternalEvent,
@@ -21,6 +23,51 @@ from silent_cascade.schemas import (
 )
 
 _TIME_TOLERANCE = 1.0e-9
+
+
+def _require_exact_int(
+    value: object,
+    name: str,
+    *,
+    maximum: int | None = None,
+) -> None:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an exact integer")
+    if value < 0 or (maximum is not None and value > maximum):
+        raise ValueError(f"{name} is out of bounds")
+
+
+def _require_optional_int(
+    value: object,
+    name: str,
+    *,
+    maximum: int | None = None,
+) -> None:
+    if value is not None:
+        _require_exact_int(value, name, maximum=maximum)
+
+
+def _require_int_tuple(
+    value: object,
+    name: str,
+    *,
+    nonempty: bool = False,
+    maximum: int | None = None,
+) -> None:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple")
+    if nonempty and not value:
+        raise ValueError(f"{name} must be nonempty")
+    for item in value:
+        _require_exact_int(item, name, maximum=maximum)
+
+
+def _require_nonnegative_float(value: object, name: str, *, positive: bool = False) -> None:
+    if type(value) is not float:
+        raise TypeError(f"{name} must be an exact float")
+    if not math.isfinite(value) or value < 0.0 or (positive and value == 0.0):
+        qualifier = "positive and finite" if positive else "nonnegative and finite"
+        raise ValueError(f"{name} must be {qualifier}")
 
 
 class OraclePolicy(StrEnum):
@@ -52,6 +99,9 @@ class OracleTraceStep:
     focus_before: int | None
     focus_after: int | None
 
+    def __post_init__(self) -> None:
+        _validate_trace_step(self)
+
 
 @dataclass(frozen=True, slots=True)
 class OracleSolution:
@@ -65,6 +115,9 @@ class OracleSolution:
     public_delay: float | None
     superseded_terminal_record_ids: tuple[int, ...] = ()
 
+    def __post_init__(self) -> None:
+        _validate_solution(self)
+
 
 @dataclass(frozen=True, slots=True)
 class OracleTrace:
@@ -73,6 +126,153 @@ class OracleTrace:
     solution: OracleSolution
     steps: tuple[OracleTraceStep, ...]
     actions: tuple[Action, ...]
+
+    def __post_init__(self) -> None:
+        _validate_trace(self)
+
+
+def _validate_solution(solution: OracleSolution) -> None:
+    if not isinstance(solution.terminal_kind, OracleTerminalKind):
+        raise TypeError("terminal_kind must be an OracleTerminalKind")
+    _require_int_tuple(solution.node_path, "node_path", nonempty=True, maximum=MAX_ENTITY_ID)
+    _require_int_tuple(solution.link_record_ids, "link_record_ids")
+    _require_optional_int(solution.terminal_record_id, "terminal_record_id")
+    _require_optional_int(solution.hazard_type, "hazard_type", maximum=MAX_HAZARD_TYPE)
+    if solution.public_delay is not None:
+        _require_nonnegative_float(solution.public_delay, "public_delay", positive=True)
+    _require_int_tuple(
+        solution.superseded_terminal_record_ids,
+        "superseded_terminal_record_ids",
+    )
+    if len(solution.node_path) != len(solution.link_record_ids) + 1:
+        raise ValueError("node_path and link_record_ids lengths disagree")
+    if len(set(solution.node_path)) != len(solution.node_path):
+        raise ValueError("node_path must not repeat nodes")
+    support_ids = solution.link_record_ids + (
+        () if solution.terminal_record_id is None else (solution.terminal_record_id,)
+    )
+    if len(set(support_ids)) != len(support_ids):
+        raise ValueError("oracle support record IDs must be unique")
+    if solution.terminal_kind is OracleTerminalKind.HAZARD:
+        if (
+            solution.terminal_record_id is None
+            or solution.hazard_type is None
+            or solution.public_delay is None
+        ):
+            raise ValueError("hazard solution requires terminal record, hazard type, and delay")
+    elif solution.terminal_kind is OracleTerminalKind.SAFE:
+        if (
+            solution.terminal_record_id is None
+            or solution.hazard_type is not None
+            or solution.public_delay is not None
+        ):
+            raise ValueError("safe solution requires only a terminal record")
+    elif (
+        solution.terminal_record_id is not None
+        or solution.hazard_type is not None
+        or solution.public_delay is not None
+    ):
+        raise ValueError("disconnected solution cannot contain terminal hazard fields")
+
+
+def _validate_trace_step(step: OracleTraceStep) -> None:
+    _require_exact_int(step.trace_step_id, "trace_step_id")
+    _require_optional_int(step.parent_trace_step_id, "parent_trace_step_id")
+    if not isinstance(step.kind, InternalEventKind):
+        raise TypeError("kind must be an InternalEventKind")
+    _require_nonnegative_float(step.timestamp, "timestamp")
+    _require_nonnegative_float(step.delta, "delta")
+    _require_optional_int(step.selected_record_id, "selected_record_id")
+    _require_optional_int(step.focus_before, "focus_before", maximum=MAX_ENTITY_ID)
+    _require_optional_int(step.focus_after, "focus_after", maximum=MAX_ENTITY_ID)
+    if step.parent_trace_step_id is not None and step.parent_trace_step_id >= step.trace_step_id:
+        raise ValueError("parent_trace_step_id must precede trace_step_id")
+    memory_values = (step.selected_record_id, step.focus_before, step.focus_after)
+    if step.kind in (InternalEventKind.RECALL, InternalEventKind.COMPOSE):
+        if any(value is None for value in memory_values):
+            raise ValueError("memory trace steps require selection and focus")
+    elif any(value is not None for value in memory_values):
+        raise ValueError("non-memory trace steps cannot contain selection or focus")
+
+
+def _validate_action(action: Action) -> None:
+    if not isinstance(action, Action):
+        raise TypeError("actions must contain Action values")
+    _require_exact_int(action.hazard_type, "action.hazard_type", maximum=MAX_HAZARD_TYPE)
+    _require_nonnegative_float(action.timestamp, "action.timestamp")
+    _require_exact_int(action.caused_by_event_id, "action.caused_by_event_id")
+
+
+def _validate_trace(trace: OracleTrace) -> None:
+    if not isinstance(trace.solution, OracleSolution):
+        raise TypeError("solution must be an OracleSolution")
+    _validate_solution(trace.solution)
+    if not isinstance(trace.steps, tuple):
+        raise TypeError("steps must be a tuple")
+    if not isinstance(trace.actions, tuple):
+        raise TypeError("actions must be a tuple")
+    support_ids = set(trace.solution.link_record_ids)
+    if trace.solution.terminal_record_id is not None:
+        support_ids.add(trace.solution.terminal_record_id)
+    previous: OracleTraceStep | None = None
+    for index, step in enumerate(trace.steps):
+        if not isinstance(step, OracleTraceStep):
+            raise TypeError("steps must contain OracleTraceStep values")
+        _validate_trace_step(step)
+        if step.trace_step_id != index:
+            raise ValueError("trace step IDs must be zero-based and contiguous")
+        expected_parent = None if index == 0 else index - 1
+        if step.parent_trace_step_id != expected_parent:
+            raise ValueError("trace parent links must form one contiguous chain")
+        if (
+            step.kind in (InternalEventKind.RECALL, InternalEventKind.COMPOSE)
+            and step.selected_record_id not in support_ids
+        ):
+            raise ValueError("trace step selects a record outside oracle support")
+        if previous is not None and (
+            step.timestamp < previous.timestamp
+            or not math.isclose(
+                step.timestamp - previous.timestamp,
+                step.delta,
+                rel_tol=1.0e-12,
+                abs_tol=_TIME_TOLERANCE,
+            )
+        ):
+            raise ValueError("trace timestamps and deltas must be monotonic and aligned")
+        previous = step
+    for action in trace.actions:
+        _validate_action(action)
+
+    act_steps = tuple(step for step in trace.steps if step.kind is InternalEventKind.ACT)
+    if trace.solution.terminal_kind is OracleTerminalKind.HAZARD:
+        if len(act_steps) != 1 or not trace.steps or trace.steps[-1] is not act_steps[0]:
+            raise ValueError("hazard trace requires one final ACT step")
+        if len(trace.actions) != 1:
+            raise ValueError("hazard trace requires exactly one action")
+        action = trace.actions[0]
+        act = act_steps[0]
+        if (
+            action.hazard_type != trace.solution.hazard_type
+            or action.timestamp != act.timestamp
+            or action.caused_by_event_id != act.trace_step_id
+        ):
+            raise ValueError("hazard action must match the oracle solution and ACT step")
+    elif act_steps or trace.actions:
+        raise ValueError("negative oracle traces must abstain and contain no ACT step")
+
+
+def _require_valid_solution(solution: OracleSolution) -> None:
+    try:
+        _validate_solution(solution)
+    except (TypeError, ValueError) as error:
+        raise OracleError(f"invalid oracle solution: {error}") from error
+
+
+def _require_valid_trace(trace: OracleTrace) -> None:
+    try:
+        _validate_trace(trace)
+    except (TypeError, ValueError) as error:
+        raise OracleError(f"invalid oracle trace: {error}") from error
 
 
 type _Fact = LinkFact | HazardFact | SafeFact
@@ -139,6 +339,8 @@ def solve_public_episode(
         if len(terminals) > 1:
             raise OracleError("primary graph has multiple terminals at a reachable node")
         if terminals:
+            if links_by_source.get(current_node):
+                raise OracleError("reachable terminal has an outgoing continuation")
             terminal = terminals[0]
             payload = terminal.payload
             if isinstance(payload, HazardFact):
@@ -186,6 +388,7 @@ def verify_oracle_truth(solution: OracleSolution, truth: EpisodeTruth) -> None:
     """Fail if independently derived public support disagrees with private truth."""
     if not isinstance(solution, OracleSolution) or not isinstance(truth, EpisodeTruth):
         raise TypeError("solution and truth must be oracle and episode values")
+    _require_valid_solution(solution)
     expected_kind = {
         EpisodeVariant.POSITIVE: OracleTerminalKind.HAZARD,
         EpisodeVariant.SAFE_NEGATIVE: OracleTerminalKind.SAFE,
@@ -210,13 +413,15 @@ def verify_oracle_truth(solution: OracleSolution, truth: EpisodeTruth) -> None:
     for public_value, private_value, field in comparisons:
         if public_value != private_value:
             raise OracleError(f"oracle truth mismatch: {field}")
-    if solution.public_delay is not None and not math.isclose(
-        solution.public_delay,
-        truth.episode_delay,
-        rel_tol=0.0,
-        abs_tol=_TIME_TOLERANCE,
-    ):
-        raise OracleError("oracle truth mismatch: episode delay")
+    if solution.terminal_kind is OracleTerminalKind.HAZARD:
+        assert solution.public_delay is not None
+        if not math.isclose(
+            solution.public_delay,
+            truth.episode_delay,
+            rel_tol=0.0,
+            abs_tol=_TIME_TOLERANCE,
+        ):
+            raise OracleError("oracle truth mismatch: episode delay")
 
 
 def _delay_bucket(delay: float) -> int:
@@ -280,6 +485,17 @@ def _selected_trace_records(
     node = solution.node_path[-1]
     if terminal.payload.node != node:
         raise OracleError("oracle terminal support does not match its node path")
+    if isinstance(terminal.payload, HazardFact) and (
+        terminal.payload.hazard_type != solution.hazard_type
+        or solution.public_delay is None
+        or not math.isclose(
+            terminal.payload.delay,
+            solution.public_delay,
+            rel_tol=0.0,
+            abs_tol=_TIME_TOLERANCE,
+        )
+    ):
+        raise OracleError("oracle solution disagrees with selected public hazard")
     selected.append((terminal, node, node))
     return tuple(selected)
 
@@ -294,6 +510,7 @@ def build_oracle_trace(
     """Build the unique deterministic-feasible trace using a local jitter RNG."""
     if not isinstance(public, PublicEpisode) or not isinstance(solution, OracleSolution):
         raise TypeError("public and solution must be oracle episode values")
+    _require_valid_solution(solution)
     if not isinstance(terminal_horizon, ExternalEvent) or terminal_horizon.kind not in (
         ExternalEventKind.OUTCOME,
         ExternalEventKind.END,
@@ -318,10 +535,15 @@ def build_oracle_trace(
     )
     if terminal_horizon.kind is not expected_terminal_kind:
         raise OracleError("terminal horizon kind disagrees with oracle solution")
-    if solution.public_delay is not None and not math.isclose(
-        solution.public_delay, delay, rel_tol=0.0, abs_tol=_TIME_TOLERANCE
-    ):
-        raise OracleError("public hazard delay disagrees with terminal horizon")
+    if solution.terminal_kind is OracleTerminalKind.HAZARD:
+        assert solution.public_delay is not None
+        if not math.isclose(
+            solution.public_delay,
+            delay,
+            rel_tol=0.0,
+            abs_tol=_TIME_TOLERANCE,
+        ):
+            raise OracleError("public hazard delay disagrees with terminal horizon")
 
     selected_records = _selected_trace_records(public, solution)
     facts = tuple(
@@ -413,16 +635,34 @@ def scale_oracle_trace(trace: OracleTrace, factor: float) -> OracleTrace:
     """Scale all trace and action time values by one positive finite factor."""
     if not isinstance(trace, OracleTrace):
         raise TypeError("trace must be an OracleTrace")
-    if type(factor) not in (int, float) or not math.isfinite(factor) or factor <= 0.0:
+    _require_valid_trace(trace)
+    if type(factor) is not float or not math.isfinite(factor) or factor <= 0.0:
         raise OracleError("oracle trace scale factor must be positive and finite")
+    scaled_step_times = tuple(
+        (step.timestamp * factor, step.delta * factor) for step in trace.steps
+    )
+    scaled_action_times = tuple(action.timestamp * factor for action in trace.actions)
+    if any(not math.isfinite(value) for values in scaled_step_times for value in values) or any(
+        not math.isfinite(timestamp) for timestamp in scaled_action_times
+    ):
+        raise OracleError("scaled oracle trace contains nonfinite time values")
     return OracleTrace(
         solution=trace.solution,
         steps=tuple(
-            replace(step, timestamp=step.timestamp * factor, delta=step.delta * factor)
-            for step in trace.steps
+            replace(step, timestamp=timestamp, delta=delta)
+            for step, (timestamp, delta) in zip(
+                trace.steps,
+                scaled_step_times,
+                strict=True,
+            )
         ),
         actions=tuple(
-            replace(action, timestamp=action.timestamp * factor) for action in trace.actions
+            replace(action, timestamp=timestamp)
+            for action, timestamp in zip(
+                trace.actions,
+                scaled_action_times,
+                strict=True,
+            )
         ),
     )
 

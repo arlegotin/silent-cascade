@@ -20,6 +20,8 @@ from silent_cascade.env.oracle import (
     OraclePolicy,
     OracleSolution,
     OracleTerminalKind,
+    OracleTrace,
+    OracleTraceStep,
     build_oracle_trace,
     oracle_actions,
     scale_oracle_trace,
@@ -28,6 +30,7 @@ from silent_cascade.env.oracle import (
 )
 from silent_cascade.errors import OracleError
 from silent_cascade.schemas import (
+    Action,
     ActivationPayload,
     AgentInit,
     ExternalEvent,
@@ -63,16 +66,16 @@ def public_episode(
     )
 
 
-def positive_public() -> PublicEpisode:
+def positive_public(*, delay: float = 24.0) -> PublicEpisode:
     return public_episode(
         (
             LinkFact(7, 2),
-            HazardFact(5, 3, 24.0),
+            HazardFact(5, 3, delay),
             LinkFact(1, 6),
             SafeFact(4),
             LinkFact(2, 5),
             LinkFact(9, 7),
-            HazardFact(6, 1, 24.0),
+            HazardFact(6, 1, delay),
         ),
         activation_node=9,
     )
@@ -100,6 +103,44 @@ def positive_truth() -> EpisodeTruth:
         action_target=119.8,
         rejection_count=0,
         rejection_reasons=(),
+    )
+
+
+def unchecked_solution(solution: OracleSolution, **updates: object) -> OracleSolution:
+    """Bypass construction solely to exercise public boundary revalidation."""
+    corrupt = object.__new__(OracleSolution)
+    for field in (
+        "terminal_kind",
+        "node_path",
+        "link_record_ids",
+        "terminal_record_id",
+        "hazard_type",
+        "public_delay",
+        "superseded_terminal_record_ids",
+    ):
+        object.__setattr__(corrupt, field, updates.get(field, getattr(solution, field)))
+    return corrupt
+
+
+def built_positive_trace() -> OracleTrace:
+    public = positive_public()
+    return build_oracle_trace(
+        public,
+        solve_public_episode(public),
+        ExternalEvent(99, 124.0, ExternalEventKind.OUTCOME, None),
+        OracleTimingConfig(jitter_log_std=0.0),
+        np.random.default_rng(4),
+    )
+
+
+def built_negative_trace() -> OracleTrace:
+    public = public_episode((LinkFact(1, 2), SafeFact(2)))
+    return build_oracle_trace(
+        public,
+        solve_public_episode(public),
+        ExternalEvent(99, 124.0, ExternalEventKind.END, None),
+        OracleTimingConfig(jitter_log_std=0.0),
+        np.random.default_rng(5),
     )
 
 
@@ -137,6 +178,44 @@ def test_primary_solver_rejects_nonunique_legal_traces(
         solve_public_episode(public_episode(facts))
 
 
+@pytest.mark.parametrize(
+    "facts",
+    [
+        (LinkFact(1, 2), SafeFact(2), LinkFact(2, 3), HazardFact(3, 1, 10.0)),
+        (LinkFact(1, 2), SafeFact(2), LinkFact(2, 3), LinkFact(2, 4)),
+        (LinkFact(1, 2), HazardFact(2, 1, 10.0), LinkFact(2, 1)),
+    ],
+    ids=("sequential-terminals", "terminal-to-branch", "terminal-to-cycle"),
+)
+def test_primary_solver_rejects_any_reachable_continuation_after_terminal(
+    facts: tuple[LinkFact | HazardFact | SafeFact, ...],
+) -> None:
+    with pytest.raises(OracleError, match=r"terminal.*continuation"):
+        solve_public_episode(public_episode(facts))
+
+
+def test_primary_solver_ignores_unreachable_branches_and_cycles() -> None:
+    public = public_episode(
+        (
+            LinkFact(1, 2),
+            SafeFact(2),
+            LinkFact(30, 31),
+            LinkFact(30, 32),
+            LinkFact(40, 41),
+            LinkFact(41, 40),
+        )
+    )
+
+    assert solve_public_episode(public) == OracleSolution(
+        OracleTerminalKind.SAFE,
+        (1, 2),
+        (10,),
+        11,
+        None,
+        None,
+    )
+
+
 def test_solver_rejects_corrupt_fact_payload() -> None:
     corrupt = object.__new__(ExternalEvent)
     object.__setattr__(corrupt, "event_id", 10)
@@ -171,6 +250,178 @@ def test_truth_verification_fails_loudly_without_repairing_private_truth() -> No
     with pytest.raises(OracleError, match="truth mismatch"):
         verify_oracle_truth(solution, corrupt)
     assert corrupt.relevant_node_path == (9, 7, 2, 6)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"hazard_type": 2},
+        {"hazard_type": None},
+        {"public_delay": 12.0},
+        {"public_delay": None},
+    ],
+    ids=("wrong-hazard", "missing-hazard", "wrong-delay", "missing-delay"),
+)
+def test_truth_verification_rejects_wrong_or_missing_positive_hazard_fields(
+    updates: dict[str, object],
+) -> None:
+    solution = unchecked_solution(solve_public_episode(positive_public()), **updates)
+
+    with pytest.raises(OracleError):
+        verify_oracle_truth(solution, positive_truth())
+
+
+@pytest.mark.parametrize(
+    ("updates", "terminal_time"),
+    [
+        ({"hazard_type": 2}, 124.0),
+        ({"hazard_type": None}, 124.0),
+        ({"public_delay": 12.0}, 112.0),
+        ({"public_delay": None}, 124.0),
+    ],
+    ids=("wrong-hazard", "missing-hazard", "wrong-delay", "missing-delay"),
+)
+def test_trace_builder_binds_hazard_fields_to_selected_public_fact(
+    updates: dict[str, object], terminal_time: float
+) -> None:
+    public = positive_public()
+    solution = unchecked_solution(solve_public_episode(public), **updates)
+
+    with pytest.raises(OracleError):
+        build_oracle_trace(
+            public,
+            solution,
+            ExternalEvent(99, terminal_time, ExternalEventKind.OUTCOME, None),
+            OracleTimingConfig(),
+            np.random.default_rng(19),
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"terminal_kind": "hazard"},
+        {"node_path": [9, 7, 2, 5]},
+        {"node_path": (9, 7, 2, True)},
+        {"link_record_ids": (15, 10, True)},
+        {"terminal_record_id": True},
+        {"hazard_type": True},
+        {"hazard_type": 4},
+        {"public_delay": 24},
+        {"public_delay": math.nan},
+        {"public_delay": math.inf},
+        {"superseded_terminal_record_ids": (True,)},
+    ],
+)
+def test_oracle_solution_requires_exact_finite_declared_values(
+    updates: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "terminal_kind": OracleTerminalKind.HAZARD,
+        "node_path": (9, 7, 2, 5),
+        "link_record_ids": (15, 10, 14),
+        "terminal_record_id": 11,
+        "hazard_type": 3,
+        "public_delay": 24.0,
+        "superseded_terminal_record_ids": (),
+    }
+    values.update(updates)
+
+    with pytest.raises((TypeError, ValueError)):
+        OracleSolution(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        (OracleTerminalKind.HAZARD, 11, None, 24.0),
+        (OracleTerminalKind.HAZARD, 11, 3, None),
+        (OracleTerminalKind.SAFE, 11, 3, None),
+        (OracleTerminalKind.SAFE, 11, None, 24.0),
+        (OracleTerminalKind.DISCONNECTED, 11, None, None),
+    ],
+)
+def test_oracle_solution_enforces_terminal_discriminants(
+    values: tuple[OracleTerminalKind, int | None, int | None, float | None],
+) -> None:
+    terminal_kind, terminal_record_id, hazard_type, public_delay = values
+
+    with pytest.raises(ValueError):
+        OracleSolution(
+            terminal_kind,
+            (1, 2),
+            (10,),
+            terminal_record_id,
+            hazard_type,
+            public_delay,
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"trace_step_id": True},
+        {"parent_trace_step_id": True},
+        {"kind": "recall"},
+        {"timestamp": 100},
+        {"timestamp": math.nan},
+        {"timestamp": math.inf},
+        {"delta": True},
+        {"delta": math.nan},
+        {"delta": math.inf},
+        {"selected_record_id": True},
+        {"focus_before": True},
+        {"focus_after": True},
+    ],
+)
+def test_oracle_trace_step_requires_exact_finite_declared_values(
+    updates: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "trace_step_id": 0,
+        "parent_trace_step_id": None,
+        "kind": InternalEventKind.RECALL,
+        "timestamp": 100.1,
+        "delta": 0.1,
+        "selected_record_id": 10,
+        "focus_before": 1,
+        "focus_after": 1,
+    }
+    values.update(updates)
+
+    with pytest.raises((TypeError, ValueError)):
+        OracleTraceStep(**values)  # type: ignore[arg-type]
+
+
+def test_oracle_trace_revalidates_contained_steps_and_actions() -> None:
+    positive = built_positive_trace()
+    negative = built_negative_trace()
+    corrupt_step = object.__new__(OracleTraceStep)
+    for field in (
+        "trace_step_id",
+        "parent_trace_step_id",
+        "kind",
+        "timestamp",
+        "delta",
+        "selected_record_id",
+        "focus_before",
+        "focus_after",
+    ):
+        object.__setattr__(corrupt_step, field, getattr(negative.steps[0], field))
+    object.__setattr__(corrupt_step, "timestamp", math.inf)
+    corrupt_action = object.__new__(Action)
+    object.__setattr__(corrupt_action, "hazard_type", 3)
+    object.__setattr__(corrupt_action, "timestamp", math.nan)
+    object.__setattr__(corrupt_action, "caused_by_event_id", positive.steps[-1].trace_step_id)
+
+    with pytest.raises((TypeError, ValueError)):
+        OracleTrace(negative.solution, (corrupt_step, *negative.steps[1:]), ())
+    with pytest.raises((TypeError, ValueError)):
+        OracleTrace(positive.solution, positive.steps, (corrupt_action,))
+    with pytest.raises(ValueError):
+        OracleTrace(positive.solution, positive.steps[:-1], ())
+    with pytest.raises(ValueError):
+        OracleTrace(negative.solution, (*negative.steps, positive.steps[-1]), positive.actions)
 
 
 def test_trace_records_support_focus_parentage_and_action_target() -> None:
@@ -237,7 +488,7 @@ def test_trace_records_support_focus_parentage_and_action_target() -> None:
 
 
 def test_nondefault_timing_controls_compression_target_and_feasibility() -> None:
-    public = positive_public()
+    public = positive_public(delay=3.0)
     solution = solve_public_episode(public)
     terminal = ExternalEvent(99, 103.0, ExternalEventKind.OUTCOME, None)
     timing = OracleTimingConfig(
@@ -250,9 +501,7 @@ def test_nondefault_timing_controls_compression_target_and_feasibility() -> None
         action_target_fraction=0.7,
         action_window_end_fraction=0.8,
     )
-    compressed = build_oracle_trace(
-        public, replace(solution, public_delay=3.0), terminal, timing, np.random.default_rng(2)
-    )
+    compressed = build_oracle_trace(public, solution, terminal, timing, np.random.default_rng(2))
 
     assert math.isclose(sum(step.delta for step in compressed.steps[:-1]), 1.2)
     assert all(step.delta >= 0.1 for step in compressed.steps[:-1])
@@ -281,14 +530,7 @@ def test_nondefault_timing_controls_compression_target_and_feasibility() -> None
 
 
 def test_scale_trace_multiplies_only_temporal_values() -> None:
-    public = positive_public()
-    trace = build_oracle_trace(
-        public,
-        solve_public_episode(public),
-        ExternalEvent(99, 124.0, ExternalEventKind.OUTCOME, None),
-        OracleTimingConfig(jitter_log_std=0.0),
-        np.random.default_rng(4),
-    )
+    trace = built_positive_trace()
 
     scaled = scale_oracle_trace(trace, 10.0)
 
@@ -319,7 +561,7 @@ def test_scale_trace_multiplies_only_temporal_values() -> None:
     ]
 
 
-@pytest.mark.parametrize("factor", [0.0, -1.0, math.inf, math.nan])
+@pytest.mark.parametrize("factor", [True, 0.0, -1.0, math.inf, math.nan])
 def test_scale_trace_rejects_invalid_factors(factor: float) -> None:
     public = positive_public()
     trace = build_oracle_trace(
@@ -332,3 +574,11 @@ def test_scale_trace_rejects_invalid_factors(factor: float) -> None:
 
     with pytest.raises(OracleError, match="scale factor"):
         scale_oracle_trace(trace, factor)
+
+
+@pytest.mark.parametrize("positive", [True, False])
+def test_scale_trace_rejects_finite_overflow_for_every_terminal_kind(positive: bool) -> None:
+    trace = built_positive_trace() if positive else built_negative_trace()
+
+    with pytest.raises(OracleError, match="nonfinite"):
+        scale_oracle_trace(trace, 1.0e308)
