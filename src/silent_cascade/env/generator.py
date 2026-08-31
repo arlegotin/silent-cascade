@@ -24,6 +24,7 @@ from silent_cascade.env.episode import (
     IndependentEpisodeCoordinate,
     MatchedEpisodeCoordinate,
     PublicEpisode,
+    StressMetadata,
 )
 from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
 from silent_cascade.env.timing import action_window
@@ -66,7 +67,14 @@ _PRIMARY_SUITES = frozenset(
         SuiteName.DISTRACTOR_FLOOD,
     }
 )
-_STRUCTURAL_STRESS_SUITES = frozenset({SuiteName.BRANCHING_STRESS, SuiteName.CYCLES_STRESS})
+_STRUCTURAL_STRESS_SUITES = frozenset(
+    {
+        SuiteName.BRANCHING_STRESS,
+        SuiteName.CYCLES_STRESS,
+        SuiteName.MEMORY_OVERFLOW_STRESS,
+        SuiteName.NULL_NEAR_MISS_STRESS,
+    }
+)
 _STRESS_RESERVED_NODES = frozenset(range(49, 61))
 _OBSERVATION_GAP_RANGE = (0.1, 8.0)
 _TERMINAL_RECORD_COUNT = 3
@@ -161,6 +169,8 @@ _SUITE_SPECS = {
     SuiteName.DISTRACTOR_FLOOD: SuiteSpec((2, 3, 4), (8.0, 64.0), (16, 48)),
     SuiteName.BRANCHING_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
     SuiteName.CYCLES_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
+    SuiteName.MEMORY_OVERFLOW_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
+    SuiteName.NULL_NEAR_MISS_STRESS: SuiteSpec((2, 3, 4), (8.0, 64.0), (0, 12)),
 }
 
 
@@ -1264,7 +1274,7 @@ def _sample_independent_template(
     structure_rng = _independent_stream(request, SeedStream.STRUCTURE, attempt)
     selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
     distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
-    structural_edges = _sample_structural_edges(config, request, structure_rng)
+    structural_edges = _sample_structural_edges(config, request, structure_rng, distractor_edges)
     _validate_template_topology(
         relevant_nodes, relevant_edges, distractor_edges, unreachable_terminal_nodes
     )
@@ -1272,7 +1282,14 @@ def _sample_independent_template(
     fact_count = (
         len(relevant_edges) + len(distractor_edges) + len(structural_edges) + _TERMINAL_RECORD_COUNT
     )
-    if fact_count > config.data.primary_memory_capacity:
+    if request.suite is SuiteName.MEMORY_OVERFLOW_STRESS:
+        if config.stress is None or not (
+            config.stress.overflow_record_count[0]
+            <= fact_count
+            <= config.stress.overflow_record_count[1]
+        ):
+            raise ValueError("memory overflow facts are outside the configured range")
+    elif fact_count > config.data.primary_memory_capacity:
         raise ValueError("independent facts exceed the fixed memory capacity")
     timestamps_rng = _independent_stream(request, SeedStream.TIMESTAMPS, attempt)
     fact_gaps = tuple(
@@ -1296,6 +1313,7 @@ def _sample_structural_edges(
     config: Phase1Config,
     request: IndependentEpisodeRequest,
     structure_rng: np.random.Generator,
+    distractor_edges: tuple[tuple[int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
     """Derive only the declared structural stress shape from the local structure stream."""
 
@@ -1323,6 +1341,26 @@ def _sample_structural_edges(
         )
         nodes = tuple(range(49, 55))[:length]
         return tuple((nodes[index], nodes[(index + 1) % length]) for index in range(length))
+    if request.suite is SuiteName.MEMORY_OVERFLOW_STRESS:
+        total_count = int(
+            structure_rng.integers(
+                config.stress.overflow_record_count[0],
+                config.stress.overflow_record_count[1] + 1,
+            )
+        )
+        edge_count = total_count - request.requested_path_length - len(distractor_edges) - 3
+        candidates = tuple(
+            (source, target)
+            for source in range(request.requested_path_length + 1, 61)
+            for target in range(request.requested_path_length + 1, 61)
+            if source < target and (source, target) not in distractor_edges
+        )
+        if not 0 <= edge_count <= len(candidates):
+            raise ValueError("memory overflow topology cannot fit the configured fact count")
+        selected = structure_rng.choice(len(candidates), size=edge_count, replace=False)
+        return tuple(sorted(candidates[int(index)] for index in selected))
+    if request.suite is SuiteName.NULL_NEAR_MISS_STRESS:
+        return ()
     raise ValueError("unsupported structural stress suite")
 
 
@@ -1360,6 +1398,7 @@ def _build_independent_candidate(
         relabel[template.unreachable_terminal_nodes[int(index)]]
         for index in terminals_rng.permutation(_TERMINAL_RECORD_COUNT)
     )
+    near_miss_hazard_node: int | None = None
     target = relevant_nodes[-1]
     if request.variant is EpisodeVariant.POSITIVE:
         facts.extend(
@@ -1387,19 +1426,35 @@ def _build_independent_candidate(
             )
         )
     elif request.variant is EpisodeVariant.DISCONNECTED_NEGATIVE:
-        facts.extend(
-            (
+        if request.suite is SuiteName.NULL_NEAR_MISS_STRESS:
+            near_miss_hazard_node = relabel[55]
+            facts.extend(
                 (
-                    HazardFact(terminal_nodes[0], hazard_types[0], template.episode_delay),
-                    "decoy_terminal",
-                ),
-                (
-                    HazardFact(terminal_nodes[1], hazard_types[1], template.episode_delay),
-                    "decoy_terminal",
-                ),
-                (SafeFact(terminal_nodes[2]), "decoy_terminal"),
+                    (
+                        HazardFact(near_miss_hazard_node, hazard_types[0], template.episode_delay),
+                        "near_miss_terminal",
+                    ),
+                    (
+                        HazardFact(terminal_nodes[1], hazard_types[1], template.episode_delay),
+                        "decoy_terminal",
+                    ),
+                    (SafeFact(terminal_nodes[2]), "decoy_terminal"),
+                )
             )
-        )
+        else:
+            facts.extend(
+                (
+                    (
+                        HazardFact(terminal_nodes[0], hazard_types[0], template.episode_delay),
+                        "decoy_terminal",
+                    ),
+                    (
+                        HazardFact(terminal_nodes[1], hazard_types[1], template.episode_delay),
+                        "decoy_terminal",
+                    ),
+                    (SafeFact(terminal_nodes[2]), "decoy_terminal"),
+                )
+            )
     else:
         raise ValueError("independent request has an unsupported primary variant")
 
@@ -1440,6 +1495,18 @@ def _build_independent_candidate(
         activation_time, template.episode_delay, config.data.oracle_timing
     )
     positive = request.variant is EpisodeVariant.POSITIVE
+    stress_metadata = (
+        StressMetadata(over_capacity_record_count=fact_count)
+        if request.suite is SuiteName.MEMORY_OVERFLOW_STRESS
+        else (
+            StressMetadata(
+                near_miss_missing_edges=config.stress.near_miss_missing_edges,
+                near_miss_hazard_node=near_miss_hazard_node,
+            )
+            if request.suite is SuiteName.NULL_NEAR_MISS_STRESS
+            else None
+        )
+    )
     truth = EpisodeTruth(
         key=EpisodeKey(
             "ofd-v1",
@@ -1475,6 +1542,7 @@ def _build_independent_candidate(
         action_target=configured_window.target if positive else None,
         rejection_count=attempt,
         rejection_reasons=rejection_reasons,
+        stress_metadata=stress_metadata,
     )
     return EpisodeBundle(
         PublicEpisode(
@@ -1493,7 +1561,19 @@ def _build_independent_candidate(
 def _validate_independent_episode_shape(bundle: EpisodeBundle, config: Phase1Config) -> None:
     """Generator-local primary shape checks before binding its public ID."""
 
-    _validate_matched_member_shape(bundle, config)
+    facts = bundle.public.events[:-1]
+    if bundle.truth.key.suite is SuiteName.MEMORY_OVERFLOW_STRESS:
+        if config.stress is None or not (
+            config.stress.overflow_record_count[0]
+            <= len(facts)
+            <= config.stress.overflow_record_count[1]
+        ):
+            raise ValueError("memory overflow fact count is outside the configured range")
+        metadata = bundle.truth.stress_metadata
+        if metadata is None or metadata.over_capacity_record_count != len(facts):
+            raise ValueError("memory overflow metadata does not match retained facts")
+    else:
+        _validate_matched_member_shape(bundle, config)
     minimum_trace_events = 2 * (
         bundle.truth.recipe.requested_path_length
         + (0 if bundle.truth.recipe.variant is EpisodeVariant.DISCONNECTED_NEGATIVE else 1)
@@ -1551,8 +1631,14 @@ def generate_stress_episode(
         raise TypeError("request must be an IndependentEpisodeRequest")
     if request.suite not in _STRUCTURAL_STRESS_SUITES:
         raise ValueError("generate_stress_episode supports only structural stress suites")
-    if request.variant is not EpisodeVariant.POSITIVE:
+    positive_suites = _STRUCTURAL_STRESS_SUITES - {SuiteName.NULL_NEAR_MISS_STRESS}
+    if request.suite in positive_suites and request.variant is not EpisodeVariant.POSITIVE:
         raise ValueError("structural stress suites require a positive hazard path")
+    if (
+        request.suite is SuiteName.NULL_NEAR_MISS_STRESS
+        and request.variant is not EpisodeVariant.DISCONNECTED_NEGATIVE
+    ):
+        raise ValueError("null near-miss stress suites require a disconnected negative path")
     return _generate_independent_bundle(config, request, public_id_seed)
 
 

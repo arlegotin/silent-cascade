@@ -51,7 +51,14 @@ _PRIMARY_SUITES = frozenset(
         SuiteName.DISTRACTOR_FLOOD,
     }
 )
-_STRUCTURAL_STRESS_SUITES = frozenset({SuiteName.BRANCHING_STRESS, SuiteName.CYCLES_STRESS})
+_STRUCTURAL_STRESS_SUITES = frozenset(
+    {
+        SuiteName.BRANCHING_STRESS,
+        SuiteName.CYCLES_STRESS,
+        SuiteName.MEMORY_OVERFLOW_STRESS,
+        SuiteName.NULL_NEAR_MISS_STRESS,
+    }
+)
 _STRESS_RESERVED_NODES = frozenset(range(49, 61))
 
 _INDEPENDENT_ALLOCATION_BLOCKS = (
@@ -443,6 +450,7 @@ def _expected_structural_edges(
     bundle: EpisodeBundle,
     config: Phase1Config,
     structure_rng: object,
+    distractor_edges: tuple[tuple[int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
     """Reconstruct the declared stress shape without calling the generator."""
 
@@ -464,6 +472,27 @@ def _expected_structural_edges(
             for _ in targets
         )
         return tuple(zip(sources, targets, strict=True))
+    if suite is SuiteName.MEMORY_OVERFLOW_STRESS:
+        total_count = int(
+            structure_rng.integers(  # type: ignore[union-attr]
+                config.stress.overflow_record_count[0], config.stress.overflow_record_count[1] + 1
+            )
+        )
+        edge_count = total_count - length - len(distractor_edges) - 3
+        candidates = tuple(
+            (source, target)
+            for source in range(length + 1, 61)
+            for target in range(length + 1, 61)
+            if source < target and (source, target) not in distractor_edges
+        )
+        if not 0 <= edge_count <= len(candidates):
+            _fail("memory overflow topology cannot fit the configured fact count")
+        selected = structure_rng.choice(  # type: ignore[union-attr]
+            len(candidates), size=edge_count, replace=False
+        )
+        return tuple(sorted(candidates[int(index)] for index in selected))
+    if suite is SuiteName.NULL_NEAR_MISS_STRESS:
+        return ()
     cycle_length = int(
         structure_rng.integers(  # type: ignore[union-attr]
             config.stress.irrelevant_cycle_length[0],
@@ -528,7 +557,7 @@ def _expected_independent_payloads(
     structure_rng = _independent_generator(bundle, SeedStream.STRUCTURE)
     selected = structure_rng.choice(len(candidates), size=distractor_count, replace=False)
     distractor_edges = tuple(sorted(candidates[int(index)] for index in selected))
-    structural_edges = _expected_structural_edges(bundle, config, structure_rng)
+    structural_edges = _expected_structural_edges(bundle, config, structure_rng, distractor_edges)
     timestamps_rng = _independent_generator(bundle, SeedStream.TIMESTAMPS)
     fact_gaps = tuple(
         _log_uniform(timestamps_rng, config.data.observation_gap_log_uniform)
@@ -570,13 +599,22 @@ def _expected_independent_payloads(
             )
         )
     elif recipe.variant is EpisodeVariant.DISCONNECTED_NEGATIVE:
-        facts.extend(
-            (
-                HazardFact(terminal_nodes[0], hazard_types[0], episode_delay),
-                HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
-                SafeFact(terminal_nodes[2]),
+        if key.suite is SuiteName.NULL_NEAR_MISS_STRESS:
+            facts.extend(
+                (
+                    HazardFact(relabel[55], hazard_types[0], episode_delay),
+                    HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
+                    SafeFact(terminal_nodes[2]),
+                )
             )
-        )
+        else:
+            facts.extend(
+                (
+                    HazardFact(terminal_nodes[0], hazard_types[0], episode_delay),
+                    HazardFact(terminal_nodes[1], hazard_types[1], episode_delay),
+                    SafeFact(terminal_nodes[2]),
+                )
+            )
     else:
         _fail("episode variant is invalid")
     presentation = _independent_generator(bundle, SeedStream.PRESENTATION).permutation(len(facts))
@@ -761,7 +799,29 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
     ):
         _fail("public episode must finish with activation")
     facts = public.events[:-1]
-    if len(facts) > min(config.data.primary_memory_capacity, 64):
+    capacity = min(config.data.primary_memory_capacity, 64)
+    if truth.key.suite is SuiteName.MEMORY_OVERFLOW_STRESS:
+        metadata = truth.stress_metadata
+        if (
+            config.stress is None
+            or not config.stress.overflow_record_count[0]
+            <= len(facts)
+            <= config.stress.overflow_record_count[1]
+            or len(facts) <= capacity
+            or metadata is None
+            or metadata.over_capacity_record_count != len(facts)
+            or any(
+                value is not None
+                for value in (
+                    metadata.near_miss_missing_edges,
+                    metadata.near_miss_hazard_node,
+                    metadata.proposed_checkpoint_pause_time,
+                    metadata.minimum_feasible_delay,
+                )
+            )
+        ):
+            _fail("memory overflow stress metadata or retained fact count is invalid")
+    elif len(facts) > capacity:
         _fail("primary fact capacity exceeded")
     previous_time = initial_time
     identities: set[tuple[object, ...]] = set()
@@ -959,6 +1019,27 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
             cycles = _directed_cycles(tuple(links))
             if any(node in seen for node in cycles[0]):
                 _fail("cycles stress cycle must be outside activation reachability")
+
+    if truth.key.suite is SuiteName.NULL_NEAR_MISS_STRESS:
+        metadata = truth.stress_metadata
+        expected_near_miss_node = tuple(
+            int(value)
+            for value in _independent_generator(bundle, SeedStream.NODE_PERMUTATION).permutation(64)
+        )[55]
+        if (
+            config.stress is None
+            or metadata is None
+            or metadata.near_miss_missing_edges != config.stress.near_miss_missing_edges
+            or metadata.near_miss_hazard_node != expected_near_miss_node
+            or expected_near_miss_node in seen
+            or (path[-1], expected_near_miss_node) in link_endpoints
+            or not any(
+                isinstance(event.payload, HazardFact)
+                and event.payload.node == expected_near_miss_node
+                for event in terminals
+            )
+        ):
+            _fail("null near-miss stress provenance is invalid")
 
     requested_length = _require_exact_int(
         truth.recipe.requested_path_length, "requested path length", minimum=1

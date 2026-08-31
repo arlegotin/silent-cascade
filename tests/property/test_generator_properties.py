@@ -33,7 +33,12 @@ PRIMARY_PATHS = {
     SuiteName.OOD_LONG_DELAY: (2, 3, 4),
     SuiteName.DISTRACTOR_FLOOD: (2, 3, 4),
 }
-STRUCTURAL_STRESS_SUITES = (SuiteName.BRANCHING_STRESS, SuiteName.CYCLES_STRESS)
+STRUCTURAL_STRESS_SUITES = (
+    SuiteName.BRANCHING_STRESS,
+    SuiteName.CYCLES_STRESS,
+    SuiteName.MEMORY_OVERFLOW_STRESS,
+    SuiteName.NULL_NEAR_MISS_STRESS,
+)
 
 
 def _config() -> Phase1Config:
@@ -328,18 +333,28 @@ def test_structural_stress_episodes_remain_independently_valid_and_private(
     from silent_cascade.env.invariants import validate_episode_invariants
     from silent_cascade.env.oracle import OraclePolicy, OracleTerminalKind, solve_public_episode
 
+    variant = (
+        EpisodeVariant.DISCONNECTED_NEGATIVE
+        if suite is SuiteName.NULL_NEAR_MISS_STRESS
+        else EpisodeVariant.POSITIVE
+    )
     request = IndependentEpisodeRequest(
         SplitNamespace.DEBUG,
         suite,
         root_seed,
         episode_index,
         3,
-        EpisodeVariant.POSITIVE,
+        variant,
         episode_index // 4,
     )
     bundle = generate_stress_episode(_stress_config(), request, 91)
     policy = OraclePolicy.BRANCHING if suite is SuiteName.BRANCHING_STRESS else OraclePolicy.PRIMARY
+    expected_terminal = (
+        OracleTerminalKind.DISCONNECTED
+        if suite is SuiteName.NULL_NEAR_MISS_STRESS
+        else OracleTerminalKind.HAZARD
+    )
 
     assert validate_episode_invariants(bundle, _stress_config()).valid
-    assert solve_public_episode(bundle.public, policy).terminal_kind is OracleTerminalKind.HAZARD
+    assert solve_public_episode(bundle.public, policy).terminal_kind is expected_terminal
     assert "stress_metadata" not in repr(bundle.public)

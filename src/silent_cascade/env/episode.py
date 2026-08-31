@@ -171,12 +171,20 @@ class EpisodeRecipe:
 @dataclass(frozen=True, slots=True)
 class StressMetadata:
     over_capacity_record_count: int | None = None
+    near_miss_missing_edges: int | None = None
+    near_miss_hazard_node: int | None = None
     proposed_checkpoint_pause_time: float | None = None
     minimum_feasible_delay: float | None = None
 
     def __post_init__(self) -> None:
         if self.over_capacity_record_count is not None:
             _require_int(self.over_capacity_record_count, "over_capacity_record_count", minimum=65)
+        if self.near_miss_missing_edges is not None:
+            _require_int(self.near_miss_missing_edges, "near_miss_missing_edges", minimum=1)
+        if self.near_miss_hazard_node is not None:
+            _require_int(self.near_miss_hazard_node, "near_miss_hazard_node")
+            if self.near_miss_hazard_node > 63:
+                raise ValueError("near_miss_hazard_node is out of bounds")
         if self.proposed_checkpoint_pause_time is not None:
             _require_float(self.proposed_checkpoint_pause_time, "proposed_checkpoint_pause_time")
         if self.minimum_feasible_delay is not None:
@@ -284,6 +292,7 @@ class EpisodeTruth:
         suite = self.key.suite
         special = {
             SuiteName.MEMORY_OVERFLOW_STRESS,
+            SuiteName.NULL_NEAR_MISS_STRESS,
             SuiteName.CHECKPOINT_STRESS,
             SuiteName.MINIMUM_DURATION_STRESS,
         }
@@ -300,12 +309,30 @@ class EpisodeTruth:
             if metadata.over_capacity_record_count is None or any(
                 value is not None
                 for value in (
+                    metadata.near_miss_missing_edges,
+                    metadata.near_miss_hazard_node,
                     metadata.proposed_checkpoint_pause_time,
                     metadata.minimum_feasible_delay,
                 )
             ):
                 raise EpisodeInvariantError(
                     "memory overflow metadata must contain only record count"
+                )
+        elif suite is SuiteName.NULL_NEAR_MISS_STRESS:
+            if (
+                metadata.near_miss_missing_edges is None
+                or metadata.near_miss_hazard_node is None
+                or any(
+                    value is not None
+                    for value in (
+                        metadata.over_capacity_record_count,
+                        metadata.proposed_checkpoint_pause_time,
+                        metadata.minimum_feasible_delay,
+                    )
+                )
+            ):
+                raise EpisodeInvariantError(
+                    "null near-miss metadata must contain only missing-edge provenance"
                 )
         elif suite is SuiteName.CHECKPOINT_STRESS:
             pause = metadata.proposed_checkpoint_pause_time
@@ -316,6 +343,8 @@ class EpisodeTruth:
                     value is not None
                     for value in (
                         metadata.over_capacity_record_count,
+                        metadata.near_miss_missing_edges,
+                        metadata.near_miss_hazard_node,
                         metadata.minimum_feasible_delay,
                     )
                 )
@@ -327,6 +356,8 @@ class EpisodeTruth:
             value is not None
             for value in (
                 metadata.over_capacity_record_count,
+                metadata.near_miss_missing_edges,
+                metadata.near_miss_hazard_node,
                 metadata.proposed_checkpoint_pause_time,
             )
         ):
