@@ -54,4 +54,4 @@
 
 ## Commit evidence
 
-- Pending final local verification and commit.
+- `f48b1b3` — `feat: orchestrate Phase 1 data services`.
