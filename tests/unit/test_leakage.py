@@ -52,7 +52,7 @@ def _provenance(config_sha256: str, source: object | None = None) -> EvidencePro
         source_commit="d" * 40,
         source_dirty=False,
         generator_version="ofd-v1",
-        generation_mode="matched",
+        generation_mode=(source.descriptor.generation_mode if source is not None else "matched"),
         allocation_id="test-leakage-v1",
         split_namespace=SplitNamespace.DEBUG,
         config_sha256=config_sha256,
@@ -161,6 +161,111 @@ def _authenticated_test_source(config: Phase1Config, groups_per_path: int = 100)
     )
 
 
+def _authenticated_independent_test_source(
+    config: Phase1Config,
+    groups_per_path: int = 20,
+):
+    from silent_cascade.env.episode import scale_episode_time
+    from silent_cascade.env.generator import (
+        IndependentEpisodeRequest,
+        generate_independent_episode,
+    )
+    from silent_cascade.env.invariants import _allocation_variants
+    from silent_cascade.env.leakage import (
+        AuditExample,
+        AuditSourceAuthentication,
+        AuditSourceDescriptor,
+        InMemoryAuditSource,
+        LeakageAuditProfileName,
+        PairedClockAuditPair,
+        _clock_pair_manifest_sha256,
+        _source_manifest_sha256,
+        audit_source_descriptor_sha256,
+    )
+
+    examples = []
+    for path_index, path in enumerate((2, 3, 4)):
+        for local_group in range(groups_per_path):
+            block = path_index * groups_per_path + local_group
+            variants = _allocation_variants(
+                SplitNamespace.DEBUG,
+                SuiteName.IID_PRIMARY,
+                41,
+                path,
+                block,
+            )
+            for local_position, variant in enumerate(variants):
+                episode_index = block * 4 + local_position
+                bundle = generate_independent_episode(
+                    config,
+                    IndependentEpisodeRequest(
+                        split_namespace=SplitNamespace.DEBUG,
+                        suite=SuiteName.IID_PRIMARY,
+                        root_seed=41,
+                        episode_index=episode_index,
+                        requested_path_length=path,
+                        variant=variant,
+                        allocation_quartet_index=block,
+                    ),
+                    91,
+                )
+                examples.append(
+                    AuditExample(
+                        bundle,
+                        episode_index,
+                        "independent",
+                        block,
+                        episode_index,
+                    )
+                )
+    clock_pairs = (
+        PairedClockAuditPair(
+            examples[0],
+            scale_episode_time(
+                examples[0].bundle,
+                SuiteName.CLOCK_SCALE_0_1X,
+                "00000000-0000-4000-8000-000000000011",
+            ),
+        ),
+        PairedClockAuditPair(
+            examples[groups_per_path * 4],
+            scale_episode_time(
+                examples[groups_per_path * 4].bundle,
+                SuiteName.CLOCK_SCALE_10X,
+                "00000000-0000-4000-8000-000000000012",
+            ),
+        ),
+    )
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="independent",
+        allocation_id="test-leakage-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=SplitNamespace.DEBUG,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256=_config_sha256(config),
+        generator_source_sha256="a" * 64,
+        episode_count=len(examples),
+    )
+    authentication = AuditSourceAuthentication(
+        schema_version="leakage-source-auth-v1",
+        profile=LeakageAuditProfileName.TEST,
+        descriptor_sha256=audit_source_descriptor_sha256(descriptor),
+        source_manifest_sha256=_source_manifest_sha256(examples),
+        suite_path_denominators={f"iid_primary:{path}": groups_per_path * 4 for path in (2, 3, 4)},
+        clock_pair_manifest_sha256=_clock_pair_manifest_sha256(clock_pairs),
+        clock_scale_pair_counts={"scale_0_1x": 1, "scale_10x": 1},
+    )
+    return InMemoryAuditSource(
+        descriptor,
+        tuple(examples),
+        validation_config=config,
+        authentication=authentication,
+        clock_pairs=clock_pairs,
+    )
+
+
 def test_shortcut_features_have_fixed_public_only_dimensions() -> None:
     """Adding a private field or changing one declared feature width must fail this contract."""
     from silent_cascade.env.leakage import (
@@ -199,6 +304,40 @@ def test_shortcut_features_have_fixed_public_only_dimensions() -> None:
             ]
         ),
     )
+
+
+def test_feature_extraction_ignores_private_targets_and_rejects_unknown_payloads() -> None:
+    """Private truth is forbidden input and public payload vocabulary is closed."""
+    from silent_cascade.env.leakage import (
+        AuditExample,
+        ShortcutFeatureGroup,
+        extract_shortcut_features,
+    )
+
+    config = _config()
+    bundle = generate_matched_cohort(
+        config,
+        CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 7, 3),
+        91,
+    ).episodes[0]
+    example = AuditExample(bundle, 0, "matched", 7, 0)
+    baseline = extract_shortcut_features(example, corpus_size=8)
+    private_mutation = replace(
+        bundle,
+        truth=replace(
+            bundle.truth,
+            rejection_reasons=(*bundle.truth.rejection_reasons, "private-only-mutation"),
+        ),
+    )
+    mutated = extract_shortcut_features(
+        replace(example, bundle=private_mutation),
+        corpus_size=8,
+    )
+    for group in ShortcutFeatureGroup:
+        assert np.array_equal(baseline.vectors[group], mutated.vectors[group])
+
+    with pytest.raises(ValueError, match="payload"):
+        replace(bundle.public.events[0], payload=object())
 
 
 def test_audit_rejects_unauthenticated_source_before_iteration(tmp_path: Path) -> None:
@@ -530,6 +669,125 @@ def test_link_topology_mask_freezes_cycle_flag_and_combined_1560_bit_layout() ->
     )
 
 
+def test_every_standardization_mask_has_a_frozen_known_answer() -> None:
+    """Every feature family freezes categorical and continuous vocabulary roles."""
+    from silent_cascade.env.leakage import (
+        ShortcutFeatureGroup,
+        _continuous_columns,
+        _feature_bounds,
+    )
+
+    expected = {
+        ShortcutFeatureGroup.ID_POSITION: (
+            17,
+            1,
+            "d3a064592dc6bda7ad009a53d77dc197fd15e0fd3b291f30eb8ab37862e2fc95",
+        ),
+        ShortcutFeatureGroup.ACTIVATION_NODE: (
+            256,
+            192,
+            "f6e117451b82a006c21b97960fb6dd5203b5ebedc0700004771b1fa1f31edf6b",
+        ),
+        ShortcutFeatureGroup.FIRST_LAST_FACT: (
+            278,
+            2,
+            "a44fb51bf98102fa816d746ca68f483713b672e0b6d5dbe1af7bc29c27d30419",
+        ),
+        ShortcutFeatureGroup.COUNTS: (
+            4,
+            4,
+            "fde502858306c235a3121e42326b53228b7ef4690eeed92a2b2eafe73c03a3ef",
+        ),
+        ShortcutFeatureGroup.ORDER_RECORD_IDS: (
+            768,
+            256,
+            "ba084cee7b744153155fb8ea34183bde8dbebd50db9196266bba2b752a0a6e67",
+        ),
+        ShortcutFeatureGroup.TIMES: (
+            194,
+            130,
+            "4c8ce184e41c4f76706f279ae276deeb658897d1f3f58e4f885e9c548c078254",
+        ),
+        ShortcutFeatureGroup.TERMINAL_MULTISET: (
+            10,
+            4,
+            "46aa68f4b1ee3cc5e0d0ff27299d91b99c9e6ac64b2a0588fcc9074a08c44a62",
+        ),
+        ShortcutFeatureGroup.LINK_TOPOLOGY: (
+            33,
+            14,
+            "4469147f074ed578389d5ac0b1d19eb7c02440110d2edc25ddafe0ad998adc71",
+        ),
+        ShortcutFeatureGroup.COMBINED: (
+            1560,
+            603,
+            "6ca18896cbfa1cd90a65b0851758f769b5fd340c94ddfdb956f5517f5cebbe51",
+        ),
+    }
+    for group, (width, continuous_count, digest) in expected.items():
+        start, stop = _feature_bounds(group)
+        mask = _continuous_columns(group, stop - start)
+        assert (len(mask), int(mask.sum())) == (width, continuous_count)
+        assert hashlib.sha256(np.packbits(mask.astype(np.uint8)).tobytes()).hexdigest() == digest
+
+
+def test_split_membership_has_an_exact_known_answer() -> None:
+    """Seed framing, quartet grouping, rank order, and 80/20 selection are frozen."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.leakage import _split_memberships, _StoredExample
+
+    variants = (
+        EpisodeVariant.POSITIVE,
+        EpisodeVariant.POSITIVE,
+        EpisodeVariant.SAFE_NEGATIVE,
+        EpisodeVariant.DISCONNECTED_NEGATIVE,
+    )
+    rows = tuple(
+        _StoredExample(
+            public_id=f"00000000-0000-4000-8000-{block * 4 + position:012d}",
+            digest=f"{block * 4 + position + 1:064x}",
+            group_id=f"matched:{block}",
+            suite=SuiteName.IID_PRIMARY,
+            path_length=3,
+            variant=variant,
+            hazard_class=0 if variant is EpisodeVariant.POSITIVE else None,
+            block=block,
+            position=position,
+        )
+        for block in range(5)
+        for position, variant in enumerate(variants)
+    )
+
+    train, test, digest = _split_memberships(
+        rows,
+        2026083091,
+        "b" * 64,
+        "matched",
+        strict_divisible=True,
+    )
+
+    assert train.tolist() == [
+        0,
+        1,
+        2,
+        3,
+        8,
+        9,
+        10,
+        11,
+        4,
+        5,
+        6,
+        7,
+        16,
+        17,
+        18,
+        19,
+    ]
+    assert test.tolist() == [12, 13, 14, 15]
+    assert digest == "4ac3287de1886b3d10644f95363b955d6cf4219bd578ac701522cb32ef473d3e"
+
+
 def test_group_permutations_select_only_complete_declared_assignments() -> None:
     """A per-position remap that changes a quartet class multiset must fail this null contract."""
     from silent_cascade.env.episode import EpisodeVariant
@@ -675,6 +933,56 @@ def test_independent_quartet_aggregate_rejects_corruption(mutation: str) -> None
         _validate_independent_quartets(rows)
 
 
+def test_independently_authenticated_source_executes_all_fits_with_frozen_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Independent quartets run clean/shuffled fits under the exact same protocol."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_independent_test_source(config)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": source.episode_count,
+                    "permutation_replicates": 1,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+    fit_configs = []
+
+    def exact_label_fit(
+        _reader,
+        _train,
+        labels,
+        test,
+        _classes,
+        _continuous,
+        fit_config,
+    ):
+        fit_configs.append(fit_config)
+        return labels[test].copy(), 1
+
+    monkeypatch.setattr(leakage, "_fit_predict_batched", exact_label_fit)
+    report = leakage.audit_leakage(
+        source,
+        audit_config,
+        leakage.LeakageAuditProfileName.TEST,
+        _provenance(_config_sha256(config), source),
+        tmp_path,
+    )
+
+    assert report.generation_mode == "independent"
+    assert report.episode_count == 240
+    assert len(fit_configs) == 54
+    assert {id(item) for item in fit_configs} == {id(audit_config)}
+    assert {item.l2_penalty for item in fit_configs} == {0.03}
+
+
 def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: Path) -> None:
     """Retaining bundles or omitting a report family must fail this bounded audit contract."""
     from silent_cascade.env.leakage import (
@@ -710,7 +1018,52 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
     assert tuple(item.check_id for item in report.counterfactual_checks) == tuple(
         CounterfactualCheckId
     )
+    assert report.label_shuffled_control_passed
     assert not list(tmp_path.iterdir())
+
+
+def test_complete_report_hash_is_stable_in_a_fresh_process() -> None:
+    """A fresh interpreter reproduces the exact canonical leakage report bytes."""
+    import subprocess
+    import sys
+
+    script = """
+import runpy
+import tempfile
+from pathlib import Path
+from silent_cascade.env.leakage import LeakageAuditProfileName, audit_leakage
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+ns = runpy.run_path('tests/unit/test_leakage.py')
+config = ns['_config']()
+source = ns['_authenticated_test_source'](config, groups_per_path=20)
+audit_config = config.data.leakage_audit.model_copy(update={
+    'test': config.data.leakage_audit.test.model_copy(update={
+        'episode_count': source.episode_count,
+        'permutation_replicates': 1,
+        'minimum_test_examples_per_class': 1,
+    }),
+})
+with tempfile.TemporaryDirectory() as directory:
+    report = audit_leakage(
+        source,
+        audit_config,
+        LeakageAuditProfileName.TEST,
+        ns['_provenance'](ns['_config_sha256'](config), source),
+        Path(directory),
+    )
+print(sha256_bytes(canonical_json_bytes(report)))
+"""
+    completed = subprocess.run(
+        (sys.executable, "-c", script),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stderr == ""
+    assert completed.stdout.strip() == (
+        "d5e9f2f6e7e241f3026d38da415ccbae44a585e16c7918a116de5b54fee960c6"
+    )
 
 
 def test_audit_fails_closed_when_workspace_cleanup_fails(
@@ -1207,6 +1560,17 @@ def test_counterfactual_engine_consumes_only_declared_paired_clock_children() ->
         CounterfactualCheckId.PRESENTATION_PERMUTATION: 12,
         CounterfactualCheckId.PAIRED_CLOCK_SCALE: 2,
     }
+    assert {item.check_id: item.result_payload_sha256 for item in checks} == {
+        CounterfactualCheckId.TERMINAL_DELAY_SWAP: (
+            "02a14285d1611cc621b2e378db943863a69b4bb83e2b73f0c6aa5977353e52af"
+        ),
+        CounterfactualCheckId.PRESENTATION_PERMUTATION: (
+            "1c517d250c47f8fa94a2a0874c3c9141d271a229cb7b4dd2295b4637780c5c92"
+        ),
+        CounterfactualCheckId.PAIRED_CLOCK_SCALE: (
+            "6f12f1e20b581940f1395bde9ae8af34053c4b6fd129a880c92b2afc238c8cb0"
+        ),
+    }
     assert all(item.passed for item in checks)
 
 
@@ -1404,6 +1768,77 @@ def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
     else:
         assert result.base_subset_corpus_sha256 != result.injected_corpus_sha256
     assert result.balanced_accuracy is not None and result.balanced_accuracy >= 0.95
+    assert result.passed
+
+
+def test_bounded_control_executes_the_exact_4999_replicate_gate_semantics(
+    tmp_path: Path,
+) -> None:
+    """The finite-null Holm gate runs actual fits/results at the frozen denominator."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    clean_source = _authenticated_test_source(config, groups_per_path=20)
+    profile = config.data.leakage_audit.test.model_copy(
+        update={
+            "episode_count": clean_source.episode_count,
+            "permutation_replicates": 4_999,
+            "positive_control_episode_count": clean_source.episode_count,
+            "positive_control_permutation_replicates": 4_999,
+            "minimum_test_examples_per_class": 1,
+            "enforce_clean_statistical_gate": True,
+        }
+    )
+    audit_config = config.data.leakage_audit.model_copy(update={"test": profile})
+    rows = []
+    digest = leakage.CorpusHashBuilder(clean_source.episode_count)
+    for example in clean_source.iter_examples():
+        bundle = example.bundle
+        bundle_digest = leakage.episode_sha256(bundle)
+        feature_set = leakage.extract_shortcut_features(example, clean_source.episode_count)
+        rows.append(
+            leakage._StoredExample(
+                bundle.public.init.episode_public_id,
+                bundle_digest,
+                feature_set.audit_group_id,
+                bundle.truth.key.suite,
+                bundle.truth.recipe.requested_path_length,
+                bundle.truth.recipe.variant,
+                bundle.truth.relevant_hazard_type,
+                example.randomization_block_index,
+                example.episode_position,
+                tuple(
+                    sorted(
+                        event.payload.hazard_type
+                        for event in leakage._fact_events(bundle)
+                        if isinstance(event.payload, leakage.HazardFact)
+                    )
+                ),
+            )
+        )
+        digest.add(
+            leakage.CorpusDigestEntry(
+                bundle.public.init.episode_public_id,
+                bundle_digest,
+            )
+        )
+    leakage._validate_holm_attainability(audit_config, profile)
+    result = leakage._execute_positive_control(
+        leakage.leak_record_count.apply(clean_source),
+        rows,
+        leakage.leak_record_count,
+        audit_config,
+        profile,
+        digest.finalize(),
+        config,
+        tmp_path,
+    )
+
+    assert profile.permutation_replicates == 4_999
+    assert profile.positive_control_permutation_replicates == 4_999
+    assert result.expected_detector_id in result.observed_detector_ids
+    assert result.holm_adjusted_p is not None
+    assert result.holm_adjusted_p < audit_config.alpha
     assert result.passed
 
 
@@ -1634,6 +2069,7 @@ def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
     classes = np.arange(3, dtype=np.int8)
     continuous = np.ones(values.shape[1], dtype=bool)
     predictions = []
+    iterations = []
     for batch_size in (7, 13):
         config = _config().data.leakage_audit.model_copy(update={"feature_batch_size": batch_size})
         reader = _BatchedFeatureReader(
@@ -1644,7 +2080,7 @@ def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
             config.feature_batch_size,
             config,
         )
-        actual, _ = _fit_predict_batched(
+        actual, iteration_count = _fit_predict_batched(
             reader,
             train,
             labels,
@@ -1654,28 +2090,107 @@ def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
             config,
         )
         predictions.append(actual)
+        iterations.append(iteration_count)
         assert reader.max_batch_seen <= config.feature_batch_size
 
     assert np.array_equal(predictions[0], predictions[1])
+    assert iterations[0] == iterations[1]
 
 
-def test_full_profile_feature_shape_streams_under_resident_ceiling(tmp_path: Path) -> None:
-    """The 624 MB full-profile store must execute moments below the 512 MB RSS gate."""
+@pytest.mark.parametrize("failure", ("nonconverged", "nonfinite"))
+def test_batched_optimizer_fails_closed_on_invalid_solver_result(
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither optimizer exhaustion nor a nonfinite solution can publish evidence."""
+    from types import SimpleNamespace
+
+    import silent_cascade.env.leakage as leakage
+
+    values = np.asarray(((0.0, 1.0), (1.0, 0.0), (0.0, 1.0), (1.0, 0.0)))
+    labels = np.asarray((0, 1, 0, 1), dtype=np.int8)
+    config = _config().data.leakage_audit.model_copy(update={"feature_batch_size": 2})
+    reader = leakage._BatchedFeatureReader(values, 0, 2, None, 2, config)
+    result = SimpleNamespace(
+        success=failure != "nonconverged",
+        x=(np.asarray((np.nan,)) if failure == "nonfinite" else np.asarray((0.0,))),
+        nit=0,
+    )
+    monkeypatch.setattr(leakage, "minimize", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(ValueError, match="optimizer failed"):
+        leakage._fit_predict_batched(
+            reader,
+            np.asarray((0, 1), dtype=np.int64),
+            labels,
+            np.asarray((2, 3), dtype=np.int64),
+            np.asarray((0, 1), dtype=np.int8),
+            np.ones(2, dtype=bool),
+            config,
+        )
+
+
+def test_holm_and_threshold_boundaries_are_exact() -> None:
+    """Holm monotonicity and strict alpha/chance comparisons are protocol KATs."""
+    from silent_cascade.env.leakage import (
+        ShortcutFeatureGroup,
+        ShortcutProbeResult,
+        ShortcutTask,
+        _holm,
+    )
+
+    def probe(raw_p: float, balanced: float = 0.75) -> ShortcutProbeResult:
+        return ShortcutProbeResult(
+            task=ShortcutTask.POSITIVE_BINARY,
+            feature_group=ShortcutFeatureGroup.COUNTS,
+            feature_dimension=4,
+            train_examples=8,
+            test_examples=4,
+            train_class_counts={"0": 4, "1": 4},
+            test_class_counts={"0": 2, "1": 2},
+            raw_accuracy=balanced,
+            balanced_accuracy=balanced,
+            balanced_chance=0.5,
+            raw_permutation_p=raw_p,
+            holm_adjusted_p=1.0,
+            optimizer_iterations=1,
+            optimizer_converged=True,
+            passed=True,
+        )
+
+    adjusted = _holm([probe(0.001), probe(0.01), probe(0.04)], 0.05)
+    assert [item.holm_adjusted_p for item in adjusted] == pytest.approx((0.003, 0.02, 0.04))
+    assert not any(item.passed for item in adjusted)
+    assert _holm([probe(0.05)], 0.05)[0].passed
+    assert _holm([probe(0.001, balanced=0.5)], 0.05)[0].passed
+
+
+def test_full_profile_phases_stream_under_resident_ceiling_and_cleanup(tmp_path: Path) -> None:
+    """100k storage/write/moments/fit/predict phases stay bounded and clean up."""
     import psutil
 
     from silent_cascade.env.leakage import (
+        _allocate_feature_store,
         _batched_moments,
         _BatchedFeatureReader,
+        _fit_predict_batched,
+        _write_feature_batch,
     )
 
     config = _config().data.leakage_audit
     feature_path = tmp_path / "full-profile.f32"
-    values = np.memmap(
+    rss_by_phase = {}
+    _allocate_feature_store(feature_path, 100_000)
+    rss_by_phase["allocate"] = psutil.Process().memory_info().rss
+    _write_feature_batch(
         feature_path,
-        dtype=np.float32,
-        mode="w+",
-        shape=(100_000, 1_560),
+        100_000,
+        0,
+        np.zeros((4_096, 1_560), dtype=np.float32),
+        config,
     )
+    rss_by_phase["write"] = psutil.Process().memory_info().rss
+    values = np.memmap(feature_path, dtype=np.float32, mode="r", shape=(100_000, 1_560))
     reader = _BatchedFeatureReader(
         values,
         0,
@@ -1690,10 +2205,38 @@ def test_full_profile_feature_shape_streams_under_resident_ceiling(tmp_path: Pat
         np.arange(100_000, dtype=np.int64),
         np.ones(1_560, dtype=bool),
     )
+    rss_by_phase["moments"] = psutil.Process().memory_info().rss
+    narrow_reader = _BatchedFeatureReader(
+        values,
+        0,
+        2,
+        None,
+        config.feature_batch_size,
+        config,
+    )
+    labels = np.arange(100_000, dtype=np.int8) % 2
+    predictions, _iterations = _fit_predict_batched(
+        narrow_reader,
+        np.arange(80_000, dtype=np.int64),
+        labels,
+        np.arange(80_000, 100_000, dtype=np.int64),
+        np.asarray((0, 1), dtype=np.int8),
+        np.ones(2, dtype=bool),
+        config,
+    )
+    rss_by_phase["fit_predict"] = psutil.Process().memory_info().rss
 
     assert feature_path.stat().st_size == 624_000_000
     assert np.array_equal(mean, np.zeros(1_560))
     assert np.array_equal(std, np.ones(1_560))
     assert np.all(zero)
     assert reader.max_batch_seen <= 4_096
-    assert psutil.Process().memory_info().rss <= config.max_resident_working_bytes
+    assert predictions.shape == (20_000,)
+    assert narrow_reader.max_batch_seen <= 4_096
+    assert all(value <= config.max_resident_working_bytes for value in rss_by_phase.values())
+    values._mmap.close()
+    del values
+    feature_path.unlink()
+    rss_by_phase["cleanup"] = psutil.Process().memory_info().rss
+    assert not feature_path.exists()
+    assert rss_by_phase["cleanup"] <= config.max_resident_working_bytes

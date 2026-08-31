@@ -1790,6 +1790,20 @@ def _balanced_accuracy(labels: np.ndarray, predictions: np.ndarray, classes: np.
     return float(np.mean(recalls))
 
 
+def _permutation_exceeds_observed(
+    labels: np.ndarray,
+    predictions: np.ndarray,
+    classes: np.ndarray,
+    observed: float,
+) -> bool:
+    # A conditional hazard-label permutation can remove a class in a bounded
+    # sample. Count that replicate as an exceedance instead of assigning an
+    # anti-conservative statistic to an undefined class recall.
+    if any(not np.any(labels == value) for value in classes):
+        return True
+    return _balanced_accuracy(labels, predictions, classes) >= observed
+
+
 def _permuted_labels(
     rows: Sequence[_StoredExample],
     labels: np.ndarray,
@@ -2013,7 +2027,12 @@ def _run_probes(
                         rows, labels_by_task[task], task, replicate, corpus_hash, config.audit_seed
                     )
                     permuted = permuted_all[task_test]
-                    exceed += _balanced_accuracy(permuted, predictions, classes) >= observed
+                    exceed += _permutation_exceeds_observed(
+                        permuted,
+                        predictions,
+                        classes,
+                        observed,
+                    )
             raw_p = (1 + exceed) / (profile.permutation_replicates + 1)
             probes.append(
                 ShortcutProbeResult(
@@ -2565,7 +2584,12 @@ def _run_positive_control_probe(
             injected_hash,
             config.positive_control_seed,
         )[task_test]
-        exceed += _balanced_accuracy(permuted, predictions, classes) >= observed
+        exceed += _permutation_exceeds_observed(
+            permuted,
+            predictions,
+            classes,
+            observed,
+        )
     raw_p = (1 + exceed) / (profile.positive_control_permutation_replicates + 1)
     return ShortcutProbeResult(
         task=injector.target_task,
