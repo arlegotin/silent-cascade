@@ -690,6 +690,99 @@ def test_audit_fails_closed_when_workspace_cleanup_fails(
         )
 
 
+def test_feature_store_ceiling_refuses_before_source_iteration(tmp_path: Path) -> None:
+    """The exact 1,560-float row budget must be checked before opening the source."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=20)
+
+    class CountingSource:
+        descriptor = source.descriptor
+        authentication = source.authentication
+        validation_config = source.validation_config
+        episode_count = source.episode_count
+        iter_calls = 0
+
+        def iter_examples(self):
+            self.iter_calls += 1
+            return source.iter_examples()
+
+        def iter_clock_pairs(self):
+            self.iter_calls += 1
+            return source.iter_clock_pairs()
+
+    counting = CountingSource()
+    required = source.episode_count * 1_560 * np.dtype(np.float32).itemsize
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "max_feature_store_bytes": required - 1,
+            "test": config.data.leakage_audit.test.model_copy(
+                update={"episode_count": source.episode_count}
+            ),
+        }
+    )
+
+    with pytest.raises(MemoryError, match="feature-store ceiling"):
+        leakage.audit_leakage(
+            counting,
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config)),
+            tmp_path,
+        )
+    assert counting.iter_calls == 0
+    assert not list(tmp_path.iterdir())
+
+
+def test_second_pass_identity_failure_precedes_probe_fitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A regenerating source that truncates pass two must fail before publication."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=20)
+
+    class TruncatingSource:
+        descriptor = source.descriptor
+        authentication = source.authentication
+        validation_config = source.validation_config
+        episode_count = source.episode_count
+        calls = 0
+
+        def iter_examples(self):
+            self.calls += 1
+            if self.calls == 2:
+                return iter(source.examples[:-1])
+            return source.iter_examples()
+
+        def iter_clock_pairs(self):
+            return source.iter_clock_pairs()
+
+    def prohibited_fit(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("probe fitting began before second-pass authentication")
+
+    monkeypatch.setattr(leakage, "_run_probes", prohibited_fit)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={"episode_count": source.episode_count}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="second pass differs"):
+        leakage.audit_leakage(
+            TruncatingSource(),
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config)),
+            tmp_path,
+        )
+    assert not list(tmp_path.iterdir())
+
+
 def test_audit_rejects_validation_config_digest_before_source_iteration(tmp_path: Path) -> None:
     """Trusting a typed config without hashing it would fit against unauthenticated inputs."""
     from silent_cascade.env.leakage import (
