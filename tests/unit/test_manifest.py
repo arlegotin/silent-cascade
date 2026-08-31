@@ -352,7 +352,11 @@ def test_frozen_manifest_rejects_non_frozen_allocation_aliases(allocation_id: st
         "frozen-",
         "frozen- ",
         "frozen-\t",
+        "frozen--a",
         "frozen--phase6-v1",
+        "frozen-a--b",
+        "frozen-a-",
+        "frozen-a-b-",
         "frozen-Phase6-v1",
         "Frozen-phase6-v1",
         "frozen_phase6_v1",
@@ -363,7 +367,10 @@ def test_frozen_manifest_rejects_malformed_allocation_identity_direct(allocation
         _frozen_manifest(allocation_id)
 
 
-@pytest.mark.parametrize("allocation_id", ["frozen-", "frozen- ", "Frozen-phase6-v1"])
+@pytest.mark.parametrize(
+    "allocation_id",
+    ["frozen-", "frozen--a", "frozen-a--b", "frozen-a-", "frozen-a-b-"],
+)
 def test_frozen_manifest_rejects_malformed_allocation_identity_json(allocation_id: str) -> None:
     payload = _frozen_manifest("frozen-phase6-v1").model_dump(mode="json")
     payload["provenance"]["allocation_id"] = allocation_id  # type: ignore[index]
@@ -372,7 +379,10 @@ def test_frozen_manifest_rejects_malformed_allocation_identity_json(allocation_i
         EpisodeManifest.model_validate_json(json.dumps(payload))
 
 
-@pytest.mark.parametrize("allocation_id", ["frozen-a", "frozen-0", "frozen-phase6-v1"])
+@pytest.mark.parametrize(
+    "allocation_id",
+    ["frozen-a", "frozen-0", "frozen-phase6-v1", "frozen-a-b2-c3"],
+)
 def test_frozen_manifest_accepts_only_approved_allocation_identity_grammar(
     allocation_id: str,
 ) -> None:

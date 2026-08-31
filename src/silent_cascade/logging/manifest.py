@@ -25,7 +25,7 @@ class ManifestAccessClass(StrEnum):
     FROZEN_TEST = "frozen_test"
 
 
-_FROZEN_ALLOCATION_ID_PATTERN = re.compile(r"^frozen-[a-z0-9][a-z0-9-]*$")
+_FROZEN_ALLOCATION_ID_PATTERN = re.compile(r"^frozen-[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class MatchedManifestCoordinate(StrictModel):
