@@ -2,6 +2,19 @@ import subprocess
 import sys
 
 
+def imported_modules(module_name: str) -> set[str]:
+    program = f"""
+import sys
+import {module_name}
+print('\\n'.join(sorted(sys.modules)))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program], check=False, capture_output=True, text=True
+    )
+    assert completed.returncode == 0, completed.stderr
+    return set(completed.stdout.splitlines())
+
+
 def test_core_imports_do_not_load_optional_qwen_modules() -> None:
     program = r"""
 import importlib.abc
@@ -31,3 +44,9 @@ assert not blocked.intersection(sys.modules)
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_generator_and_invariants_do_not_import_oracle() -> None:
+    assert "silent_cascade.env.oracle" not in imported_modules("silent_cascade.env.generator")
+    assert "silent_cascade.env.oracle" not in imported_modules("silent_cascade.env.invariants")
+    assert "silent_cascade.env.generator" not in imported_modules("silent_cascade.env.invariants")

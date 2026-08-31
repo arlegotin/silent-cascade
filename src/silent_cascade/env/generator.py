@@ -24,6 +24,7 @@ from silent_cascade.env.episode import (
     MatchedEpisodeCoordinate,
     PublicEpisode,
 )
+from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
 from silent_cascade.env.timing import action_window
 from silent_cascade.errors import GenerationError
 from silent_cascade.hashing import canonical_json_bytes
@@ -1090,10 +1091,14 @@ def generate_matched_cohort(
             )
             for candidate, public_id in zip(candidates, public_ids, strict=True)
         )
+        complete_episodes = (episodes[0], episodes[1], episodes[2], episodes[3])
+        for episode in complete_episodes:
+            validate_episode_invariants(episode, config)
+        validate_cohort_invariants(complete_episodes, config)
         return GenerationCohort(
             request=request,
             accepted_attempt=attempt,
-            episodes=(episodes[0], episodes[1], episodes[2], episodes[3]),
+            episodes=complete_episodes,
             seed_tokens=_matched_seed_tokens(request, attempt),
             rejections=tuple(
                 RejectionDiagnostic(reason, count) for reason, count in rejection_counts.items()
