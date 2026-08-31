@@ -573,3 +573,75 @@ def test_non_strict_cohort_failure_marks_every_report_invalid(
     )
     assert all(not report.valid for report in reports)
     assert all("cohort_matching" in report.check_ids for report in reports)
+
+
+def test_validators_reject_uniform_private_distractor_count_corruption(
+    config: Phase1Config,
+    cohort: tuple[EpisodeBundle, EpisodeBundle, EpisodeBundle, EpisodeBundle],
+) -> None:
+    """Recipe counts must equal independently parsed non-reachable LINK records."""
+    from silent_cascade.env.invariants import (
+        validate_cohort_invariants,
+        validate_episode_invariants,
+    )
+
+    corrupted = tuple(
+        _bundle_with(
+            bundle,
+            recipe=replace(
+                bundle.truth.recipe,
+                distractor_link_count=bundle.truth.recipe.distractor_link_count + 1,
+            ),
+        )
+        for bundle in cohort
+    )
+    assert len(corrupted) == 4
+    for bundle in corrupted:
+        with pytest.raises(EpisodeInvariantError):
+            validate_episode_invariants(bundle, config)
+        report = validate_episode_invariants(bundle, config, strict=False)
+        assert not report.valid
+        assert "recipe_distractor_count" in report.check_ids
+    with pytest.raises(EpisodeInvariantError):
+        validate_cohort_invariants(corrupted, config)
+    reports = validate_cohort_invariants(corrupted, config, strict=False)
+    assert all(not report.valid for report in reports)
+    assert all("recipe_distractor_count" in report.check_ids for report in reports)
+    assert all("cohort_matching" in report.check_ids for report in reports)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda bundle: object.__setattr__(bundle.truth.key, "root_seed", -1),
+        lambda bundle: object.__setattr__(bundle.truth.key.coordinate, "cohort_index", -1),
+        lambda bundle: object.__setattr__(bundle.truth.key.coordinate, "member_index", 4),
+        lambda bundle: (
+            object.__setattr__(bundle.truth.recipe, "accepted_attempt", 1_000),
+            object.__setattr__(bundle.truth, "rejection_count", 1_000),
+        ),
+        lambda bundle: (
+            object.__setattr__(bundle.truth.key, "split_namespace", "malformed"),
+            object.__setattr__(bundle.truth.key, "suite", "malformed"),
+            object.__setattr__(bundle.truth.recipe, "evaluation_suite", "malformed"),
+        ),
+    ],
+)
+def test_invalid_persisted_rng_coordinates_raise_safe_typed_invariant_errors(
+    config: Phase1Config,
+    cohort: tuple[EpisodeBundle, EpisodeBundle, EpisodeBundle, EpisodeBundle],
+    mutation: object,
+) -> None:
+    """Corrupted RNG fields must not expose lower-layer validation errors or values."""
+    from silent_cascade.env.invariants import validate_episode_invariants
+
+    assert callable(mutation)
+    bundle = _bundle_with(cohort[0])
+    mutation(bundle)  # type: ignore[operator]
+    with pytest.raises(EpisodeInvariantError) as raised:
+        validate_episode_invariants(bundle, config)
+    assert raised.value.context == {}
+    message = raised.value.message
+    assert "-1" not in message
+    assert "1000" not in message
+    assert "malformed" not in message

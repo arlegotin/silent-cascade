@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from itertools import pairwise
 
-from silent_cascade.env.config import Phase1Config, SuiteName
+from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
     EpisodeBundle,
     EpisodeVariant,
@@ -69,8 +69,16 @@ class _Analysis:
     link_signature: tuple[tuple[int, int], tuple[int, ...], tuple[tuple[int, int], ...]]
 
 
-def _fail(message: str) -> None:
-    raise EpisodeInvariantError(message)
+class _InvariantViolation(EpisodeInvariantError):
+    """Private check marker for stable non-strict reports without error detail."""
+
+    def __init__(self, message: str, check_id: str = "invalid") -> None:
+        super().__init__(message)
+        self.check_id = check_id
+
+
+def _fail(message: str, *, check_id: str = "invalid") -> None:
+    raise _InvariantViolation(message, check_id)
 
 
 def _is_close(left: float, right: float) -> bool:
@@ -188,19 +196,33 @@ def _log_uniform(generator: object, bounds: tuple[float, float]) -> float:
 
 def _expected_member_payloads(
     bundle: EpisodeBundle, config: Phase1Config
-) -> tuple[tuple[object, ...], tuple[float, ...], float]:
+) -> tuple[tuple[object, ...], tuple[float, ...], float, int]:
     """Reconstruct one member using only the stable RNG contract and public types."""
 
     truth = bundle.truth
     key = truth.key
     recipe = truth.recipe
+    coordinate = key.coordinate
     if (
         recipe.evaluation_suite is not key.suite
         or key.generator_version != config.data.generator_version
         or recipe.accepted_attempt != truth.rejection_count
-        or not isinstance(key.coordinate, MatchedEpisodeCoordinate)
+        or not isinstance(key.split_namespace, SplitNamespace)
+        or not isinstance(key.suite, SuiteName)
+        or not isinstance(coordinate, MatchedEpisodeCoordinate)
     ):
-        _fail("private key and recipe provenance disagree")
+        _fail("invalid RNG provenance", check_id="rng_provenance")
+    if (
+        type(key.root_seed) is not int
+        or not 0 <= key.root_seed < 2**128
+        or type(coordinate.cohort_index) is not int
+        or coordinate.cohort_index < 0
+        or type(coordinate.member_index) is not int
+        or coordinate.member_index not in range(4)
+        or type(recipe.accepted_attempt) is not int
+        or not 0 <= recipe.accepted_attempt < 1_000
+    ):
+        _fail("invalid RNG provenance", check_id="rng_provenance")
     path_lengths, delay_bounds, distractor_bounds = _suite_parameters(config, key.suite)
     if recipe.requested_path_length not in path_lengths:
         _fail("requested path length is invalid for the suite")
@@ -270,7 +292,12 @@ def _expected_member_payloads(
     else:
         _fail("episode variant is invalid")
     presentation = _member_generator(bundle, SeedStream.PRESENTATION).permutation(len(facts))
-    return tuple(facts[int(index)] for index in presentation), fact_gaps, activation_gap
+    return (
+        tuple(facts[int(index)] for index in presentation),
+        fact_gaps,
+        activation_gap,
+        distractor_count,
+    )
 
 
 def _require_acyclic_links(links: tuple[ExternalEvent, ...]) -> None:
@@ -331,7 +358,7 @@ def _link_signature(
     )
 
 
-def _invalid_report(bundle: EpisodeBundle) -> InvariantReport:
+def _invalid_report(bundle: EpisodeBundle, check_id: str = "invalid") -> InvariantReport:
     facts = tuple(
         event
         for event in bundle.public.events
@@ -348,7 +375,7 @@ def _invalid_report(bundle: EpisodeBundle) -> InvariantReport:
         reachable_node_count=0,
         reachable_terminal_count=0,
         requested_path_length=getattr(truth.recipe, "requested_path_length", 0),
-        check_ids=("invalid",),
+        check_ids=(check_id,),
     )
 
 
@@ -431,9 +458,21 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         ):
             _fail("every hazard terminal delay must match private episode delay")
 
-    expected_payloads, expected_fact_gaps, expected_activation_gap = _expected_member_payloads(
-        bundle, config
-    )
+    (
+        expected_payloads,
+        expected_fact_gaps,
+        expected_activation_gap,
+        expected_distractor_count,
+    ) = _expected_member_payloads(bundle, config)
+    observed_distractor_count = len(links) - truth.recipe.requested_path_length
+    if (
+        truth.recipe.distractor_link_count != observed_distractor_count
+        or truth.recipe.distractor_link_count != expected_distractor_count
+    ):
+        _fail(
+            "private distractor count disagrees with independently parsed facts",
+            check_id="recipe_distractor_count",
+        )
     if tuple(event.payload for event in facts) != expected_payloads:
         _fail("member presentation provenance disagrees")
     if (
@@ -619,12 +658,12 @@ def validate_episode_invariants(
         raise TypeError("strict must be a bool")
     try:
         return _analyze_episode(bundle, config).report
-    except EpisodeInvariantError:
+    except EpisodeInvariantError as error:
         if strict:
             raise
         if not isinstance(bundle, EpisodeBundle):
             raise
-        return _invalid_report(bundle)
+        return _invalid_report(bundle, getattr(error, "check_id", "invalid"))
 
 
 def validate_cohort_invariants(
