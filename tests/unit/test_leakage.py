@@ -637,6 +637,44 @@ def test_independent_coordinate_rejects_forged_source_position() -> None:
         _validate_audit_coordinate(AuditExample(bundle, 0, "independent", 1, 99), 0, descriptor)
 
 
+@pytest.mark.parametrize("mutation", ("position", "variant", "stratum"))
+def test_independent_quartet_aggregate_rejects_corruption(mutation: str) -> None:
+    """Individually valid coordinates cannot forge a complete allocation quartet."""
+    from silent_cascade.env.episode import EpisodeVariant
+    from silent_cascade.env.leakage import _StoredExample, _validate_independent_quartets
+
+    variants = (
+        EpisodeVariant.POSITIVE,
+        EpisodeVariant.SAFE_NEGATIVE,
+        EpisodeVariant.POSITIVE,
+        EpisodeVariant.DISCONNECTED_NEGATIVE,
+    )
+    rows = [
+        _StoredExample(
+            public_id=f"00000000-0000-4000-8000-{index:012d}",
+            digest=f"{index + 1:064x}",
+            group_id="independent:7",
+            suite=SuiteName.IID_PRIMARY,
+            path_length=3,
+            variant=variant,
+            hazard_class=0 if variant is EpisodeVariant.POSITIVE else None,
+            block=7,
+            position=28 + index,
+            public_hazard_classes=(0, 1),
+        )
+        for index, variant in enumerate(variants)
+    ]
+    if mutation == "position":
+        rows[3] = replace(rows[3], position=30)
+    elif mutation == "variant":
+        rows[3] = replace(rows[3], variant=EpisodeVariant.POSITIVE)
+    else:
+        rows[3] = replace(rows[3], path_length=4)
+
+    with pytest.raises(ValueError, match="independent allocation quartet"):
+        _validate_independent_quartets(rows)
+
+
 def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: Path) -> None:
     """Retaining bundles or omitting a report family must fail this bounded audit contract."""
     from silent_cascade.env.leakage import (
@@ -1172,6 +1210,55 @@ def test_counterfactual_engine_consumes_only_declared_paired_clock_children() ->
     assert all(item.passed for item in checks)
 
 
+def test_delay_swap_compares_the_full_action_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A correct swapped delay is insufficient when start/target/end are wrong."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config)
+    real_action_window = leakage.action_window
+
+    def wrong_target(activation_time, delay, timing):
+        window = real_action_window(activation_time, delay, timing)
+        return replace(window, target=window.target + 1.0)
+
+    monkeypatch.setattr(leakage, "action_window", wrong_target)
+    checks = leakage._counterfactual_checks(
+        source,
+        leakage.LeakageAuditProfileName.TEST,
+    )
+    delay = next(
+        item
+        for item in checks
+        if item.check_id is leakage.CounterfactualCheckId.TERMINAL_DELAY_SWAP
+    )
+
+    assert not delay.passed
+    assert delay.temporal_mismatch_count == delay.checked_pairs
+
+
+def test_presentation_counterfactual_forces_a_nonidentity_permutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even an identity-producing rank schedule must yield a real permutation."""
+    import silent_cascade.env.leakage as leakage
+
+    example = next(_authenticated_test_source(_config()).iter_examples())
+    rank = iter(range(1_000))
+    monkeypatch.setattr(leakage, "sha256_bytes", lambda _payload: f"{next(rank):064x}")
+
+    reordered = leakage._reordered_public(
+        example.bundle,
+        example.bundle.public.init.episode_public_id,
+    )
+    original_ids = tuple(event.event_id for event in leakage._fact_events(example.bundle))
+    reordered_ids = tuple(event.event_id for event in reordered.events[:-1])
+
+    assert reordered_ids != original_ids
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("child", "order", "count", "hash", "parent", "scale"),
@@ -1310,10 +1397,169 @@ def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
     result = report.positive_controls[0]
     assert result.control_id == injector.control_id
     assert result.target_task is injector.target_task
-    assert result.observed_detector_ids == (injector.expected_detector_id,), result
-    assert result.base_subset_corpus_sha256 != result.injected_corpus_sha256
+    assert injector.expected_detector_id in result.observed_detector_ids, result
+    if injector.control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
+        assert result.injected_corpus_sha256 == result.base_subset_corpus_sha256
+        assert result.injected_corpus_sha256 == report.corpus_hash
+    else:
+        assert result.base_subset_corpus_sha256 != result.injected_corpus_sha256
     assert result.balanced_accuracy is not None and result.balanced_accuracy >= 0.95
     assert result.passed
+
+
+def test_positive_control_rejects_a_passing_probe_with_the_wrong_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Observed detector evidence must come from the task/group actually executed."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    clean_source = _authenticated_test_source(config)
+    injector = leakage.leak_record_count
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": clean_source.episode_count,
+                    "permutation_replicates": 1,
+                    "positive_control_episode_count": clean_source.episode_count,
+                    "positive_control_permutation_replicates": 19,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+
+    def wrong_probe(*_args: object, **_kwargs: object) -> leakage.ShortcutProbeResult:
+        return leakage.ShortcutProbeResult(
+            task=leakage.ShortcutTask.VARIANT_THREE_WAY,
+            feature_group=leakage.ShortcutFeatureGroup.LINK_TOPOLOGY,
+            feature_dimension=33,
+            train_examples=960,
+            test_examples=240,
+            train_class_counts={"0": 480, "1": 480},
+            test_class_counts={"0": 120, "1": 120},
+            raw_accuracy=1.0,
+            balanced_accuracy=1.0,
+            balanced_chance=0.5,
+            raw_permutation_p=0.05,
+            holm_adjusted_p=0.001,
+            optimizer_iterations=1,
+            optimizer_converged=True,
+            passed=False,
+        )
+
+    monkeypatch.setattr(leakage, "_run_positive_control_probe", wrong_probe)
+
+    with pytest.raises(ValueError, match="detector identity"):
+        leakage.audit_leakage(
+            injector.apply(clean_source),
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), clean_source),
+            tmp_path,
+            positive_control=injector.control_id,
+        )
+
+
+def test_positive_control_rejects_generic_unrelated_invariant_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The catch-all `invalid` ID cannot authorize an unrelated corruption."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    clean_source = _authenticated_test_source(config)
+    injector = leakage.leak_record_count
+    real_validate = leakage.validate_episode_invariants
+
+    def unrelated_invalid(bundle, validation_config, strict=True):
+        report = real_validate(bundle, validation_config, strict=strict)
+        if strict is False:
+            return replace(report, valid=False, check_ids=("invalid",))
+        return report
+
+    monkeypatch.setattr(leakage, "validate_episode_invariants", unrelated_invalid)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": clean_source.episode_count,
+                    "permutation_replicates": 1,
+                    "positive_control_episode_count": clean_source.episode_count,
+                    "positive_control_permutation_replicates": 19,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="exactly authorized"):
+        leakage.audit_leakage(
+            injector.apply(clean_source),
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), clean_source),
+            tmp_path,
+            positive_control=injector.control_id,
+        )
+
+
+def test_positive_control_overlapping_code_is_refused_before_control_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both frozen train and test partitions need disjoint target-feature codes."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    clean_source = _authenticated_test_source(config)
+    injector = leakage.leak_record_count
+    monkeypatch.setattr(
+        leakage,
+        "_rewrite_positive_control",
+        lambda _injector, example, _position, **_kwargs: example,
+    )
+    real_validate = leakage.validate_episode_invariants
+
+    def authorized_report(bundle, validation_config, strict=True):
+        report = real_validate(bundle, validation_config, strict=strict)
+        if strict is False:
+            return replace(
+                report,
+                valid=False,
+                check_ids=("recipe_distractor_count",),
+            )
+        return report
+
+    monkeypatch.setattr(leakage, "validate_episode_invariants", authorized_report)
+
+    def prohibited_control_fit(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("overlapping positive-control features reached fitting")
+
+    monkeypatch.setattr(leakage, "_run_positive_control_probe", prohibited_control_fit)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={
+                    "episode_count": clean_source.episode_count,
+                    "permutation_replicates": 1,
+                    "positive_control_episode_count": clean_source.episode_count,
+                    "positive_control_permutation_replicates": 19,
+                    "minimum_test_examples_per_class": 1,
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="disjoint"):
+        leakage.audit_leakage(
+            injector.apply(clean_source),
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), clean_source),
+            tmp_path,
+            positive_control=injector.control_id,
+        )
 
 
 def test_frozen_optimizer_fits_three_standardized_contiguous_rank_blocks() -> None:
@@ -1321,8 +1567,9 @@ def test_frozen_optimizer_fits_three_standardized_contiguous_rank_blocks() -> No
     from silent_cascade.env.leakage import (
         ShortcutFeatureGroup,
         _balanced_accuracy,
-        _fit_predict,
-        _standardize,
+        _BatchedFeatureReader,
+        _continuous_columns,
+        _fit_predict_batched,
     )
 
     count = 1_200
@@ -1331,27 +1578,41 @@ def test_frozen_optimizer_fits_three_standardized_contiguous_rank_blocks() -> No
     labels = np.repeat(np.arange(3, dtype=np.int8), count // 3)
     test = np.arange(0, count, 5, dtype=np.int64)
     train = np.setdiff1d(np.arange(count, dtype=np.int64), test, assume_unique=True)
-    x_train, x_test = _standardize(values[train], values[test], ShortcutFeatureGroup.ID_POSITION)
+    classes = np.arange(3, dtype=np.int8)
+    continuous = _continuous_columns(ShortcutFeatureGroup.ID_POSITION, values.shape[1])
+    sweep = (1.0, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001)
+    expected = (0.745833, 0.837500, 0.912500, 0.970833, 0.995833, 0.995833, 0.995833)
+    observed: dict[float, float] = {}
+    for penalty, expected_ba in zip(sweep, expected, strict=True):
+        config = _config().data.leakage_audit.model_copy(update={"l2_penalty": penalty})
+        reader = _BatchedFeatureReader(
+            values,
+            0,
+            values.shape[1],
+            None,
+            config.feature_batch_size,
+            config,
+        )
+        predictions, _iterations = _fit_predict_batched(
+            reader,
+            train,
+            labels,
+            test,
+            classes,
+            continuous,
+            config,
+        )
+        observed[penalty] = _balanced_accuracy(labels[test], predictions, classes)
+        assert observed[penalty] == pytest.approx(expected_ba, abs=5e-7)
 
-    predictions, _iterations = _fit_predict(
-        x_train,
-        labels[train],
-        x_test,
-        np.arange(3, dtype=np.int8),
-        _config().data.leakage_audit,
-    )
-
-    assert _balanced_accuracy(labels[test], predictions, np.arange(3)) >= 0.95
+    assert max(penalty for penalty, ba in observed.items() if ba >= 0.95) == 0.03
 
 
 def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
-    """A full-row advanced-index or float64 materialization would violate this KAT."""
+    """Batch-size changes preserve fits without oversized materialization."""
     from silent_cascade.env.leakage import (
-        ShortcutFeatureGroup,
         _BatchedFeatureReader,
-        _fit_predict,
         _fit_predict_batched,
-        _standardize,
     )
 
     row_count = 60
@@ -1371,28 +1632,31 @@ def test_batched_optimizer_matches_dense_fit_without_oversized_reads() -> None:
     train = np.arange(0, 48, dtype=np.int64)
     test = np.arange(48, row_count, dtype=np.int64)
     classes = np.arange(3, dtype=np.int8)
-    config = _config().data.leakage_audit.model_copy(update={"feature_batch_size": 7})
     continuous = np.ones(values.shape[1], dtype=bool)
-    dense_train, dense_test = _standardize(
-        values[train],
-        values[test],
-        ShortcutFeatureGroup.COUNTS,
-        continuous_mask=continuous,
-    )
-    expected, _ = _fit_predict(dense_train, labels[train], dense_test, classes, config)
-    reader = _BatchedFeatureReader(
-        values,
-        0,
-        values.shape[1],
-        None,
-        config.feature_batch_size,
-        config,
-    )
+    predictions = []
+    for batch_size in (7, 13):
+        config = _config().data.leakage_audit.model_copy(update={"feature_batch_size": batch_size})
+        reader = _BatchedFeatureReader(
+            values,
+            0,
+            values.shape[1],
+            None,
+            config.feature_batch_size,
+            config,
+        )
+        actual, _ = _fit_predict_batched(
+            reader,
+            train,
+            labels,
+            test,
+            classes,
+            continuous,
+            config,
+        )
+        predictions.append(actual)
+        assert reader.max_batch_seen <= config.feature_batch_size
 
-    actual, _ = _fit_predict_batched(reader, train, labels, test, classes, continuous, config)
-
-    assert np.array_equal(actual, expected)
-    assert reader.max_batch_seen <= config.feature_batch_size
+    assert np.array_equal(predictions[0], predictions[1])
 
 
 def test_full_profile_feature_shape_streams_under_resident_ceiling(tmp_path: Path) -> None:

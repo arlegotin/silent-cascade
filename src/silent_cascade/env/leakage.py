@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from itertools import permutations
+from itertools import pairwise, permutations
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Literal, Protocol
@@ -476,6 +476,7 @@ def _rebuild_control_bundle(
     *,
     event_ids: Sequence[int] | None = None,
     activation_time: float | None = None,
+    initial_time: float | None = None,
     public_id: str | None = None,
     relevant_node_path: tuple[int, ...] | None = None,
     hazard_type: int | None = None,
@@ -485,13 +486,14 @@ def _rebuild_control_bundle(
     original_facts = _fact_events(bundle)
     activation = bundle.public.events[-1]
     activation_time = activation.timestamp if activation_time is None else activation_time
+    initial_time = bundle.public.init.initial_time if initial_time is None else initial_time
     ids = tuple(range(len(facts))) if event_ids is None else tuple(event_ids)
     if len(ids) != len(facts) or len(set(ids)) != len(ids):
         raise ValueError("positive-control FACT IDs must be complete and unique")
     if len(facts) == len(original_facts):
         timestamps = tuple(sorted(event.timestamp for event in original_facts))
     else:
-        start = bundle.public.init.initial_time
+        start = initial_time
         timestamps = tuple(
             float(start + (activation_time - start) * (index + 1) / (len(facts) + 1))
             for index in range(len(facts))
@@ -512,6 +514,7 @@ def _rebuild_control_bundle(
     public = PublicEpisode(
         replace(
             bundle.public.init,
+            initial_time=float(initial_time),
             episode_public_id=(
                 bundle.public.init.episode_public_id if public_id is None else public_id
             ),
@@ -570,6 +573,22 @@ def _unused_link(facts: Sequence[ExternalEvent], forbidden_nodes: set[int]) -> L
         for event in facts
         if isinstance(event.payload, LinkFact)
     }
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for source, target in used:
+        adjacency[source].add(target)
+
+    def reaches(source: int, target: int) -> bool:
+        pending = [source]
+        visited: set[int] = set()
+        while pending:
+            node = pending.pop()
+            if node == target:
+                return True
+            if node not in visited:
+                visited.add(node)
+                pending.extend(adjacency[node])
+        return False
+
     for source in range(64):
         for target in range(64):
             if (
@@ -577,6 +596,7 @@ def _unused_link(facts: Sequence[ExternalEvent], forbidden_nodes: set[int]) -> L
                 and source not in forbidden_nodes
                 and target not in forbidden_nodes
                 and (source, target) not in used
+                and not reaches(target, source)
             ):
                 return LinkFact(source, target)
     raise ValueError("positive control cannot allocate an unreachable sentinel LINK")
@@ -589,6 +609,7 @@ def _rewrite_positive_control(
     *,
     encoded_manifest_rank: int | None = None,
     injected_hazard_target: int | None = None,
+    minimum_observation_gap: float = 0.1,
 ) -> AuditExample:
     """Construct one exact declared public control after subset/split freezing."""
     bundle = example.bundle
@@ -602,9 +623,11 @@ def _rewrite_positive_control(
             event.event_id for event in facts if isinstance(event.payload, (HazardFact, SafeFact))
         }
         essential = required | terminals
-        kept = [event for event in facts if event.event_id in essential]
         optional = [event for event in facts if event.event_id not in essential]
-        kept.extend(optional[: max(0, target - len(kept))])
+        retained_ids = essential | {
+            event.event_id for event in optional[: max(0, target - len(essential))]
+        }
+        kept = [event for event in facts if event.event_id in retained_ids]
         forbidden = set(bundle.truth.relevant_node_path)
         while len(kept) < target:
             payload = _unused_link(kept, forbidden)
@@ -616,7 +639,16 @@ def _rewrite_positive_control(
                     payload,
                 )
             )
-        bundle = _rebuild_control_bundle(bundle, kept[:target])
+        padded_gap = minimum_observation_gap * 1.001
+        control_initial_time = min(
+            bundle.public.init.initial_time,
+            bundle.public.events[-1].timestamp - padded_gap * (target + 1),
+        )
+        bundle = _rebuild_control_bundle(
+            bundle,
+            kept[:target],
+            initial_time=control_initial_time,
+        )
     elif injector.control_id == "PC_ACTIVATION_GAP_BY_LABEL":
         bundle = _rebuild_control_bundle(
             bundle,
@@ -630,15 +662,25 @@ def _rewrite_positive_control(
         codes = ((0, 1, 2), (0, 2, 1), (2, 0, 1))
         selected = [terminals[index] for index in codes[variant_index]]
         selected.extend(event for event in facts if event not in terminals)
+        if tuple(event.payload for event in selected) == tuple(event.payload for event in facts):
+            link_positions = [
+                index for index, event in enumerate(selected) if isinstance(event.payload, LinkFact)
+            ]
+            left, right = link_positions[:2]
+            selected[left], selected[right] = selected[right], selected[left]
         bundle = _rebuild_control_bundle(bundle, selected)
     elif injector.control_id == "PC_ACTIVATION_ID_BY_LABEL":
         activation = bundle.public.events[-1]
         assert isinstance(activation.payload, ActivationPayload)
         target = 0 if positive else 63
         source = activation.payload.start_node
+        swaps = {source: target, target: source}
+        if source == target:
+            left, right = bundle.truth.relevant_node_path[1:3]
+            swaps.update({left: right, right: left})
 
         def remap(value: int) -> int:
-            return target if value == source else (source if value == target else value)
+            return swaps.get(value, value)
 
         rewritten = []
         for event in facts:
@@ -719,7 +761,6 @@ def _rewrite_positive_control(
             )
             for event in hazards
         ]
-        forbidden = set(bundle.truth.relevant_node_path)
         sentinel = next(
             (
                 event
@@ -730,13 +771,7 @@ def _rewrite_positive_control(
             None,
         )
         if sentinel is None:
-            sentinel = ExternalEvent(
-                max(event.event_id for event in facts) + 1,
-                facts[-1].timestamp,
-                ExternalEventKind.FACT,
-                _unused_link(facts, forbidden),
-            )
-            facts.append(sentinel)
+            sentinel = next(event for event in facts if isinstance(event.payload, LinkFact))
         replaced = {event.event_id: event for event in rewritten_hazards}
         facts = [replaced.get(event.event_id, event) for event in facts]
         safe = next(event for event in facts if isinstance(event.payload, SafeFact))
@@ -1353,6 +1388,29 @@ def _validate_audit_coordinate(
         or coordinate.episode_index != example.episode_position
     ):
         raise ValueError("independent audit coordinate is not authenticated")
+
+
+def _validate_independent_quartets(rows: Sequence[_StoredExample]) -> None:
+    by_block: dict[int, list[_StoredExample]] = defaultdict(list)
+    for row in rows:
+        by_block[row.block].append(row)
+    expected_variants = Counter(
+        (
+            EpisodeVariant.POSITIVE,
+            EpisodeVariant.POSITIVE,
+            EpisodeVariant.SAFE_NEGATIVE,
+            EpisodeVariant.DISCONNECTED_NEGATIVE,
+        )
+    )
+    for block, quartet in by_block.items():
+        if (
+            len(quartet) != 4
+            or {row.position for row in quartet} != set(range(block * 4, block * 4 + 4))
+            or Counter(row.variant for row in quartet) != expected_variants
+            or len({(row.suite, row.path_length) for row in quartet}) != 1
+            or {row.group_id for row in quartet} != {f"independent:{block}"}
+        ):
+            raise ValueError("independent allocation quartet is incomplete or corrupted")
 
 
 def _matched_nuisance_signature(bundle: EpisodeBundle) -> tuple[object, ...]:
@@ -1985,56 +2043,6 @@ def _run_probes(
     return _holm(probes, config.alpha)
 
 
-def _fit_predict(
-    x_train: np.ndarray,
-    labels: np.ndarray,
-    x_test: np.ndarray,
-    classes: np.ndarray,
-    config: LeakageAuditConfig,
-) -> tuple[np.ndarray, int]:
-    targets = np.searchsorted(classes, labels)
-    n_features, n_classes = x_train.shape[1], len(classes)
-    counts = np.bincount(targets, minlength=n_classes).astype(np.float64)
-    if np.any(counts == 0):
-        raise ValueError("optimizer received a missing class")
-    weights = 1.0 / counts[targets]
-    weights /= weights.sum()
-    eye = np.eye(n_classes)
-
-    def objective(flat: np.ndarray) -> tuple[float, np.ndarray]:
-        coefficients = flat[: n_features * n_classes].reshape(n_features, n_classes)
-        intercept = flat[n_features * n_classes :]
-        logits = x_train @ coefficients + intercept
-        log_probs = logits - logsumexp(logits, axis=1, keepdims=True)
-        residual = (np.exp(log_probs) - eye[targets]) * weights[:, None]
-        return float(
-            -np.sum(weights * log_probs[np.arange(len(labels)), targets])
-            + 0.5 * config.l2_penalty * np.sum(coefficients * coefficients)
-        ), np.concatenate(
-            (
-                (x_train.T @ residual + config.l2_penalty * coefficients).ravel(),
-                residual.sum(axis=0),
-            )
-        )
-
-    result = minimize(
-        objective,
-        np.zeros(n_features * n_classes + n_classes),
-        jac=True,
-        method="L-BFGS-B",
-        options={
-            "maxiter": config.optimizer_max_iterations,
-            "gtol": config.optimizer_gradient_tolerance,
-            "ftol": config.optimizer_function_tolerance,
-        },
-    )
-    if not result.success or not np.isfinite(result.x).all():
-        raise ValueError("leakage logistic optimizer failed")
-    coefficients = result.x[: n_features * n_classes].reshape(n_features, n_classes)
-    intercept = result.x[n_features * n_classes :]
-    return classes[np.argmax(x_test @ coefficients + intercept, axis=1)], int(result.nit)
-
-
 class _CounterfactualResultBuilder:
     """Accumulate one canonical counterfactual result without retaining its pairs."""
 
@@ -2120,6 +2128,8 @@ def _reordered_public(bundle: EpisodeBundle, seed: str) -> PublicEpisode:
             )
         ),
     )
+    if order == list(range(len(facts))):
+        order = [*order[1:], order[0]]
     sorted_times = sorted(event.timestamp for event in facts)
     reordered = tuple(
         ExternalEvent(
@@ -2187,6 +2197,37 @@ def _normalized_windows_equal(left: EpisodeBundle, right: EpisodeBundle) -> bool
     return all(
         math.isclose(left_value, right_value, rel_tol=0.0, abs_tol=1.0e-12)
         for left_value, right_value in zip(left_values, right_values, strict=True)
+    )
+
+
+def _swapped_action_window_matches(
+    bundle: EpisodeBundle,
+    public: PublicEpisode,
+    expected_delay: float,
+) -> bool:
+    solved = solve_public_episode(public)
+    if solved.public_delay is None or not math.isclose(
+        solved.public_delay,
+        expected_delay,
+        rel_tol=0.0,
+        abs_tol=1.0e-12,
+    ):
+        return False
+    activation = public.events[-1].timestamp
+    timing = bundle.truth.recipe.oracle_timing
+    observed = action_window(activation, solved.public_delay, timing)
+    expected = (
+        activation + timing.action_window_start_fraction * expected_delay,
+        activation + timing.action_target_fraction * expected_delay,
+        activation + timing.action_window_end_fraction * expected_delay,
+    )
+    return all(
+        math.isclose(actual, wanted, rel_tol=0.0, abs_tol=1.0e-12)
+        for actual, wanted in zip(
+            (observed.start, observed.target, observed.end),
+            expected,
+            strict=True,
+        )
     )
 
 
@@ -2284,12 +2325,8 @@ def _counterfactual_checks(
                 pending_positive[key] = example
             else:
                 partner_solution = solve_public_episode(partner.bundle.public)
-                left = solve_public_episode(
-                    _with_terminal_delay(bundle, partner_solution.public_delay)
-                )
-                right = solve_public_episode(
-                    _with_terminal_delay(partner.bundle, original.public_delay)
-                )
+                left_public = _with_terminal_delay(bundle, partner_solution.public_delay)
+                right_public = _with_terminal_delay(partner.bundle, original.public_delay)
                 delay_builder.add(
                     CounterfactualPairResult(
                         pair_key_sha256=counterfactual_pair_key(
@@ -2301,18 +2338,21 @@ def _counterfactual_checks(
                             "swap_terminal_delay",
                         ),
                         decision_mismatch=(
-                            _decision_signature(
-                                _with_terminal_delay(bundle, partner_solution.public_delay)
-                            )
-                            != _decision_signature(bundle.public)
-                            or _decision_signature(
-                                _with_terminal_delay(partner.bundle, original.public_delay)
-                            )
+                            _decision_signature(left_public) != _decision_signature(bundle.public)
+                            or _decision_signature(right_public)
                             != _decision_signature(partner.bundle.public)
                         ),
                         temporal_mismatch=(
-                            left.public_delay != partner_solution.public_delay
-                            or right.public_delay != original.public_delay
+                            not _swapped_action_window_matches(
+                                bundle,
+                                left_public,
+                                partner_solution.public_delay,
+                            )
+                            or not _swapped_action_window_matches(
+                                partner.bundle,
+                                right_public,
+                                original.public_delay,
+                            )
                         ),
                     )
                 )
@@ -2463,6 +2503,7 @@ def _run_positive_control_probe(
     train: np.ndarray,
     test: np.ndarray,
     injector: NamedLeakInjector,
+    group: ShortcutFeatureGroup,
     config: LeakageAuditConfig,
     profile: object,
     injected_hash: str,
@@ -2488,16 +2529,16 @@ def _run_positive_control_probe(
     )
     if len(classes) != expected_classes:
         raise ValueError("positive-control target is missing a class")
-    group = ShortcutFeatureGroup(injector.expected_detector_id.split(":", 1)[1])
+    start, stop = _feature_bounds(group)
     allowed: np.ndarray | None = None
-    continuous = _continuous_columns(group, values.shape[1])
+    continuous = _continuous_columns(group, stop - start)
     if injector.target_task is ShortcutTask.POSITIVE_HAZARD_CLASS:
         allowed = ~_hazard_identity_columns(group)
         continuous = continuous[allowed]
     reader = _BatchedFeatureReader(
         values,
-        0,
-        values.shape[1],
+        start,
+        stop,
         allowed,
         config.feature_batch_size,
         config,
@@ -2542,31 +2583,138 @@ def _run_positive_control_probe(
         balanced_accuracy=observed,
         balanced_chance=1.0 / len(classes),
         raw_permutation_p=raw_p,
-        holm_adjusted_p=min(1.0, 27 * raw_p),
+        holm_adjusted_p=1.0,
         optimizer_iterations=iterations,
         optimizer_converged=True,
         passed=False,
     )
 
 
-_AUTHORIZED_CONTROL_FAILURE_IDS: dict[str, frozenset[str]] = {
-    control_id: frozenset({"invalid"})
-    for control_id in (
-        "PC_COUNT_BY_LABEL",
-        "PC_ACTIVATION_GAP_BY_LABEL",
-        "PC_TERMINAL_ORDER_BY_VARIANT",
-        "PC_ACTIVATION_ID_BY_LABEL",
-        "PC_RECORD_ID_BY_VARIANT",
-        "PC_DELAY_BY_LABEL",
-        "PC_HAZARD_LAYOUT_BY_CLASS",
-    )
+_EXPECTED_CONTROL_FAILURE_ID: dict[str, str | None] = {
+    "PC_COUNT_BY_LABEL": "recipe_distractor_count",
+    "PC_ACTIVATION_GAP_BY_LABEL": "timing_provenance",
+    "PC_TERMINAL_ORDER_BY_VARIANT": "presentation_provenance",
+    "PC_ACTIVATION_ID_BY_LABEL": "node_permutation_provenance",
+    "PC_RECORD_ID_BY_VARIANT": "record_identity",
+    "PC_PUBLIC_ID_BY_LABEL": None,
+    "PC_DELAY_BY_LABEL": "presentation_provenance",
+    "PC_HAZARD_LAYOUT_BY_CLASS": "presentation_provenance",
+    "PC_MANIFEST_ORDER_BY_VARIANT": None,
 }
-_AUTHORIZED_CONTROL_FAILURE_IDS["PC_HAZARD_LAYOUT_BY_CLASS"] = frozenset(
-    {"invalid", "recipe_distractor_count"}
-)
-_AUTHORIZED_CONTROL_FAILURE_IDS["PC_COUNT_BY_LABEL"] = frozenset(
-    {"invalid", "recipe_distractor_count"}
-)
+
+
+def _expected_control_failure_id(injector: NamedLeakInjector, row: _StoredExample) -> str | None:
+    if (
+        injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
+        and row.variant is not EpisodeVariant.POSITIVE
+    ):
+        return None
+    return _EXPECTED_CONTROL_FAILURE_ID[injector.control_id]
+
+
+def _control_code(
+    values: np.ndarray,
+    row: _StoredExample,
+    injector: NamedLeakInjector,
+) -> object:
+    """Read only the exact predeclared disjoint code from one targeted view."""
+    group = ShortcutFeatureGroup(injector.expected_detector_id.split(":", 1)[1])
+    start, stop = _feature_bounds(group)
+    view = values[start:stop]
+    control_id = injector.control_id
+    if control_id == "PC_COUNT_BY_LABEL":
+        return float(view[0])
+    if control_id == "PC_ACTIVATION_GAP_BY_LABEL":
+        return float(view[-1])
+    if control_id == "PC_TERMINAL_ORDER_BY_VARIANT":
+        return tuple(int(np.argmax(view[slot * 12 + 1 : slot * 12 + 4])) for slot in range(3))
+    if control_id == "PC_ACTIVATION_ID_BY_LABEL":
+        return int(np.argmax(view[:64]))
+    if control_id == "PC_RECORD_ID_BY_VARIANT":
+        return float(view[11])
+    if control_id == "PC_PUBLIC_ID_BY_LABEL":
+        return float(view[0])
+    if control_id == "PC_DELAY_BY_LABEL":
+        return tuple(float(value) for value in view[4:6])
+    if control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
+        return next(
+            slot for slot in range(4) if int(np.argmax(view[slot * 12 + 1 : slot * 12 + 4])) == 2
+        )
+    if control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
+        return float(view[-1])
+    raise ValueError("unknown positive-control code")
+
+
+def _expected_control_code(row: _StoredExample, injector: NamedLeakInjector) -> object:
+    variant_index = list(EpisodeVariant).index(row.variant)
+    if injector.control_id == "PC_COUNT_BY_LABEL":
+        return (48 if row.variant is EpisodeVariant.POSITIVE else 56) / 64.0
+    if injector.control_id == "PC_ACTIVATION_GAP_BY_LABEL":
+        return math.log1p(1.0 if row.variant is EpisodeVariant.POSITIVE else 4.0)
+    if injector.control_id == "PC_TERMINAL_ORDER_BY_VARIANT":
+        return ((1, 1, 2), (1, 2, 1), (2, 1, 1))[variant_index]
+    if injector.control_id == "PC_ACTIVATION_ID_BY_LABEL":
+        return 0 if row.variant is EpisodeVariant.POSITIVE else 63
+    if injector.control_id == "PC_RECORD_ID_BY_VARIANT":
+        return (0, 128, 256)[variant_index] / 63.0
+    if injector.control_id == "PC_PUBLIC_ID_BY_LABEL":
+        return 0.0 if row.variant is EpisodeVariant.POSITIVE else 1.0
+    if injector.control_id == "PC_DELAY_BY_LABEL":
+        encoded = math.log1p(1.0 if row.variant is EpisodeVariant.POSITIVE else 1024.0)
+        return (encoded, encoded)
+    if injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS":
+        if row.hazard_class is None:
+            raise ValueError("hazard-layout positive row has no target")
+        return row.hazard_class
+    raise ValueError("manifest-order codes use ordered disjoint intervals")
+
+
+def _control_codes_equal(actual: object, expected: object) -> bool:
+    if isinstance(actual, float) and isinstance(expected, float):
+        return math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-6)
+    if isinstance(actual, tuple) and isinstance(expected, tuple):
+        return len(actual) == len(expected) and all(
+            _control_codes_equal(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _require_control_feature_disjointness(
+    values: np.ndarray,
+    rows: Sequence[_StoredExample],
+    indices: np.ndarray,
+    injector: NamedLeakInjector,
+    split_name: str,
+) -> None:
+    eligible = [
+        int(index)
+        for index in indices
+        if injector.target_task is not ShortcutTask.POSITIVE_HAZARD_CLASS
+        or rows[int(index)].variant is EpisodeVariant.POSITIVE
+    ]
+    if not eligible:
+        raise ValueError(f"positive-control {split_name} target features are not disjoint")
+    by_label: dict[int, set[object]] = defaultdict(set)
+    labels = _task_labels(rows, injector.target_task)
+    for index in eligible:
+        code = _control_code(values[index], rows[index], injector)
+        by_label[int(labels[index])].add(code)
+        if injector.control_id != "PC_MANIFEST_ORDER_BY_VARIANT" and not _control_codes_equal(
+            code,
+            _expected_control_code(rows[index], injector),
+        ):
+            raise ValueError(f"positive-control {split_name} target features are not disjoint")
+    if len(by_label) not in {2, 3, 4} or any(
+        left & right
+        for left_label, left in by_label.items()
+        for right_label, right in by_label.items()
+        if left_label < right_label
+    ):
+        raise ValueError(f"positive-control {split_name} target features are not disjoint")
+    if injector.control_id == "PC_MANIFEST_ORDER_BY_VARIANT":
+        ordered = [by_label[label] for label in sorted(by_label)]
+        if any(max(left) >= min(right) for left, right in pairwise(ordered)):
+            raise ValueError(f"positive-control {split_name} target features are not disjoint")
 
 
 def _execute_positive_control(
@@ -2599,11 +2747,12 @@ def _execute_positive_control(
     )
     encoded_ranks = {index: rank for rank, index in enumerate(manifest_order)}
     global_to_local = {global_index: local for local, global_index in enumerate(selected)}
-    group = ShortcutFeatureGroup(injector.expected_detector_id.split(":", 1)[1])
-    width = _FEATURE_DIMENSIONS[list(ShortcutFeatureGroup).index(group)]
     control_path = work / "positive-control.f32"
     control_values = np.memmap(
-        control_path, dtype=np.float32, mode="w+", shape=(len(selected), width)
+        control_path,
+        dtype=np.float32,
+        mode="w+",
+        shape=(len(selected), _TOTAL_FEATURE_DIMENSION),
     )
     control_rows: list[_StoredExample] = []
     injected_entries: list[CorpusDigestEntry | None] = [None] * len(selected)
@@ -2621,20 +2770,25 @@ def _execute_positive_control(
                 local,
                 encoded_manifest_rank=encoded_ranks[local],
                 injected_hazard_target=hazard_targets.get(local),
+                minimum_observation_gap=validation_config.data.observation_gap_log_uniform[0],
             )
             report = validate_episode_invariants(
                 transformed.bundle, validation_config, strict=False
             )
-            authorized_failures = _AUTHORIZED_CONTROL_FAILURE_IDS.get(
-                injector.control_id, frozenset()
+            expected_failure = _expected_control_failure_id(injector, selected_rows[local])
+            actual_failure = (
+                None
+                if report.valid
+                else (report.check_ids[0] if len(report.check_ids) == 1 else "multiple")
             )
-            if not report.valid and not set(report.check_ids).issubset(authorized_failures):
+            if actual_failure != expected_failure:
                 raise ValueError(
                     "positive-control construction failure was not exactly authorized: "
-                    f"{injector.control_id} valid={report.valid} checks={report.check_ids}"
+                    f"{injector.control_id} expected={expected_failure} "
+                    f"actual={actual_failure}"
                 )
             feature_set = extract_shortcut_features(transformed, len(selected))
-            control_values[local] = feature_set.vectors[group]
+            control_values[local] = feature_set.vectors[ShortcutFeatureGroup.COMBINED]
             bundle = transformed.bundle
             digest = episode_sha256(bundle)
             injected_entries[local] = CorpusDigestEntry(
@@ -2665,46 +2819,61 @@ def _execute_positive_control(
             raise ValueError("positive-control source regeneration is incomplete")
         control_values.flush()
         injected_digest = CorpusHashBuilder(len(selected))
-        digest_order = (
-            manifest_order
-            if injector.control_id == "PC_MANIFEST_ORDER_BY_VARIANT"
-            else range(len(selected))
-        )
-        for local in digest_order:
+        for local in range(len(selected)):
             entry = injected_entries[local]
             if entry is None:
                 raise ValueError("positive-control injected digest is incomplete")
             injected_digest.add(entry)
         injected_hash = injected_digest.finalize()
-        probe = _run_positive_control_probe(
-            control_values,
-            control_rows,
-            train,
-            test,
-            injector,
-            config,
-            profile,
-            injected_hash,
+        _require_control_feature_disjointness(
+            control_values, control_rows, train, injector, "train"
         )
+        _require_control_feature_disjointness(control_values, control_rows, test, injector, "test")
+        probes: list[ShortcutProbeResult] = []
+        for group in ShortcutFeatureGroup:
+            probe = _run_positive_control_probe(
+                control_values,
+                control_rows,
+                train,
+                test,
+                injector,
+                group,
+                config,
+                profile,
+                injected_hash,
+            )
+            if probe.task is not injector.target_task or probe.feature_group is not group:
+                raise ValueError("positive-control detector identity was not actually observed")
+            probes.append(probe)
+        probes = _holm(probes, config.alpha)
     finally:
         del control_values
         control_path.unlink(missing_ok=True)
     full_gate = profile.enforce_clean_statistical_gate
-    passed = (
-        probe.balanced_accuracy >= config.positive_control_min_balanced_accuracy
+    observed = tuple(
+        f"{probe.task.value}:{probe.feature_group.value}"
+        for probe in probes
+        if probe.balanced_accuracy >= config.positive_control_min_balanced_accuracy
         and probe.raw_permutation_p <= 0.05
         and (not full_gate or probe.holm_adjusted_p < config.alpha)
     )
+    expected_group = ShortcutFeatureGroup(injector.expected_detector_id.split(":", 1)[1])
+    expected_probe = next(
+        probe
+        for probe in probes
+        if probe.task is injector.target_task and probe.feature_group is expected_group
+    )
+    passed = injector.expected_detector_id in observed
     return PositiveControlResult(
         control_id=injector.control_id,
         target_task=injector.target_task,
         expected_detector_id=injector.expected_detector_id,
-        observed_detector_ids=((injector.expected_detector_id,) if passed else ()),
+        observed_detector_ids=observed,
         base_subset_corpus_sha256=clean_hash,
         injected_corpus_sha256=injected_hash,
         split_membership_sha256=split_hash,
-        balanced_accuracy=probe.balanced_accuracy,
-        holm_adjusted_p=probe.holm_adjusted_p,
+        balanced_accuracy=expected_probe.balanced_accuracy,
+        holm_adjusted_p=expected_probe.holm_adjusted_p,
         passed=passed,
     )
 
@@ -2838,6 +3007,8 @@ def audit_leakage(
         del feature_buffer
         if source.descriptor.generation_mode == "matched":
             flush_matched_group()
+        else:
+            _validate_independent_quartets(rows)
         corpus_hash = digest.finalize()
         if source_manifest.finalize() != authentication.source_manifest_sha256:
             raise ValueError("audit source order or membership differs from authentication")

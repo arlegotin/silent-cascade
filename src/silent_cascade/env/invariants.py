@@ -387,7 +387,10 @@ def _expected_member_payloads(
     )
     relabel = {canonical: permutation[canonical] for canonical in range(64)}
     if truth.relevant_node_path != tuple(relabel[node] for node in relevant_nodes):
-        _fail("member node permutation provenance disagrees")
+        _fail(
+            "member node permutation provenance disagrees",
+            check_id="node_permutation_provenance",
+        )
     facts: list[object] = [
         LinkFact(relabel[source], relabel[target]) for source, target in pairwise(relevant_nodes)
     ]
@@ -1017,7 +1020,7 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         if not isinstance(event, ExternalEvent) or event.kind is not ExternalEventKind.FACT:
             _fail("all pre-activation events must be FACT events")
         if event.event_id != expected_id:
-            _fail("FACT IDs must be contiguous")
+            _fail("FACT IDs must be contiguous", check_id="record_identity")
         timestamp = _require_finite_float(event.timestamp, "FACT timestamp")
         if timestamp <= previous_time:
             _fail("FACT timestamps must be strictly increasing")
@@ -1035,7 +1038,7 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         else:
             terminals.append(event)
     if activation.event_id != len(facts):
-        _fail("activation ID must follow FACT IDs")
+        _fail("activation ID must follow FACT IDs", check_id="record_identity")
     activation_time = _require_finite_float(activation.timestamp, "activation timestamp")
     if activation_time <= previous_time:
         _fail("activation timestamp must follow FACT timestamps")
@@ -1102,7 +1105,7 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
             check_id="recipe_distractor_count",
         )
     if tuple(event.payload for event in facts) != expected_payloads:
-        _fail("member presentation provenance disagrees")
+        _fail("member presentation provenance disagrees", check_id="presentation_provenance")
     if (
         len(fact_gaps) != len(expected_fact_gaps)
         or any(
@@ -1111,7 +1114,7 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
         )
         or not _is_close(activation_gap, expected_activation_gap)
     ):
-        _fail("member timing provenance disagrees")
+        _fail("member timing provenance disagrees", check_id="timing_provenance")
 
     if truth.key.suite in (_PRIMARY_SUITES | _STRUCTURAL_STRESS_SUITES) - {
         SuiteName.CONTRADICTION_STRESS
