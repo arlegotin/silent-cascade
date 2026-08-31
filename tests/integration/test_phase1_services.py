@@ -21,10 +21,20 @@ from silent_cascade.provenance import (
 
 def test_inspection_request_requires_exactly_one_selector() -> None:
     """Changing selector validation would allow an ambiguous private inspection."""
+    from uuid import UUID
+
     from silent_cascade.env.services import ConfigSelection, InspectEpisodeRequest
 
     with pytest.raises(ValueError, match="select exactly one"):
         InspectEpisodeRequest(config=ConfigSelection(), manifest_path=Path("manifest.json"))
+
+    with pytest.raises(ValueError, match="select exactly one"):
+        InspectEpisodeRequest(
+            config=ConfigSelection(),
+            manifest_path=Path("manifest.json"),
+            episode_public_id=UUID("00000000-0000-4000-8000-000000000001"),
+            entry_index=0,
+        )
 
 
 def test_freeze_with_test_dependencies_publishes_immutable_report(tmp_path: Path) -> None:
@@ -151,6 +161,61 @@ def test_service_dependency_identity_and_test_size_bounds_are_sealed() -> None:
             _require_service_dependencies(invalid)
 
 
+def test_default_freeze_selects_the_sealed_production_adapter_without_running_task18(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The 10,000 adapter identity is covered without executing the Task 18 corpus."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.generator import VALIDATION_ALLOCATION
+    from silent_cascade.env.services import ConfigSelection, FreezeValidationRequest
+
+    observed: list[tuple[Phase1Config, EvidenceProvenance, int, int]] = []
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        resolved = args[0]
+        return _provenance(allocation_id="validation-v1").model_copy(
+            update={
+                "split_namespace": SplitNamespace.VALIDATION,
+                "config_sha256": resolved.sha256,  # type: ignore[attr-defined]
+                "root_seed": kwargs["root_seed"],
+                "public_id_seed_sha256": public_id_seed_sha256(kwargs["public_id_seed"]),
+            }
+        )
+
+    def stop_at_adapter(
+        config: Phase1Config,
+        provenance: EvidenceProvenance,
+        root_seed: int,
+        public_id_seed: int,
+    ) -> object:
+        observed.append((config, provenance, root_seed, public_id_seed))
+        raise RuntimeError("production adapter selected")
+
+    monkeypatch.setattr(
+        services,
+        "PRODUCTION_DEPENDENCIES",
+        replace(
+            services.PRODUCTION_DEPENDENCIES,
+            validation_allocation=VALIDATION_ALLOCATION,
+            collect_provenance=collect,
+            build_manifest=stop_at_adapter,
+        ),
+    )
+    with pytest.raises(RuntimeError, match="production adapter selected"):
+        services.freeze_validation(
+            FreezeValidationRequest(
+                config=ConfigSelection(),
+                output_path=tmp_path / "production-spy.json",
+                episode_count=10_000,
+                root_seed=41,
+                public_id_seed=91,
+            )
+        )
+    assert len(observed) == 1
+    assert observed[0][2:] == (41, 91)
+
+
 def test_request_models_reject_unknown_source_modes_and_ambiguous_selectors() -> None:
     """Permissive request parsing would let invalid mode combinations reach generation."""
     from silent_cascade.env.services import ConfigSelection, OracleEvaluationRequest
@@ -212,8 +277,88 @@ def test_debug_inspection_can_include_oracle_without_private_truth(tmp_path: Pat
     assert "truth" not in report.model_dump_json()
 
 
+def test_validation_inspection_is_authorized_but_frozen_access_survives_rename(
+    tmp_path: Path,
+) -> None:
+    """Access authority comes from authenticated content, never a copied filename."""
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        InspectEpisodeRequest,
+        Phase1ServiceDependencies,
+        inspect_episode,
+    )
+    from silent_cascade.errors import ManifestAccessError
+    from silent_cascade.logging.manifest import publish_manifest
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_allocation(),
+        independent_allocation=_independent_allocation(8),
+        collect_provenance=lambda *args, **kwargs: _provenance(),
+        build_manifest=lambda *args: pytest.fail("not used"),
+    )
+    validation = _small_access_manifest(
+        SplitNamespace.VALIDATION,
+        ManifestAccessClass.VALIDATION,
+        "validation-v1",
+        SuiteName.VALIDATION,
+    )
+    validation_path = tmp_path / "validation-copy.json"
+    publish_manifest(validation_path, validation)
+    authorized = inspect_episode(
+        InspectEpisodeRequest(
+            config=ConfigSelection(),
+            manifest_path=validation_path,
+            entry_index=0,
+            include_oracle=True,
+        ),
+        deps=deps,
+    )
+    assert authorized.oracle is not None
+    assert authorized.access_class is ManifestAccessClass.VALIDATION
+    assert "truth" not in authorized.model_dump_json()
+
+    frozen = _small_access_manifest(
+        SplitNamespace.FROZEN,
+        ManifestAccessClass.FROZEN_TEST,
+        "frozen-task16-v1",
+        SuiteName.IID_PRIMARY,
+    )
+    renamed = tmp_path / "harmless-debug-name.json"
+    publish_manifest(renamed, frozen)
+    public_only = inspect_episode(
+        InspectEpisodeRequest(config=ConfigSelection(), manifest_path=renamed, entry_index=0),
+        deps=deps,
+    )
+    serialized = public_only.model_dump_json()
+    assert public_only.oracle is None
+    assert public_only.access_class is ManifestAccessClass.FROZEN_TEST
+    assert all(
+        sentinel not in serialized
+        for sentinel in (
+            "truth",
+            "root_seed",
+            "public_id_seed",
+            "accepted_attempt",
+            "rejection",
+            "action_target",
+        )
+    )
+    with pytest.raises(ManifestAccessError, match="forbidden"):
+        inspect_episode(
+            InspectEpisodeRequest(
+                config=ConfigSelection(),
+                manifest_path=renamed,
+                entry_index=0,
+                include_oracle=True,
+            ),
+            deps=deps,
+        )
+
+
 def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None:
     """Removing per-episode verification would let a corrupt generated bundle enter evidence."""
+    from scipy.stats import binomtest
+
     from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
     from silent_cascade.env.services import (
         ConfigSelection,
@@ -254,20 +399,66 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
         collect_provenance=collect,
         build_manifest=lambda *args: pytest.fail("not used"),
     )
-    result = evaluate_oracle(
-        OracleEvaluationRequest(
-            config=ConfigSelection(),
-            source=Phase1GateCorpusSource(
-                allocation_id=independent.allocation_id, root_seed=41, public_id_seed=91
-            ),
-            output_path=tmp_path / "oracle.json",
+    output = tmp_path / "oracle.json"
+    request = OracleEvaluationRequest(
+        config=ConfigSelection(),
+        source=Phase1GateCorpusSource(
+            allocation_id=independent.allocation_id, root_seed=41, public_id_seed=91
         ),
-        deps=deps,
+        output_path=output,
     )
+    result = evaluate_oracle(request, deps=deps)
+    saved = output.read_bytes()
+    reused = evaluate_oracle(request, deps=deps)
 
     assert result.report.verified_episode_count == 12
     assert result.report.oracle_successes == 12
     assert result.report.corpus_sha256
+    assert result.report.provenance.foundation_model_calls == 0
+    assert result.report.provenance.analysis_source.scope == "phase1_analysis"
+    assert "src/silent_cascade/env/services.py" in result.report.provenance.analysis_source.paths
+    assert "src/silent_cascade/env/leakage.py" in result.report.provenance.analysis_source.paths
+    assert result.report.random_positive.total == result.report.positive_count
+    assert result.report.random_positive.expected_rate == 0.125
+    assert result.report.random_positive.exact_binomial_p == pytest.approx(
+        binomtest(
+            result.report.random_positive.successes,
+            result.report.positive_count,
+            0.125,
+            alternative="two-sided",
+        ).pvalue
+    )
+    negative_count = result.report.safe_negative_count + result.report.disconnected_negative_count
+    assert result.report.random_negative.total == negative_count
+    assert result.report.random_negative.expected_rate == 0.5
+    assert result.report.random_negative.exact_binomial_p == pytest.approx(
+        binomtest(
+            result.report.random_negative.successes,
+            negative_count,
+            0.5,
+            alternative="two-sided",
+        ).pvalue
+    )
+    assert result.report.random_pooled_expected_rate == 0.3125
+    assert result.report.generation_attempt_count == (
+        result.report.verified_episode_count + result.report.rejected_draw_count
+    )
+    assert sum(result.report.rejection_reason_counts.values()) == result.report.rejected_draw_count
+    assert result.report.rejected_draw_rate == pytest.approx(
+        result.report.rejected_draw_count / result.report.generation_attempt_count
+    )
+    assert reused.publication is not None and reused.publication.created is False
+    assert output.read_bytes() == saved
+    divergent = request.model_copy(
+        update={
+            "config": ConfigSelection(
+                set_overrides=("data.leakage_audit.test.permutation_replicates=1",)
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="different immutable report"):
+        evaluate_oracle(divergent, deps=deps)
+    assert output.read_bytes() == saved
 
 
 def test_oracle_refuses_episode_outside_the_bound_allocation_before_publication(
@@ -306,6 +497,143 @@ def test_oracle_refuses_episode_outside_the_bound_allocation_before_publication(
             deps=_oracle_dependencies(allocation, generate_independent=generate_shifted),
         )
     assert not output.exists()
+
+
+def test_oracle_refuses_incomplete_denominator_before_publication(tmp_path: Path) -> None:
+    from silent_cascade.env.generator import iter_independent_requests
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        OracleEvaluationRequest,
+        Phase1GateCorpusSource,
+        evaluate_oracle,
+    )
+
+    allocation = _independent_allocation()
+
+    def truncated(current: object, root_seed: int):
+        return iter(tuple(iter_independent_requests(current, root_seed))[:-4])  # type: ignore[arg-type]
+
+    output = tmp_path / "incomplete-must-not-exist.json"
+    with pytest.raises(ValueError, match="denominator"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=Phase1GateCorpusSource(
+                    allocation_id=allocation.allocation_id,
+                    root_seed=41,
+                    public_id_seed=91,
+                ),
+                output_path=output,
+            ),
+            deps=_oracle_dependencies(allocation, iter_independent=truncated),
+        )
+    assert not output.exists()
+
+
+def test_oracle_refuses_independently_invalid_episode_before_publication(
+    tmp_path: Path,
+) -> None:
+    from silent_cascade.env.generator import generate_independent_episode
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        OracleEvaluationRequest,
+        Phase1GateCorpusSource,
+        evaluate_oracle,
+    )
+    from silent_cascade.errors import EpisodeInvariantError
+
+    allocation = _independent_allocation()
+
+    def corrupt(config: Phase1Config, request: object, public_id_seed: int):
+        bundle = generate_independent_episode(config, request, public_id_seed)  # type: ignore[arg-type]
+        first = bundle.public.events[0]
+        changed = replace(
+            first,
+            timestamp=(bundle.public.init.initial_time + first.timestamp) / 2.0,
+        )
+        return replace(
+            bundle,
+            public=replace(bundle.public, events=(changed, *bundle.public.events[1:])),
+        )
+
+    output = tmp_path / "invalid-invariant-must-not-exist.json"
+    with pytest.raises(EpisodeInvariantError, match=r"timestamp|gap|timing|invariant"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=Phase1GateCorpusSource(
+                    allocation_id=allocation.allocation_id,
+                    root_seed=41,
+                    public_id_seed=91,
+                ),
+                output_path=output,
+            ),
+            deps=_oracle_dependencies(allocation, generate_independent=corrupt),
+        )
+    assert not output.exists()
+
+
+def test_manifest_oracle_runs_the_independent_cohort_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import silent_cascade.env.services as services
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest = _matched_manifest()
+    path = tmp_path / "matched-cohorts.json"
+    publish_manifest(path, manifest)
+    observed: list[int] = []
+    real_validate = services.validate_cohort_invariants
+
+    def validate(cohort: object, config: Phase1Config):
+        observed.append(len(cohort))  # type: ignore[arg-type]
+        return real_validate(cohort, config)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(services, "validate_cohort_invariants", validate)
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        del kwargs
+        resolved = args[0]
+        return manifest.provenance.model_copy(
+            update={"config_sha256": resolved.sha256}  # type: ignore[attr-defined]
+        )
+
+    result = evaluate_oracle(
+        OracleEvaluationRequest(
+            config=ConfigSelection(), source=ManifestCorpusSource(manifest_path=path)
+        ),
+        deps=Phase1ServiceDependencies.for_test(
+            validation_allocation=_audit_validation_allocation(),
+            independent_allocation=_independent_allocation(),
+            collect_provenance=collect,
+            build_manifest=lambda *args: pytest.fail("not used"),
+        ),
+    )
+    assert observed == [4, 4, 4]
+    assert result.report.invariant_failures == 0
+
+
+@pytest.mark.parametrize(
+    ("suite", "expected"),
+    (
+        (SuiteName.BRANCHING_STRESS, "branching"),
+        (SuiteName.CONTRADICTION_STRESS, "contradiction"),
+        (SuiteName.IID_PRIMARY, "primary"),
+        (SuiteName.CLOCK_SCALE_0_1X, "primary"),
+    ),
+)
+def test_oracle_suite_policy_uses_the_exact_authority(suite: SuiteName, expected: str) -> None:
+    from silent_cascade.env.services import _oracle_policy_for_suite
+
+    assert _oracle_policy_for_suite(suite).value == expected
 
 
 def test_manifest_oracle_accepts_real_authenticated_clock_children(tmp_path: Path) -> None:
@@ -747,7 +1075,7 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
 
     @contextmanager
     def create_workspace():
-        workspace.mkdir()
+        workspace.mkdir(exist_ok=True)
         yield workspace
         cleanup_observed.append(tuple(workspace.iterdir()))
 
@@ -804,28 +1132,37 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
             public_id_seed=91,
         )
     )
-    result = run_leakage_audit(
-        LeakageAuditRequest(
-            config=config_selection,
-            source=source,
-            profile=LeakageAuditProfileName.TEST,
-            output_path=output,
-        ),
-        deps=deps,
+    request = LeakageAuditRequest(
+        config=config_selection,
+        source=source,
+        profile=LeakageAuditProfileName.TEST,
+        output_path=output,
     )
+    result = run_leakage_audit(request, deps=deps)
+    saved = output.read_bytes()
+    reused = run_leakage_audit(request, deps=deps)
 
     assert result.report.passed is (not scientific_failure)
     assert tuple(item.check_id for item in result.report.counterfactual_checks) == tuple(
         CounterfactualCheckId
     )
-    assert all(item.passed for item in result.report.counterfactual_checks)
+    assert all(
+        item.passed
+        and item.checked_pairs > 0
+        and item.decision_mismatch_count == 0
+        and item.temporal_mismatch_count == 0
+        and len(item.result_payload_sha256) == 64
+        for item in result.report.counterfactual_checks
+    )
     assert result.report.provenance.analysis_seeds == {
         "audit_seed": 2026083091,
         "positive_control_seed": 2026083092,
     }
     assert result.publication is not None and result.publication.created
+    assert reused.publication is not None and reused.publication.created is False
     assert output.exists()
-    assert cleanup_observed == [()]
+    assert output.read_bytes() == saved
+    assert cleanup_observed == [(), ()]
     if source_mode == "phase1_gate" and not scientific_failure:
         from silent_cascade.env.generator import (
             generate_independent_episode,
@@ -842,6 +1179,13 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
         oracle = evaluate_oracle(
             OracleEvaluationRequest(config=config_selection, source=source),
             deps=deps,
+        )
+        assert oracle.report.clock_0_1x_episode_count == 1
+        assert oracle.report.clock_10x_episode_count == 1
+        assert oracle.report.clock_decision_mismatches == 0
+        assert sum(oracle.report.suite_path_denominators.values()) == 12
+        assert oracle.report.generation_attempt_count == (
+            oracle.report.verified_episode_count + oracle.report.rejected_draw_count
         )
         resolved = resolve_config(
             Phase1Config,
@@ -884,6 +1228,20 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
             == result.report.corpus_hash
             == reproducibility.reference_corpus_sha256
         )
+        divergent = request.model_copy(
+            update={
+                "config": ConfigSelection(
+                    set_overrides=(
+                        *config_selection.set_overrides,
+                        "data.leakage_audit.test.permutation_replicates=2",
+                    )
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="different immutable report"):
+            run_leakage_audit(divergent, deps=deps)
+        assert output.read_bytes() == saved
+        assert cleanup_observed == [(), (), ()]
 
 
 def _config() -> Phase1Config:
@@ -1071,6 +1429,115 @@ def _oracle_dependencies(
         build_manifest=lambda *args: pytest.fail("not used"),
         iter_independent=iter_independent or iter_independent_requests,
         generate_independent=generate_independent or generate_independent_episode,
+    )
+
+
+def _small_access_manifest(
+    split: SplitNamespace,
+    access_class: ManifestAccessClass,
+    allocation_id: str,
+    suite: SuiteName,
+):
+    from silent_cascade.env.episode import episode_sha256
+    from silent_cascade.env.generator import (
+        CohortAllocation,
+        CohortBlock,
+        EpisodeBlock,
+        IndependentAllocation,
+        generate_independent_episode,
+        generate_matched_cohort,
+        iter_cohort_requests,
+        iter_independent_requests,
+    )
+    from silent_cascade.logging.manifest import (
+        EpisodeManifest,
+        EpisodeManifestEntry,
+        IndependentManifestCoordinate,
+        MatchedManifestCoordinate,
+    )
+
+    resolved = resolve_config(
+        Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
+    )
+    provenance = _provenance(allocation_id=allocation_id).model_copy(
+        update={
+            "generation_mode": (
+                "matched" if access_class is ManifestAccessClass.VALIDATION else "independent"
+            ),
+            "split_namespace": split,
+            "config_sha256": resolved.sha256,
+        }
+    )
+    entries = []
+    if access_class is ManifestAccessClass.VALIDATION:
+        allocation = CohortAllocation(
+            allocation_id=allocation_id,
+            split_namespace=split,
+            blocks=(
+                CohortBlock(
+                    suite=suite,
+                    requested_path_length=2,
+                    first_cohort_index=0,
+                    cohort_count=2,
+                ),
+            ),
+        )
+        for request in iter_cohort_requests(allocation, 41):
+            cohort = generate_matched_cohort(resolved.config, request, 91)
+            for member_index, bundle in enumerate(cohort.episodes):
+                entries.append(
+                    EpisodeManifestEntry(
+                        episode_public_id=bundle.public.init.episode_public_id,
+                        split_namespace=split,
+                        suite=suite,
+                        coordinate=MatchedManifestCoordinate(
+                            cohort_index=request.cohort_index,
+                            member_index=member_index,
+                        ),
+                        requested_path_length=2,
+                        accepted_attempt=cohort.accepted_attempt,
+                        episode_sha256=episode_sha256(bundle),
+                    )
+                )
+    else:
+        allocation = IndependentAllocation(
+            allocation_id=allocation_id,
+            split_namespace=split,
+            blocks=(
+                EpisodeBlock(
+                    suite=suite,
+                    requested_path_length=2,
+                    first_episode_index=0,
+                    episode_count=8,
+                ),
+            ),
+        )
+        for request in iter_independent_requests(allocation, 41):
+            bundle = generate_independent_episode(resolved.config, request, 91)
+            entries.append(
+                EpisodeManifestEntry(
+                    episode_public_id=bundle.public.init.episode_public_id,
+                    split_namespace=split,
+                    suite=suite,
+                    coordinate=IndependentManifestCoordinate(
+                        episode_index=request.episode_index,
+                        allocation_quartet_index=request.allocation_quartet_index,
+                        quartet_member_index=request.episode_index % 4,
+                    ),
+                    requested_path_length=2,
+                    accepted_attempt=bundle.truth.recipe.accepted_attempt,
+                    episode_sha256=episode_sha256(bundle),
+                )
+            )
+    return EpisodeManifest(
+        schema_version=1,
+        experiment_version=resolved.config.experiment_version,
+        access_class=access_class,
+        provenance=provenance,
+        suite=suite,
+        public_id_seed=91,
+        episode_count=len(entries),
+        entries=tuple(entries),
     )
 
 
