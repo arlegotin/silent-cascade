@@ -12,6 +12,7 @@ from silent_cascade.env.config import Phase1Config
 from silent_cascade.env.reproducibility import (
     IndependentAllocationReproducibilitySource,
     ManifestReproducibilitySource,
+    ReproducibilityReport,
     ReproducibilityRequest,
     check_reproducibility,
 )
@@ -26,6 +27,9 @@ _PHASE1_ALLOCATION_ID = "phase1-independent-gate-v1"
 _PRODUCTION_SAMPLE_SIZE = 1_000
 _PRODUCTION_CHUNK_SIZES = (1, 3, 7)
 _PRODUCTION_PYTHON_HASH_SEEDS = (0, 1)
+_PRODUCTION_MODES = ("forward", "reverse", "chunked", "fresh_process")
+_VALIDATION_ENTRY_COUNT = 10_000
+_INDEPENDENT_ENTRY_COUNT = 100_000
 
 
 def _seed(value: int, *, option: str) -> int:
@@ -100,6 +104,48 @@ def _publish_report(path: Path, data: bytes) -> None:
         raise ArtifactIntegrityError("published reproducibility report verification failed")
 
 
+def _require_production_request(
+    *,
+    sample_size: int,
+    chunk_sizes: tuple[int, ...],
+    python_hash_seeds: tuple[int, ...],
+    verify_all_source_entries: bool,
+) -> None:
+    if (
+        sample_size != _PRODUCTION_SAMPLE_SIZE
+        or chunk_sizes != _PRODUCTION_CHUNK_SIZES
+        or python_hash_seeds != _PRODUCTION_PYTHON_HASH_SEEDS
+        or not verify_all_source_entries
+    ):
+        raise typer.BadParameter(
+            "production evidence requires sample-size 1000, chunk sizes 1/3/7, "
+            "Python hash seeds 0/1, and --verify-all-source-entries",
+            param_hint="reproducibility matrix",
+        )
+
+
+def _require_passing_report(
+    report: ReproducibilityReport,
+    source: ManifestReproducibilitySource | IndependentAllocationReproducibilitySource,
+) -> None:
+    manifest_mode = isinstance(source, ManifestReproducibilitySource)
+    expected_mode = "manifest" if manifest_mode else "independent_allocation"
+    expected_entries = _VALIDATION_ENTRY_COUNT if manifest_mode else _INDEPENDENT_ENTRY_COUNT
+    if not (
+        report.passed
+        and report.source_mode == expected_mode
+        and report.sample_size == _PRODUCTION_SAMPLE_SIZE
+        and report.verified_source_entries == expected_entries
+        and report.modes == _PRODUCTION_MODES
+        and report.chunk_sizes == _PRODUCTION_CHUNK_SIZES
+        and report.python_hash_seeds == _PRODUCTION_PYTHON_HASH_SEEDS
+        and report.mismatch_count == 0
+    ):
+        raise ArtifactIntegrityError(
+            "reproducibility report is failed or does not match the production matrix"
+        )
+
+
 def _render_error(error: SilentCascadeError) -> None:
     payload = {"code": error.code, "context": {}, "message": error.message}
     sys.stderr.buffer.write(canonical_json_bytes(payload) + b"\n")
@@ -127,22 +173,26 @@ def main(
     )
     chunks = tuple(chunk_size or _PRODUCTION_CHUNK_SIZES)
     hash_seeds = tuple(python_hash_seed or _PRODUCTION_PYTHON_HASH_SEEDS)
+    _require_production_request(
+        sample_size=sample_size,
+        chunk_sizes=chunks,
+        python_hash_seeds=hash_seeds,
+        verify_all_source_entries=verify_all_source_entries,
+    )
     try:
         resolved = resolve_config(Phase1Config, [config, data_config])
-        try:
-            report = check_reproducibility(
-                ReproducibilityRequest(
-                    source=source,
-                    sample_size=sample_size,
-                    chunk_sizes=chunks,
-                    python_hash_seeds=hash_seeds,
-                    verify_all_source_entries=verify_all_source_entries,
-                    output_path=None,
-                ),
-                resolved,
-            )
-        except ValueError as error:
-            raise ArtifactIntegrityError("reproducibility verification failed") from error
+        report = check_reproducibility(
+            ReproducibilityRequest(
+                source=source,
+                sample_size=sample_size,
+                chunk_sizes=chunks,
+                python_hash_seeds=hash_seeds,
+                verify_all_source_entries=verify_all_source_entries,
+                output_path=None,
+            ),
+            resolved,
+        )
+        _require_passing_report(report, source)
         data = canonical_json_bytes(report)
         if output is not None:
             _publish_report(output, data)

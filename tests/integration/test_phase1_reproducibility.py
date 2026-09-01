@@ -8,6 +8,12 @@ import pytest
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
+from silent_cascade.errors import (
+    ArtifactIntegrityError,
+    ConfigurationError,
+    ManifestAccessError,
+    ProvenanceError,
+)
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
@@ -152,7 +158,7 @@ def test_independent_rejects_dirty_provenance_before_generation() -> None:
         verify_all_source_entries=True,
     )
 
-    with pytest.raises(ValueError, match="provenance"):
+    with pytest.raises(ProvenanceError, match="provenance"):
         check_reproducibility(request, resolved, deps=deps)
     assert calls == 0
 
@@ -199,11 +205,22 @@ def test_reproducibility_rejects_empty_matrix_before_generation() -> None:
         verify_all_source_entries=True,
     )
 
-    with pytest.raises(ValueError, match="matrix"):
+    with pytest.raises(ConfigurationError, match="matrix"):
         check_reproducibility(request, resolved, deps=deps)
 
 
-def test_reproducibility_rejects_altered_production_matrix_before_generation() -> None:
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"sample_size": 999},
+        {"chunk_sizes": (2,)},
+        {"python_hash_seeds": (3,)},
+        {"verify_all_source_entries": False},
+    ],
+)
+def test_reproducibility_rejects_altered_production_matrix_before_generation(
+    update: dict[str, object],
+) -> None:
     """The production evidence matrix is a frozen protocol input, not a tuning flag."""
     from silent_cascade.env.reproducibility import (
         IndependentAllocationReproducibilitySource,
@@ -216,12 +233,12 @@ def test_reproducibility_rejects_altered_production_matrix_before_generation() -
             allocation_id="phase1-independent-gate-v1", root_seed=41, public_id_seed=91
         ),
         sample_size=1_000,
-        chunk_sizes=(2,),
-        python_hash_seeds=(3,),
+        chunk_sizes=(1, 3, 7),
+        python_hash_seeds=(0, 1),
         verify_all_source_entries=True,
-    )
+    ).model_copy(update=update)
 
-    with pytest.raises(ValueError, match="production matrix"):
+    with pytest.raises(ConfigurationError, match="production matrix"):
         _require_execution_matrix(request, production_mode=True)
 
 
@@ -335,14 +352,14 @@ def test_reproducibility_rejects_noncanonical_fresh_worker_output() -> None:
         verify_all_source_entries=True,
     )
 
-    with pytest.raises(ValueError, match="malformed"):
+    with pytest.raises(ArtifactIntegrityError, match="malformed"):
         check_reproducibility(request, resolved, deps=deps)
 
 
-def test_clean_worktree_manifest_runs_with_unmodified_production_dependencies(
+def test_clean_worktree_debug_manifest_is_rejected_by_production_dependencies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Task-14 evidence has an exact available source scope before Task 15 exists."""
+    """A clean source tree cannot make a DEBUG manifest production evidence."""
     import subprocess
 
     from silent_cascade.config import resolve_config
@@ -405,18 +422,18 @@ def test_clean_worktree_manifest_runs_with_unmodified_production_dependencies(
         path = worktree / "debug-manifest.json"
         publish_manifest(path, manifest)
 
-        report = check_reproducibility(
-            ReproducibilityRequest(
-                source=ManifestReproducibilitySource(manifest_path=path),
-                sample_size=8,
-                chunk_sizes=(1, 3, 7),
-                python_hash_seeds=(0, 1),
-                verify_all_source_entries=True,
-            ),
-            resolved,
-            deps=PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
-        )
-        assert report.passed
+        with pytest.raises(ManifestAccessError, match="canonical validation"):
+            check_reproducibility(
+                ReproducibilityRequest(
+                    source=ManifestReproducibilitySource(manifest_path=path),
+                    sample_size=1_000,
+                    chunk_sizes=(1, 3, 7),
+                    python_hash_seeds=(0, 1),
+                    verify_all_source_entries=True,
+                ),
+                resolved,
+                deps=PRODUCTION_REPRODUCIBILITY_DEPENDENCIES,
+            )
     finally:
         monkeypatch.chdir(repository)
         subprocess.run(

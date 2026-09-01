@@ -23,6 +23,7 @@ from silent_cascade.env.episode import (
 )
 from silent_cascade.env.generator import (
     PHASE1_GATE_ALLOCATION,
+    VALIDATION_ALLOCATION,
     CohortRequest,
     IndependentAllocation,
     IndependentEpisodeRequest,
@@ -34,11 +35,18 @@ from silent_cascade.env.generator import (
     validate_phase1_gate_allocation,
 )
 from silent_cascade.env.services import regenerate_entry
+from silent_cascade.errors import (
+    ArtifactIntegrityError,
+    ConfigurationError,
+    ManifestAccessError,
+    ProvenanceError,
+)
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.logging.manifest import (
     EpisodeManifest,
     EpisodeManifestEntry,
     IndependentManifestCoordinate,
+    ManifestAccessClass,
     MatchedManifestCoordinate,
     load_manifest,
 )
@@ -190,7 +198,7 @@ def _run_fresh_process(work_order_bytes: bytes, python_hash_seed: int) -> bytes:
             env=environment,
         )
         if result.returncode != 0 or result.stderr:
-            raise ValueError("fresh reproducibility process failed")
+            raise ArtifactIntegrityError("fresh reproducibility process failed")
         return result.stdout
     finally:
         with suppress(OSError):
@@ -264,7 +272,7 @@ def _validate_independent_provenance(
             )
         )
     ):
-        raise ValueError("reproducibility provenance mismatch")
+        raise ProvenanceError("reproducibility provenance mismatch")
 
 
 def _independent_sample(
@@ -295,27 +303,88 @@ def _independent_sample(
             ),
         )
         if len(ranked) < quota:
-            raise ValueError("source stratum lacks its reproducibility quota")
+            raise ConfigurationError("source stratum lacks its reproducibility quota")
         selected.extend(ranked[:quota])
     return tuple(selected)
 
 
 PRODUCTION_CHUNK_SIZES = (1, 3, 7)
 PRODUCTION_PYTHON_HASH_SEEDS = (0, 1)
+PRODUCTION_SAMPLE_SIZE = 1_000
+PRODUCTION_VALIDATION_EPISODE_COUNT = 10_000
+PRODUCTION_INDEPENDENT_EPISODE_COUNT = 100_000
+PRODUCTION_REPRODUCIBILITY_MODES = ("forward", "reverse", "chunked", "fresh_process")
+_VALIDATION_EXPERIMENT_VERSION = "ofd-primary-validation-v1"
+_VALIDATION_ROOT_SEED = 2026083001
+_VALIDATION_PUBLIC_ID_SEED = 2026083002
 
 
 def _require_execution_matrix(request: ReproducibilityRequest, *, production_mode: bool) -> None:
     if not request.chunk_sizes or not request.python_hash_seeds:
-        raise ValueError("reproducibility matrix must include chunks and Python hash seeds")
+        raise ConfigurationError("reproducibility matrix must include chunks and Python hash seeds")
     if any(type(value) is not int or value <= 0 for value in request.chunk_sizes):
-        raise ValueError("reproducibility matrix chunk sizes must be positive exact integers")
+        raise ConfigurationError(
+            "reproducibility matrix chunk sizes must be positive exact integers"
+        )
     if any(type(value) is not int or value < 0 for value in request.python_hash_seeds):
-        raise ValueError("reproducibility matrix hash seeds must be nonnegative exact integers")
+        raise ConfigurationError(
+            "reproducibility matrix hash seeds must be nonnegative exact integers"
+        )
     if production_mode and (
-        request.chunk_sizes != PRODUCTION_CHUNK_SIZES
+        request.sample_size != PRODUCTION_SAMPLE_SIZE
+        or request.chunk_sizes != PRODUCTION_CHUNK_SIZES
         or request.python_hash_seeds != PRODUCTION_PYTHON_HASH_SEEDS
+        or not request.verify_all_source_entries
     ):
-        raise ValueError("production matrix must equal chunks (1, 3, 7) and hash seeds (0, 1)")
+        raise ConfigurationError(
+            "production matrix requires sample_size=1000, chunks (1, 3, 7), "
+            "hash seeds (0, 1), and every source entry"
+        )
+
+
+def _require_production_manifest_source(manifest: EpisodeManifest) -> None:
+    """Reject every source except the frozen Task 18 validation manifest recipe."""
+    provenance = manifest.provenance
+    valid_identity = (
+        manifest.access_class is ManifestAccessClass.VALIDATION
+        and manifest.experiment_version == _VALIDATION_EXPERIMENT_VERSION
+        and manifest.suite is SuiteName.VALIDATION
+        and manifest.public_id_seed == _VALIDATION_PUBLIC_ID_SEED
+        and manifest.episode_count == PRODUCTION_VALIDATION_EPISODE_COUNT
+        and len(manifest.entries) == PRODUCTION_VALIDATION_EPISODE_COUNT
+        and provenance.generation_mode == "matched"
+        and provenance.allocation_id == VALIDATION_ALLOCATION.allocation_id
+        and provenance.split_namespace is SplitNamespace.VALIDATION
+        and provenance.root_seed == _VALIDATION_ROOT_SEED
+        and provenance.public_id_seed_sha256 == public_id_seed_sha256(_VALIDATION_PUBLIC_ID_SEED)
+        and not provenance.source_dirty
+        and provenance.analysis_seeds == {}
+        and provenance.leakage_audit is None
+    )
+    expected_recipe = (
+        (block.suite, block.requested_path_length, cohort_index, member_index)
+        for block in VALIDATION_ALLOCATION.blocks
+        for cohort_index in range(
+            block.first_cohort_index,
+            block.first_cohort_index + block.cohort_count,
+        )
+        for member_index in range(4)
+    )
+    valid_recipe = valid_identity and all(
+        isinstance(entry.coordinate, MatchedManifestCoordinate)
+        and (
+            entry.suite,
+            entry.requested_path_length,
+            entry.coordinate.cohort_index,
+            entry.coordinate.member_index,
+        )
+        == expected
+        for entry, expected in zip(manifest.entries, expected_recipe, strict=True)
+    )
+    if not valid_recipe:
+        raise ManifestAccessError(
+            "production manifest source is not the canonical validation recipe"
+        )
 
 
 def production_sample_quotas() -> tuple[int, ...]:
@@ -370,7 +439,7 @@ def _manifest_sample(
             ),
         )
         if len(ranked) < quota:
-            raise ValueError("manifest stratum lacks its reproducibility quota")
+            raise ArtifactIntegrityError("manifest stratum lacks its reproducibility quota")
         selected.extend(ranked[:quota])
     return tuple(selected)
 
@@ -474,6 +543,8 @@ def check_reproducibility(
     _require_execution_matrix(request, production_mode=deps.production_mode)
     if isinstance(request.source, ManifestReproducibilitySource):
         manifest = deps.load_verified_manifest(request.source.manifest_path)
+        if deps.production_mode:
+            _require_production_manifest_source(manifest)
         embedded = manifest.provenance
         current = deps.collect_provenance(
             resolved,
@@ -486,7 +557,9 @@ def check_reproducibility(
             analysis_seeds={},
         )
         if current != embedded:
-            raise ValueError("manifest provenance does not match current reproducibility inputs")
+            raise ProvenanceError(
+                "manifest provenance does not match current reproducibility inputs"
+            )
         source_hash = sha256_bytes(canonical_json_bytes(manifest))
         source_entries = tuple(manifest.entries)
         selected = _manifest_sample(manifest, source_hash, request.sample_size)
@@ -497,18 +570,18 @@ def check_reproducibility(
                 bundle.public.init.episode_public_id != entry.episode_public_id
                 or episode_sha256(bundle) != entry.episode_sha256
             ):
-                raise ValueError("manifest entry regeneration mismatch")
+                raise ArtifactIntegrityError("manifest entry regeneration mismatch")
         for ordered in (selected, tuple(reversed(selected))):
             for entry in ordered:
                 bundle = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
                 if episode_sha256(bundle) != entry.episode_sha256:
-                    raise ValueError("manifest order reproducibility mismatch")
+                    raise ArtifactIntegrityError("manifest order reproducibility mismatch")
         for size in request.chunk_sizes:
             for start in range(0, len(selected), size):
                 for entry in selected[start : start + size]:
                     bundle = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
                     if episode_sha256(bundle) != entry.episode_sha256:
-                        raise ValueError("manifest chunk reproducibility mismatch")
+                        raise ArtifactIntegrityError("manifest chunk reproducibility mismatch")
         reference = corpus_sha256(
             (
                 CorpusDigestEntry(entry.episode_public_id, entry.episode_sha256)
@@ -529,14 +602,14 @@ def check_reproducibility(
             try:
                 output = FreshProcessResult.model_validate_json(raw)
             except (TypeError, ValueError) as error:
-                raise ValueError(
+                raise ArtifactIntegrityError(
                     "fresh process emitted malformed reproducibility output"
                 ) from error
             if (
                 raw != canonical_json_bytes(output)
                 or output.reference_corpus_sha256 != selected_reference
             ):
-                raise ValueError("manifest fresh-process reproducibility mismatch")
+                raise ArtifactIntegrityError("manifest fresh-process reproducibility mismatch")
         return ReproducibilityReport(
             schema_version="phase1-reproducibility-v1",
             source_mode="manifest",
@@ -557,13 +630,18 @@ def check_reproducibility(
     source = request.source
     allocation = deps.independent_allocation
     if source.allocation_id != allocation.allocation_id:
-        raise ValueError("source allocation does not match bound dependencies")
+        raise ConfigurationError("source allocation does not match bound dependencies")
     if deps.production_mode:
-        if request.sample_size != 1_000:
-            raise ValueError("production reproducibility requires sample_size=1000")
-        validate_phase1_gate_allocation(allocation, resolved.config)
+        try:
+            validate_phase1_gate_allocation(allocation, resolved.config)
+        except ValueError as error:
+            raise ConfigurationError(
+                "production independent allocation is not canonical"
+            ) from error
         if allocation.allocation_id != "phase1-independent-gate-v1":
-            raise ValueError("production requires the canonical independent gate allocation")
+            raise ConfigurationError(
+                "production requires the canonical independent gate allocation"
+            )
     elif (
         allocation.split_namespace is not SplitNamespace.DEBUG
         or not allocation.allocation_id.startswith("test-")
@@ -611,7 +689,7 @@ def check_reproducibility(
             for block in allocation.blocks
         )
         if quotas != production_sample_quotas():
-            raise ValueError(
+            raise ArtifactIntegrityError(
                 "production reproducibility sample quotas differ from the frozen 62/63 plan"
             )
     for mode, ordered in (("forward", selected), ("reverse", tuple(reversed(selected)))):
@@ -622,7 +700,7 @@ def check_reproducibility(
                 )
                 != expected[_request_key(item)]
             ):
-                raise ValueError(f"reproducibility mismatch in {mode}")
+                raise ArtifactIntegrityError(f"reproducibility mismatch in {mode}")
     for size in request.chunk_sizes:
         if type(size) is not int or size <= 0:
             raise ValueError("chunk sizes must be positive exact integers")
@@ -635,18 +713,20 @@ def check_reproducibility(
                     )
                     != expected[_request_key(item)]
                 ):
-                    raise ValueError("reproducibility mismatch in chunked generation")
+                    raise ArtifactIntegrityError("reproducibility mismatch in chunked generation")
     work_order = _fresh_work_order(resolved.config, source, selected, expected, accepted_attempts)
     for hash_seed in request.python_hash_seeds:
         raw = deps.run_fresh_process(work_order, hash_seed)
         try:
             output = FreshProcessResult.model_validate_json(raw)
         except (TypeError, ValueError) as error:
-            raise ValueError("fresh process emitted malformed reproducibility output") from error
+            raise ArtifactIntegrityError(
+                "fresh process emitted malformed reproducibility output"
+            ) from error
         if raw != canonical_json_bytes(output) or output.reference_corpus_sha256 != corpus_sha256(
             (expected[_request_key(item)] for item in selected), expected_count=len(selected)
         ):
-            raise ValueError("fresh process reproducibility mismatch")
+            raise ArtifactIntegrityError("fresh process reproducibility mismatch")
     return ReproducibilityReport(
         schema_version="phase1-reproducibility-v1",
         source_mode="independent_allocation",
