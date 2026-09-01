@@ -49,3 +49,59 @@
   `git diff --check` passed. Privacy coverage remained in the full green suite:
   AST oracle-import guards, blocked optional-model imports, public-projection
   truth-access spying, and the existing renamed frozen-manifest refusal.
+
+## Fix Round 1
+
+### Root-cause and RED evidence
+
+- Real installed-command probes against the canonical 10,000-entry validation
+  recipe reproduced Rich tracebacks for out-of-bounds index and unknown UUID
+  inspection. A real `_publish_report` no-clobber conflict reproduced the full
+  `FileExistsError` to `AtomicWriteError` to `ValueError` chain. The shared
+  cause was the adapter catching `SilentCascadeError` while documented Task 16
+  domain and integrity refusals cross the public service seam as `ValueError`.
+- Coordinated canonical five-artifact mutations reproduced three verifier
+  bypasses: validation sample size one with empty reproducibility schedules,
+  a contradictory leakage audit authority, and a rehashed 10,000-entry
+  validation manifest with every path length set to one. Every bypass returned
+  a result with `passed=True` before the corrections.
+- Verifier TDD RED: the new review matrix reported
+  `19 failed, 10 passed, 14 deselected in 15.22s`. The failures were the exact
+  missing schedule, leakage-authority, and validation-recipe checks; the ten
+  passing cases were fields already rejected by strict report/manifest models.
+- CLI TDD RED: the new adapter/progress matrix reported
+  `12 failed, 16 deselected in 2.63s`. The failures were the three selector or
+  config refusals, the real immutable publication conflict, and all six
+  human/JSON progress paths plus the two prior success-output expectations.
+
+### Corrective commits and GREEN evidence
+
+- Commit `6760f7f` requires both reproducibility reports to declare the exact
+  sample size 1,000, mode tuple, chunks `(1,3,7)`, hash seeds `(0,1)`, zero
+  mismatches, and complete source-entry counts. It reconstructs the sealed
+  full-gate leakage descriptor from exact allocation/config/generator identity
+  and binds the audit authority's profile, allocation hash, descriptor hash,
+  denominators, clock counts, and episode count. It also checks every ordered
+  validation coordinate/member/path against the exact 834/833/833 allocation
+  and experiment version without generation or network access. The new matrix
+  passed `29` tests and the complete verifier file passed
+  `43 passed in 25.66s`; scoped Ruff and formatting passed.
+- Commit `e5afdf7` narrowly normalizes service `ValueError` refusals into the
+  private-safe `phase1_command_error` payload while leaving programmer
+  `TypeError` and `RuntimeError` visible. Freeze, oracle, and leakage emit exact
+  deterministic started/completed progress lines to stderr in human and JSON
+  modes; stdout remains the single final result. The targeted matrix passed
+  `12` tests, the complete CLI/doctor matrix passed `31 passed in 4.84s`, and a
+  real installed out-of-bounds probe exited one with one typed JSON error and
+  no traceback.
+
+### Final Round 1 verification
+
+- Complete focused Task 17 matrix: `127 passed in 37.35s`.
+- `make smoke`: `86 passed in 28.32s`.
+- Scoped Ruff check: `All checks passed!`; scoped Ruff format:
+  `7 files already formatted`.
+- Full local `make verify`: Ruff check passed, Ruff format reported
+  `63 files already formatted`, pytest reported `830 passed in 457.18s`,
+  doctor reported `Overall PASS`, and both the source distribution and wheel
+  built successfully.
