@@ -105,3 +105,64 @@
   `63 files already formatted`, pytest reported `830 passed in 457.18s`,
   doctor reported `Overall PASS`, and both the source distribution and wheel
   built successfully.
+
+## Fix Round 2
+
+### Root-cause and RED evidence
+
+- A read-only counterexample replaced only independent reproducibility's
+  `source_payload_sha256` with an arbitrary digest and still returned
+  `passed=True`. A second counterexample recomputed every validation and
+  independent manifest/report/descriptor digest around coordinated alternate
+  root/public seed pairs and also returned `passed=True`. The verifier did not
+  authenticate the Task 14 independent source descriptor or the predeclared
+  Phase 1 evidence seeds.
+- The verifier TDD matrix covered an arbitrary source hash, all seven mutable
+  descriptor coordinates (the eighth field is a strict literal), and coordinated
+  validation-only, independent-only, and combined seed replacement. Before
+  implementation it reported
+  `11 failed, 43 deselected in 7.79s`.
+- An adapter-boundary probe that raised `ValueError("programmer bug")` was
+  converted into `phase1_command_error`, while equivalent `TypeError` and
+  `RuntimeError` values propagated. After adding all six documented Task 16
+  selector/config/publication refusals plus exact-match near-misses, the CLI
+  TDD matrix reported `3 failed, 8 passed, 25 deselected in 2.24s`. The three
+  failures were the arbitrary `ValueError`, selector trailing-space near-miss,
+  and publication appended-detail near-miss.
+
+### Corrective commits and GREEN evidence
+
+- Commit `5664d8e` reconstructs `IndependentSourceDescriptor` from the literal
+  Phase 1 gate allocation identity and the report's authenticated namespace,
+  root/public-seed fingerprint, config, and generator provenance, then requires
+  its canonical SHA-256. It also pins validation seeds
+  `2026083001/2026083002` and independent seeds
+  `2026083011/2026083012` through their exact root values, raw validation public
+  seed, and literal public-seed fingerprints. The new 11-case matrix passed,
+  the complete verifier file reported `54 passed in 28.34s`, and scoped Ruff,
+  formatting, and diff checks passed.
+- Commit `4235c7a` centralizes an immutable exact-match set containing only the
+  six documented Task 16 selector/config/publication refusal messages. Only a
+  `ValueError` whose complete message is in that set receives the stable
+  private-safe exit-one payload; every other `ValueError` is re-raised unchanged,
+  and `TypeError`/`RuntimeError` remain outside the catch boundary. The targeted
+  matrix reported `12 passed, 24 deselected in 2.53s`; complete CLI/doctor tests
+  reported `39 passed in 4.56s`; scoped Ruff, formatting, and diff checks passed.
+
+### Final Round 2 verification
+
+- Complete focused Task 17 matrix: `146 passed in 42.03s`.
+- `make smoke`: `105 passed in 32.83s`.
+- Scoped Ruff check: `All checks passed!`; scoped Ruff format:
+  `7 files already formatted`.
+- Full local `make verify`: Ruff check passed, Ruff format reported
+  `63 files already formatted`, pytest reported `849 passed in 499.45s`,
+  doctor reported `Overall PASS`, and both
+  `dist/silent_cascade-0.1.0.tar.gz` and
+  `dist/silent_cascade-0.1.0-py3-none-any.whl` built successfully.
+- The range from `f95303e` through `4235c7a` contains only the verifier, CLI,
+  and their two integration-test files (`232` insertions, `7` deletions), with
+  no Make target, CI/CD, or Task 18 change. `git diff --check` passed. The full
+  focused and local gates retained the AST import/privacy boundaries, public
+  inspection protections, frozen-access refusal, read-only/no-regeneration
+  verifier contract, deterministic stderr progress, and four-command surface.
