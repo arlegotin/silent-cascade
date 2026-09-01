@@ -10,15 +10,22 @@ from pydantic import ValidationError
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
 from silent_cascade.env.leakage import (
+    AuditSourceDescriptor,
     CounterfactualCheckId,
     LeakageAuditProfileName,
     LeakageReport,
+    audit_source_descriptor_sha256,
 )
 from silent_cascade.env.reproducibility import ReproducibilityReport
 from silent_cascade.env.services import OracleEvaluationReport
 from silent_cascade.errors import ArtifactIntegrityError, ManifestError, SilentCascadeError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.logging.manifest import EpisodeManifest, ManifestAccessClass, load_manifest
+from silent_cascade.logging.manifest import (
+    EpisodeManifest,
+    ManifestAccessClass,
+    MatchedManifestCoordinate,
+    load_manifest,
+)
 from silent_cascade.provenance import EvidenceProvenance
 from silent_cascade.validation import StrictModel
 
@@ -50,6 +57,13 @@ _GATE_DENOMINATORS = {
     "ood_short_delay:4": 8_000,
 }
 _REPRODUCIBILITY_MODES = ("forward", "reverse", "chunked", "fresh_process")
+_REPRODUCIBILITY_SAMPLE_SIZE = 1_000
+_REPRODUCIBILITY_CHUNK_SIZES = (1, 3, 7)
+_REPRODUCIBILITY_PYTHON_HASH_SEEDS = (0, 1)
+_VALIDATION_EXPERIMENT_VERSION = "ofd-primary-validation-v1"
+_VALIDATION_COHORT_BLOCKS = ((0, 834, 2), (834, 1_667, 3), (1_667, 2_500, 4))
+_PHASE1_GATE_ALLOCATION_SHA256 = "9e032f6993af9f2d53c1dde3a3e3e72e097cf143ae2e72d02609f2d2d6f1ce18"
+_CLOCK_PAIR_COUNTS = {"scale_0_1x": 5_000, "scale_10x": 2_000}
 
 
 class Phase1GateVerificationResult(StrictModel):
@@ -132,6 +146,40 @@ def _require_zero_call_common_provenance(
     )
 
 
+def _validation_path_length(cohort_index: int) -> int | None:
+    for first, stop, path_length in _VALIDATION_COHORT_BLOCKS:
+        if first <= cohort_index < stop:
+            return path_length
+    return None
+
+
+def _require_validation_recipe(manifest: EpisodeManifest) -> None:
+    _require(
+        manifest.experiment_version == _VALIDATION_EXPERIMENT_VERSION,
+        "validation artifact has the wrong frozen experiment version",
+    )
+    for entry_index, entry in enumerate(manifest.entries):
+        coordinate = entry.coordinate
+        expected_cohort_index, expected_member_index = divmod(entry_index, 4)
+        _require(
+            isinstance(coordinate, MatchedManifestCoordinate)
+            and coordinate.cohort_index == expected_cohort_index
+            and coordinate.member_index == expected_member_index
+            and entry.requested_path_length == _validation_path_length(expected_cohort_index),
+            "validation artifact does not match the ordered 834/833/833 allocation recipe",
+        )
+
+
+def _has_frozen_reproducibility_matrix(report: ReproducibilityReport) -> bool:
+    return (
+        report.sample_size == _REPRODUCIBILITY_SAMPLE_SIZE
+        and report.modes == _REPRODUCIBILITY_MODES
+        and report.chunk_sizes == _REPRODUCIBILITY_CHUNK_SIZES
+        and report.python_hash_seeds == _REPRODUCIBILITY_PYTHON_HASH_SEEDS
+        and report.mismatch_count == 0
+    )
+
+
 def _require_validation_artifacts(
     manifest: EpisodeManifest,
     reproducibility: ReproducibilityReport,
@@ -145,6 +193,7 @@ def _require_validation_artifacts(
         and manifest.episode_count == _VALIDATION_EPISODE_COUNT,
         "validation artifact does not have the frozen 10,000-episode recipe",
     )
+    _require_validation_recipe(manifest)
     manifest_payload_sha256 = sha256_bytes(canonical_json_bytes(manifest))
     expected_corpus = corpus_sha256(
         (
@@ -156,6 +205,7 @@ def _require_validation_artifacts(
     _require(
         reproducibility.passed
         and reproducibility.source_mode == "manifest"
+        and _has_frozen_reproducibility_matrix(reproducibility)
         and reproducibility.verified_source_entries == _VALIDATION_EPISODE_COUNT
         and reproducibility.source_payload_sha256 == manifest_payload_sha256
         and reproducibility.reference_corpus_sha256 == expected_corpus
@@ -224,12 +274,33 @@ def _require_leakage(leakage: LeakageReport) -> None:
         ),
         "leakage counterfactual check failed or has a wrong denominator",
     )
+    anchor = leakage.provenance.leakage_audit
+    _require(anchor is not None, "leakage provenance is missing its frozen audit authority")
+    assert anchor is not None
+    expected_descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="independent",
+        allocation_id="phase1-independent-gate-v1",
+        allocation_or_manifest_sha256=_PHASE1_GATE_ALLOCATION_SHA256,
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        root_seed=leakage.provenance.root_seed,
+        public_id_seed_sha256=leakage.provenance.public_id_seed_sha256,
+        config_sha256=leakage.provenance.config_sha256,
+        generator_source_sha256=leakage.provenance.generator_source.sha256,
+        episode_count=_INDEPENDENT_EPISODE_COUNT,
+    )
     _require(
         leakage.provenance.analysis_seeds
         == {"audit_seed": 2026083091, "positive_control_seed": 2026083092}
-        and leakage.provenance.leakage_audit is not None
-        and leakage.provenance.leakage_audit.episode_count == _INDEPENDENT_EPISODE_COUNT,
-        "leakage provenance is missing its frozen audit authority",
+        and anchor.profile == LeakageAuditProfileName.PHASE1_GATE.value
+        and anchor.allocation_id == leakage.provenance.allocation_id == "phase1-independent-gate-v1"
+        and anchor.allocation_or_manifest_sha256 == _PHASE1_GATE_ALLOCATION_SHA256
+        and anchor.config_sha256 == leakage.provenance.config_sha256
+        and anchor.descriptor_sha256 == audit_source_descriptor_sha256(expected_descriptor)
+        and anchor.suite_path_denominators == leakage.suite_path_denominators == _GATE_DENOMINATORS
+        and anchor.clock_scale_pair_counts == _CLOCK_PAIR_COUNTS
+        and anchor.episode_count == leakage.episode_count == _INDEPENDENT_EPISODE_COUNT,
+        "leakage provenance contradicts its frozen audit authority",
     )
 
 
@@ -237,9 +308,9 @@ def _require_independent_reproducibility(report: ReproducibilityReport) -> None:
     _require(
         report.passed
         and report.source_mode == "independent_allocation"
-        and report.sample_size == 1_000
+        and _has_frozen_reproducibility_matrix(report)
         and report.verified_source_entries == _INDEPENDENT_EPISODE_COUNT
-        and report.modes == _REPRODUCIBILITY_MODES,
+        and report.mismatch_count == 0,
         "independent reproducibility artifact is failed or has a wrong denominator",
     )
 
