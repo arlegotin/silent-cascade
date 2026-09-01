@@ -19,7 +19,11 @@ def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     )
     assert dry_run.returncode == 0, dry_run.stderr
     assert "uv run ruff check ." in dry_run.stdout
-    assert "uv run pytest -q" in dry_run.stdout
+    regular_tests = "uv run pytest -q --ignore=tests/unit/test_leakage.py"
+    leakage_tests = "uv run pytest -q tests/unit/test_leakage.py"
+    assert regular_tests in dry_run.stdout
+    assert leakage_tests in dry_run.stdout
+    assert dry_run.stdout.index(regular_tests) < dry_run.stdout.index(leakage_tests)
     assert "uv run silent-cascade doctor" in dry_run.stdout
     assert "uv build" in dry_run.stdout
 

@@ -11,7 +11,8 @@ lint:
 	uv run ruff format --check .
 
 test:
-	uv run pytest -q
+	uv run pytest -q --ignore=tests/unit/test_leakage.py
+	uv run pytest -q tests/unit/test_leakage.py
 
 smoke:
 	uv run pytest -q tests/integration/test_cli_doctor.py tests/integration/test_cli_phase1.py tests/integration/test_phase1_gate_verifier.py tests/regression/test_phase1_fixtures.py tests/regression/test_import_boundaries.py

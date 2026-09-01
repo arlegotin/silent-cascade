@@ -125,7 +125,7 @@ def _canonical_validation_manifest() -> EpisodeManifest:
     )
     return EpisodeManifest.model_construct(
         schema_version=1,
-        experiment_version="ofd-primary-validation-v1",
+        experiment_version="v1",
         access_class=ManifestAccessClass.VALIDATION,
         provenance=provenance,
         suite=SuiteName.VALIDATION,

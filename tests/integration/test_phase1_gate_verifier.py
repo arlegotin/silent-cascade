@@ -114,7 +114,7 @@ def _validation_manifest() -> EpisodeManifest:
     )
     return EpisodeManifest(
         schema_version=1,
-        experiment_version="ofd-primary-validation-v1",
+        experiment_version="v1",
         access_class=ManifestAccessClass.VALIDATION,
         provenance=provenance,
         suite=SuiteName.VALIDATION,

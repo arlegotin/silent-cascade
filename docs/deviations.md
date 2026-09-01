@@ -4,6 +4,32 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 validation experiment-version guard correction
+
+The first exact matched reproducibility command exposed a pre-evidence adapter
+guard mismatch: the canonical base configuration and exact freeze command
+produce `experiment_version=v1`, while the newly added reproducibility and
+cross-artifact guards expected the unconfigured value
+`ofd-primary-validation-v1`. Integration fixtures had duplicated that stale
+literal and masked the production incompatibility. Both guards and their
+canonical fixtures now bind the existing configured value `v1`; access class,
+allocation, seeds, ordered 10,000-entry recipe, provenance, and every scientific
+gate remain unchanged. The failed command published no reproducibility report.
+All artifacts generated under the earlier source revision are discarded only
+after this correction passes full local verification and independent review,
+then every Task 18 evidence artifact is regenerated from one clean source
+revision so no mixed-revision evidence is retained.
+
+The correction's full local gate also exposed that unrelated integration-test
+fixtures can leave the shared pytest process above the audit's absolute 512 MB
+RSS ceiling before the leakage tests start. The complete leakage module passes
+with the unchanged production guard in a fresh process, and no individual
+suspect integration module reproduces the breach; the full inherited
+integration baseline does. `make test` therefore runs all non-leakage tests and
+then the complete leakage module in a second pytest process. No test is skipped,
+and the production code, 512 MB ceiling, audit profiles, and assertions are
+unchanged; process isolation gives the resource test a defined baseline.
+
 ## 2026-09-01 — Task 18 reproducibility adapter and command-matrix correction
 
 Before any Phase 1 evidence was generated, the Task 18 reproducibility commands
