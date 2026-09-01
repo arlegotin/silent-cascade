@@ -1283,6 +1283,10 @@ def _expected_profile_denominators(
     return {f"iid_primary:{path}": per_path for path in (2, 3, 4)}
 
 
+def _audit_stratum_suite(suite: SuiteName) -> SuiteName:
+    return SuiteName.IID_PRIMARY if suite is SuiteName.VALIDATION else suite
+
+
 def _validate_source_authentication(
     source: ReiterableAuditSource,
     profile: LeakageAuditProfileName,
@@ -3384,6 +3388,7 @@ def audit_leakage(
                     config,
                 )
             bundle = example.bundle
+            audit_suite = _audit_stratum_suite(bundle.truth.key.suite)
             bundle_digest = episode_sha256(bundle)
             digest.add(CorpusDigestEntry(bundle.public.init.episode_public_id, bundle_digest))
             source_manifest.add(example, bundle_digest)
@@ -3392,7 +3397,7 @@ def audit_leakage(
                     bundle.public.init.episode_public_id,
                     bundle_digest,
                     feature_set.audit_group_id,
-                    bundle.truth.key.suite,
+                    audit_suite,
                     bundle.truth.recipe.requested_path_length,
                     bundle.truth.recipe.variant,
                     bundle.truth.relevant_hazard_type,
@@ -3407,9 +3412,7 @@ def audit_leakage(
                     ),
                 )
             )
-            denominators[
-                f"{bundle.truth.key.suite.value}:{bundle.truth.recipe.requested_path_length}"
-            ] += 1
+            denominators[f"{audit_suite.value}:{bundle.truth.recipe.requested_path_length}"] += 1
         if len(rows) != source.episode_count:
             raise ValueError("audit source yielded the wrong number of examples")
         remainder = len(rows) % len(feature_buffer)

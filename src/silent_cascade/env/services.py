@@ -69,7 +69,15 @@ from silent_cascade.env.reward import (
     score_actions,
 )
 from silent_cascade.env.timing import action_window
-from silent_cascade.errors import AtomicWriteError
+from silent_cascade.errors import (
+    ArtifactError,
+    AtomicWriteError,
+    ConfigurationError,
+    EpisodeError,
+    ManifestAccessError,
+    ManifestError,
+    ProvenanceError,
+)
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.io import atomic_create_bytes
 from silent_cascade.logging.manifest import (
@@ -77,8 +85,10 @@ from silent_cascade.logging.manifest import (
     EpisodeManifestEntry,
     IndependentManifestCoordinate,
     ManifestAccessClass,
+    ManifestPublication,
     MatchedManifestCoordinate,
     load_manifest,
+    publish_manifest,
     require_oracle_inspection_allowed,
 )
 from silent_cascade.provenance import (
@@ -364,7 +374,7 @@ def _require_test_output_boundary(path: Path, deps: Phase1ServiceDependencies) -
         candidate.resolve().relative_to(canonical_validation)
     except ValueError:
         return
-    raise ValueError("test dependencies may not publish under manifests/validation")
+    raise ManifestAccessError("test dependencies may not publish under manifests/validation")
 
 
 @contextmanager
@@ -390,19 +400,27 @@ def _publish_report(path: Path, report: StrictModel) -> ArtifactPublication:
         created = True
     except AtomicWriteError as error:
         if error.message != "artifact already exists":
-            raise ValueError("immutable report publication failed") from error
-        existing = path.read_bytes()
+            raise ArtifactError("immutable report publication failed") from error
+        try:
+            existing = path.read_bytes()
+        except OSError as read_error:
+            raise ArtifactError("existing report cannot be verified") from read_error
         if existing != payload:
-            raise ValueError("different immutable report already exists") from error
+            raise ArtifactError("different immutable report already exists") from error
         created = False
-    if path.read_bytes() != payload:
-        raise ValueError("published report differs from candidate")
+    try:
+        if path.read_bytes() != payload:
+            raise ArtifactError("published report differs from candidate")
+        file_sha256 = sha256_file(path)
+    except OSError as error:
+        raise ArtifactError("published report cannot be verified") from error
     return ArtifactPublication(
-        path=str(path),
-        created=created,
-        payload_sha256=payload_sha256,
-        file_sha256=sha256_file(path),
+        path=str(path), created=created, payload_sha256=payload_sha256, file_sha256=file_sha256
     )
+
+
+def _artifact_publication(publication: ManifestPublication) -> ArtifactPublication:
+    return ArtifactPublication.model_validate(publication.model_dump(mode="python"))
 
 
 def _validation_provenance(
@@ -427,7 +445,7 @@ def freeze_validation(
     *,
     deps: Phase1ServiceDependencies = None,  # type: ignore[assignment]
 ) -> ManifestFreezeResult:
-    """Freeze the only publishable validation manifest and its report atomically."""
+    """Freeze the only publishable validation manifest and return its summary."""
     if deps is None:
         deps = PRODUCTION_DEPENDENCIES
     _require_service_dependencies(deps)
@@ -436,14 +454,21 @@ def freeze_validation(
     allocation = deps.validation_allocation
     if deps.production_mode:
         if request.episode_count != 10_000 or allocation != VALIDATION_ALLOCATION:
-            raise ValueError("production freeze requires the canonical 10,000 episode allocation")
-        validate_validation_allocation(allocation, resolved.config)
+            raise ConfigurationError(
+                "production freeze requires the canonical 10,000 episode allocation"
+            )
+        try:
+            validate_validation_allocation(allocation, resolved.config)
+        except ValueError as error:
+            raise ConfigurationError(
+                "production validation configuration is not canonical"
+            ) from error
     elif (
         allocation.split_namespace is not SplitNamespace.DEBUG
         or not allocation.allocation_id.startswith("test-")
         or request.episode_count != sum(block.cohort_count for block in allocation.blocks) * 4
     ):
-        raise ValueError("test freeze requires its exact test- DEBUG allocation")
+        raise ConfigurationError("test freeze requires its exact test- DEBUG allocation")
     provenance = _validation_provenance(resolved, request, deps)
     if (
         provenance.generation_mode != "matched"
@@ -454,7 +479,7 @@ def freeze_validation(
         or provenance.public_id_seed_sha256 != public_id_seed_sha256(request.public_id_seed)
         or provenance.foundation_model_calls != 0
     ):
-        raise ValueError("freeze provenance does not bind resolved inputs")
+        raise ProvenanceError("freeze provenance does not bind resolved inputs")
     manifest = deps.build_manifest(
         resolved.config, provenance, request.root_seed, request.public_id_seed
     )
@@ -481,9 +506,10 @@ def freeze_validation(
         counts[EpisodeVariant.DISCONNECTED_NEGATIVE],
     ) != (10_000, 2_500, 5_000, 2_500, 2_500):
         raise ValueError("production validation manifest has an invalid allocation")
+    manifest_payload_sha256 = sha256_bytes(canonical_json_bytes(manifest))
     report = ManifestFreezeReport(
         schema_version="manifest-freeze-report-v1",
-        manifest_payload_sha256=sha256_bytes(canonical_json_bytes(manifest)),
+        manifest_payload_sha256=manifest_payload_sha256,
         provenance=provenance,
         access_class=manifest.access_class,
         episode_count=manifest.episode_count,
@@ -492,9 +518,10 @@ def freeze_validation(
         safe_negative_count=counts[EpisodeVariant.SAFE_NEGATIVE],
         disconnected_negative_count=counts[EpisodeVariant.DISCONNECTED_NEGATIVE],
     )
-    return ManifestFreezeResult(
-        report=report, publication=_publish_report(request.output_path, report)
-    )
+    publication = publish_manifest(request.output_path, manifest)
+    if publication.payload_sha256 != manifest_payload_sha256:
+        raise ManifestError("published manifest digest differs from verified candidate")
+    return ManifestFreezeResult(report=report, publication=_artifact_publication(publication))
 
 
 def _oracle_policy_for_suite(suite: SuiteName) -> OraclePolicy:
@@ -517,10 +544,10 @@ def inspect_episode(
     resolved = _resolve(request.config)
     manifest = load_manifest(request.manifest_path)
     if manifest.provenance.config_sha256 != resolved.sha256:
-        raise ValueError("manifest config does not match resolved inspection config")
+        raise ConfigurationError("manifest config does not match resolved inspection config")
     if request.entry_index is not None:
         if request.entry_index >= len(manifest.entries):
-            raise ValueError("inspection entry index is outside the manifest")
+            raise ManifestAccessError("inspection entry index is outside the manifest")
         index = request.entry_index
     else:
         assert request.episode_public_id is not None
@@ -530,7 +557,7 @@ def inspect_episode(
             if entry.episode_public_id == str(request.episode_public_id)
         ]
         if len(matches) != 1:
-            raise ValueError("inspection public ID is not in the manifest")
+            raise ManifestAccessError("inspection public ID is not in the manifest")
         index = matches[0]
     entry = manifest.entries[index]
     bundle = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
@@ -592,14 +619,19 @@ def _independent_provenance(
 ) -> EvidenceProvenance:
     allocation = deps.independent_allocation
     if source.allocation_id != allocation.allocation_id:
-        raise ValueError("source allocation does not match bound dependencies")
+        raise ConfigurationError("source allocation does not match bound dependencies")
     if deps.production_mode:
         if (
             allocation != PHASE1_GATE_ALLOCATION
             or allocation.allocation_id != "phase1-independent-gate-v1"
         ):
-            raise ValueError("production requires the canonical independent gate allocation")
-        validate_phase1_gate_allocation(allocation, resolved.config)
+            raise ConfigurationError(
+                "production requires the canonical independent gate allocation"
+            )
+        try:
+            validate_phase1_gate_allocation(allocation, resolved.config)
+        except ValueError as error:
+            raise ConfigurationError("production gate configuration is not canonical") from error
     elif (
         allocation.split_namespace is not SplitNamespace.DEBUG
         or not allocation.allocation_id.startswith("test-")
@@ -624,7 +656,7 @@ def _independent_provenance(
         or provenance.config_sha256 != resolved.sha256
         or provenance.foundation_model_calls != 0
     ):
-        raise ValueError("independent provenance does not bind resolved inputs")
+        raise ProvenanceError("independent provenance does not bind resolved inputs")
     return provenance
 
 
@@ -698,7 +730,7 @@ def _require_manifest_bundle_matches_entry(
         or recipe.evaluation_suite is not entry.suite
         or recipe.requested_path_length != entry.requested_path_length
     ):
-        raise ValueError("regenerated episode does not match its manifest coordinate")
+        raise EpisodeError("regenerated episode does not match its manifest coordinate")
 
 
 def _manifest_matches_matched_allocation(
@@ -789,7 +821,7 @@ def _require_manifest_source_boundary(
         )
         message = "test manifest source does not match its bound DEBUG allocation"
     if not valid:
-        raise ValueError(message)
+        raise ManifestAccessError(message)
 
 
 def _bound_manifest_sha256(
@@ -802,7 +834,7 @@ def _bound_manifest_sha256(
     _require_manifest_source_boundary(manifest, deps)
     digest = sha256_bytes(canonical_json_bytes(manifest))
     if expected_sha256 is not None and digest != expected_sha256:
-        raise ValueError("manifest source changed before evidence publication")
+        raise ManifestError("manifest source changed before evidence publication")
     return manifest, digest
 
 
@@ -826,7 +858,7 @@ def evaluate_oracle(
             deps,
         )
         if manifest.provenance.config_sha256 != resolved.sha256:
-            raise ValueError("manifest config does not match resolved oracle config")
+            raise ConfigurationError("manifest config does not match resolved oracle config")
         embedded = manifest.provenance
         provenance = deps.collect_provenance(
             resolved,
@@ -849,7 +881,9 @@ def evaluate_oracle(
             or provenance.config_sha256 != embedded.config_sha256
             or provenance.generator_source != embedded.generator_source
         ):
-            raise ValueError("current oracle provenance does not authenticate immutable manifest")
+            raise ProvenanceError(
+                "current oracle provenance does not authenticate immutable manifest"
+            )
         ordered = (
             (deps.regenerate_manifest_entry(resolved.config, manifest, entry), entry)
             for entry in manifest.entries
@@ -1345,6 +1379,78 @@ def _bind_independent_audit_source(
     )
 
 
+def _manifest_test_profile_entries(
+    manifest: EpisodeManifest,
+    deps: Phase1ServiceDependencies,
+    *,
+    audit_seed: int,
+) -> tuple[EpisodeManifestEntry, ...]:
+    """Select the sealed matched TEST cohorts while retaining manifest order."""
+    _require_manifest_source_boundary(manifest, deps)
+    if not deps.production_mode:
+        return manifest.entries
+    if audit_seed != 2026083091:
+        raise ConfigurationError("production TEST selection requires the frozen audit seed")
+    manifest_sha256 = sha256_bytes(canonical_json_bytes(manifest))
+    cohorts: dict[tuple[int, int], list[EpisodeManifestEntry]] = {}
+    for entry in manifest.entries:
+        coordinate = entry.coordinate
+        if not isinstance(coordinate, MatchedManifestCoordinate):
+            raise ManifestError("production TEST selection requires matched manifest cohorts")
+        cohorts.setdefault((entry.requested_path_length, coordinate.cohort_index), []).append(entry)
+    selected: set[tuple[int, int]] = set()
+    for path_length in (2, 3, 4):
+        eligible = [
+            cohort_index
+            for candidate_path, cohort_index in cohorts
+            if candidate_path == path_length
+        ]
+        ranked = sorted(
+            eligible,
+            key=lambda cohort_index: (
+                sha256_bytes(
+                    canonical_json_bytes(
+                        {
+                            "schema_version": "leakage-v1",
+                            "audit_seed": audit_seed,
+                            "corpus_hash": manifest_sha256,
+                            "generation_mode": "matched",
+                            "suite": SuiteName.IID_PRIMARY.value,
+                            "requested_path_length": path_length,
+                            "randomization_block_index": cohort_index,
+                        }
+                    )
+                ),
+                cohort_index,
+            ),
+        )
+        if len(ranked) < 100:
+            raise ManifestError("production TEST source lacks its frozen cohort quota")
+        selected.update((path_length, cohort_index) for cohort_index in ranked[:100])
+    for key in selected:
+        entries = cohorts[key]
+        members = {
+            entry.coordinate.member_index
+            for entry in entries
+            if isinstance(entry.coordinate, MatchedManifestCoordinate)
+        }
+        if len(entries) != 4 or members != {0, 1, 2, 3}:
+            raise ManifestError("production TEST source contains an incomplete matched cohort")
+    result = tuple(
+        entry
+        for entry in manifest.entries
+        if (entry.requested_path_length, entry.coordinate.cohort_index) in selected
+        and isinstance(entry.coordinate, MatchedManifestCoordinate)
+    )
+    if len(result) != 1_200:
+        raise ManifestError("production TEST source does not contain exactly 1,200 episodes")
+    return result
+
+
+def _audit_suite(suite: SuiteName) -> SuiteName:
+    return SuiteName.IID_PRIMARY if suite is SuiteName.VALIDATION else suite
+
+
 def _bind_manifest_audit_source(
     resolved: ResolvedConfig[Phase1Config],
     manifest: EpisodeManifest,
@@ -1354,10 +1460,15 @@ def _bind_manifest_audit_source(
     _require_manifest_source_boundary(manifest, deps)
     provenance = manifest.provenance
     if provenance.generation_mode != "matched":
-        raise ValueError("manifest leakage audit requires a matched base source")
+        raise ManifestAccessError("manifest leakage audit requires a matched base source")
+    entries = _manifest_test_profile_entries(
+        manifest,
+        deps,
+        audit_seed=resolved.config.data.leakage_audit.audit_seed,
+    )
 
     def examples() -> Iterator[AuditExample]:
-        for rank, entry in enumerate(manifest.entries):
+        for rank, entry in enumerate(entries):
             bundle = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
             _require_manifest_bundle_matches_entry(bundle, entry)
             coordinate = entry.coordinate
@@ -1371,7 +1482,7 @@ def _bind_manifest_audit_source(
 
     def clock_pairs() -> Iterator[PairedClockAuditPair]:
         for suite in (SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X):
-            for rank, entry in enumerate(manifest.entries):
+            for rank, entry in enumerate(entries):
                 coordinate = entry.coordinate
                 if not isinstance(coordinate, MatchedManifestCoordinate):
                     raise ValueError("matched manifest entry has an invalid coordinate")
@@ -1408,7 +1519,7 @@ def _bind_manifest_audit_source(
         public_id_seed_sha256=provenance.public_id_seed_sha256,
         config_sha256=resolved.sha256,
         generator_source_sha256=provenance.generator_source.sha256,
-        episode_count=manifest.episode_count,
+        episode_count=len(entries),
     )
     source_manifest = _SourceManifestHashBuilder()
     for example in examples():
@@ -1423,7 +1534,7 @@ def _bind_manifest_audit_source(
             else "scale_10x"
         ] += 1
     denominators = Counter(
-        f"{entry.suite.value}:{entry.requested_path_length}" for entry in manifest.entries
+        f"{_audit_suite(entry.suite).value}:{entry.requested_path_length}" for entry in entries
     )
     authentication = AuditSourceAuthentication(
         schema_version="leakage-source-auth-v1",
@@ -1530,7 +1641,7 @@ def build_validation_manifest(
 ) -> EpisodeManifest:
     """Build the sole production validation allocation and reject dirty evidence."""
     if provenance.source_dirty:
-        raise ValueError("production validation provenance must be clean")
+        raise ProvenanceError("production validation provenance must be clean")
     manifest = build_cohort_manifest(
         config,
         VALIDATION_ALLOCATION,
@@ -1558,7 +1669,7 @@ def _assert_entry(bundle: EpisodeBundle, entry: EpisodeManifestEntry) -> Episode
         or bundle.truth.recipe.accepted_attempt != entry.accepted_attempt
         or episode_sha256(bundle) != entry.episode_sha256
     ):
-        raise ValueError("regenerated episode does not match manifest entry")
+        raise EpisodeError("regenerated episode does not match manifest entry")
     return bundle
 
 
@@ -1693,7 +1804,7 @@ def _production_audit_source(
     else:
         raise TypeError("unsupported audit source")
     if bound.authentication.profile is not profile:
-        raise ValueError("audit source profile does not match request")
+        raise ConfigurationError("audit source profile does not match request")
     return bound
 
 
@@ -1715,7 +1826,7 @@ def _require_current_provenance_authenticates_manifest(
         or current.generator_source != embedded.generator_source
         or current.foundation_model_calls != 0
     ):
-        raise ValueError("current audit provenance does not authenticate immutable manifest")
+        raise ProvenanceError("current audit provenance does not authenticate immutable manifest")
 
 
 def _anchor_for_bound_source(
@@ -1724,7 +1835,7 @@ def _anchor_for_bound_source(
     descriptor = source.descriptor
     authentication = source.authentication
     if authentication.profile is not profile:
-        raise ValueError("audit anchor profile does not match authenticated source")
+        raise ConfigurationError("audit anchor profile does not match authenticated source")
     return LeakageAuditEvidenceAnchor(
         schema_version="phase1-leakage-audit-anchor-v1",
         profile=profile.value,
@@ -1796,9 +1907,14 @@ def _audit_provenance(
     if isinstance(source, Phase1GateCorpusSource):
         allocation = deps.independent_allocation
         if source.allocation_id != allocation.allocation_id:
-            raise ValueError("audit allocation does not match bound dependencies")
+            raise ConfigurationError("audit allocation does not match bound dependencies")
         if deps.production_mode:
-            validate_phase1_gate_allocation(allocation, resolved.config)
+            try:
+                validate_phase1_gate_allocation(allocation, resolved.config)
+            except ValueError as error:
+                raise ConfigurationError(
+                    "production audit configuration is not canonical"
+                ) from error
         provenance = deps.collect_provenance(
             resolved,
             repo_root=Path.cwd(),
@@ -1814,7 +1930,7 @@ def _audit_provenance(
         _require_manifest_source_boundary(manifest, deps)
         embedded = manifest.provenance
         if embedded.config_sha256 != resolved.sha256:
-            raise ValueError("manifest config does not match resolved audit config")
+            raise ConfigurationError("manifest config does not match resolved audit config")
         provenance = deps.collect_provenance(
             resolved,
             repo_root=Path.cwd(),
@@ -1834,7 +1950,9 @@ def _audit_provenance(
             or provenance.config_sha256 != embedded.config_sha256
             or provenance.generator_source != embedded.generator_source
         ):
-            raise ValueError("current audit provenance does not authenticate immutable manifest")
+            raise ProvenanceError(
+                "current audit provenance does not authenticate immutable manifest"
+            )
     else:
         raise TypeError("unsupported audit source")
     if (
@@ -1843,7 +1961,7 @@ def _audit_provenance(
         or provenance.analysis_seeds != seeds
         or (deps.production_mode and provenance.source_dirty)
     ):
-        raise ValueError("audit provenance does not bind resolved clean inputs")
+        raise ProvenanceError("audit provenance does not bind resolved clean inputs")
     return provenance
 
 

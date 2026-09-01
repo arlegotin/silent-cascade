@@ -9,6 +9,14 @@ import pytest
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.generator import CohortAllocation, CohortBlock
+from silent_cascade.errors import (
+    ArtifactError,
+    ConfigurationError,
+    EpisodeError,
+    ManifestAccessError,
+    ManifestError,
+    ProvenanceError,
+)
 from silent_cascade.logging.manifest import ManifestAccessClass
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
@@ -37,14 +45,18 @@ def test_inspection_request_requires_exactly_one_selector() -> None:
         )
 
 
-def test_freeze_with_test_dependencies_publishes_immutable_report(tmp_path: Path) -> None:
-    """Dropping the report-only publication boundary would make reuse mutate evidence."""
+def test_freeze_with_test_dependencies_publishes_an_immutable_loadable_manifest(
+    tmp_path: Path,
+) -> None:
+    """Publishing the summary instead would break every downstream manifest consumer."""
     from silent_cascade.env.services import (
         ConfigSelection,
         FreezeValidationRequest,
         Phase1ServiceDependencies,
         freeze_validation,
     )
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
+    from silent_cascade.logging.manifest import load_manifest
 
     allocation = _allocation()
 
@@ -84,16 +96,22 @@ def test_freeze_with_test_dependencies_publishes_immutable_report(tmp_path: Path
     )
     first = freeze_validation(request, deps=deps)
     saved = request.output_path.read_bytes()
+    saved_mtime_ns = request.output_path.stat().st_mtime_ns
+    loaded = load_manifest(request.output_path)
     second = freeze_validation(request, deps=deps)
 
     assert first.report.episode_count == 8
     assert first.publication.created is True
     assert second.publication.created is False
     assert request.output_path.read_bytes() == saved
+    assert request.output_path.stat().st_mtime_ns == saved_mtime_ns
+    assert loaded == built[0]
+    assert first.report.manifest_payload_sha256 == sha256_bytes(canonical_json_bytes(loaded))
+    assert first.publication.payload_sha256 == first.report.manifest_payload_sha256
+    assert first.publication.file_sha256 == sha256_file(request.output_path)
     assert first.report.provenance.foundation_model_calls == 0
-    assert b'"created"' not in saved
     assert all(
-        entry.episode_public_id.encode() not in saved
+        entry.episode_public_id.encode() in saved
         for entry in built[0].entries  # type: ignore[attr-defined]
     )
     divergent = request.model_copy(
@@ -103,9 +121,33 @@ def test_freeze_with_test_dependencies_publishes_immutable_report(tmp_path: Path
             )
         }
     )
-    with pytest.raises(ValueError, match="different immutable report"):
+    with pytest.raises(ManifestError, match="different immutable manifest"):
         freeze_validation(divergent, deps=deps)
     assert request.output_path.read_bytes() == saved
+    assert request.output_path.stat().st_mtime_ns == saved_mtime_ns
+
+    with pytest.raises(ManifestError, match=r"publication|manifest|target"):
+        freeze_validation(request.model_copy(update={"output_path": tmp_path}), deps=deps)
+
+
+def test_dirty_production_validation_provenance_is_a_typed_refusal() -> None:
+    """Dirty evidence is an expected publication refusal, not a raw builder traceback."""
+    from silent_cascade.env.services import build_validation_manifest
+
+    provenance = _provenance(allocation_id="validation-v1", dirty=True).model_copy(
+        update={"split_namespace": SplitNamespace.VALIDATION}
+    )
+
+    with pytest.raises(ProvenanceError, match=r"clean|dirty|provenance"):
+        build_validation_manifest(_config(), provenance, 41, 91)
+
+
+def test_report_publication_directory_is_a_typed_artifact_refusal(tmp_path: Path) -> None:
+    """An existing directory target must not escape as IsADirectoryError."""
+    from silent_cascade.env.services import ConfigSelection, _publish_report
+
+    with pytest.raises(ArtifactError, match=r"publication|report|target"):
+        _publish_report(tmp_path, ConfigSelection())
 
 
 @pytest.mark.parametrize(
@@ -121,7 +163,7 @@ def test_test_dependencies_refuse_canonical_validation_tree(output: Path) -> Non
     """Changing ancestor checking would let DEBUG evidence impersonate validation output."""
     from silent_cascade.env.services import _require_test_output_boundary
 
-    with pytest.raises(ValueError, match="manifests/validation"):
+    with pytest.raises(ManifestAccessError, match="manifests/validation"):
         _require_test_output_boundary(output, type("Deps", (), {"production_mode": False})())
 
 
@@ -276,7 +318,7 @@ def test_default_production_manifest_services_refuse_noncanonical_sources_before
     )
 
     if service == "oracle":
-        with pytest.raises(ValueError, match=r"production|canonical|manifest"):
+        with pytest.raises(ManifestAccessError, match=r"production|canonical|manifest"):
             services.evaluate_oracle(
                 OracleEvaluationRequest(
                     config=ConfigSelection(),
@@ -290,7 +332,7 @@ def test_default_production_manifest_services_refuse_noncanonical_sources_before
             "audit_leakage",
             lambda *args, **kwargs: pytest.fail("Task 15 must not run"),
         )
-        with pytest.raises(ValueError, match=r"production|canonical|manifest"):
+        with pytest.raises(ManifestAccessError, match=r"production|canonical|manifest"):
             services.run_leakage_audit(
                 LeakageAuditRequest(
                     config=ConfigSelection(),
@@ -350,7 +392,7 @@ def test_injected_manifest_services_refuse_unbound_access_and_allocation(
         build_audit_anchor=forbidden,
     )
     if service == "oracle":
-        with pytest.raises(ValueError, match=r"test|bound|manifest|DEBUG"):
+        with pytest.raises(ManifestAccessError, match=r"test|bound|manifest|DEBUG"):
             evaluate_oracle(
                 OracleEvaluationRequest(
                     config=ConfigSelection(),
@@ -360,7 +402,7 @@ def test_injected_manifest_services_refuse_unbound_access_and_allocation(
                 deps=deps,
             )
     else:
-        with pytest.raises(ValueError, match=r"test|bound|manifest|DEBUG"):
+        with pytest.raises(ManifestAccessError, match=r"test|bound|manifest|DEBUG"):
             run_leakage_audit(
                 LeakageAuditRequest(
                     config=ConfigSelection(),
@@ -384,6 +426,190 @@ def test_production_manifest_boundary_accepts_the_exact_validation_recipe() -> N
         _canonical_validation_manifest_recipe(),
         PRODUCTION_DEPENDENCIES,
     )
+
+
+@pytest.mark.parametrize("service", ("oracle", "leakage"))
+@pytest.mark.parametrize("refusal", ("config", "provenance"))
+def test_manifest_evidence_services_type_routine_config_and_provenance_refusals(
+    service: str,
+    refusal: str,
+    tmp_path: Path,
+) -> None:
+    """User-selected config and current-source drift are expected service refusals."""
+    from silent_cascade.env.leakage import LeakageAuditProfileName
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        LeakageAuditRequest,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+        run_leakage_audit,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest = _matched_manifest()
+    path = tmp_path / f"{service}-{refusal}.json"
+    publish_manifest(path, manifest)
+    selection = (
+        ConfigSelection(set_overrides=("data.leakage_audit.test.permutation_replicates=1",))
+        if refusal == "config"
+        else ConfigSelection()
+    )
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        del args, kwargs
+        return manifest.provenance.model_copy(
+            update={
+                "generator_source": manifest.provenance.generator_source.model_copy(
+                    update={"sha256": "f" * 64}
+                )
+            }
+        )
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_audit_validation_allocation(),
+        independent_allocation=_audit_independent_allocation(),
+        collect_provenance=(
+            collect if refusal == "provenance" else _manifest_current_collector(manifest)
+        ),
+        build_manifest=lambda *args: pytest.fail("not used"),
+        build_audit_source=lambda *args: pytest.fail("audit source work reached"),
+        build_audit_anchor=lambda *args: pytest.fail("audit anchor work reached"),
+    )
+    expected = ConfigurationError if refusal == "config" else ProvenanceError
+    source = ManifestCorpusSource(manifest_path=path)
+
+    with pytest.raises(expected, match=r"config|provenance|authenticate"):
+        if service == "oracle":
+            evaluate_oracle(
+                OracleEvaluationRequest(config=selection, source=source),
+                deps=deps,
+            )
+        else:
+            run_leakage_audit(
+                LeakageAuditRequest(
+                    config=selection,
+                    source=source,
+                    profile=LeakageAuditProfileName.TEST,
+                ),
+                deps=deps,
+            )
+
+
+def test_manifest_source_change_before_publication_is_a_typed_integrity_refusal(
+    tmp_path: Path,
+) -> None:
+    """Both oracle and leakage rely on one typed manifest recheck boundary."""
+    from silent_cascade.env.services import (
+        Phase1ServiceDependencies,
+        _bound_manifest_sha256,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest = _matched_manifest()
+    path = tmp_path / "source-changed.json"
+    publish_manifest(path, manifest)
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_audit_validation_allocation(),
+        independent_allocation=_audit_independent_allocation(),
+        collect_provenance=_manifest_current_collector(manifest),
+        build_manifest=lambda *args: pytest.fail("not used"),
+    )
+
+    with pytest.raises(ManifestError, match=r"changed|manifest|source"):
+        _bound_manifest_sha256(path, deps, expected_sha256="0" * 64)
+
+
+def test_production_manifest_test_profile_selects_the_frozen_1200_in_canonical_order() -> None:
+    """Auditing all 10,000 rows or sampling partial cohorts would invalidate TEST."""
+    from collections import Counter, defaultdict
+
+    from silent_cascade.env.services import (
+        PRODUCTION_DEPENDENCIES,
+        _manifest_test_profile_entries,
+    )
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.logging.manifest import MatchedManifestCoordinate
+
+    manifest = _canonical_validation_manifest_recipe()
+    selected = _manifest_test_profile_entries(
+        manifest,
+        PRODUCTION_DEPENDENCIES,
+        audit_seed=2026083091,
+    )
+    coordinates = []
+    members: dict[tuple[int, int], set[int]] = defaultdict(set)
+    for entry in selected:
+        assert isinstance(entry.coordinate, MatchedManifestCoordinate)
+        coordinate = (
+            entry.requested_path_length,
+            entry.coordinate.cohort_index,
+            entry.coordinate.member_index,
+        )
+        coordinates.append(coordinate)
+        members[coordinate[:2]].add(coordinate[2])
+
+    assert len(selected) == 1_200
+    assert Counter(entry.requested_path_length for entry in selected) == {
+        2: 400,
+        3: 400,
+        4: 400,
+    }
+    assert len(members) == 300
+    assert all(value == {0, 1, 2, 3} for value in members.values())
+    assert coordinates == sorted(coordinates)
+    assert (
+        sha256_bytes(canonical_json_bytes({"coordinates": coordinates}))
+        == "57f500c7be1182f0f6dd625bb445b5dda066cffc34ba687589ef6d7c5bca9469"
+    )
+
+
+def test_production_manifest_test_source_binds_full_identity_and_subset_witnesses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A self-consistent 1,200-row subset must still authenticate its complete manifest."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.leakage import LeakageAuditProfileName
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    resolved = resolve_config(
+        Phase1Config,
+        [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+    )
+    manifest = _canonical_validation_manifest_recipe()
+    debug_manifest = _matched_manifest(resolved)
+    template = services.regenerate_entry(
+        resolved.config,
+        debug_manifest,
+        debug_manifest.entries[0],
+    )
+    deps = replace(
+        services.PRODUCTION_DEPENDENCIES,
+        regenerate_manifest_entry=lambda *args: template,
+    )
+    monkeypatch.setattr(services, "_require_manifest_bundle_matches_entry", lambda *args: None)
+
+    source = services._bind_manifest_audit_source(resolved, manifest, deps)
+    independent_authority = services._bind_manifest_audit_source(resolved, manifest, deps)
+    anchor = services._anchor_for_bound_source(source, LeakageAuditProfileName.TEST)
+
+    assert source.descriptor.episode_count == 1_200
+    assert source.descriptor.allocation_or_manifest_sha256 == sha256_bytes(
+        canonical_json_bytes(manifest)
+    )
+    assert source.authentication.suite_path_denominators == {
+        "iid_primary:2": 400,
+        "iid_primary:3": 400,
+        "iid_primary:4": 400,
+    }
+    assert source.authentication.clock_scale_pair_counts["scale_0_1x"] > 0
+    assert source.authentication.clock_scale_pair_counts["scale_10x"] > 0
+    assert independent_authority.descriptor == source.descriptor
+    assert independent_authority.authentication == source.authentication
+    assert anchor.source_manifest_sha256 == source.authentication.source_manifest_sha256
+    assert anchor.clock_pair_manifest_sha256 == source.authentication.clock_pair_manifest_sha256
+    assert anchor.episode_count == 1_200
 
 
 def test_request_models_reject_unknown_source_modes_and_ambiguous_selectors() -> None:
@@ -445,6 +671,81 @@ def test_debug_inspection_can_include_oracle_without_private_truth(tmp_path: Pat
 
     assert report.oracle is not None
     assert "truth" not in report.model_dump_json()
+
+
+@pytest.mark.parametrize("refusal", ("config", "index", "uuid"))
+def test_inspection_routine_artifact_and_selector_refusals_are_typed(
+    refusal: str,
+    tmp_path: Path,
+) -> None:
+    """Routine manifest selection failures must cross the public service seam typed."""
+    from uuid import UUID
+
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        InspectEpisodeRequest,
+        Phase1ServiceDependencies,
+        inspect_episode,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest = _matched_manifest()
+    path = tmp_path / "inspect-routine.json"
+    publish_manifest(path, manifest)
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_audit_validation_allocation(),
+        independent_allocation=_audit_independent_allocation(),
+        collect_provenance=_manifest_current_collector(manifest),
+        build_manifest=lambda *args: pytest.fail("not used"),
+    )
+    selection = (
+        ConfigSelection(set_overrides=("data.leakage_audit.test.permutation_replicates=1",))
+        if refusal == "config"
+        else ConfigSelection()
+    )
+    request = InspectEpisodeRequest(
+        config=selection,
+        manifest_path=path,
+        entry_index=99 if refusal in {"config", "index"} else None,
+        episode_public_id=(
+            UUID("ffffffff-ffff-4fff-bfff-ffffffffffff") if refusal == "uuid" else None
+        ),
+    )
+    error_type = ConfigurationError if refusal == "config" else ManifestAccessError
+
+    with pytest.raises(error_type, match=r"config|index|public ID|manifest"):
+        inspect_episode(request, deps=deps)
+
+
+def test_inspection_regenerated_entry_mismatch_is_a_typed_episode_refusal(
+    tmp_path: Path,
+) -> None:
+    """A manifest recipe mismatch is corrupt artifact evidence, not a programmer ValueError."""
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        InspectEpisodeRequest,
+        Phase1ServiceDependencies,
+        inspect_episode,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest = _matched_manifest()
+    changed_entry = manifest.entries[0].model_copy(update={"episode_sha256": "0" * 64})
+    changed = manifest.model_copy(update={"entries": (changed_entry, *manifest.entries[1:])})
+    path = tmp_path / "inspect-corrupt-entry.json"
+    publish_manifest(path, changed)
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=_audit_validation_allocation(),
+        independent_allocation=_audit_independent_allocation(),
+        collect_provenance=_manifest_current_collector(changed),
+        build_manifest=lambda *args: pytest.fail("not used"),
+    )
+
+    with pytest.raises(EpisodeError, match=r"regenerated|manifest entry"):
+        inspect_episode(
+            InspectEpisodeRequest(config=ConfigSelection(), manifest_path=path, entry_index=0),
+            deps=deps,
+        )
 
 
 def test_validation_inspection_is_authorized_but_frozen_access_survives_rename(
@@ -626,7 +927,7 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
             )
         }
     )
-    with pytest.raises(ValueError, match="different immutable report"):
+    with pytest.raises(ArtifactError, match="different immutable report"):
         evaluate_oracle(divergent, deps=deps)
     assert output.read_bytes() == saved
 
@@ -667,6 +968,35 @@ def test_oracle_refuses_episode_outside_the_bound_allocation_before_publication(
             deps=_oracle_dependencies(allocation, generate_independent=generate_shifted),
         )
     assert not output.exists()
+
+
+@pytest.mark.parametrize("service", ("oracle", "leakage"))
+def test_allocation_source_mismatch_is_a_typed_configuration_refusal(service: str) -> None:
+    """A caller-selected allocation ID cannot become an untyped generation traceback."""
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        Phase1GateCorpusSource,
+        _audit_provenance,
+        _independent_provenance,
+    )
+
+    allocation = _audit_independent_allocation()
+    deps = _oracle_dependencies(allocation)
+    resolved = resolve_config(
+        Phase1Config,
+        [ConfigSelection().base_path, ConfigSelection().data_path],
+    )
+    source = Phase1GateCorpusSource(
+        allocation_id="wrong-allocation-v1",
+        root_seed=41,
+        public_id_seed=91,
+    )
+
+    with pytest.raises(ConfigurationError, match=r"allocation|config|source"):
+        if service == "oracle":
+            _independent_provenance(resolved, source, deps)
+        else:
+            _audit_provenance(resolved, source, deps)
 
 
 def test_oracle_refuses_incomplete_denominator_before_publication(tmp_path: Path) -> None:
@@ -895,7 +1225,7 @@ def test_manifest_oracle_authenticates_every_regenerated_entry_before_publicatio
         build_manifest=lambda *args: pytest.fail("not used"),
         regenerate_manifest_entry=permute,
     )
-    with pytest.raises(ValueError, match=r"manifest|entry|coordinate"):
+    with pytest.raises(EpisodeError, match=r"manifest|entry|coordinate"):
         evaluate_oracle(
             OracleEvaluationRequest(
                 config=ConfigSelection(),
@@ -1115,6 +1445,7 @@ def test_manifest_audit_binds_current_execution_separately_from_embedded_source(
     from silent_cascade.env.services import (
         ManifestCorpusSource,
         Phase1ServiceDependencies,
+        _anchor_for_bound_source,
         _production_audit_source,
     )
     from silent_cascade.logging.manifest import publish_manifest
@@ -1150,8 +1481,16 @@ def test_manifest_audit_binds_current_execution_separately_from_embedded_source(
     )
 
     assert source.descriptor.generation_mode == "matched"
+    assert source.descriptor.episode_count == 12
+    assert source.authentication.suite_path_denominators == {
+        "iid_primary:2": 4,
+        "iid_primary:3": 4,
+        "iid_primary:4": 4,
+    }
     assert source.authentication.clock_scale_pair_counts["scale_0_1x"] > 0
     assert source.authentication.clock_scale_pair_counts["scale_10x"] > 0
+    with pytest.raises(ConfigurationError, match=r"profile|source"):
+        _anchor_for_bound_source(source, LeakageAuditProfileName.PHASE1_GATE)
 
 
 @pytest.mark.parametrize("source_mode", ("manifest", "phase1_gate"))
@@ -1400,7 +1739,7 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
             == reproducibility.reference_corpus_sha256
         )
         divergent = result.report.model_copy(update={"feature_schema_hash": "f" * 64})
-        with pytest.raises(ValueError, match="different immutable report"):
+        with pytest.raises(ArtifactError, match="different immutable report"):
             _publish_report(output, divergent)
         assert output.read_bytes() == saved
         assert cleanup_observed == [()]
