@@ -1,18 +1,59 @@
+import ast
 import subprocess
 import sys
+from pathlib import Path
+
+import pytest
+
+from silent_cascade.env.config import SplitNamespace, SuiteName
+from silent_cascade.env.episode import (
+    EpisodeBundle,
+    EpisodeKey,
+    EpisodeRecipe,
+    EpisodeTruth,
+    EpisodeVariant,
+    MatchedEpisodeCoordinate,
+    PublicEpisode,
+    public_projection,
+)
+from silent_cascade.schemas import (
+    ActivationPayload,
+    AgentInit,
+    ExternalEvent,
+    ExternalEventKind,
+    LinkFact,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = ROOT / "src"
 
 
-def imported_modules(module_name: str) -> set[str]:
-    program = f"""
-import sys
-import {module_name}
-print('\\n'.join(sorted(sys.modules)))
-"""
-    completed = subprocess.run(
-        [sys.executable, "-c", program], check=False, capture_output=True, text=True
-    )
-    assert completed.returncode == 0, completed.stderr
-    return set(completed.stdout.splitlines())
+def _module_name(path: Path) -> str:
+    return ".".join(path.relative_to(SOURCE_ROOT).with_suffix("").parts)
+
+
+def imported_modules(path: Path) -> set[str]:
+    """Return imports from source syntax without executing module side effects."""
+    module = _module_name(path)
+    package = module.split(".")[:-1]
+    imported: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                keep = len(package) - node.level + 1
+                base_parts = package[:keep]
+                if node.module:
+                    base_parts.extend(node.module.split("."))
+                base = ".".join(base_parts)
+            else:
+                base = node.module or ""
+            if base:
+                imported.add(base)
+            imported.update(f"{base}.{alias.name}" if base else alias.name for alias in node.names)
+    return imported
 
 
 def test_core_imports_do_not_load_optional_qwen_modules() -> None:
@@ -36,6 +77,7 @@ import silent_cascade.io
 import silent_cascade.doctor
 import silent_cascade.cli
 assert not blocked.intersection(sys.modules)
+assert not any("qwen" in name.lower() for name in sys.modules)
 """
     completed = subprocess.run(
         [sys.executable, "-c", program],
@@ -47,12 +89,82 @@ assert not blocked.intersection(sys.modules)
 
 
 def test_generator_and_invariants_do_not_import_oracle() -> None:
-    assert "silent_cascade.env.oracle" not in imported_modules("silent_cascade.env.generator")
-    assert "silent_cascade.env.oracle" not in imported_modules("silent_cascade.env.invariants")
-    assert "silent_cascade.env.generator" not in imported_modules("silent_cascade.env.invariants")
+    generator_imports = imported_modules(SOURCE_ROOT / "silent_cascade/env/generator.py")
+    invariant_imports = imported_modules(SOURCE_ROOT / "silent_cascade/env/invariants.py")
+    assert "silent_cascade.env.oracle" not in generator_imports
+    assert "silent_cascade.env.oracle" not in invariant_imports
+    assert "silent_cascade.env.generator" not in invariant_imports
 
 
 def test_oracle_does_not_import_generator_or_invariants() -> None:
-    modules = imported_modules("silent_cascade.env.oracle")
+    modules = imported_modules(SOURCE_ROOT / "silent_cascade/env/oracle.py")
     assert "silent_cascade.env.generator" not in modules
     assert "silent_cascade.env.invariants" not in modules
+
+
+def test_future_agent_facing_modules_cannot_import_private_oracle() -> None:
+    """Any later agent-facing module is picked up without importing it at runtime."""
+    package = SOURCE_ROOT / "silent_cascade"
+    for relative in ("eventflow", "memory", "models", "eval/conditions"):
+        directory = package / relative
+        for path in directory.rglob("*.py") if directory.exists() else ():
+            assert "silent_cascade.env.oracle" not in imported_modules(path), path
+
+
+def test_public_projection_spy_observes_no_private_truth_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default public projection must not consult private truth even transiently."""
+    public = PublicEpisode(
+        init=AgentInit("00000000-0000-4000-8000-000000000001", 64, 4, 0.0),
+        events=(
+            ExternalEvent(0, 0.5, ExternalEventKind.FACT, LinkFact(1, 2)),
+            ExternalEvent(
+                1,
+                1.0,
+                ExternalEventKind.ACTIVATE,
+                ActivationPayload(1),
+            ),
+        ),
+    )
+    truth = EpisodeTruth(
+        key=EpisodeKey(
+            "ofd-v1",
+            SplitNamespace.DEBUG,
+            SuiteName.IID_PRIMARY,
+            998_877,
+            MatchedEpisodeCoordinate("matched", 0, 0),
+        ),
+        recipe=EpisodeRecipe(
+            1,
+            EpisodeVariant.DISCONNECTED_NEGATIVE,
+            0,
+            SuiteName.IID_PRIMARY,
+            0,
+        ),
+        relevant_node_path=(1, 2),
+        relevant_record_ids=(0,),
+        terminal_record_id=None,
+        relevant_hazard_type=None,
+        private_terminal=ExternalEvent(2, 2.0, ExternalEventKind.END, None),
+        activation_time=1.0,
+        episode_delay=1.0,
+        action_window_start=None,
+        action_window_end=None,
+        action_target=None,
+        rejection_count=0,
+        rejection_reasons=("PRIVATE-ROOT-SEED-998877",),
+    )
+    bundle = EpisodeBundle(public, truth)
+    private_reads: list[str] = []
+    original_getattribute = EpisodeBundle.__getattribute__
+
+    def observe_private_read(instance: EpisodeBundle, name: str) -> object:
+        if name == "truth":
+            private_reads.append(name)
+        return original_getattribute(instance, name)
+
+    monkeypatch.setattr(EpisodeBundle, "__getattribute__", observe_private_read)
+
+    assert public_projection(bundle) is public
+    assert private_reads == []

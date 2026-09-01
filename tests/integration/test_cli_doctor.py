@@ -33,5 +33,5 @@ def test_installed_console_script_runs_doctor(tmp_path) -> None:
     assert json.loads(completed.stdout)["ok"] is True
 
 
-def test_cli_has_no_unimplemented_commands() -> None:
+def test_cli_keeps_doctor_as_the_only_root_command() -> None:
     assert {command.name for command in app.registered_commands} == {"doctor"}
