@@ -16,7 +16,7 @@ from silent_cascade.env.leakage import (
     LeakageReport,
     audit_source_descriptor_sha256,
 )
-from silent_cascade.env.reproducibility import ReproducibilityReport
+from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
 from silent_cascade.env.services import OracleEvaluationReport
 from silent_cascade.errors import ArtifactIntegrityError, ManifestError, SilentCascadeError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
@@ -64,6 +64,15 @@ _VALIDATION_EXPERIMENT_VERSION = "ofd-primary-validation-v1"
 _VALIDATION_COHORT_BLOCKS = ((0, 834, 2), (834, 1_667, 3), (1_667, 2_500, 4))
 _PHASE1_GATE_ALLOCATION_SHA256 = "9e032f6993af9f2d53c1dde3a3e3e72e097cf143ae2e72d02609f2d2d6f1ce18"
 _CLOCK_PAIR_COUNTS = {"scale_0_1x": 5_000, "scale_10x": 2_000}
+_VALIDATION_ROOT_SEED = 2026083001
+_VALIDATION_PUBLIC_ID_SEED = 2026083002
+_VALIDATION_PUBLIC_ID_SEED_SHA256 = (
+    "0454fca622eb08379a5d88ecbe0a5ef70f6a15e9ca7d333acecf840f2df38802"
+)
+_INDEPENDENT_ROOT_SEED = 2026083011
+_INDEPENDENT_PUBLIC_ID_SEED_SHA256 = (
+    "f21ac562825bfd96e875eedf90c8ba5ed09883ebe2c18449843b03acebec778a"
+)
 
 
 class Phase1GateVerificationResult(StrictModel):
@@ -190,6 +199,9 @@ def _require_validation_artifacts(
         and manifest.provenance.generation_mode == "matched"
         and manifest.provenance.allocation_id == "validation-v1"
         and manifest.provenance.split_namespace is SplitNamespace.VALIDATION
+        and manifest.provenance.root_seed == _VALIDATION_ROOT_SEED
+        and manifest.public_id_seed == _VALIDATION_PUBLIC_ID_SEED
+        and manifest.provenance.public_id_seed_sha256 == _VALIDATION_PUBLIC_ID_SEED_SHA256
         and manifest.episode_count == _VALIDATION_EPISODE_COUNT,
         "validation artifact does not have the frozen 10,000-episode recipe",
     )
@@ -313,6 +325,20 @@ def _require_independent_reproducibility(report: ReproducibilityReport) -> None:
         and report.mismatch_count == 0,
         "independent reproducibility artifact is failed or has a wrong denominator",
     )
+    expected_source = IndependentSourceDescriptor(
+        schema_version="phase1-independent-source-v1",
+        allocation_id="phase1-independent-gate-v1",
+        allocation_sha256=_PHASE1_GATE_ALLOCATION_SHA256,
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        root_seed=report.provenance.root_seed,
+        public_id_seed_sha256=report.provenance.public_id_seed_sha256,
+        config_sha256=report.provenance.config_sha256,
+        generator_source_sha256=report.provenance.generator_source.sha256,
+    )
+    _require(
+        report.source_payload_sha256 == sha256_bytes(canonical_json_bytes(expected_source)),
+        "independent reproducibility source descriptor disagrees with frozen provenance",
+    )
 
 
 def verify_phase1_gate_artifacts(
@@ -357,8 +383,14 @@ def verify_phase1_gate_artifacts(
             _independent_source_key(item) == independent_key
             for item in (leakage.provenance, independent_reproducibility.provenance)
         )
-        and independent_key[:3]
-        == ("independent", "phase1-independent-gate-v1", SplitNamespace.PHASE1_GATE),
+        and independent_key
+        == (
+            "independent",
+            "phase1-independent-gate-v1",
+            SplitNamespace.PHASE1_GATE,
+            _INDEPENDENT_ROOT_SEED,
+            _INDEPENDENT_PUBLIC_ID_SEED_SHA256,
+        ),
         "independent gate source provenance disagrees",
     )
     _require(

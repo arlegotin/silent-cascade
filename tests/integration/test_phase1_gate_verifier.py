@@ -19,7 +19,7 @@ from silent_cascade.env.leakage import (
     LeakageReport,
     audit_source_descriptor_sha256,
 )
-from silent_cascade.env.reproducibility import ReproducibilityReport
+from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
 from silent_cascade.env.services import ExactRandomCheck, OracleEvaluationReport
 from silent_cascade.errors import ArtifactIntegrityError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
@@ -62,6 +62,9 @@ GATE_DENOMINATORS = {
     "ood_short_delay:4": 8_000,
 }
 GATE_ALLOCATION_SHA256 = "9e032f6993af9f2d53c1dde3a3e3e72e097cf143ae2e72d02609f2d2d6f1ce18"
+INDEPENDENT_SOURCE_PAYLOAD_SHA256 = (
+    "799f4add88eae1e541eff6edf7e3afa35ec22a68e29f7a8309b05f6b315cc121"
+)
 
 
 def _provenance(*, independent: bool) -> EvidenceProvenance:
@@ -274,7 +277,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
     independent_reproducibility = ReproducibilityReport(
         schema_version="phase1-reproducibility-v1",
         source_mode="independent_allocation",
-        source_payload_sha256="d" * 64,
+        source_payload_sha256=INDEPENDENT_SOURCE_PAYLOAD_SHA256,
         sample_size=1_000,
         verified_source_entries=100_000,
         modes=("forward", "reverse", "chunked", "fresh_process"),
@@ -332,6 +335,85 @@ def _mutate_validation_manifest(
     artifacts["validation-reproducibility.json"] = _mutate_json(
         artifacts["validation-reproducibility.json"], rebind_reproducibility
     )
+
+
+def _independent_descriptor_sha256(**updates: object) -> str:
+    values: dict[str, object] = {
+        "schema_version": "phase1-independent-source-v1",
+        "allocation_id": "phase1-independent-gate-v1",
+        "allocation_sha256": GATE_ALLOCATION_SHA256,
+        "split_namespace": SplitNamespace.PHASE1_GATE,
+        "root_seed": 2026083011,
+        "public_id_seed_sha256": public_id_seed_sha256(2026083012),
+        "config_sha256": "c" * 64,
+        "generator_source_sha256": "d" * 64,
+    }
+    values.update(updates)
+    descriptor = IndependentSourceDescriptor.model_validate(values)
+    return sha256_bytes(canonical_json_bytes(descriptor))
+
+
+def _replace_validation_seeds(
+    artifacts: dict[str, bytes], *, root_seed: int, public_id_seed: int
+) -> None:
+    envelope = json.loads(artifacts["validation.json"])
+    provenance = envelope["payload"]["provenance"]
+    provenance["root_seed"] = root_seed
+    provenance["public_id_seed_sha256"] = public_id_seed_sha256(public_id_seed)
+    envelope["payload"]["public_id_seed"] = public_id_seed
+    envelope["payload_sha256"] = sha256_bytes(canonical_json_bytes(envelope["payload"]))
+    artifacts["validation.json"] = canonical_json_bytes(envelope)
+
+    def rebind(value: dict[str, object]) -> None:
+        report_provenance = value["provenance"]  # type: ignore[assignment]
+        report_provenance["root_seed"] = root_seed  # type: ignore[index]
+        report_provenance["public_id_seed_sha256"] = public_id_seed_sha256(  # type: ignore[index]
+            public_id_seed
+        )
+        value["source_payload_sha256"] = envelope["payload_sha256"]
+
+    artifacts["validation-reproducibility.json"] = _mutate_json(
+        artifacts["validation-reproducibility.json"], rebind
+    )
+
+
+def _replace_independent_seeds(
+    artifacts: dict[str, bytes], *, root_seed: int, public_id_seed: int
+) -> None:
+    fingerprint = public_id_seed_sha256(public_id_seed)
+    for artifact_name in (
+        "oracle.json",
+        "leakage.json",
+        "independent-reproducibility.json",
+    ):
+
+        def rebind(value: dict[str, object], *, name: str = artifact_name) -> None:
+            provenance = value["provenance"]  # type: ignore[assignment]
+            provenance["root_seed"] = root_seed  # type: ignore[index]
+            provenance["public_id_seed_sha256"] = fingerprint  # type: ignore[index]
+            if name == "leakage.json":
+                descriptor = AuditSourceDescriptor(
+                    schema_version="leakage-source-v1",
+                    generation_mode="independent",
+                    allocation_id="phase1-independent-gate-v1",
+                    allocation_or_manifest_sha256=GATE_ALLOCATION_SHA256,
+                    split_namespace=SplitNamespace.PHASE1_GATE,
+                    root_seed=root_seed,
+                    public_id_seed_sha256=fingerprint,
+                    config_sha256="c" * 64,
+                    generator_source_sha256="d" * 64,
+                    episode_count=100_000,
+                )
+                provenance["leakage_audit"]["descriptor_sha256"] = (  # type: ignore[index]
+                    audit_source_descriptor_sha256(descriptor)
+                )
+            elif name == "independent-reproducibility.json":
+                value["source_payload_sha256"] = _independent_descriptor_sha256(
+                    root_seed=root_seed,
+                    public_id_seed_sha256=fingerprint,
+                )
+
+        artifacts[artifact_name] = _mutate_json(artifacts[artifact_name], rebind)
 
 
 def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
@@ -491,6 +573,60 @@ def test_verifier_refuses_nonfrozen_reproducibility_execution_matrix(
     )
 
     with pytest.raises(ArtifactIntegrityError, match="reproducibility"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "descriptor_updates",
+    [
+        pytest.param(None, id="arbitrary-payload-hash"),
+        pytest.param({"allocation_id": "unrelated-allocation"}, id="allocation-id"),
+        pytest.param({"allocation_sha256": "0" * 64}, id="allocation-hash"),
+        pytest.param({"split_namespace": SplitNamespace.DEBUG}, id="namespace"),
+        pytest.param({"root_seed": 47}, id="root-seed"),
+        pytest.param(
+            {"public_id_seed_sha256": public_id_seed_sha256(53)},
+            id="public-id-seed",
+        ),
+        pytest.param({"config_sha256": "0" * 64}, id="config-hash"),
+        pytest.param({"generator_source_sha256": "0" * 64}, id="generator-hash"),
+    ],
+)
+def test_verifier_refuses_wrong_independent_reproducibility_source_descriptor(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    descriptor_updates: dict[str, object] | None,
+) -> None:
+    """A matching corpus hash cannot substitute for the sealed Task 14 source identity."""
+    artifacts = dict(consistent_artifact_bytes)
+    wrong_hash = (
+        "0" * 64
+        if descriptor_updates is None
+        else _independent_descriptor_sha256(**descriptor_updates)
+    )
+    artifacts["independent-reproducibility.json"] = _mutate_json(
+        artifacts["independent-reproducibility.json"],
+        lambda value: value.__setitem__("source_payload_sha256", wrong_hash),
+    )
+
+    with pytest.raises(ArtifactIntegrityError, match="independent reproducibility"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize("scope", ["validation", "independent", "both"])
+def test_verifier_refuses_coordinated_alternate_evidence_seeds(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    scope: str,
+) -> None:
+    """Internally consistent republishing cannot replace the predeclared evidence seeds."""
+    artifacts = dict(consistent_artifact_bytes)
+    if scope in {"validation", "both"}:
+        _replace_validation_seeds(artifacts, root_seed=41, public_id_seed=43)
+    if scope in {"independent", "both"}:
+        _replace_independent_seeds(artifacts, root_seed=47, public_id_seed=53)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"seed|source provenance|validation"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 
