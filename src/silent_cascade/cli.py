@@ -41,6 +41,16 @@ app.add_typer(leakage_app, name="leakage")
 _PHASE1_ALLOCATION_SELECTOR = "phase1-gate"
 _PHASE1_ALLOCATION_ID = "phase1-independent-gate-v1"
 _PHASE1_REFUSAL_MESSAGE = "Phase 1 command refused invalid or inconsistent inputs"
+_EXPECTED_PHASE1_SERVICE_REFUSALS = frozenset(
+    {
+        "inspection entry index is outside the manifest",
+        "inspection public ID is not in the manifest",
+        "manifest config does not match resolved inspection config",
+        "immutable report publication failed",
+        "different immutable report already exists",
+        "published report differs from candidate",
+    }
+)
 
 
 class _Phase1CommandError(SilentCascadeError):
@@ -202,6 +212,10 @@ def _emit_phase1_progress(operation: str, state: str) -> None:
     typer.echo(f"phase1-progress: {operation} {state}", err=True)
 
 
+def _is_expected_phase1_service_refusal(error: ValueError) -> bool:
+    return str(error) in _EXPECTED_PHASE1_SERVICE_REFUSALS
+
+
 def _invoke_phase1[RequestT](
     operation: Callable[[RequestT], StrictModel],
     request: RequestT,
@@ -217,7 +231,9 @@ def _invoke_phase1[RequestT](
     except SilentCascadeError as error:
         _render_phase1_error(error)
         raise typer.Exit(code=1) from None
-    except ValueError:
+    except ValueError as error:
+        if not _is_expected_phase1_service_refusal(error):
+            raise
         _render_phase1_error(_Phase1CommandError(_PHASE1_REFUSAL_MESSAGE))
         raise typer.Exit(code=1) from None
     if progress_operation is not None:

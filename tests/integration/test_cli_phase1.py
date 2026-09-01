@@ -369,9 +369,12 @@ def test_silent_cascade_error_is_one_stable_stderr_object_without_private_data(
             ["--entry-index", "0"],
             "manifest config does not match resolved inspection config",
         ),
+        (["--entry-index", "0"], "immutable report publication failed"),
+        (["--entry-index", "0"], "different immutable report already exists"),
+        (["--entry-index", "0"], "published report differs from candidate"),
     ],
 )
-def test_expected_inspection_refusals_are_one_private_safe_typed_error(
+def test_expected_task16_service_refusals_are_one_private_safe_typed_error(
     monkeypatch: pytest.MonkeyPatch,
     selector: list[str],
     service_message: str,
@@ -397,6 +400,44 @@ def test_expected_inspection_refusals_are_one_private_safe_typed_error(
     assert "Traceback" not in result.stderr
     assert service_message not in result.stderr
     assert private_sentinel not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(ValueError("programmer bug"), id="unrecognized-value-error"),
+        pytest.param(
+            ValueError("inspection entry index is outside the manifest "),
+            id="selector-near-miss",
+        ),
+        pytest.param(
+            ValueError("different immutable report already exists: detail"),
+            id="publication-near-miss",
+        ),
+        pytest.param(TypeError("programmer type bug"), id="type-error"),
+        pytest.param(RuntimeError("programmer runtime bug"), id="runtime-error"),
+    ],
+)
+def test_unexpected_service_failures_remain_visible_to_the_cli_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    """Only the exact finite Task 16 refusal contract may become a generic exit-one error."""
+
+    def inspect(request: InspectEpisodeRequest) -> _AdapterPayload:
+        del request
+        raise error
+
+    monkeypatch.setattr(cli, "inspect_episode", inspect)
+    result = runner.invoke(
+        cli.app,
+        ["episode", "inspect", "renamed.json", "--entry-index", "0", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert result.exception is error
 
 
 def test_immutable_publication_conflict_is_typed_after_progress_without_traceback(
