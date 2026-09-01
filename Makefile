@@ -14,7 +14,7 @@ test:
 	uv run pytest -q
 
 smoke:
-	uv run pytest -q tests/integration/test_cli_doctor.py tests/regression/test_import_boundaries.py
+	uv run pytest -q tests/integration/test_cli_doctor.py tests/integration/test_cli_phase1.py tests/integration/test_phase1_gate_verifier.py tests/regression/test_phase1_fixtures.py tests/regression/test_import_boundaries.py
 
 verify: lint test doctor
 	uv build

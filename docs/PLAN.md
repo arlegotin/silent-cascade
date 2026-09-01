@@ -5,7 +5,7 @@ The canonical requirements live in the [design specification](superpowers/specs/
 | Phase | Plan | Gate |
 |---|---|---|
 | 0 — Bootstrap | [Phase 0 implementation plan](superpowers/plans/2026-08-30-phase-0-bootstrap.md) | `uv sync --locked --group dev`, `make verify`, and `uv run silent-cascade doctor` |
-| 1 — Generator and oracle | [Phase 1 implementation plan](superpowers/plans/2026-08-30-phase-1-generator-oracle.md) | Explicit plan approval, then fixed matched-validation manifest, 100,000 independently generated/validated claim-recipe episodes, exact oracle success, random analytic check, leakage/reproducibility audits, and local `make verify` |
+| 1 — Generator and oracle | [Phase 1 implementation plan](superpowers/plans/2026-08-30-phase-1-generator-oracle.md) | Fixed matched-validation manifest + 100,000 independent-recipe generated/validated episodes + oracle 100% + random analytic check + leakage/reproducibility audits + local `make verify` |
 | 2 — Flow and event engine | Governed by a separate plan after the Phase 1 gate | Phase 1 must pass first |
 | 3 — Neural components | Governed by a separate plan after the Phase 2 gate | Phase 2 must pass first |
 | 4 — Autonomous EventFlow | Governed by a separate plan after the Phase 3 gate | Phase 3 must pass first |
