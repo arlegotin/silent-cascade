@@ -95,7 +95,7 @@ from silent_cascade.provenance import (
     EvidenceProvenance,
     EvidenceProvenanceCollector,
     LeakageAuditEvidenceAnchor,
-    collect_evidence_provenance,
+    collect_final_phase1_provenance,
     public_id_seed_sha256,
 )
 from silent_cascade.rng import (
@@ -1871,30 +1871,6 @@ def _production_audit_anchor(
     return _anchor_for_bound_source(bound, profile)
 
 
-def _collect_final_phase1_provenance(
-    resolved: ResolvedConfig[Phase1Config],
-    *,
-    repo_root: Path,
-    generation_mode: Literal["matched", "independent"],
-    allocation_id: str,
-    split_namespace: SplitNamespace,
-    root_seed: int,
-    public_id_seed: int,
-    analysis_seeds: dict[str, int],
-) -> EvidenceProvenance:
-    return collect_evidence_provenance(
-        resolved,
-        repo_root=repo_root,
-        generation_mode=generation_mode,
-        allocation_id=allocation_id,
-        split_namespace=split_namespace,
-        root_seed=root_seed,
-        public_id_seed=public_id_seed,
-        analysis_seeds=analysis_seeds,
-        analysis_scope="phase1_analysis",
-    )
-
-
 def _audit_provenance(
     resolved: ResolvedConfig[Phase1Config],
     source: CorpusSource,
@@ -2012,7 +1988,7 @@ PRODUCTION_DEPENDENCIES = Phase1ServiceDependencies(
     production_mode=True,
     validation_allocation=VALIDATION_ALLOCATION,
     independent_allocation=PHASE1_GATE_ALLOCATION,
-    collect_provenance=_collect_final_phase1_provenance,
+    collect_provenance=collect_final_phase1_provenance,
     build_manifest=build_validation_manifest,
     regenerate_manifest_entry=regenerate_entry,
     iter_independent=iter_independent_requests,

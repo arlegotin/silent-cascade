@@ -57,6 +57,60 @@ def _provenance(resolved) -> EvidenceProvenance:
     )
 
 
+def test_production_validation_reproducibility_uses_freeze_provenance() -> None:
+    """The frozen manifest and its verifier must authenticate the same final source scope."""
+    from silent_cascade.env.generator import VALIDATION_ALLOCATION
+    from silent_cascade.env.reproducibility import PRODUCTION_REPRODUCIBILITY_DEPENDENCIES
+    from silent_cascade.env.services import PRODUCTION_DEPENDENCIES
+
+    resolved = _resolved()
+    arguments = {
+        "repo_root": Path.cwd(),
+        "generation_mode": "matched",
+        "allocation_id": VALIDATION_ALLOCATION.allocation_id,
+        "split_namespace": SplitNamespace.VALIDATION,
+        "root_seed": 2026083001,
+        "public_id_seed": 2026083002,
+        "analysis_seeds": {},
+    }
+
+    freeze = PRODUCTION_DEPENDENCIES.collect_provenance(resolved, **arguments)  # type: ignore[arg-type]
+    reproducibility = PRODUCTION_REPRODUCIBILITY_DEPENDENCIES.collect_provenance(
+        resolved,
+        **arguments,  # type: ignore[arg-type]
+    )
+
+    assert freeze == reproducibility
+    assert reproducibility.analysis_source.scope == "phase1_analysis"
+
+
+def test_production_independent_reproducibility_uses_common_gate_provenance() -> None:
+    """Independent reproducibility must share oracle/leakage's final source authority."""
+    from silent_cascade.env.generator import PHASE1_GATE_ALLOCATION
+    from silent_cascade.env.reproducibility import PRODUCTION_REPRODUCIBILITY_DEPENDENCIES
+    from silent_cascade.env.services import PRODUCTION_DEPENDENCIES
+
+    resolved = _resolved()
+    arguments = {
+        "repo_root": Path.cwd(),
+        "generation_mode": "independent",
+        "allocation_id": PHASE1_GATE_ALLOCATION.allocation_id,
+        "split_namespace": SplitNamespace.PHASE1_GATE,
+        "root_seed": 2026083011,
+        "public_id_seed": 2026083012,
+        "analysis_seeds": {},
+    }
+
+    gate = PRODUCTION_DEPENDENCIES.collect_provenance(resolved, **arguments)  # type: ignore[arg-type]
+    reproducibility = PRODUCTION_REPRODUCIBILITY_DEPENDENCIES.collect_provenance(
+        resolved,
+        **arguments,  # type: ignore[arg-type]
+    )
+
+    assert gate == reproducibility
+    assert reproducibility.analysis_source.scope == "phase1_analysis"
+
+
 def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> None:
     from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
     from silent_cascade.env.reproducibility import (

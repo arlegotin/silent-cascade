@@ -350,3 +350,28 @@ def collect_evidence_provenance(
         analysis_seeds=dict(analysis_seeds),
         foundation_model_calls=resolved.config.runtime.primary_foundation_model_calls,
     )
+
+
+def collect_final_phase1_provenance(
+    resolved: ResolvedConfig[Phase1Config],
+    *,
+    repo_root: Path,
+    generation_mode: Literal["matched", "independent"],
+    allocation_id: str,
+    split_namespace: SplitNamespace,
+    root_seed: int,
+    public_id_seed: int,
+    analysis_seeds: Mapping[str, int],
+) -> EvidenceProvenance:
+    """Collect provenance against the complete final Phase 1 analysis source scope."""
+    return collect_evidence_provenance(
+        resolved,
+        repo_root=repo_root,
+        generation_mode=generation_mode,
+        allocation_id=allocation_id,
+        split_namespace=split_namespace,
+        root_seed=root_seed,
+        public_id_seed=public_id_seed,
+        analysis_seeds=analysis_seeds,
+        analysis_scope="phase1_analysis",
+    )

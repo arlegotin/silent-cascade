@@ -53,7 +53,7 @@ from silent_cascade.logging.manifest import (
 from silent_cascade.provenance import (
     EvidenceProvenance,
     EvidenceProvenanceCollector,
-    collect_evidence_provenance,
+    collect_final_phase1_provenance,
     public_id_seed_sha256,
 )
 from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
@@ -209,7 +209,7 @@ def _run_fresh_process(work_order_bytes: bytes, python_hash_seed: int) -> bytes:
 PRODUCTION_REPRODUCIBILITY_DEPENDENCIES = ReproducibilityDependencies(
     True,
     PHASE1_GATE_ALLOCATION,
-    collect_evidence_provenance,
+    collect_final_phase1_provenance,
     load_manifest,
     regenerate_entry,
     iter_independent_requests,
