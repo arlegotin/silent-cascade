@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import UUID
 
 import pytest
@@ -17,6 +18,7 @@ from silent_cascade.env.services import (
     ManifestCorpusSource,
     OracleEvaluationRequest,
     Phase1GateCorpusSource,
+    _publish_report,
 )
 from silent_cascade.errors import ManifestAccessError
 from silent_cascade.validation import StrictModel
@@ -89,7 +91,9 @@ def test_data_freeze_json_builds_the_exact_production_request(
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == {"report": {"operation": "data.freeze", "passed": True}}
     assert result.stdout.count("\n") == 1
-    assert result.stderr == ""
+    assert result.stderr == (
+        "phase1-progress: data.freeze started\nphase1-progress: data.freeze completed\n"
+    )
     assert observed == [
         FreezeValidationRequest(
             config=ConfigSelection(
@@ -353,6 +357,162 @@ def test_silent_cascade_error_is_one_stable_stderr_object_without_private_data(
     assert private_sentinel not in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("selector", "service_message"),
+    [
+        (["--entry-index", "10000"], "inspection entry index is outside the manifest"),
+        (
+            ["--episode-id", "ffffffff-ffff-4fff-bfff-ffffffffffff"],
+            "inspection public ID is not in the manifest",
+        ),
+        (
+            ["--entry-index", "0"],
+            "manifest config does not match resolved inspection config",
+        ),
+    ],
+)
+def test_expected_inspection_refusals_are_one_private_safe_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+    selector: list[str],
+    service_message: str,
+) -> None:
+    """Routine selector/config refusals must not expose service stack frames or values."""
+    private_sentinel = "PRIVATE-ROOT-SEED-998877"
+
+    def inspect(request: InspectEpisodeRequest) -> _AdapterPayload:
+        del request
+        raise ValueError(service_message)
+
+    monkeypatch.setattr(cli, "inspect_episode", inspect)
+    result = runner.invoke(cli.app, ["episode", "inspect", "renamed.json", *selector, "--json"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "code": "phase1_command_error",
+        "message": "Phase 1 command refused invalid or inconsistent inputs",
+        "context": {},
+    }
+    assert result.stderr.count("\n") == 1
+    assert "Traceback" not in result.stderr
+    assert service_message not in result.stderr
+    assert private_sentinel not in result.stderr
+
+
+def test_immutable_publication_conflict_is_typed_after_progress_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No-clobber publication is expected domain refusal, not a programmer traceback."""
+
+    def conflict(request: FreezeValidationRequest) -> _AdapterResult:
+        del request
+        with TemporaryDirectory(prefix="silent-cascade-cli-conflict-") as raw:
+            path = Path(raw) / "report.json"
+            _publish_report(path, ConfigSelection())
+            _publish_report(path, ConfigSelection(base_path=Path("different.yaml")))
+        raise AssertionError("publication conflict did not fail")
+
+    monkeypatch.setattr(cli, "freeze_validation", conflict)
+    result = runner.invoke(
+        cli.app,
+        [
+            "data",
+            "freeze",
+            "--output",
+            "unused.json",
+            "--root-seed",
+            "41",
+            "--public-id-seed",
+            "91",
+            "--json",
+        ],
+    )
+
+    lines = result.stderr.splitlines()
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert lines[0] == "phase1-progress: data.freeze started"
+    assert json.loads(lines[1]) == {
+        "code": "phase1_command_error",
+        "message": "Phase 1 command refused invalid or inconsistent inputs",
+        "context": {},
+    }
+    assert len(lines) == 2
+    assert "Traceback" not in result.stderr
+    assert "different.yaml" not in result.stderr
+    assert "silent-cascade-cli-conflict" not in result.stderr
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["human", "json"])
+@pytest.mark.parametrize(
+    ("service_name", "arguments", "operation", "title"),
+    [
+        (
+            "freeze_validation",
+            [
+                "data",
+                "freeze",
+                "--output",
+                "validation.json",
+                "--root-seed",
+                "41",
+                "--public-id-seed",
+                "91",
+            ],
+            "data.freeze",
+            "Phase 1 validation freeze",
+        ),
+        (
+            "evaluate_oracle",
+            ["oracle", "evaluate", "--manifest", "validation.json"],
+            "oracle.evaluate",
+            "Phase 1 oracle evaluation",
+        ),
+        (
+            "run_leakage_audit",
+            [
+                "leakage",
+                "audit",
+                "--manifest",
+                "validation.json",
+                "--profile",
+                "phase1-gate",
+            ],
+            "leakage.audit",
+            "Phase 1 leakage audit",
+        ),
+    ],
+)
+def test_long_running_commands_emit_deterministic_stderr_progress_only(
+    monkeypatch: pytest.MonkeyPatch,
+    service_name: str,
+    arguments: list[str],
+    operation: str,
+    title: str,
+    json_output: bool,
+) -> None:
+    """Dropping stderr updates would leave production-scale work silent."""
+
+    def complete(request: object) -> _AdapterResult:
+        del request
+        return _AdapterResult(report=_AdapterPayload(operation=operation))
+
+    monkeypatch.setattr(cli, service_name, complete)
+    result = runner.invoke(cli.app, [*arguments, *(["--json"] if json_output else [])])
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == (
+        f"phase1-progress: {operation} started\nphase1-progress: {operation} completed\n"
+    )
+    if json_output:
+        assert json.loads(result.stdout) == {"report": {"operation": operation, "passed": True}}
+        assert result.stdout.count("\n") == 1
+    else:
+        assert result.stdout.startswith(f"{title}\n")
+        payload = json.loads(result.stdout.removeprefix(f"{title}\n"))
+        assert payload["report"]["operation"] == operation
+
+
 def test_human_output_is_stable_and_failed_scientific_report_exits_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,7 +526,9 @@ def test_human_output_is_stable_and_failed_scientific_report_exits_one(
     result = runner.invoke(cli.app, ["oracle", "evaluate", "--manifest", "a.json"])
 
     assert result.exit_code == 1
-    assert result.stderr == ""
+    assert result.stderr == (
+        "phase1-progress: oracle.evaluate started\nphase1-progress: oracle.evaluate completed\n"
+    )
     assert result.stdout == (
         "Phase 1 oracle evaluation\n"
         "{\n"

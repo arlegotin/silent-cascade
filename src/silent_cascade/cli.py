@@ -40,6 +40,11 @@ app.add_typer(leakage_app, name="leakage")
 
 _PHASE1_ALLOCATION_SELECTOR = "phase1-gate"
 _PHASE1_ALLOCATION_ID = "phase1-independent-gate-v1"
+_PHASE1_REFUSAL_MESSAGE = "Phase 1 command refused invalid or inconsistent inputs"
+
+
+class _Phase1CommandError(SilentCascadeError):
+    code = "phase1_command_error"
 
 
 @app.callback()
@@ -180,27 +185,43 @@ def _render_phase1_result(result: StrictModel, *, json_output: bool, title: str)
     )
 
 
+def _render_phase1_error(error: SilentCascadeError) -> None:
+    typer.echo(
+        json.dumps(
+            error.to_payload(),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        err=True,
+    )
+
+
+def _emit_phase1_progress(operation: str, state: str) -> None:
+    typer.echo(f"phase1-progress: {operation} {state}", err=True)
+
+
 def _invoke_phase1[RequestT](
     operation: Callable[[RequestT], StrictModel],
     request: RequestT,
     *,
     json_output: bool,
     title: str,
+    progress_operation: str | None = None,
 ) -> None:
+    if progress_operation is not None:
+        _emit_phase1_progress(progress_operation, "started")
     try:
         result = operation(request)
     except SilentCascadeError as error:
-        typer.echo(
-            json.dumps(
-                error.to_payload(),
-                allow_nan=False,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-            err=True,
-        )
+        _render_phase1_error(error)
         raise typer.Exit(code=1) from None
+    except ValueError:
+        _render_phase1_error(_Phase1CommandError(_PHASE1_REFUSAL_MESSAGE))
+        raise typer.Exit(code=1) from None
+    if progress_operation is not None:
+        _emit_phase1_progress(progress_operation, "completed")
     _render_phase1_result(result, json_output=json_output, title=title)
     report = getattr(result, "report", None)
     if getattr(report, "passed", True) is False:
@@ -230,6 +251,7 @@ def data_freeze_command(
         request,
         json_output=json_output,
         title="Phase 1 validation freeze",
+        progress_operation="data.freeze",
     )
 
 
@@ -298,6 +320,7 @@ def oracle_evaluate_command(
         request,
         json_output=json_output,
         title="Phase 1 oracle evaluation",
+        progress_operation="oracle.evaluate",
     )
 
 
@@ -349,6 +372,7 @@ def leakage_audit_command(
         request,
         json_output=json_output,
         title="Phase 1 leakage audit",
+        progress_operation="leakage.audit",
     )
 
 
