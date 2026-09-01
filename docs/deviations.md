@@ -4,6 +4,22 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-01 — Task 18 reproducibility adapter and command-matrix correction
+
+Before any Phase 1 evidence was generated, the Task 18 reproducibility commands
+were found to be unreachable through the production script adapter: the
+underlying Task 14 library supported both authenticated manifest and independent
+allocation sources, while the adapter exposed only allocation mode and no
+request-matrix options. The adapter was restored to the approved two-source
+contract with mutually exclusive source selection, conditional allocation
+seeds, exact request forwarding, stable typed failures, and one verified
+no-clobber publication path. Task 18's stale chunk examples `(1,31,257)` were
+corrected to the already reviewed and verifier-enforced production matrix
+`(1,3,7)` with hash seeds `(0,1)`. This correction changes no generator,
+allocation, sample size, scientific threshold, corpus seed, or zero-model-call
+requirement; all evidence is generated only after the repair is committed and
+independently reviewed.
+
 ## 2026-08-31 — Task 15 pre-freeze leakage regularization correction
 
 The global leakage-probe L2 penalty was corrected from `1.0` to `0.03` before

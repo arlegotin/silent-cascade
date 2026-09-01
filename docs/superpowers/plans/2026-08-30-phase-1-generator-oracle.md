@@ -4979,8 +4979,8 @@ uv run python scripts/check_phase1_reproducibility.py \
   --manifest manifests/validation/v1/ofd-primary-10000.json \
   --sample-size 1000 \
   --chunk-size 1 \
-  --chunk-size 31 \
-  --chunk-size 257 \
+  --chunk-size 3 \
+  --chunk-size 7 \
   --python-hash-seed 0 \
   --python-hash-seed 1 \
   --verify-all-source-entries \
@@ -5003,8 +5003,8 @@ uv run python scripts/check_phase1_reproducibility.py \
   --public-id-seed 2026083012 \
   --sample-size 1000 \
   --chunk-size 1 \
-  --chunk-size 31 \
-  --chunk-size 257 \
+  --chunk-size 3 \
+  --chunk-size 7 \
   --python-hash-seed 0 \
   --python-hash-seed 1 \
   --verify-all-source-entries \
