@@ -40,21 +40,6 @@ app.add_typer(leakage_app, name="leakage")
 
 _PHASE1_ALLOCATION_SELECTOR = "phase1-gate"
 _PHASE1_ALLOCATION_ID = "phase1-independent-gate-v1"
-_PHASE1_REFUSAL_MESSAGE = "Phase 1 command refused invalid or inconsistent inputs"
-_EXPECTED_PHASE1_SERVICE_REFUSALS = frozenset(
-    {
-        "inspection entry index is outside the manifest",
-        "inspection public ID is not in the manifest",
-        "manifest config does not match resolved inspection config",
-        "immutable report publication failed",
-        "different immutable report already exists",
-        "published report differs from candidate",
-    }
-)
-
-
-class _Phase1CommandError(SilentCascadeError):
-    code = "phase1_command_error"
 
 
 @app.callback()
@@ -198,7 +183,7 @@ def _render_phase1_result(result: StrictModel, *, json_output: bool, title: str)
 def _render_phase1_error(error: SilentCascadeError) -> None:
     typer.echo(
         json.dumps(
-            error.to_payload(),
+            {"code": error.code, "context": {}, "message": error.message},
             allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),
@@ -210,10 +195,6 @@ def _render_phase1_error(error: SilentCascadeError) -> None:
 
 def _emit_phase1_progress(operation: str, state: str) -> None:
     typer.echo(f"phase1-progress: {operation} {state}", err=True)
-
-
-def _is_expected_phase1_service_refusal(error: ValueError) -> bool:
-    return str(error) in _EXPECTED_PHASE1_SERVICE_REFUSALS
 
 
 def _invoke_phase1[RequestT](
@@ -230,11 +211,6 @@ def _invoke_phase1[RequestT](
         result = operation(request)
     except SilentCascadeError as error:
         _render_phase1_error(error)
-        raise typer.Exit(code=1) from None
-    except ValueError as error:
-        if not _is_expected_phase1_service_refusal(error):
-            raise
-        _render_phase1_error(_Phase1CommandError(_PHASE1_REFUSAL_MESSAGE))
         raise typer.Exit(code=1) from None
     if progress_operation is not None:
         _emit_phase1_progress(progress_operation, "completed")
@@ -375,6 +351,13 @@ def leakage_audit_command(
     ):
         raise typer.BadParameter(
             "allocation mode requires the phase1-gate profile",
+            param_hint="--profile",
+        )
+    if isinstance(source, ManifestCorpusSource) and (
+        selected_profile is not LeakageAuditProfileName.TEST
+    ):
+        raise typer.BadParameter(
+            "manifest mode requires the test profile",
             param_hint="--profile",
         )
     request = LeakageAuditRequest(

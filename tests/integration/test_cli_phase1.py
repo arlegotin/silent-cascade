@@ -20,7 +20,7 @@ from silent_cascade.env.services import (
     Phase1GateCorpusSource,
     _publish_report,
 )
-from silent_cascade.errors import ManifestAccessError
+from silent_cascade.errors import ArtifactError, ConfigurationError, ManifestAccessError
 from silent_cascade.validation import StrictModel
 
 runner = CliRunner()
@@ -107,6 +107,151 @@ def test_data_freeze_json_builds_the_exact_production_request(
             public_id_seed=91,
         )
     ]
+
+
+def test_cli_freeze_manifest_is_loadable_and_consumed_by_inspect_and_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The command's declared output must feed its two downstream manifest adapters."""
+    from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
+    from silent_cascade.env.generator import CohortAllocation, CohortBlock
+    from silent_cascade.env.services import (
+        Phase1ServiceDependencies,
+        build_cohort_manifest,
+        evaluate_oracle,
+        freeze_validation,
+        inspect_episode,
+    )
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.logging.manifest import ManifestAccessClass, load_manifest
+    from silent_cascade.provenance import (
+        GENERATOR_SOURCE_PATHS,
+        PHASE1_ANALYSIS_SOURCE_PATHS,
+        EvidenceProvenance,
+        SourceTreeFingerprint,
+        public_id_seed_sha256,
+    )
+
+    allocation = CohortAllocation(
+        allocation_id="test-cli-validation-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=tuple(
+            CohortBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=path,
+                first_cohort_index=path - 2,
+                cohort_count=1,
+            )
+            for path in (2, 3, 4)
+        ),
+    )
+
+    def collect(resolved: object, **kwargs: object) -> EvidenceProvenance:
+        return EvidenceProvenance(
+            schema_version="phase1-evidence-provenance-v1",
+            plan_base_revision="c" * 40,
+            source_commit="d" * 40,
+            source_dirty=False,
+            generator_version="ofd-v1",
+            generation_mode=kwargs["generation_mode"],  # type: ignore[arg-type]
+            allocation_id=kwargs["allocation_id"],  # type: ignore[arg-type]
+            split_namespace=kwargs["split_namespace"],  # type: ignore[arg-type]
+            config_sha256=resolved.sha256,  # type: ignore[attr-defined]
+            generator_source=SourceTreeFingerprint(
+                frame_version="sc-source-tree-v1",
+                scope="generator",
+                paths=GENERATOR_SOURCE_PATHS,
+                sha256="a" * 64,
+            ),
+            analysis_source=SourceTreeFingerprint(
+                frame_version="sc-source-tree-v1",
+                scope="phase1_analysis",
+                paths=PHASE1_ANALYSIS_SOURCE_PATHS,
+                sha256="b" * 64,
+            ),
+            root_seed=kwargs["root_seed"],  # type: ignore[arg-type]
+            public_id_seed_sha256=public_id_seed_sha256(kwargs["public_id_seed"]),  # type: ignore[arg-type]
+            analysis_seeds=kwargs["analysis_seeds"],  # type: ignore[arg-type]
+        )
+
+    def build(
+        config: Phase1Config,
+        provenance: EvidenceProvenance,
+        root_seed: int,
+        public_id_seed: int,
+    ):
+        return build_cohort_manifest(
+            config,
+            allocation,
+            provenance,
+            root_seed,
+            public_id_seed,
+            access_class=ManifestAccessClass.DEBUG,
+        )
+
+    deps = Phase1ServiceDependencies.for_test(
+        validation_allocation=allocation,
+        collect_provenance=collect,
+        build_manifest=build,
+    )
+    output = tmp_path / "cli-validation.json"
+    monkeypatch.setattr(
+        cli,
+        "freeze_validation",
+        lambda request: freeze_validation(
+            request.model_copy(update={"episode_count": 12}),
+            deps=deps,
+        ),
+    )
+    frozen = runner.invoke(
+        cli.app,
+        [
+            "data",
+            "freeze",
+            "--output",
+            str(output),
+            "--root-seed",
+            "41",
+            "--public-id-seed",
+            "91",
+            "--json",
+        ],
+    )
+
+    assert frozen.exit_code == 0, frozen.output
+    loaded = load_manifest(output)
+    frozen_payload = json.loads(frozen.stdout)
+    assert loaded.episode_count == 12
+    assert frozen_payload["report"]["manifest_payload_sha256"] == sha256_bytes(
+        canonical_json_bytes(loaded)
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "inspect_episode",
+        lambda request: inspect_episode(request, deps=deps),
+    )
+    inspected = runner.invoke(
+        cli.app,
+        ["episode", "inspect", str(output), "--entry-index", "0", "--json"],
+    )
+    assert inspected.exit_code == 0, inspected.output
+    assert json.loads(inspected.stdout)["episode_public_id"] == loaded.entries[0].episode_public_id
+
+    monkeypatch.setattr(
+        cli,
+        "evaluate_oracle",
+        lambda request: evaluate_oracle(request, deps=deps),
+    )
+    evaluated = runner.invoke(
+        cli.app,
+        ["oracle", "evaluate", "--manifest", str(output), "--json"],
+    )
+    oracle_payload = json.loads(evaluated.stdout)
+    assert evaluated.exit_code == 1
+    assert oracle_payload["report"]["requested_episode_count"] == 12
+    assert oracle_payload["report"]["verified_episode_count"] == 12
 
 
 @pytest.mark.parametrize(
@@ -213,7 +358,7 @@ def test_leakage_manifest_mode_builds_the_exact_profile_request(
             "--manifest",
             "validation.json",
             "--profile",
-            "phase1-gate",
+            "test",
             "--json",
         ],
     )
@@ -223,7 +368,7 @@ def test_leakage_manifest_mode_builds_the_exact_profile_request(
         LeakageAuditRequest(
             config=ConfigSelection(),
             source=ManifestCorpusSource(manifest_path=Path("validation.json")),
-            profile=LeakageAuditProfileName.PHASE1_GATE,
+            profile=LeakageAuditProfileName.TEST,
         )
     ]
 
@@ -309,6 +454,17 @@ def test_leakage_manifest_mode_builds_the_exact_profile_request(
             ],
             "phase1-gate profile",
         ),
+        (
+            [
+                "leakage",
+                "audit",
+                "--manifest",
+                "validation.json",
+                "--profile",
+                "phase1-gate",
+            ],
+            "manifest mode requires the test profile",
+        ),
     ],
 )
 def test_invalid_mode_and_seed_combinations_are_typer_usage_errors(
@@ -357,34 +513,75 @@ def test_silent_cascade_error_is_one_stable_stderr_object_without_private_data(
     assert private_sentinel not in result.stderr
 
 
+def test_typed_phase1_error_context_is_removed_at_the_private_cli_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typed filesystem/config diagnostics must not echo private paths or values."""
+    private_sentinel = "PRIVATE-PUBLICATION-PATH-998877"
+
+    def inspect(request: InspectEpisodeRequest) -> _AdapterPayload:
+        del request
+        raise ArtifactError(
+            "immutable report publication failed",
+            context={"path": private_sentinel, "reason": private_sentinel},
+        )
+
+    monkeypatch.setattr(cli, "inspect_episode", inspect)
+    result = runner.invoke(
+        cli.app,
+        ["episode", "inspect", "renamed.json", "--entry-index", "0", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "code": "artifact_error",
+        "message": "immutable report publication failed",
+        "context": {},
+    }
+    assert private_sentinel not in result.stderr
+
+
 @pytest.mark.parametrize(
-    ("selector", "service_message"),
+    ("selector", "service_error"),
     [
-        (["--entry-index", "10000"], "inspection entry index is outside the manifest"),
+        (
+            ["--entry-index", "10000"],
+            ManifestAccessError("inspection entry index is outside the manifest"),
+        ),
         (
             ["--episode-id", "ffffffff-ffff-4fff-bfff-ffffffffffff"],
-            "inspection public ID is not in the manifest",
+            ManifestAccessError("inspection public ID is not in the manifest"),
         ),
         (
             ["--entry-index", "0"],
-            "manifest config does not match resolved inspection config",
+            ConfigurationError("manifest config does not match resolved inspection config"),
         ),
-        (["--entry-index", "0"], "immutable report publication failed"),
-        (["--entry-index", "0"], "different immutable report already exists"),
-        (["--entry-index", "0"], "published report differs from candidate"),
+        (
+            ["--entry-index", "0"],
+            ArtifactError("immutable report publication failed"),
+        ),
+        (
+            ["--entry-index", "0"],
+            ArtifactError("different immutable report already exists"),
+        ),
+        (
+            ["--entry-index", "0"],
+            ArtifactError("published report differs from candidate"),
+        ),
     ],
 )
 def test_expected_task16_service_refusals_are_one_private_safe_typed_error(
     monkeypatch: pytest.MonkeyPatch,
     selector: list[str],
-    service_message: str,
+    service_error: ArtifactError | ConfigurationError | ManifestAccessError,
 ) -> None:
     """Routine selector/config refusals must not expose service stack frames or values."""
     private_sentinel = "PRIVATE-ROOT-SEED-998877"
 
     def inspect(request: InspectEpisodeRequest) -> _AdapterPayload:
         del request
-        raise ValueError(service_message)
+        raise service_error
 
     monkeypatch.setattr(cli, "inspect_episode", inspect)
     result = runner.invoke(cli.app, ["episode", "inspect", "renamed.json", *selector, "--json"])
@@ -392,13 +589,12 @@ def test_expected_task16_service_refusals_are_one_private_safe_typed_error(
     assert result.exit_code == 1
     assert result.stdout == ""
     assert json.loads(result.stderr) == {
-        "code": "phase1_command_error",
-        "message": "Phase 1 command refused invalid or inconsistent inputs",
+        "code": service_error.code,
+        "message": service_error.message,
         "context": {},
     }
     assert result.stderr.count("\n") == 1
     assert "Traceback" not in result.stderr
-    assert service_message not in result.stderr
     assert private_sentinel not in result.stderr
 
 
@@ -406,6 +602,30 @@ def test_expected_task16_service_refusals_are_one_private_safe_typed_error(
     "error",
     [
         pytest.param(ValueError("programmer bug"), id="unrecognized-value-error"),
+        pytest.param(
+            ValueError("inspection entry index is outside the manifest"),
+            id="former-selector-allowlist-value",
+        ),
+        pytest.param(
+            ValueError("inspection public ID is not in the manifest"),
+            id="former-uuid-allowlist-value",
+        ),
+        pytest.param(
+            ValueError("manifest config does not match resolved inspection config"),
+            id="former-config-allowlist-value",
+        ),
+        pytest.param(
+            ValueError("immutable report publication failed"),
+            id="former-publication-allowlist-value",
+        ),
+        pytest.param(
+            ValueError("different immutable report already exists"),
+            id="former-conflict-allowlist-value",
+        ),
+        pytest.param(
+            ValueError("published report differs from candidate"),
+            id="former-post-publication-allowlist-value",
+        ),
         pytest.param(
             ValueError("inspection entry index is outside the manifest "),
             id="selector-near-miss",
@@ -474,8 +694,8 @@ def test_immutable_publication_conflict_is_typed_after_progress_without_tracebac
     assert result.stdout == ""
     assert lines[0] == "phase1-progress: data.freeze started"
     assert json.loads(lines[1]) == {
-        "code": "phase1_command_error",
-        "message": "Phase 1 command refused invalid or inconsistent inputs",
+        "code": "artifact_error",
+        "message": "different immutable report already exists",
         "context": {},
     }
     assert len(lines) == 2
@@ -517,7 +737,7 @@ def test_immutable_publication_conflict_is_typed_after_progress_without_tracebac
                 "--manifest",
                 "validation.json",
                 "--profile",
-                "phase1-gate",
+                "test",
             ],
             "leakage.audit",
             "Phase 1 leakage audit",
