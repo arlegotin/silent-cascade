@@ -166,3 +166,70 @@
   focused and local gates retained the AST import/privacy boundaries, public
   inspection protections, frozen-access refusal, read-only/no-regeneration
   verifier contract, deterministic stderr progress, and four-command surface.
+
+## Fix Round 3
+
+### Root-cause and RED evidence
+
+- `data freeze --output` published `ManifestFreezeReport` bytes through the
+  generic report writer even though every downstream consumer requires the
+  canonical Task 13 `EpisodeManifest` envelope. The focused load-after-freeze
+  test failed once in `2.88s` with 11 envelope validation errors; the actual
+  CLI freeze-to-load path independently failed once in `3.03s` at the same
+  boundary.
+- Manifest leakage mode had no executable production pairing: the CLI admitted
+  `manifest + phase1-gate`, while the service minted a TEST authentication for
+  all 10,000 validation rows. The new selector-helper test failed at collection
+  with the missing `_manifest_test_profile_entries` import, and the production
+  metadata test then failed because the descriptor declared 10,000 rather than
+  the frozen 1,200-example TEST source.
+- Routine service refusals crossed the adapter as a mixture of raw `ValueError`
+  and typed errors, forcing the CLI to maintain a finite string allowlist. The
+  CLI RED matrix reported `8 failed, 21 passed, 14 deselected in 2.40s`, covering
+  the unsupported profile pairing, every former allowlisted programmer
+  `ValueError`, and publication typing. The service refusal inventory reported
+  `21 failed, 40 deselected in 3.50s`; the additional oracle/leakage
+  config/provenance matrix reported `4 failed in 2.46s`.
+
+### Corrective commits and GREEN evidence
+
+- Commit `80023fd` publishes the verified manifest with Task 13
+  `publish_manifest`, maps `ManifestPublication` into the freeze result, and
+  keeps the human/JSON result as the summary plus publication metadata. Exact
+  identical reuse remains immutable (`created=false`), while divergent files
+  and directory targets fail through typed manifest/artifact boundaries without
+  changing bytes or modification time.
+- The same commit makes `manifest + TEST` the supported audit pairing. For the
+  exact production validation manifest it independently hashes and ranks whole
+  matched cohorts with audit seed `2026083091` and the full canonical manifest
+  digest, selects 100 cohorts at each path 2/3/4, and emits their 1,200 examples
+  in original manifest order. The descriptor retains the full-manifest digest;
+  source and clock hashes, TEST denominators (`400` per path), both positive
+  clock strata, and the anchor authenticate the selected source. Injected DEBUG
+  manifests retain all of their complete cohorts. Task 15 normalizes only the
+  validation audit stratum label to its declared `iid_primary` TEST authority;
+  source bytes and frozen controls are unchanged.
+- Commit `e67a45f` replaces the CLI message allowlist with the principled typed
+  boundary: routine user/artifact/config/provenance/episode refusals are
+  `SilentCascadeError` subclasses at the services that own them, the adapter
+  catches only `SilentCascadeError`, and arbitrary `ValueError`, `TypeError`,
+  and `RuntimeError` remain visible. Stable typed stderr deliberately discards
+  diagnostic context, so private paths or sentinels cannot cross the public CLI
+  boundary. Typer still owns invalid mode/profile requests and exits two.
+- The core freeze/subset matrix passed `5 passed in 5.99s`; the complete service
+  file passed `61 passed in 18.92s`; the complete CLI file passed
+  `45 passed in 3.64s`; and their combined post-format run passed
+  `106 passed in 18.70s`.
+
+### Final Round 3 verification
+
+- Task 16/17 plus manifest, leakage, oracle, config, reproducibility, fixture,
+  and import/privacy upstream suites passed `548 passed in 479.82s`.
+- `make smoke` passed `114 passed in 37.51s`.
+- Repository-wide Ruff check reported `All checks passed!`; Ruff format check
+  reported `63 files already formatted`.
+- Full local `make verify`: Ruff check passed, Ruff format reported
+  `63 files already formatted`, pytest reported
+  `873 passed in 519.17s`, doctor reported `Overall PASS`, and both
+  `dist/silent_cascade-0.1.0.tar.gz` and
+  `dist/silent_cascade-0.1.0-py3-none-any.whl` built successfully.
