@@ -31,4 +31,21 @@
 - `make smoke` passed: `47 passed in 10.35s`.
 - Scoped Ruff check reported `All checks passed!`; scoped Ruff format check
   reported `7 files already formatted`.
-- Full local `make verify` is pending the final documentation/smoke commit.
+- The first full `make verify` attempt used an isolated UV cache under the
+  managed sandbox. Ruff passed and pytest reached `788 passed, 1 skipped`; its
+  only two failures were environmental: the sandbox denied a test's temporary
+  `.git/worktrees` write, and the isolated offline cache did not contain the
+  Hatchling build dependency.
+- The identical full local `make verify` rerun with repository-metadata and
+  normal dependency-cache access passed: Ruff check passed, Ruff format
+  reported `63 files already formatted`, pytest reported
+  `791 passed in 410.30s`, doctor reported `Overall PASS`, and both the source
+  distribution and wheel built successfully.
+- Installed-command help exposed exactly `doctor`, `data`, `episode`, `oracle`,
+  and `leakage`; the nested help surfaces exposed only `freeze`, `inspect`,
+  `evaluate`, and `audit`, respectively.
+- The final range audit from `b37331f` through `db099fa` contained only the
+  eleven Task 17 files, no `.github`/workflow file, and no Task 18 artifact.
+  `git diff --check` passed. Privacy coverage remained in the full green suite:
+  AST oracle-import guards, blocked optional-model imports, public-projection
+  truth-access spying, and the existing renamed frozen-manifest refusal.
