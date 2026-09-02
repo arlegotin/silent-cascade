@@ -4,6 +4,27 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 all-nine positive-control publication correction
+
+Independent review found that the first Task 18 leakage artifact contained an
+empty positive-control family. The exact production command supplied a clean
+source, while the audit engine scheduled a positive control only for an
+internal pre-injected source; the verifier and derived report pass state also
+accepted that absence. Fixture-scale coverage cannot replace the binding Phase
+1 acceptance run. The `phase1-gate` audit now schedules all nine frozen named
+injectors in declared order against the shared 8,000-episode subset with 4,999
+permutations, requires the exact complete passing family in its derived report
+state, and the five-artifact verifier checks its identities, power,
+significance, and shared subset/split witnesses. TEST-profile single-control
+reports retain their existing non-publishable semantics. No injector,
+threshold, sample size, replicate count, seed, or resource ceiling changes.
+
+The earlier five artifacts are invalid acceptance evidence. After this repair
+passes full local verification and independent review, only those five files
+are removed and all Task 18 evidence is regenerated from one new clean source
+revision; no mixed-revision evidence is retained. Phase 1 remains incomplete
+until that regeneration and its terminal review pass.
+
 ## 2026-09-02 — Task 18 service resource-test process isolation
 
 The final committed Task 18 local gate exposed a second suite-order resource

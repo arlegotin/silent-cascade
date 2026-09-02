@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
 from silent_cascade.env.leakage import (
+    NAMED_LEAK_INJECTORS,
     AuditSourceDescriptor,
     CounterfactualCheckId,
     LeakageAuditProfileName,
@@ -285,6 +286,29 @@ def _require_leakage(leakage: LeakageReport) -> None:
             for check_id, expected_count in _COUNTERFACTUAL_COUNTS.items()
         ),
         "leakage counterfactual check failed or has a wrong denominator",
+    )
+    expected_controls = tuple(
+        (injector.control_id, injector.target_task, injector.expected_detector_id)
+        for injector in NAMED_LEAK_INJECTORS
+    )
+    observed_controls = tuple(
+        (control.control_id, control.target_task, control.expected_detector_id)
+        for control in leakage.positive_controls
+    )
+    _require(
+        observed_controls == expected_controls
+        and all(
+            control.passed
+            and control.expected_detector_id in control.observed_detector_ids
+            and control.balanced_accuracy is not None
+            and control.balanced_accuracy >= 0.95
+            and control.holm_adjusted_p is not None
+            and control.holm_adjusted_p < 0.01
+            for control in leakage.positive_controls
+        )
+        and len({control.base_subset_corpus_sha256 for control in leakage.positive_controls}) == 1
+        and len({control.split_membership_sha256 for control in leakage.positive_controls}) == 1,
+        "leakage positive-control family is absent, incomplete, or failed",
     )
     anchor = leakage.provenance.leakage_audit
     _require(anchor is not None, "leakage provenance is missing its frozen audit authority")

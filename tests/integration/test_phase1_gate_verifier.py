@@ -12,11 +12,13 @@ import pytest
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
 from silent_cascade.env.leakage import (
+    NAMED_LEAK_INJECTORS,
     AuditSourceDescriptor,
     CounterfactualCheckId,
     CounterfactualCheckResult,
     LeakageAuditProfileName,
     LeakageReport,
+    PositiveControlResult,
     audit_source_descriptor_sha256,
 )
 from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
@@ -139,6 +141,24 @@ def _counterfactual(
     )
 
 
+def _positive_controls() -> tuple[PositiveControlResult, ...]:
+    return tuple(
+        PositiveControlResult(
+            control_id=injector.control_id,
+            target_task=injector.target_task,
+            expected_detector_id=injector.expected_detector_id,
+            observed_detector_ids=(injector.expected_detector_id,),
+            base_subset_corpus_sha256="1" * 64,
+            injected_corpus_sha256=f"{index + 17:064x}",
+            split_membership_sha256="3" * 64,
+            balanced_accuracy=1.0,
+            holm_adjusted_p=0.0054,
+            passed=True,
+        )
+        for index, injector in enumerate(NAMED_LEAK_INJECTORS)
+    )
+
+
 @pytest.fixture(scope="session")
 def consistent_artifact_bytes() -> dict[str, bytes]:
     manifest = _validation_manifest()
@@ -250,7 +270,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         suite_path_denominators=GATE_DENOMINATORS,
         construction_checks={"complete": True},
         probes=(),
-        positive_controls=(),
+        positive_controls=_positive_controls(),
         counterfactual_checks=(
             _counterfactual(CounterfactualCheckId.TERMINAL_DELAY_SWAP, 25_000, "9"),
             _counterfactual(CounterfactualCheckId.PRESENTATION_PERMUTATION, 100_000, "a"),
@@ -746,6 +766,22 @@ def test_verifier_refuses_absent_or_failed_counterfactual_check(
     artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
 
     with pytest.raises(ArtifactIntegrityError, match=r"leakage|counterfactual"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+def test_verifier_refuses_an_incomplete_positive_control_family(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        controls = value["positive_controls"]  # type: ignore[assignment]
+        controls.pop()  # type: ignore[union-attr]
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|positive.control"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 

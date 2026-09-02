@@ -886,8 +886,21 @@ class LeakageReport(StrictModel):
         clean_pass = self.profile is LeakageAuditProfileName.TEST or all(
             probe.passed for probe in self.probes
         )
+        expected_controls = tuple(
+            (injector.control_id, injector.target_task, injector.expected_detector_id)
+            for injector in NAMED_LEAK_INJECTORS
+        )
+        observed_controls = tuple(
+            (control.control_id, control.target_task, control.expected_detector_id)
+            for control in self.positive_controls
+        )
+        control_family_complete = (
+            observed_controls == expected_controls
+            if self.profile is LeakageAuditProfileName.PHASE1_GATE
+            else not observed_controls
+        )
         expected = (
-            not self.positive_controls
+            control_family_complete
             and clean_pass
             and self.label_shuffled_control_passed
             and all(item.passed for item in self.positive_controls)
@@ -3299,6 +3312,33 @@ def _execute_positive_control(
     )
 
 
+def _execute_required_positive_controls(
+    source: ReiterableAuditSource,
+    rows: Sequence[_StoredExample],
+    config: LeakageAuditConfig,
+    profile: LeakageAuditProfileName,
+    selected_profile: object,
+    corpus_hash: str,
+    validation_config: Phase1Config,
+    work: Path,
+) -> tuple[PositiveControlResult, ...]:
+    if profile is not LeakageAuditProfileName.PHASE1_GATE:
+        return ()
+    return tuple(
+        _execute_positive_control(
+            injector.apply(source),
+            rows,
+            injector,
+            config,
+            selected_profile,
+            corpus_hash,
+            validation_config,
+            work,
+        )
+        for injector in NAMED_LEAK_INJECTORS
+    )
+
+
 def audit_leakage(
     source: ReiterableAuditSource,
     config: LeakageAuditConfig,
@@ -3513,8 +3553,25 @@ def audit_leakage(
                     work,
                 ),
             )
+        else:
+            controls = _execute_required_positive_controls(
+                source,
+                rows,
+                config,
+                profile,
+                selected_profile,
+                corpus_hash,
+                validation_config,
+                work,
+            )
         clean_pass = not selected_profile.enforce_clean_statistical_gate or all(
             probe.passed for probe in probes
+        )
+        control_family_complete = (
+            tuple(item.control_id for item in controls)
+            == tuple(injector.control_id for injector in NAMED_LEAK_INJECTORS)
+            if profile is LeakageAuditProfileName.PHASE1_GATE
+            else not controls
         )
         return LeakageReport(
             schema_version="leakage-report-v1",
@@ -3550,7 +3607,7 @@ def audit_leakage(
             counterfactual_checks=counterfactual,
             label_shuffled_control_passed=all(probe.passed for probe in shuffled_probes),
             passed=(
-                not controls
+                control_family_complete
                 and clean_pass
                 and all(probe.passed for probe in shuffled_probes)
                 and all(item.passed for item in counterfactual)

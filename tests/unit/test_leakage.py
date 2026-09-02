@@ -577,6 +577,62 @@ def test_named_positive_controls_have_one_disjoint_targeted_detector() -> None:
     }
 
 
+def test_phase1_gate_schedules_every_named_positive_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The acceptance profile cannot silently substitute fixture-scale control evidence."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=20)
+    observed: list[str] = []
+
+    def execute(
+        injected_source: object,
+        _rows: object,
+        injector: object,
+        _config: object,
+        profile: object,
+        _corpus_hash: object,
+        _validation_config: object,
+        _work: object,
+    ) -> leakage.PositiveControlResult:
+        assert profile is config.data.leakage_audit.phase1_gate
+        assert injected_source.injector == injector  # type: ignore[attr-defined]
+        observed.append(injector.control_id)  # type: ignore[attr-defined]
+        return leakage.PositiveControlResult(
+            control_id=injector.control_id,  # type: ignore[attr-defined]
+            target_task=injector.target_task,  # type: ignore[attr-defined]
+            expected_detector_id=injector.expected_detector_id,  # type: ignore[attr-defined]
+            observed_detector_ids=(injector.expected_detector_id,),  # type: ignore[attr-defined]
+            base_subset_corpus_sha256="1" * 64,
+            injected_corpus_sha256="2" * 64,
+            split_membership_sha256="3" * 64,
+            balanced_accuracy=1.0,
+            holm_adjusted_p=0.0054,
+            passed=True,
+        )
+
+    monkeypatch.setattr(leakage, "_execute_positive_control", execute)
+
+    controls = leakage._execute_required_positive_controls(
+        source,
+        (),
+        config.data.leakage_audit,
+        leakage.LeakageAuditProfileName.PHASE1_GATE,
+        config.data.leakage_audit.phase1_gate,
+        "4" * 64,
+        config,
+        tmp_path,
+    )
+
+    assert tuple(observed) == tuple(
+        injector.control_id for injector in leakage.NAMED_LEAK_INJECTORS
+    )
+    assert tuple(item.control_id for item in controls) == tuple(observed)
+
+
 def test_named_positive_controls_write_the_exact_declared_public_codes() -> None:
     """A one-field encoding drift can create an overlapping or underpowered control."""
     from silent_cascade.env.leakage import (
