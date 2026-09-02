@@ -84,6 +84,23 @@ _PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
     ShortcutTask.POSITIVE_HAZARD_CLASS: (17, 256, 270, 4, 704, 194, 4, 33, 1_482),
 }
+_CONSTRUCTION_CHECKS = {
+    "provenance": True,
+    "public_ids": True,
+    "seed_tokens": True,
+    "invariants": True,
+    "finite_features": True,
+    "two_pass_identity": True,
+}
+_FEATURE_SCHEMA_SHA256 = sha256_bytes(
+    canonical_json_bytes(
+        {
+            "schema_version": "leakage-features-v1",
+            "dimensions": (17, 256, 278, 4, 768, 194, 10, 33),
+            "groups": [group.value for group in ShortcutFeatureGroup],
+        }
+    )
+)
 
 
 class Phase1GateVerificationResult(StrictModel):
@@ -136,6 +153,48 @@ def _holm_adjusted_p_values(raw_p_values: tuple[float, ...]) -> tuple[float, ...
     return tuple(adjusted)
 
 
+def _probe_primitive_types_are_exact(probe: ShortcutProbeResult) -> bool:
+    return (
+        type(probe.task) is ShortcutTask
+        and type(probe.feature_group) is ShortcutFeatureGroup
+        and type(probe.feature_dimension) is int
+        and type(probe.train_examples) is int
+        and type(probe.test_examples) is int
+        and type(probe.train_class_counts) is dict
+        and type(probe.test_class_counts) is dict
+        and all(
+            type(key) is str and type(value) is int
+            for counts in (probe.train_class_counts, probe.test_class_counts)
+            for key, value in counts.items()
+        )
+        and type(probe.raw_accuracy) is float
+        and type(probe.balanced_accuracy) is float
+        and type(probe.balanced_chance) is float
+        and type(probe.raw_permutation_p) is float
+        and type(probe.holm_adjusted_p) is float
+        and type(probe.optimizer_iterations) is int
+        and type(probe.optimizer_converged) is bool
+        and type(probe.passed) is bool
+    )
+
+
+def _positive_control_primitive_types_are_exact(control: PositiveControlResult) -> bool:
+    return (
+        type(control.control_id) is str
+        and type(control.target_task) is ShortcutTask
+        and type(control.expected_detector_id) is str
+        and type(control.observed_detector_ids) is tuple
+        and all(type(value) is str for value in control.observed_detector_ids)
+        and type(control.base_subset_corpus_sha256) is str
+        and type(control.injected_corpus_sha256) is str
+        and type(control.split_membership_sha256) is str
+        and type(control.balanced_accuracy) is float
+        and type(control.holm_adjusted_p) is float
+        and type(control.probes) is tuple
+        and type(control.passed) is bool
+    )
+
+
 def _expected_class_counts(
     task: ShortcutTask,
     episode_count: int,
@@ -163,6 +222,8 @@ def _probe_metadata_is_consistent(
     *,
     episode_count: int,
 ) -> bool:
+    if not _probe_primitive_types_are_exact(probe):
+        return False
     group_index = tuple(ShortcutFeatureGroup).index(probe.feature_group)
     task_examples = (
         episode_count // 2 if probe.task is ShortcutTask.POSITIVE_HAZARD_CLASS else episode_count
@@ -242,6 +303,8 @@ def _probe_family_is_consistent(
 
 
 def _positive_control_is_consistent(control: PositiveControlResult) -> bool:
+    if not _positive_control_primitive_types_are_exact(control):
+        return False
     expected_family = tuple((control.target_task, group) for group in ShortcutFeatureGroup)
     observed_family = tuple((probe.task, probe.feature_group) for probe in control.probes)
     if observed_family != expected_family or any(
@@ -423,16 +486,23 @@ def _require_oracle(oracle: OracleEvaluationReport) -> None:
 
 
 def _require_leakage(leakage: LeakageReport) -> None:
-    _require(leakage.passed, "leakage inner report passed flag is false")
+    _require(
+        type(leakage.passed) is bool and leakage.passed,
+        "leakage inner report passed flag is false or mistyped",
+    )
     _require(
         leakage.generation_mode == "independent"
         and leakage.profile is LeakageAuditProfileName.PHASE1_GATE
         and leakage.episode_count == _INDEPENDENT_EPISODE_COUNT
         and leakage.randomization_block_count == 25_000
         and leakage.suite_path_denominators == _GATE_DENOMINATORS
-        and bool(leakage.construction_checks)
-        and all(leakage.construction_checks.values())
-        and leakage.label_shuffled_control_passed,
+        and type(leakage.construction_checks) is dict
+        and leakage.construction_checks == _CONSTRUCTION_CHECKS
+        and all(type(value) is bool for value in leakage.construction_checks.values())
+        and type(leakage.label_shuffled_control_passed) is bool
+        and leakage.label_shuffled_control_passed
+        and type(leakage.feature_schema_hash) is str
+        and leakage.feature_schema_hash == _FEATURE_SCHEMA_SHA256,
         "leakage artifact has a wrong frozen denominator or failed check",
     )
     _require(
@@ -459,9 +529,14 @@ def _require_leakage(leakage: LeakageReport) -> None:
     )
     _require(
         all(
-            checks[check_id].passed
+            type(checks[check_id].check_id) is CounterfactualCheckId
+            and type(checks[check_id].passed) is bool
+            and checks[check_id].passed
+            and type(checks[check_id].checked_pairs) is int
             and checks[check_id].checked_pairs == expected_count
+            and type(checks[check_id].decision_mismatch_count) is int
             and checks[check_id].decision_mismatch_count == 0
+            and type(checks[check_id].temporal_mismatch_count) is int
             and checks[check_id].temporal_mismatch_count == 0
             for check_id, expected_count in _COUNTERFACTUAL_COUNTS.items()
         ),

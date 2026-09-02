@@ -77,6 +77,23 @@ PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
     ShortcutTask.POSITIVE_HAZARD_CLASS: (17, 256, 270, 4, 704, 194, 4, 33, 1_482),
 }
+LEAKAGE_CONSTRUCTION_CHECKS = {
+    "provenance": True,
+    "public_ids": True,
+    "seed_tokens": True,
+    "invariants": True,
+    "finite_features": True,
+    "two_pass_identity": True,
+}
+LEAKAGE_FEATURE_SCHEMA_SHA256 = sha256_bytes(
+    canonical_json_bytes(
+        {
+            "schema_version": "leakage-features-v1",
+            "dimensions": (17, 256, 278, 4, 768, 194, 10, 33),
+            "groups": [group.value for group in ShortcutFeatureGroup],
+        }
+    )
+)
 
 
 def _probe_workload(
@@ -385,14 +402,14 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         generation_mode="independent",
         profile=LeakageAuditProfileName.PHASE1_GATE,
         corpus_hash=gate_corpus,
-        feature_schema_hash="5" * 64,
+        feature_schema_hash=LEAKAGE_FEATURE_SCHEMA_SHA256,
         split_membership_hash="6" * 64,
         train_membership_hash="7" * 64,
         test_membership_hash="8" * 64,
         episode_count=100_000,
         randomization_block_count=25_000,
         suite_path_denominators=GATE_DENOMINATORS,
-        construction_checks={"complete": True},
+        construction_checks=LEAKAGE_CONSTRUCTION_CHECKS,
         probes=_clean_probes(),
         label_shuffled_probes=_clean_probes(),
         positive_controls=_positive_controls(),
@@ -1130,6 +1147,124 @@ def test_verifier_requires_full_label_shuffled_probe_evidence(
 
     with pytest.raises(ArtifactIntegrityError, match=r"leakage|label|shuffl"):
         _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("task", "positive_binary"),
+        ("feature_group", "id_position"),
+        ("feature_dimension", 17.0),
+        ("train_examples", 80_000.0),
+        ("test_examples", 20_000.0),
+        ("train_class_counts", {"0": 40_000.0, "1": 40_000.0}),
+        ("test_class_counts", {"0": 10_000.0, "1": 10_000.0}),
+        ("raw_accuracy", True),
+        ("balanced_accuracy", True),
+        ("raw_permutation_p", True),
+        ("holm_adjusted_p", True),
+        ("optimizer_iterations", True),
+        ("optimizer_converged", 1),
+        ("passed", 1),
+    ],
+)
+def test_standalone_verifier_rejects_schema_bypassed_probe_primitive_types(
+    consistent_artifact_bytes: dict[str, bytes],
+    field: str,
+    replacement: object,
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    probe = report.probes[0].model_copy(update={field: replacement})
+    mutated = report.model_copy(update={"probes": (probe, *report.probes[1:])})
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|probe|type|schema"):
+        _require_leakage(mutated)
+
+
+def test_standalone_verifier_rejects_schema_bypassed_control_summary_boolean(
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    control = report.positive_controls[0].model_copy(update={"balanced_accuracy": True})
+    mutated = report.model_copy(
+        update={"positive_controls": (control, *report.positive_controls[1:])}
+    )
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|control|type|schema"):
+        _require_leakage(mutated)
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("passed", 1),
+        ("label_shuffled_control_passed", 1),
+        (
+            "construction_checks",
+            {
+                "provenance": 1,
+                "public_ids": 1,
+                "seed_tokens": 1,
+                "invariants": 1,
+                "finite_features": 1,
+                "two_pass_identity": 1,
+            },
+        ),
+    ],
+)
+def test_standalone_verifier_rejects_schema_bypassed_report_booleans(
+    consistent_artifact_bytes: dict[str, bytes],
+    field: str,
+    replacement: object,
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    mutated = report.model_copy(update={field: replacement})
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|check|type|schema"):
+        _require_leakage(mutated)
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("construction_checks", {"invented": True}),
+        ("feature_schema_hash", "0" * 64),
+    ],
+)
+def test_verifier_requires_exact_construction_and_feature_schema_identities(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    field: str,
+    replacement: object,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        value[field] = replacement
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|construction|feature|schema"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("construction_checks", {"invented": True}),
+        ("feature_schema_hash", "0" * 64),
+    ],
+)
+def test_standalone_verifier_requires_exact_construction_and_feature_schema_identities(
+    consistent_artifact_bytes: dict[str, bytes],
+    field: str,
+    replacement: object,
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    mutated = report.model_copy(update={field: replacement})
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|construction|feature|schema"):
+        _require_leakage(mutated)
 
 
 def test_verifier_refuses_a_wrong_frozen_denominator(

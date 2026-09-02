@@ -4,6 +4,20 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 exact in-memory evidence types and schema identity
+
+Adversarial review of the independent verifier found that unchecked in-memory
+model copies could exploit Python equality between booleans and numbers or
+strings and string enums, even though strict JSON parsing rejected the same
+values. Report and verifier acceptance now authenticate exact enum, integer,
+float, boolean, tuple, mapping-key, and class-count value types before using
+numeric or equality checks. The same review found that arbitrary all-true
+construction-check names and a forged feature-schema hash were accepted. The
+Phase 1 report and independent verifier now require the exact six construction
+check IDs and independently derive the feature hash from the frozen schema,
+dimensions, and ordered feature groups. This hardens the existing evidence
+contract without changing the audit algorithm or any scientific threshold.
+
 ## 2026-09-02 — Task 18 complete leakage-evidence authentication
 
 Adversarial review found four remaining fail-open seams in the Phase 1 leakage

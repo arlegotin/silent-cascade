@@ -88,6 +88,25 @@ class ShortcutFeatureGroup(StrEnum):
     COMBINED = "combined"
 
 
+_CONSTRUCTION_CHECK_IDS = (
+    "provenance",
+    "public_ids",
+    "seed_tokens",
+    "invariants",
+    "finite_features",
+    "two_pass_identity",
+)
+_FEATURE_SCHEMA_SHA256 = sha256_bytes(
+    canonical_json_bytes(
+        {
+            "schema_version": "leakage-features-v1",
+            "dimensions": _FEATURE_DIMENSIONS,
+            "groups": [group.value for group in ShortcutFeatureGroup],
+        }
+    )
+)
+
+
 _GROUP_SLICES = {
     ShortcutFeatureGroup.ID_POSITION: slice(0, 17),
     ShortcutFeatureGroup.ACTIVATION_NODE: slice(17, 273),
@@ -923,6 +942,10 @@ class LeakageReport(StrictModel):
         )
         observed_probes = tuple((probe.task, probe.feature_group) for probe in self.probes)
         if self.profile is LeakageAuditProfileName.PHASE1_GATE:
+            if self.construction_checks != dict.fromkeys(_CONSTRUCTION_CHECK_IDS, True):
+                raise ValueError("phase1 construction-check evidence is incomplete or inconsistent")
+            if self.feature_schema_hash != _FEATURE_SCHEMA_SHA256:
+                raise ValueError("phase1 feature schema hash is inconsistent")
             if observed_probes != expected_probes or not _phase1_probe_family_is_consistent(
                 self.probes,
                 episode_count=100_000,
@@ -2029,6 +2052,48 @@ def _expected_probe_dimension(task: ShortcutTask, group: ShortcutFeatureGroup) -
     return int(np.count_nonzero(~_hazard_identity_columns(group)))
 
 
+def _probe_primitive_types_are_exact(probe: ShortcutProbeResult) -> bool:
+    return (
+        type(probe.task) is ShortcutTask
+        and type(probe.feature_group) is ShortcutFeatureGroup
+        and type(probe.feature_dimension) is int
+        and type(probe.train_examples) is int
+        and type(probe.test_examples) is int
+        and type(probe.train_class_counts) is dict
+        and type(probe.test_class_counts) is dict
+        and all(
+            type(key) is str and type(value) is int
+            for counts in (probe.train_class_counts, probe.test_class_counts)
+            for key, value in counts.items()
+        )
+        and type(probe.raw_accuracy) is float
+        and type(probe.balanced_accuracy) is float
+        and type(probe.balanced_chance) is float
+        and type(probe.raw_permutation_p) is float
+        and type(probe.holm_adjusted_p) is float
+        and type(probe.optimizer_iterations) is int
+        and type(probe.optimizer_converged) is bool
+        and type(probe.passed) is bool
+    )
+
+
+def _positive_control_primitive_types_are_exact(control: PositiveControlResult) -> bool:
+    return (
+        type(control.control_id) is str
+        and type(control.target_task) is ShortcutTask
+        and type(control.expected_detector_id) is str
+        and type(control.observed_detector_ids) is tuple
+        and all(type(value) is str for value in control.observed_detector_ids)
+        and type(control.base_subset_corpus_sha256) is str
+        and type(control.injected_corpus_sha256) is str
+        and type(control.split_membership_sha256) is str
+        and type(control.balanced_accuracy) is float
+        and type(control.holm_adjusted_p) is float
+        and type(control.probes) is tuple
+        and type(control.passed) is bool
+    )
+
+
 def _phase1_expected_class_counts(
     task: ShortcutTask,
     episode_count: int,
@@ -2056,6 +2121,8 @@ def _phase1_probe_metadata_is_consistent(
     *,
     episode_count: int,
 ) -> bool:
+    if not _probe_primitive_types_are_exact(probe):
+        return False
     task_examples = (
         episode_count // 2 if probe.task is ShortcutTask.POSITIVE_HAZARD_CLASS else episode_count
     )
@@ -2093,6 +2160,8 @@ def _statistical_probe_evidence_is_consistent(
         expected = tuple((task, group) for task in ShortcutTask for group in ShortcutFeatureGroup)
         if tuple((probe.task, probe.feature_group) for probe in probes) != expected:
             return False
+    if any(not _probe_primitive_types_are_exact(probe) for probe in probes):
+        return False
     adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in probes))
     return all(
         probe.optimizer_converged
@@ -2131,6 +2200,8 @@ def _positive_control_evidence_is_consistent(
     *,
     full_gate: bool,
 ) -> bool:
+    if not _positive_control_primitive_types_are_exact(control):
+        return False
     expected_family = tuple((control.target_task, group) for group in ShortcutFeatureGroup)
     observed_family = tuple((probe.task, probe.feature_group) for probe in control.probes)
     if observed_family != expected_family:
@@ -3851,29 +3922,14 @@ def audit_leakage(
             generation_mode=source.descriptor.generation_mode,
             profile=profile,
             corpus_hash=corpus_hash,
-            feature_schema_hash=sha256_bytes(
-                canonical_json_bytes(
-                    {
-                        "schema_version": "leakage-features-v1",
-                        "dimensions": _FEATURE_DIMENSIONS,
-                        "groups": [group.value for group in ShortcutFeatureGroup],
-                    }
-                )
-            ),
+            feature_schema_hash=_FEATURE_SCHEMA_SHA256,
             split_membership_hash=split_hash,
             train_membership_hash=train_hash,
             test_membership_hash=test_hash,
             episode_count=len(rows),
             randomization_block_count=len({row.block for row in rows}),
             suite_path_denominators=dict(sorted(denominators.items())),
-            construction_checks={
-                "provenance": True,
-                "public_ids": True,
-                "seed_tokens": True,
-                "invariants": True,
-                "finite_features": True,
-                "two_pass_identity": True,
-            },
+            construction_checks=dict.fromkeys(_CONSTRUCTION_CHECK_IDS, True),
             probes=tuple(probes),
             label_shuffled_probes=tuple(shuffled_probes),
             positive_controls=controls,
