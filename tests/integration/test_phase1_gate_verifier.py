@@ -44,9 +44,11 @@ from silent_cascade.provenance import (
     public_id_seed_sha256,
 )
 
-verify_phase1_gate_artifacts = run_path(
+_VERIFIER = run_path(
     str(Path(__file__).resolve().parents[2] / "scripts/verify_phase1_gate_artifacts.py")
-)["verify_phase1_gate_artifacts"]
+)
+verify_phase1_gate_artifacts = _VERIFIER["verify_phase1_gate_artifacts"]
+_require_leakage = _VERIFIER["_require_leakage"]
 
 GATE_DENOMINATORS = {
     "distractor_flood:2": 8_000,
@@ -70,6 +72,39 @@ GATE_ALLOCATION_SHA256 = "9e032f6993af9f2d53c1dde3a3e3e72e097cf143ae2e72d02609f2
 INDEPENDENT_SOURCE_PAYLOAD_SHA256 = (
     "799f4add88eae1e541eff6edf7e3afa35ec22a68e29f7a8309b05f6b315cc121"
 )
+PHASE1_FEATURE_DIMENSIONS = {
+    ShortcutTask.POSITIVE_BINARY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
+    ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
+    ShortcutTask.POSITIVE_HAZARD_CLASS: (17, 256, 270, 4, 704, 194, 4, 33, 1_482),
+}
+
+
+def _probe_workload(
+    task: ShortcutTask,
+    *,
+    episode_count: int,
+) -> tuple[int, int, dict[str, int], dict[str, int]]:
+    if task is ShortcutTask.POSITIVE_BINARY:
+        return (
+            episode_count * 4 // 5,
+            episode_count // 5,
+            {"0": episode_count * 2 // 5, "1": episode_count * 2 // 5},
+            {"0": episode_count // 10, "1": episode_count // 10},
+        )
+    if task is ShortcutTask.VARIANT_THREE_WAY:
+        return (
+            episode_count * 4 // 5,
+            episode_count // 5,
+            {"0": episode_count * 2 // 5, "1": episode_count // 5, "2": episode_count // 5},
+            {"0": episode_count // 10, "1": episode_count // 20, "2": episode_count // 20},
+        )
+    positive_count = episode_count // 2
+    return (
+        positive_count * 4 // 5,
+        positive_count // 5,
+        {str(index): positive_count // 5 for index in range(4)},
+        {str(index): positive_count // 20 for index in range(4)},
+    )
 
 
 def _provenance(*, independent: bool) -> EvidenceProvenance:
@@ -160,11 +195,15 @@ def _positive_controls() -> tuple[PositiveControlResult, ...]:
                 ShortcutProbeResult(
                     task=injector.target_task,
                     feature_group=group,
-                    feature_dimension=1,
-                    train_examples=6_400,
-                    test_examples=1_600,
-                    train_class_counts={"0": 3_200, "1": 3_200},
-                    test_class_counts={"0": 800, "1": 800},
+                    feature_dimension=PHASE1_FEATURE_DIMENSIONS[injector.target_task][
+                        tuple(ShortcutFeatureGroup).index(group)
+                    ],
+                    train_examples=_probe_workload(injector.target_task, episode_count=8_000)[0],
+                    test_examples=_probe_workload(injector.target_task, episode_count=8_000)[1],
+                    train_class_counts=_probe_workload(injector.target_task, episode_count=8_000)[
+                        2
+                    ],
+                    test_class_counts=_probe_workload(injector.target_task, episode_count=8_000)[3],
                     raw_accuracy=(
                         1.0
                         if group.value == injector.expected_detector_id.split(":", 1)[1]
@@ -211,13 +250,23 @@ def _clean_probes() -> tuple[ShortcutProbeResult, ...]:
         ShortcutProbeResult(
             task=task,
             feature_group=group,
-            feature_dimension=1,
-            train_examples=80_000,
-            test_examples=20_000,
-            train_class_counts={"0": 40_000, "1": 40_000},
-            test_class_counts={"0": 10_000, "1": 10_000},
-            raw_accuracy=0.5,
-            balanced_accuracy=0.5,
+            feature_dimension=PHASE1_FEATURE_DIMENSIONS[task][
+                tuple(ShortcutFeatureGroup).index(group)
+            ],
+            train_examples=_probe_workload(task, episode_count=100_000)[0],
+            test_examples=_probe_workload(task, episode_count=100_000)[1],
+            train_class_counts=_probe_workload(task, episode_count=100_000)[2],
+            test_class_counts=_probe_workload(task, episode_count=100_000)[3],
+            raw_accuracy={
+                ShortcutTask.POSITIVE_BINARY: 0.5,
+                ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+                ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
+            }[task],
+            balanced_accuracy={
+                ShortcutTask.POSITIVE_BINARY: 0.5,
+                ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+                ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
+            }[task],
             balanced_chance={
                 ShortcutTask.POSITIVE_BINARY: 0.5,
                 ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
@@ -345,6 +394,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         suite_path_denominators=GATE_DENOMINATORS,
         construction_checks={"complete": True},
         probes=_clean_probes(),
+        label_shuffled_probes=_clean_probes(),
         positive_controls=_positive_controls(),
         counterfactual_checks=(
             _counterfactual(CounterfactualCheckId.TERMINAL_DELAY_SWAP, 25_000, "9"),
@@ -953,6 +1003,132 @@ def test_verifier_recomputes_positive_control_holm_and_pass_state(
     artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
 
     with pytest.raises(ArtifactIntegrityError, match=r"leakage|control|evidence"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "target,field,replacement",
+    [
+        ("clean", "feature_dimension", -1),
+        ("control", "feature_dimension", -1),
+        ("clean", "optimizer_iterations", -1),
+        ("clean", "optimizer_iterations", 501),
+        ("control", "optimizer_iterations", -1),
+        ("control", "optimizer_iterations", 501),
+    ],
+)
+def test_verifier_refuses_impossible_probe_shape_values(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    target: str,
+    field: str,
+    replacement: int,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        family = value["probes"] if target == "clean" else value["positive_controls"][0]["probes"]  # type: ignore[index]
+        family[0][field] = replacement
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|probe|schema|shape"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize("target", ["clean", "control"])
+def test_verifier_refuses_underpowered_probe_workload_metadata(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    target: str,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        family = value["probes"] if target == "clean" else value["positive_controls"][0]["probes"]  # type: ignore[index]
+        family[0]["train_examples"] = 1
+        family[0]["test_examples"] = 1
+        family[0]["train_class_counts"] = {"0": 1}
+        family[0]["test_class_counts"] = {"0": 1}
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|probe|workload|class"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize("target", ["clean", "control"])
+@pytest.mark.parametrize("raw_p", [0.00021, 0.0])
+def test_verifier_refuses_off_grid_phase1_permutation_p_values(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    target: str,
+    raw_p: float,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        if target == "clean":
+            probe = value["probes"][0]  # type: ignore[index]
+            probe["raw_permutation_p"] = raw_p
+            probe["holm_adjusted_p"] = 27 * raw_p
+        else:
+            control = value["positive_controls"][0]  # type: ignore[index]
+            expected = next(
+                probe for probe in control["probes"] if probe["feature_group"] == "counts"
+            )
+            expected["raw_permutation_p"] = raw_p
+            expected["holm_adjusted_p"] = 9 * raw_p
+            control["holm_adjusted_p"] = 9 * raw_p
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|probe|permutation|grid"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+def test_verifier_refuses_a_nonconverged_positive_control_probe(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        value["positive_controls"][0]["probes"][0]["optimizer_converged"] = False  # type: ignore[index]
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|control|converg"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+def test_standalone_verifier_rejects_nonconverged_control_without_schema_help(
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    control = report.positive_controls[0]
+    probe = control.probes[0].model_copy(update={"optimizer_converged": False})
+    mutated_control = control.model_copy(update={"probes": (probe, *control.probes[1:])})
+    mutated = report.model_copy(
+        update={"positive_controls": (mutated_control, *report.positive_controls[1:])}
+    )
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|control|converg"):
+        _require_leakage(mutated)
+
+
+def test_verifier_requires_full_label_shuffled_probe_evidence(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        value.pop("label_shuffled_probes", None)
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|label|shuffl"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 

@@ -17,6 +17,7 @@ from silent_cascade.env.leakage import (
     LeakageReport,
     PositiveControlResult,
     ShortcutFeatureGroup,
+    ShortcutProbeResult,
     ShortcutTask,
     audit_source_descriptor_sha256,
 )
@@ -77,6 +78,12 @@ _INDEPENDENT_ROOT_SEED = 2026083011
 _INDEPENDENT_PUBLIC_ID_SEED_SHA256 = (
     "f21ac562825bfd96e875eedf90c8ba5ed09883ebe2c18449843b03acebec778a"
 )
+_PHASE1_PERMUTATION_DENOMINATOR = 5_000
+_PHASE1_FEATURE_DIMENSIONS = {
+    ShortcutTask.POSITIVE_BINARY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
+    ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
+    ShortcutTask.POSITIVE_HAZARD_CLASS: (17, 256, 270, 4, 704, 194, 4, 33, 1_482),
+}
 
 
 class Phase1GateVerificationResult(StrictModel):
@@ -129,14 +136,122 @@ def _holm_adjusted_p_values(raw_p_values: tuple[float, ...]) -> tuple[float, ...
     return tuple(adjusted)
 
 
+def _expected_class_counts(
+    task: ShortcutTask,
+    episode_count: int,
+) -> tuple[dict[str, int] | None, dict[str, int] | None]:
+    if task is ShortcutTask.POSITIVE_BINARY:
+        return (
+            {"0": episode_count * 2 // 5, "1": episode_count * 2 // 5},
+            {"0": episode_count // 10, "1": episode_count // 10},
+        )
+    if task is ShortcutTask.VARIANT_THREE_WAY:
+        return (
+            {"0": episode_count * 2 // 5, "1": episode_count // 5, "2": episode_count // 5},
+            {"0": episode_count // 10, "1": episode_count // 20, "2": episode_count // 20},
+        )
+    if episode_count == 8_000:
+        return (
+            {str(index): 800 for index in range(4)},
+            {str(index): 200 for index in range(4)},
+        )
+    return None, None
+
+
+def _probe_metadata_is_consistent(
+    probe: ShortcutProbeResult,
+    *,
+    episode_count: int,
+) -> bool:
+    group_index = tuple(ShortcutFeatureGroup).index(probe.feature_group)
+    task_examples = (
+        episode_count // 2 if probe.task is ShortcutTask.POSITIVE_HAZARD_CLASS else episode_count
+    )
+    expected_train = task_examples * 4 // 5
+    expected_test = task_examples - expected_train
+    expected_labels = {
+        ShortcutTask.POSITIVE_BINARY: {"0", "1"},
+        ShortcutTask.VARIANT_THREE_WAY: {"0", "1", "2"},
+        ShortcutTask.POSITIVE_HAZARD_CLASS: {"0", "1", "2", "3"},
+    }[probe.task]
+    expected_chance = {
+        ShortcutTask.POSITIVE_BINARY: 0.5,
+        ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+        ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
+    }[probe.task]
+    exact_train, exact_test = _expected_class_counts(probe.task, episode_count)
+    scaled_p = probe.raw_permutation_p * _PHASE1_PERMUTATION_DENOMINATOR
+    permutation_numerator = round(scaled_p)
+    bounded_values = (
+        probe.raw_accuracy,
+        probe.balanced_accuracy,
+        probe.balanced_chance,
+        probe.raw_permutation_p,
+        probe.holm_adjusted_p,
+    )
+    return (
+        all(0.0 <= value <= 1.0 for value in bounded_values)
+        and probe.balanced_chance == expected_chance
+        and probe.feature_dimension == _PHASE1_FEATURE_DIMENSIONS[probe.task][group_index]
+        and probe.train_examples == expected_train
+        and probe.test_examples == expected_test
+        and set(probe.train_class_counts) == expected_labels
+        and set(probe.test_class_counts) == expected_labels
+        and all(value >= 0 for value in probe.train_class_counts.values())
+        and all(value >= 0 for value in probe.test_class_counts.values())
+        and sum(probe.train_class_counts.values()) == probe.train_examples
+        and sum(probe.test_class_counts.values()) == probe.test_examples
+        and min(probe.train_class_counts.values()) >= 200
+        and min(probe.test_class_counts.values()) >= 200
+        and (exact_train is None or probe.train_class_counts == exact_train)
+        and (exact_test is None or probe.test_class_counts == exact_test)
+        and 0 <= probe.optimizer_iterations <= 500
+        and probe.optimizer_converged
+        and 1 <= permutation_numerator <= _PHASE1_PERMUTATION_DENOMINATOR
+        and probe.raw_permutation_p == permutation_numerator / _PHASE1_PERMUTATION_DENOMINATOR
+    )
+
+
+def _probe_family_is_consistent(
+    probes: tuple[ShortcutProbeResult, ...],
+    *,
+    episode_count: int,
+) -> bool:
+    expected = tuple((task, group) for task in ShortcutTask for group in ShortcutFeatureGroup)
+    if tuple((probe.task, probe.feature_group) for probe in probes) != expected:
+        return False
+    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in probes))
+    signatures: dict[ShortcutTask, tuple[object, ...]] = {}
+    for index, probe in enumerate(probes):
+        if (
+            not _probe_metadata_is_consistent(probe, episode_count=episode_count)
+            or probe.holm_adjusted_p != adjusted[index]
+            or probe.passed
+            != (not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01))
+        ):
+            return False
+        signature = (
+            probe.train_examples,
+            probe.test_examples,
+            probe.train_class_counts,
+            probe.test_class_counts,
+        )
+        if signatures.setdefault(probe.task, signature) != signature:
+            return False
+    return True
+
+
 def _positive_control_is_consistent(control: PositiveControlResult) -> bool:
     expected_family = tuple((control.target_task, group) for group in ShortcutFeatureGroup)
     observed_family = tuple((probe.task, probe.feature_group) for probe in control.probes)
-    if observed_family != expected_family:
+    if observed_family != expected_family or any(
+        not _probe_metadata_is_consistent(probe, episode_count=8_000) for probe in control.probes
+    ):
         return False
     adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in control.probes))
     if any(
-        probe.holm_adjusted_p != adjusted[index]
+        not probe.optimizer_converged
+        or probe.holm_adjusted_p != adjusted[index]
         or probe.passed
         != (not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01))
         for index, probe in enumerate(control.probes)
@@ -320,31 +435,22 @@ def _require_leakage(leakage: LeakageReport) -> None:
         and leakage.label_shuffled_control_passed,
         "leakage artifact has a wrong frozen denominator or failed check",
     )
-    expected_probes = tuple(
-        (task, group) for task in ShortcutTask for group in ShortcutFeatureGroup
-    )
-    observed_probes = tuple((probe.task, probe.feature_group) for probe in leakage.probes)
-    expected_chance = {
-        ShortcutTask.POSITIVE_BINARY: 0.5,
-        ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
-        ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
-    }
-    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in leakage.probes))
     _require(
-        observed_probes == expected_probes
-        and all(
-            probe.balanced_chance == expected_chance[probe.task]
-            and probe.optimizer_converged
-            and probe.holm_adjusted_p == adjusted[index]
-            and probe.passed
-            == (
-                not (
-                    probe.balanced_accuracy > expected_chance[probe.task] and adjusted[index] < 0.01
-                )
-            )
-            for index, probe in enumerate(leakage.probes)
-        ),
+        _probe_family_is_consistent(
+            leakage.probes,
+            episode_count=_INDEPENDENT_EPISODE_COUNT,
+        )
+        and all(probe.passed for probe in leakage.probes),
         "leakage clean-probe family is absent, incomplete, or failed",
+    )
+    _require(
+        _probe_family_is_consistent(
+            leakage.label_shuffled_probes,
+            episode_count=_INDEPENDENT_EPISODE_COUNT,
+        )
+        and all(probe.passed for probe in leakage.label_shuffled_probes)
+        and leakage.label_shuffled_control_passed,
+        "leakage label-shuffled probe family is absent, incomplete, or failed",
     )
     checks = {item.check_id: item for item in leakage.counterfactual_checks}
     _require(

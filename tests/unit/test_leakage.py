@@ -702,6 +702,50 @@ def test_phase1_gate_rejects_noncanonical_profile_before_source_access(
         )
 
 
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("schema_version", "leakage-v2"),
+        ("audit_seed", 0),
+        ("positive_control_seed", 0),
+        ("train_fraction", 0.5),
+        ("alpha", 1.0),
+        ("l2_penalty", 0.0),
+        ("optimizer_max_iterations", 499),
+        ("optimizer_gradient_tolerance", 1.0),
+        ("optimizer_function_tolerance", 1.0),
+        ("positive_control_min_balanced_accuracy", 0.0),
+        ("feature_batch_size", 1),
+        ("permutation_batch_size", 1),
+        ("max_feature_store_bytes", 1_000_000_000_000),
+        ("max_resident_working_bytes", 1_000_000_000_000),
+    ],
+)
+def test_phase1_gate_rejects_noncanonical_audit_config_before_source_access(
+    field: str,
+    replacement: str | int | float,
+    tmp_path: Path,
+) -> None:
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    audit_config = config.data.leakage_audit.model_copy(update={field: replacement})
+
+    class ProhibitedSource:
+        @property
+        def descriptor(self) -> object:
+            raise AssertionError("noncanonical audit config reached source authentication")
+
+    with pytest.raises(ValueError, match="phase1 gate audit config is not exact"):
+        leakage.audit_leakage(
+            ProhibitedSource(),  # type: ignore[arg-type]
+            audit_config,
+            leakage.LeakageAuditProfileName.PHASE1_GATE,
+            _provenance(_config_sha256(config)),
+            tmp_path,
+        )
+
+
 def test_named_positive_controls_write_the_exact_declared_public_codes() -> None:
     """A one-field encoding drift can create an overlapping or underpowered control."""
     from silent_cascade.env.leakage import (
@@ -2170,7 +2214,7 @@ print(sha256_bytes(canonical_json_bytes(report)))
 
     assert completed.stderr == ""
     assert completed.stdout.strip() == (
-        "d5e9f2f6e7e241f3026d38da415ccbae44a585e16c7918a116de5b54fee960c6"
+        "658c4e0b2ab023e0db8d77646f849a63adf662f31c38fdf40c93ae3c8f13bae5"
     )
 
 

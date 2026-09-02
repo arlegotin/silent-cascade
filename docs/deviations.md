@@ -4,6 +4,23 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 complete leakage-evidence authentication
+
+Adversarial review found four remaining fail-open seams in the Phase 1 leakage
+acceptance boundary: only the nested six-field profile was checked before
+source access; nested positive-control convergence was not authenticated;
+probe workload, dimension, optimizer-iteration, and permutation-grid evidence
+was not pinned; and the complete label-shuffled probe family was discarded
+behind a boolean. The Phase 1 engine now checks every consumed audit setting,
+including the frozen seeds, thresholds, optimizer controls, batch sizes, and
+800 MB/512 MB ceilings, before source access. Probe schemas and contextual
+validators bind exact task dimensions, 80/20 workloads, complete class maps,
+the 500-iteration ceiling, convergence, and the 1/5000 permutation grid. The
+report now serializes the ordered 27-probe label-shuffled family, and both the
+report and independent verifier recompute its Holm values and pass state. This
+adds required publication evidence and fail-closed validation without changing
+any production threshold, scientific sample size, or failure-report behavior.
+
 ## 2026-09-02 — Task 18 leakage statistical-evidence consistency
 
 Mutation review found that the artifact verifier trusted serialized balanced

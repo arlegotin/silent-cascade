@@ -127,9 +127,9 @@ class ShortcutFeatureSet:
 class ShortcutProbeResult(StrictModel):
     task: ShortcutTask
     feature_group: ShortcutFeatureGroup
-    feature_dimension: int
-    train_examples: int
-    test_examples: int
+    feature_dimension: int = Field(gt=0)
+    train_examples: int = Field(gt=0)
+    test_examples: int = Field(gt=0)
     train_class_counts: dict[str, int]
     test_class_counts: dict[str, int]
     raw_accuracy: float = Field(ge=0.0, le=1.0)
@@ -137,7 +137,7 @@ class ShortcutProbeResult(StrictModel):
     balanced_chance: float = Field(ge=0.0, le=1.0)
     raw_permutation_p: float = Field(ge=0.0, le=1.0)
     holm_adjusted_p: float = Field(ge=0.0, le=1.0)
-    optimizer_iterations: int
+    optimizer_iterations: int = Field(ge=0, le=500)
     optimizer_converged: bool
     passed: bool
 
@@ -150,6 +150,15 @@ class ShortcutProbeResult(StrictModel):
         }[self.task]
         if self.balanced_chance != expected:
             raise ValueError("shortcut balanced chance does not match its task")
+        if (
+            not self.train_class_counts
+            or not self.test_class_counts
+            or any(value < 0 for value in self.train_class_counts.values())
+            or any(value < 0 for value in self.test_class_counts.values())
+            or sum(self.train_class_counts.values()) != self.train_examples
+            or sum(self.test_class_counts.values()) != self.test_examples
+        ):
+            raise ValueError("shortcut class counts do not match the probe workload")
         return self
 
 
@@ -888,6 +897,7 @@ class LeakageReport(StrictModel):
     suite_path_denominators: dict[str, int]
     construction_checks: dict[str, bool]
     probes: tuple[ShortcutProbeResult, ...]
+    label_shuffled_probes: tuple[ShortcutProbeResult, ...]
     positive_controls: tuple[PositiveControlResult, ...]
     counterfactual_checks: tuple[CounterfactualCheckResult, ...]
     label_shuffled_control_passed: bool
@@ -902,27 +912,33 @@ class LeakageReport(StrictModel):
                 "counterfactual checks must contain every check exactly once in enum order"
             )
         clean_pass = self.profile is LeakageAuditProfileName.TEST
+        shuffled_pass = _statistical_probe_evidence_is_consistent(
+            self.label_shuffled_probes,
+            require_complete=False,
+        ) and all(
+            probe.optimizer_converged and probe.passed for probe in self.label_shuffled_probes
+        )
         expected_probes = tuple(
             (task, group) for task in ShortcutTask for group in ShortcutFeatureGroup
         )
         observed_probes = tuple((probe.task, probe.feature_group) for probe in self.probes)
         if self.profile is LeakageAuditProfileName.PHASE1_GATE:
-            if observed_probes != expected_probes:
-                raise ValueError("phase1 leakage report requires every clean probe in order")
-            adjusted = _holm_adjusted_p_values(
-                tuple(probe.raw_permutation_p for probe in self.probes)
-            )
-            derived_passes = tuple(
-                not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01)
-                for index, probe in enumerate(self.probes)
-            )
-            if any(
-                probe.holm_adjusted_p != adjusted[index]
-                or probe.passed is not derived_passes[index]
-                for index, probe in enumerate(self.probes)
+            if observed_probes != expected_probes or not _phase1_probe_family_is_consistent(
+                self.probes,
+                episode_count=100_000,
             ):
-                raise ValueError("phase1 clean probe Holm evidence is inconsistent")
+                raise ValueError("phase1 clean probe evidence is incomplete or inconsistent")
+            if not _phase1_probe_family_is_consistent(
+                self.label_shuffled_probes,
+                episode_count=100_000,
+            ):
+                raise ValueError(
+                    "phase1 label-shuffled probe evidence is incomplete or inconsistent"
+                )
             clean_pass = all(probe.optimizer_converged and probe.passed for probe in self.probes)
+            shuffled_pass = all(
+                probe.optimizer_converged and probe.passed for probe in self.label_shuffled_probes
+            )
         expected_controls = tuple(
             (injector.control_id, injector.target_task, injector.expected_detector_id)
             for injector in NAMED_LEAK_INJECTORS
@@ -954,10 +970,12 @@ class LeakageReport(StrictModel):
             for item in self.positive_controls
         ):
             raise ValueError("test positive-control evidence is inconsistent")
+        if self.label_shuffled_control_passed is not shuffled_pass:
+            raise ValueError("label-shuffled passed state is not derived from its probes")
         expected = (
             control_family_complete
             and clean_pass
-            and self.label_shuffled_control_passed
+            and shuffled_pass
             and all(item.passed for item in self.positive_controls)
             and all(item.passed for item in self.counterfactual_checks)
         )
@@ -2004,6 +2022,110 @@ def _holm(probes: list[ShortcutProbeResult], alpha: float) -> list[ShortcutProbe
     ]
 
 
+def _expected_probe_dimension(task: ShortcutTask, group: ShortcutFeatureGroup) -> int:
+    start, stop = _feature_bounds(group)
+    if task is not ShortcutTask.POSITIVE_HAZARD_CLASS:
+        return stop - start
+    return int(np.count_nonzero(~_hazard_identity_columns(group)))
+
+
+def _phase1_expected_class_counts(
+    task: ShortcutTask,
+    episode_count: int,
+) -> tuple[dict[str, int] | None, dict[str, int] | None]:
+    if task is ShortcutTask.POSITIVE_BINARY:
+        return (
+            {"0": episode_count * 2 // 5, "1": episode_count * 2 // 5},
+            {"0": episode_count // 10, "1": episode_count // 10},
+        )
+    if task is ShortcutTask.VARIANT_THREE_WAY:
+        return (
+            {"0": episode_count * 2 // 5, "1": episode_count // 5, "2": episode_count // 5},
+            {"0": episode_count // 10, "1": episode_count // 20, "2": episode_count // 20},
+        )
+    if episode_count == 8_000:
+        return (
+            {str(index): 800 for index in range(4)},
+            {str(index): 200 for index in range(4)},
+        )
+    return None, None
+
+
+def _phase1_probe_metadata_is_consistent(
+    probe: ShortcutProbeResult,
+    *,
+    episode_count: int,
+) -> bool:
+    task_examples = (
+        episode_count // 2 if probe.task is ShortcutTask.POSITIVE_HAZARD_CLASS else episode_count
+    )
+    expected_train = task_examples * 4 // 5
+    expected_test = task_examples - expected_train
+    expected_labels = {
+        ShortcutTask.POSITIVE_BINARY: {"0", "1"},
+        ShortcutTask.VARIANT_THREE_WAY: {"0", "1", "2"},
+        ShortcutTask.POSITIVE_HAZARD_CLASS: {"0", "1", "2", "3"},
+    }[probe.task]
+    exact_train, exact_test = _phase1_expected_class_counts(probe.task, episode_count)
+    scaled_p = probe.raw_permutation_p * 5_000
+    permutation_numerator = round(scaled_p)
+    return (
+        probe.feature_dimension == _expected_probe_dimension(probe.task, probe.feature_group)
+        and probe.train_examples == expected_train
+        and probe.test_examples == expected_test
+        and set(probe.train_class_counts) == expected_labels
+        and set(probe.test_class_counts) == expected_labels
+        and min(probe.train_class_counts.values()) >= 200
+        and min(probe.test_class_counts.values()) >= 200
+        and (exact_train is None or probe.train_class_counts == exact_train)
+        and (exact_test is None or probe.test_class_counts == exact_test)
+        and 1 <= permutation_numerator <= 5_000
+        and probe.raw_permutation_p == permutation_numerator / 5_000
+    )
+
+
+def _statistical_probe_evidence_is_consistent(
+    probes: Sequence[ShortcutProbeResult],
+    *,
+    require_complete: bool,
+) -> bool:
+    if require_complete:
+        expected = tuple((task, group) for task in ShortcutTask for group in ShortcutFeatureGroup)
+        if tuple((probe.task, probe.feature_group) for probe in probes) != expected:
+            return False
+    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in probes))
+    return all(
+        probe.optimizer_converged
+        and probe.holm_adjusted_p == adjusted[index]
+        and probe.passed
+        == (not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01))
+        for index, probe in enumerate(probes)
+    )
+
+
+def _phase1_probe_family_is_consistent(
+    probes: Sequence[ShortcutProbeResult],
+    *,
+    episode_count: int,
+) -> bool:
+    if not _statistical_probe_evidence_is_consistent(probes, require_complete=True):
+        return False
+    signatures: dict[ShortcutTask, tuple[object, ...]] = {}
+    for probe in probes:
+        if not _phase1_probe_metadata_is_consistent(probe, episode_count=episode_count):
+            return False
+        signature = (
+            probe.train_examples,
+            probe.test_examples,
+            probe.train_class_counts,
+            probe.test_class_counts,
+        )
+        prior = signatures.setdefault(probe.task, signature)
+        if prior != signature:
+            return False
+    return True
+
+
 def _positive_control_evidence_is_consistent(
     control: PositiveControlResult,
     *,
@@ -2013,9 +2135,21 @@ def _positive_control_evidence_is_consistent(
     observed_family = tuple((probe.task, probe.feature_group) for probe in control.probes)
     if observed_family != expected_family:
         return False
+    if full_gate:
+        if any(
+            not _phase1_probe_metadata_is_consistent(probe, episode_count=8_000)
+            for probe in control.probes
+        ):
+            return False
+    elif any(
+        probe.feature_dimension != _expected_probe_dimension(probe.task, probe.feature_group)
+        for probe in control.probes
+    ):
+        return False
     adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in control.probes))
     if any(
-        probe.holm_adjusted_p != adjusted[index]
+        not probe.optimizer_converged
+        or probe.holm_adjusted_p != adjusted[index]
         or probe.passed
         != (not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01))
         for index, probe in enumerate(control.probes)
@@ -3439,6 +3573,42 @@ def _execute_required_positive_controls(
     )
 
 
+_PHASE1_GATE_AUDIT_SETTINGS: tuple[tuple[str, object], ...] = (
+    ("schema_version", "leakage-v1"),
+    ("audit_seed", 2026083091),
+    ("positive_control_seed", 2026083092),
+    ("train_fraction", 0.8),
+    ("alpha", 0.01),
+    ("l2_penalty", 0.03),
+    ("optimizer_max_iterations", 500),
+    ("optimizer_gradient_tolerance", 1.0e-8),
+    ("optimizer_function_tolerance", 1.0e-12),
+    ("positive_control_min_balanced_accuracy", 0.95),
+    ("feature_batch_size", 4096),
+    ("permutation_batch_size", 64),
+    ("max_feature_store_bytes", 800_000_000),
+    ("max_resident_working_bytes", 512_000_000),
+)
+
+
+def _require_exact_phase1_audit_config(
+    config: LeakageAuditConfig,
+    selected_profile: object,
+) -> None:
+    if selected_profile != PHASE1_GATE_LEAKAGE_PROFILE:
+        raise ValueError("phase1 gate profile is not exact")
+    try:
+        validated = LeakageAuditConfig.model_validate(config.model_dump(mode="python"))
+    except ValueError as error:
+        raise ValueError("phase1 gate audit config is not exact") from error
+    if any(
+        type(getattr(validated, field)) is not type(expected)
+        or getattr(validated, field) != expected
+        for field, expected in _PHASE1_GATE_AUDIT_SETTINGS
+    ):
+        raise ValueError("phase1 gate audit config is not exact")
+
+
 def audit_leakage(
     source: ReiterableAuditSource,
     config: LeakageAuditConfig,
@@ -3456,11 +3626,8 @@ def audit_leakage(
     ):
         raise TypeError("leakage audit received invalid typed inputs")
     selected_profile = _profile_config(config, profile)
-    if (
-        profile is LeakageAuditProfileName.PHASE1_GATE
-        and selected_profile != PHASE1_GATE_LEAKAGE_PROFILE
-    ):
-        raise ValueError("phase1 gate profile is not exact")
+    if profile is LeakageAuditProfileName.PHASE1_GATE:
+        _require_exact_phase1_audit_config(config, selected_profile)
     _validate_provenance(source, config, provenance)
     authentication = _validate_source_authentication(source, profile)
     _validate_independent_trust_anchor(source, profile, provenance, authentication)
@@ -3708,6 +3875,7 @@ def audit_leakage(
                 "two_pass_identity": True,
             },
             probes=tuple(probes),
+            label_shuffled_probes=tuple(shuffled_probes),
             positive_controls=controls,
             counterfactual_checks=counterfactual,
             label_shuffled_control_passed=all(probe.passed for probe in shuffled_probes),
