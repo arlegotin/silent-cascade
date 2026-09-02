@@ -4,6 +4,20 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 service resource-test process isolation
+
+The final committed Task 18 local gate exposed a second suite-order resource
+baseline: the complete non-leakage pytest child can retain more than 512 MB
+before the real leakage service integration test starts. All four service
+parametrizations pass with the unchanged production 512 MB guard in a fresh
+process. `make test` therefore runs the main suite, the complete Phase 1
+services module, and the complete leakage unit module in three pytest children,
+with the latter two excluded only from the main child. All 906 tests still run;
+no production code, resource ceiling, scientific profile, or assertion changes.
+The harness-only correction follows the six-path evidence commit and is outside
+the frozen generator and `phase1_analysis` source fingerprints, so the reviewed
+`f43499a` artifact provenance and evidence bytes remain unchanged.
+
 ## 2026-09-02 — Task 18 validation experiment-version guard correction
 
 The first exact matched reproducibility command exposed a pre-evidence adapter
