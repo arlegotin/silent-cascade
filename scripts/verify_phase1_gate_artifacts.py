@@ -13,6 +13,7 @@ from silent_cascade.env.leakage import (
     NAMED_LEAK_INJECTORS,
     AuditSourceDescriptor,
     CounterfactualCheckId,
+    CounterfactualCheckResult,
     LeakageAuditProfileName,
     LeakageReport,
     PositiveControlResult,
@@ -84,14 +85,15 @@ _PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
     ShortcutTask.POSITIVE_HAZARD_CLASS: (17, 256, 270, 4, 704, 194, 4, 33, 1_482),
 }
-_CONSTRUCTION_CHECKS = {
-    "provenance": True,
-    "public_ids": True,
-    "seed_tokens": True,
-    "invariants": True,
-    "finite_features": True,
-    "two_pass_identity": True,
-}
+_CONSTRUCTION_CHECK_IDS = (
+    "provenance",
+    "public_ids",
+    "seed_tokens",
+    "invariants",
+    "finite_features",
+    "two_pass_identity",
+)
+_CONSTRUCTION_CHECKS = {key: True for key in sorted(_CONSTRUCTION_CHECK_IDS)}
 _FEATURE_SCHEMA_SHA256 = sha256_bytes(
     canonical_json_bytes(
         {
@@ -143,6 +145,14 @@ def _require(condition: bool, message: str) -> None:
         raise _artifact_error(message)
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _holm_adjusted_p_values(raw_p_values: tuple[float, ...]) -> tuple[float, ...]:
     ordered = sorted(enumerate(raw_p_values), key=lambda item: item[1])
     adjusted = [0.0] * len(raw_p_values)
@@ -185,13 +195,64 @@ def _positive_control_primitive_types_are_exact(control: PositiveControlResult) 
         and type(control.expected_detector_id) is str
         and type(control.observed_detector_ids) is tuple
         and all(type(value) is str for value in control.observed_detector_ids)
-        and type(control.base_subset_corpus_sha256) is str
-        and type(control.injected_corpus_sha256) is str
-        and type(control.split_membership_sha256) is str
+        and _is_sha256(control.base_subset_corpus_sha256)
+        and _is_sha256(control.injected_corpus_sha256)
+        and _is_sha256(control.split_membership_sha256)
         and type(control.balanced_accuracy) is float
         and type(control.holm_adjusted_p) is float
         and type(control.probes) is tuple
         and type(control.passed) is bool
+    )
+
+
+def _leakage_report_primitive_types_are_exact(leakage: LeakageReport) -> bool:
+    digest_fields = (
+        leakage.corpus_hash,
+        leakage.feature_schema_hash,
+        leakage.split_membership_hash,
+        leakage.train_membership_hash,
+        leakage.test_membership_hash,
+    )
+    return (
+        type(leakage) is LeakageReport
+        and type(leakage.schema_version) is str
+        and leakage.schema_version == "leakage-report-v1"
+        and type(leakage.provenance) is EvidenceProvenance
+        and type(leakage.generation_mode) is str
+        and type(leakage.profile) is LeakageAuditProfileName
+        and all(_is_sha256(value) for value in digest_fields)
+        and type(leakage.episode_count) is int
+        and type(leakage.randomization_block_count) is int
+        and type(leakage.suite_path_denominators) is dict
+        and all(
+            type(key) is str and type(value) is int
+            for key, value in leakage.suite_path_denominators.items()
+        )
+        and type(leakage.construction_check_ids) is tuple
+        and all(type(value) is str for value in leakage.construction_check_ids)
+        and type(leakage.construction_checks) is dict
+        and all(
+            type(key) is str and type(value) is bool
+            for key, value in leakage.construction_checks.items()
+        )
+        and type(leakage.probes) is tuple
+        and type(leakage.label_shuffled_probes) is tuple
+        and type(leakage.positive_controls) is tuple
+        and type(leakage.counterfactual_checks) is tuple
+        and type(leakage.label_shuffled_control_passed) is bool
+        and type(leakage.passed) is bool
+    )
+
+
+def _counterfactual_primitive_types_are_exact(result: CounterfactualCheckResult) -> bool:
+    return (
+        type(result) is CounterfactualCheckResult
+        and type(result.check_id) is CounterfactualCheckId
+        and type(result.checked_pairs) is int
+        and type(result.decision_mismatch_count) is int
+        and type(result.temporal_mismatch_count) is int
+        and _is_sha256(result.result_payload_sha256)
+        and type(result.passed) is bool
     )
 
 
@@ -487,6 +548,10 @@ def _require_oracle(oracle: OracleEvaluationReport) -> None:
 
 def _require_leakage(leakage: LeakageReport) -> None:
     _require(
+        _leakage_report_primitive_types_are_exact(leakage),
+        "leakage outer report types or containers are invalid",
+    )
+    _require(
         type(leakage.passed) is bool and leakage.passed,
         "leakage inner report passed flag is false or mistyped",
     )
@@ -497,6 +562,8 @@ def _require_leakage(leakage: LeakageReport) -> None:
         and leakage.randomization_block_count == 25_000
         and leakage.suite_path_denominators == _GATE_DENOMINATORS
         and type(leakage.construction_checks) is dict
+        and leakage.construction_check_ids == _CONSTRUCTION_CHECK_IDS
+        and tuple(leakage.construction_checks) == tuple(sorted(_CONSTRUCTION_CHECK_IDS))
         and leakage.construction_checks == _CONSTRUCTION_CHECKS
         and all(type(value) is bool for value in leakage.construction_checks.values())
         and type(leakage.label_shuffled_control_passed) is bool
@@ -522,23 +589,21 @@ def _require_leakage(leakage: LeakageReport) -> None:
         and leakage.label_shuffled_control_passed,
         "leakage label-shuffled probe family is absent, incomplete, or failed",
     )
-    checks = {item.check_id: item for item in leakage.counterfactual_checks}
+    expected_counterfactuals = tuple(_COUNTERFACTUAL_COUNTS.items())
     _require(
-        set(checks) == set(CounterfactualCheckId),
-        "leakage counterfactual family is absent or incomplete",
-    )
-    _require(
-        all(
-            type(checks[check_id].check_id) is CounterfactualCheckId
-            and type(checks[check_id].passed) is bool
-            and checks[check_id].passed
-            and type(checks[check_id].checked_pairs) is int
-            and checks[check_id].checked_pairs == expected_count
-            and type(checks[check_id].decision_mismatch_count) is int
-            and checks[check_id].decision_mismatch_count == 0
-            and type(checks[check_id].temporal_mismatch_count) is int
-            and checks[check_id].temporal_mismatch_count == 0
-            for check_id, expected_count in _COUNTERFACTUAL_COUNTS.items()
+        len(leakage.counterfactual_checks) == len(expected_counterfactuals)
+        and all(
+            _counterfactual_primitive_types_are_exact(result)
+            and result.check_id is expected_id
+            and result.checked_pairs == expected_count
+            and result.decision_mismatch_count == 0
+            and result.temporal_mismatch_count == 0
+            and result.passed
+            for result, (expected_id, expected_count) in zip(
+                leakage.counterfactual_checks,
+                expected_counterfactuals,
+                strict=True,
+            )
         ),
         "leakage counterfactual check failed or has a wrong denominator",
     )

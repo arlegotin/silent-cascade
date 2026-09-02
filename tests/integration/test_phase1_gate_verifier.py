@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable
+from enum import StrEnum
 from pathlib import Path
 from runpy import run_path
 
@@ -77,14 +78,15 @@ PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
     ShortcutTask.POSITIVE_HAZARD_CLASS: (17, 256, 270, 4, 704, 194, 4, 33, 1_482),
 }
-LEAKAGE_CONSTRUCTION_CHECKS = {
-    "provenance": True,
-    "public_ids": True,
-    "seed_tokens": True,
-    "invariants": True,
-    "finite_features": True,
-    "two_pass_identity": True,
-}
+LEAKAGE_CONSTRUCTION_CHECK_IDS = (
+    "provenance",
+    "public_ids",
+    "seed_tokens",
+    "invariants",
+    "finite_features",
+    "two_pass_identity",
+)
+LEAKAGE_CONSTRUCTION_CHECKS = {key: True for key in sorted(LEAKAGE_CONSTRUCTION_CHECK_IDS)}
 LEAKAGE_FEATURE_SCHEMA_SHA256 = sha256_bytes(
     canonical_json_bytes(
         {
@@ -94,6 +96,10 @@ LEAKAGE_FEATURE_SCHEMA_SHA256 = sha256_bytes(
         }
     )
 )
+
+
+class _GenerationMode(StrEnum):
+    INDEPENDENT = "independent"
 
 
 def _probe_workload(
@@ -409,6 +415,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         episode_count=100_000,
         randomization_block_count=25_000,
         suite_path_denominators=GATE_DENOMINATORS,
+        construction_check_ids=LEAKAGE_CONSTRUCTION_CHECK_IDS,
         construction_checks=LEAKAGE_CONSTRUCTION_CHECKS,
         probes=_clean_probes(),
         label_shuffled_probes=_clean_probes(),
@@ -1265,6 +1272,87 @@ def test_standalone_verifier_requires_exact_construction_and_feature_schema_iden
 
     with pytest.raises(ArtifactIntegrityError, match=r"leakage|construction|feature|schema"):
         _require_leakage(mutated)
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("schema_version", lambda _report: 1),
+        ("generation_mode", lambda _report: _GenerationMode.INDEPENDENT),
+        ("corpus_hash", lambda _report: 1),
+        ("split_membership_hash", lambda _report: 1),
+        ("train_membership_hash", lambda _report: 1),
+        ("test_membership_hash", lambda _report: 1),
+        ("episode_count", lambda report: float(report.episode_count)),
+        ("randomization_block_count", lambda report: float(report.randomization_block_count)),
+        (
+            "suite_path_denominators",
+            lambda report: {
+                key: float(value) for key, value in report.suite_path_denominators.items()
+            },
+        ),
+        ("probes", lambda report: list(report.probes)),
+        ("label_shuffled_probes", lambda report: list(report.label_shuffled_probes)),
+        ("positive_controls", lambda report: list(report.positive_controls)),
+        ("counterfactual_checks", lambda report: list(report.counterfactual_checks)),
+    ],
+)
+def test_standalone_verifier_rejects_schema_bypassed_outer_report_types(
+    consistent_artifact_bytes: dict[str, bytes],
+    field: str,
+    replacement: Callable[[LeakageReport], object],
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    mutated = report.model_copy(update={field: replacement(report)})
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|report|type|schema"):
+        _require_leakage(mutated)
+
+
+@pytest.mark.parametrize("mutation", ["payload_type", "reversed", "duplicate"])
+def test_standalone_verifier_requires_exact_ordered_counterfactual_evidence(
+    consistent_artifact_bytes: dict[str, bytes],
+    mutation: str,
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    checks = report.counterfactual_checks
+    if mutation == "payload_type":
+        first = checks[0].model_copy(update={"result_payload_sha256": 1})
+        replacement = (first, *checks[1:])
+    elif mutation == "reversed":
+        replacement = tuple(reversed(checks))
+    else:
+        replacement = (*checks, checks[0])
+    mutated = report.model_copy(update={"counterfactual_checks": replacement})
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|counterfactual|order|type"):
+        _require_leakage(mutated)
+
+
+def test_standalone_verifier_rejects_reordered_construction_check_mapping(
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    report = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    reversed_checks = dict(reversed(tuple(report.construction_checks.items())))
+    mutated = report.model_copy(update={"construction_checks": reversed_checks})
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|construction|order"):
+        _require_leakage(mutated)
+
+
+def test_verifier_requires_ordered_construction_check_identity_evidence(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        value.pop("construction_check_ids", None)
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|construction|order|schema"):
+        _verify(_write_artifacts(tmp_path, artifacts))
 
 
 def test_verifier_refuses_a_wrong_frozen_denominator(

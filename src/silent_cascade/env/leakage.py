@@ -914,6 +914,7 @@ class LeakageReport(StrictModel):
     episode_count: int
     randomization_block_count: int
     suite_path_denominators: dict[str, int]
+    construction_check_ids: tuple[str, ...]
     construction_checks: dict[str, bool]
     probes: tuple[ShortcutProbeResult, ...]
     label_shuffled_probes: tuple[ShortcutProbeResult, ...]
@@ -942,7 +943,11 @@ class LeakageReport(StrictModel):
         )
         observed_probes = tuple((probe.task, probe.feature_group) for probe in self.probes)
         if self.profile is LeakageAuditProfileName.PHASE1_GATE:
-            if self.construction_checks != dict.fromkeys(_CONSTRUCTION_CHECK_IDS, True):
+            if self.construction_check_ids != _CONSTRUCTION_CHECK_IDS:
+                raise ValueError("phase1 construction-check identity is incomplete or reordered")
+            if tuple(self.construction_checks) != tuple(
+                sorted(_CONSTRUCTION_CHECK_IDS)
+            ) or self.construction_checks != dict.fromkeys(_CONSTRUCTION_CHECK_IDS, True):
                 raise ValueError("phase1 construction-check evidence is incomplete or inconsistent")
             if self.feature_schema_hash != _FEATURE_SCHEMA_SHA256:
                 raise ValueError("phase1 feature schema hash is inconsistent")
@@ -3929,7 +3934,8 @@ def audit_leakage(
             episode_count=len(rows),
             randomization_block_count=len({row.block for row in rows}),
             suite_path_denominators=dict(sorted(denominators.items())),
-            construction_checks=dict.fromkeys(_CONSTRUCTION_CHECK_IDS, True),
+            construction_check_ids=_CONSTRUCTION_CHECK_IDS,
+            construction_checks={key: True for key in sorted(_CONSTRUCTION_CHECK_IDS)},
             probes=tuple(probes),
             label_shuffled_probes=tuple(shuffled_probes),
             positive_controls=controls,

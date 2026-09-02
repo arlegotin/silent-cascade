@@ -4,6 +4,21 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 complete leakage-report boundary
+
+Mutation review found that the standalone verifier still accepted
+schema-bypassed top-level report values with coercion-compatible types, list
+substitutions for ordered evidence families, and reordered or duplicated
+counterfactual evidence. It also found that the canonically sorted
+construction-check mapping could prove membership but not the engine's declared
+execution order. The verifier now checks one strict outer-report type boundary,
+requires exact ordered counterfactual result types and identities, and validates
+SHA-256 syntax before interpreting evidence. The report now serializes an
+explicit ordered construction-check ID tuple derived from the engine's declared
+sequence and cross-checks it against the exact sorted boolean-map key set. This
+adds authenticated report structure without changing an audit, fit, threshold,
+sample size, replicate count, seed, control, or failure-publication rule.
+
 ## 2026-09-02 — Task 18 exact in-memory evidence types and schema identity
 
 Adversarial review of the independent verifier found that unchecked in-memory
