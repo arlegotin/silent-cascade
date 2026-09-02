@@ -253,6 +253,29 @@ def test_phase1_config_rejects_unknown_keys_and_bool_as_int(
 
 
 @pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("episode_count", "99996"),
+        ("permutation_replicates", "4998"),
+        ("positive_control_episode_count", "7980"),
+        ("positive_control_permutation_replicates", "4998"),
+        ("minimum_test_examples_per_class", "199"),
+        ("enforce_clean_statistical_gate", "false"),
+    ],
+)
+def test_phase1_config_rejects_noncanonical_leakage_gate_profile(
+    field: str,
+    replacement: str,
+) -> None:
+    with pytest.raises(ConfigurationError, match="configuration validation failed"):
+        resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+            set_overrides=(f"data.leakage_audit.phase1_gate.{field}={replacement}",),
+        )
+
+
+@pytest.mark.parametrize(
     "field",
     [
         "data.max_entities",

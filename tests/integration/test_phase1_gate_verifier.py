@@ -19,6 +19,9 @@ from silent_cascade.env.leakage import (
     LeakageAuditProfileName,
     LeakageReport,
     PositiveControlResult,
+    ShortcutFeatureGroup,
+    ShortcutProbeResult,
+    ShortcutTask,
     audit_source_descriptor_sha256,
 )
 from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
@@ -159,6 +162,30 @@ def _positive_controls() -> tuple[PositiveControlResult, ...]:
     )
 
 
+def _clean_probes() -> tuple[ShortcutProbeResult, ...]:
+    return tuple(
+        ShortcutProbeResult(
+            task=task,
+            feature_group=group,
+            feature_dimension=1,
+            train_examples=80_000,
+            test_examples=20_000,
+            train_class_counts={"0": 40_000, "1": 40_000},
+            test_class_counts={"0": 10_000, "1": 10_000},
+            raw_accuracy=0.5,
+            balanced_accuracy=0.5,
+            balanced_chance=0.5,
+            raw_permutation_p=1.0,
+            holm_adjusted_p=1.0,
+            optimizer_iterations=1,
+            optimizer_converged=True,
+            passed=True,
+        )
+        for task in ShortcutTask
+        for group in ShortcutFeatureGroup
+    )
+
+
 @pytest.fixture(scope="session")
 def consistent_artifact_bytes() -> dict[str, bytes]:
     manifest = _validation_manifest()
@@ -269,7 +296,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         randomization_block_count=25_000,
         suite_path_denominators=GATE_DENOMINATORS,
         construction_checks={"complete": True},
-        probes=(),
+        probes=_clean_probes(),
         positive_controls=_positive_controls(),
         counterfactual_checks=(
             _counterfactual(CounterfactualCheckId.TERMINAL_DELAY_SWAP, 25_000, "9"),
@@ -782,6 +809,22 @@ def test_verifier_refuses_an_incomplete_positive_control_family(
     artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
 
     with pytest.raises(ArtifactIntegrityError, match=r"leakage|positive.control"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+def test_verifier_refuses_an_incomplete_clean_probe_family(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+
+    def mutate(value: dict[str, object]) -> None:
+        probes = value["probes"]  # type: ignore[assignment]
+        probes.pop()  # type: ignore[union-attr]
+
+    artifacts["leakage.json"] = _mutate_json(artifacts["leakage.json"], mutate)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"leakage|probe"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 

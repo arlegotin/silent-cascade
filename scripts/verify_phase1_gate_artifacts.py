@@ -15,6 +15,8 @@ from silent_cascade.env.leakage import (
     CounterfactualCheckId,
     LeakageAuditProfileName,
     LeakageReport,
+    ShortcutFeatureGroup,
+    ShortcutTask,
     audit_source_descriptor_sha256,
 )
 from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
@@ -271,6 +273,22 @@ def _require_leakage(leakage: LeakageReport) -> None:
         and all(leakage.construction_checks.values())
         and leakage.label_shuffled_control_passed,
         "leakage artifact has a wrong frozen denominator or failed check",
+    )
+    expected_probes = tuple(
+        (task, group) for task in ShortcutTask for group in ShortcutFeatureGroup
+    )
+    observed_probes = tuple((probe.task, probe.feature_group) for probe in leakage.probes)
+    _require(
+        observed_probes == expected_probes
+        and all(
+            probe.passed
+            and probe.optimizer_converged
+            and not (
+                probe.balanced_accuracy > probe.balanced_chance and probe.holm_adjusted_p < 0.01
+            )
+            for probe in leakage.probes
+        ),
+        "leakage clean-probe family is absent, incomplete, or failed",
     )
     checks = {item.check_id: item for item in leakage.counterfactual_checks}
     _require(

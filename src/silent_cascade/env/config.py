@@ -181,6 +181,25 @@ class LeakageAuditProfileConfig(StrictModel):
     enforce_clean_statistical_gate: bool
 
 
+class Phase1GateLeakageAuditProfileConfig(LeakageAuditProfileConfig):
+    episode_count: Literal[100_000]
+    permutation_replicates: Literal[4_999]
+    positive_control_episode_count: Literal[8_000]
+    positive_control_permutation_replicates: Literal[4_999]
+    minimum_test_examples_per_class: Literal[200]
+    enforce_clean_statistical_gate: Literal[True]
+
+
+PHASE1_GATE_LEAKAGE_PROFILE = Phase1GateLeakageAuditProfileConfig(
+    episode_count=100_000,
+    permutation_replicates=4_999,
+    positive_control_episode_count=8_000,
+    positive_control_permutation_replicates=4_999,
+    minimum_test_examples_per_class=200,
+    enforce_clean_statistical_gate=True,
+)
+
+
 class LeakageAuditConfig(StrictModel):
     schema_version: Literal["leakage-v1"] = "leakage-v1"
     audit_seed: Literal[2026083091] = 2026083091
@@ -197,7 +216,7 @@ class LeakageAuditConfig(StrictModel):
     max_feature_store_bytes: int = Field(default=800_000_000, gt=0, le=800_000_000)
     max_resident_working_bytes: int = Field(default=512_000_000, gt=0, le=512_000_000)
     test: LeakageAuditProfileConfig
-    phase1_gate: LeakageAuditProfileConfig
+    phase1_gate: Phase1GateLeakageAuditProfileConfig
 
     @field_validator(
         "audit_seed",

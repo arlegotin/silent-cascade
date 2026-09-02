@@ -27,7 +27,13 @@ from pydantic import Field, model_validator
 from scipy.optimize import minimize
 from scipy.special import logsumexp
 
-from silent_cascade.env.config import LeakageAuditConfig, Phase1Config, SplitNamespace, SuiteName
+from silent_cascade.env.config import (
+    PHASE1_GATE_LEAKAGE_PROFILE,
+    LeakageAuditConfig,
+    Phase1Config,
+    SplitNamespace,
+    SuiteName,
+)
 from silent_cascade.env.episode import (
     CorpusDigestEntry,
     CorpusHashBuilder,
@@ -886,6 +892,12 @@ class LeakageReport(StrictModel):
         clean_pass = self.profile is LeakageAuditProfileName.TEST or all(
             probe.passed for probe in self.probes
         )
+        expected_probes = tuple(
+            (task, group) for task in ShortcutTask for group in ShortcutFeatureGroup
+        )
+        observed_probes = tuple((probe.task, probe.feature_group) for probe in self.probes)
+        if self.profile is LeakageAuditProfileName.PHASE1_GATE:
+            clean_pass = observed_probes == expected_probes and clean_pass
         expected_controls = tuple(
             (injector.control_id, injector.target_task, injector.expected_detector_id)
             for injector in NAMED_LEAK_INJECTORS
@@ -3355,12 +3367,17 @@ def audit_leakage(
         or not isinstance(workspace, Path)
     ):
         raise TypeError("leakage audit received invalid typed inputs")
+    selected_profile = _profile_config(config, profile)
+    if (
+        profile is LeakageAuditProfileName.PHASE1_GATE
+        and selected_profile != PHASE1_GATE_LEAKAGE_PROFILE
+    ):
+        raise ValueError("phase1 gate profile is not exact")
     _validate_provenance(source, config, provenance)
     authentication = _validate_source_authentication(source, profile)
     _validate_independent_trust_anchor(source, profile, provenance, authentication)
     validation_config = source.validation_config  # type: ignore[attr-defined]
     assert isinstance(validation_config, Phase1Config)
-    selected_profile = _profile_config(config, profile)
     _validate_holm_attainability(config, selected_profile)
     if source.episode_count != selected_profile.episode_count:
         raise ValueError("source episode count does not equal frozen audit profile")

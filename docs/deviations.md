@@ -4,6 +4,20 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 exact leakage acceptance-profile binding
+
+Review of the all-nine scheduler correction found that coordinated `--set`
+overrides could still replace the Phase 1 leakage profile with smaller values
+whose p-value resolution happened to meet the alpha threshold. The production
+profile now has specialized literal fields for exactly 100,000 clean episodes,
+4,999 clean permutations, 8,000 positive-control episodes, 4,999 control
+permutations, a 200-example per-class minimum, and enabled clean statistical
+enforcement. The audit engine redundantly compares that complete profile before
+source authentication, so even an unchecked model copy fails before generation.
+The report and artifact verifier also require the exact ordered three-task by
+nine-feature clean-probe family; vacuous or partial clean evidence cannot pass.
+These checks freeze already approved values and add no new scientific parameter.
+
 ## 2026-09-02 — Task 18 all-nine positive-control publication correction
 
 Independent review found that the first Task 18 leakage artifact contained an

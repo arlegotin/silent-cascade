@@ -633,6 +633,43 @@ def test_phase1_gate_schedules_every_named_positive_control(
     assert tuple(item.control_id for item in controls) == tuple(observed)
 
 
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("episode_count", 99_996),
+        ("permutation_replicates", 4_998),
+        ("positive_control_episode_count", 7_980),
+        ("positive_control_permutation_replicates", 4_998),
+        ("minimum_test_examples_per_class", 199),
+        ("enforce_clean_statistical_gate", False),
+    ],
+)
+def test_phase1_gate_rejects_noncanonical_profile_before_source_access(
+    field: str,
+    replacement: int | bool,
+    tmp_path: Path,
+) -> None:
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    phase1_gate = config.data.leakage_audit.phase1_gate.model_copy(update={field: replacement})
+    audit_config = config.data.leakage_audit.model_copy(update={"phase1_gate": phase1_gate})
+
+    class ProhibitedSource:
+        @property
+        def descriptor(self) -> object:
+            raise AssertionError("noncanonical profile reached source authentication")
+
+    with pytest.raises(ValueError, match="phase1 gate profile is not exact"):
+        leakage.audit_leakage(
+            ProhibitedSource(),  # type: ignore[arg-type]
+            audit_config,
+            leakage.LeakageAuditProfileName.PHASE1_GATE,
+            _provenance(_config_sha256(config)),
+            tmp_path,
+        )
+
+
 def test_named_positive_controls_write_the_exact_declared_public_codes() -> None:
     """A one-field encoding drift can create an overlapping or underpowered control."""
     from silent_cascade.env.leakage import (
