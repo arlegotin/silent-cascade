@@ -601,6 +601,12 @@ def test_phase1_gate_schedules_every_named_positive_control(
         assert profile is config.data.leakage_audit.phase1_gate
         assert injected_source.injector == injector  # type: ignore[attr-defined]
         observed.append(injector.control_id)  # type: ignore[attr-defined]
+        expected_group = injector.expected_detector_id.split(":", 1)[1]  # type: ignore[attr-defined]
+        chance = {
+            leakage.ShortcutTask.POSITIVE_BINARY: 0.5,
+            leakage.ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+            leakage.ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
+        }[injector.target_task]  # type: ignore[attr-defined]
         return leakage.PositiveControlResult(
             control_id=injector.control_id,  # type: ignore[attr-defined]
             target_task=injector.target_task,  # type: ignore[attr-defined]
@@ -610,7 +616,27 @@ def test_phase1_gate_schedules_every_named_positive_control(
             injected_corpus_sha256="2" * 64,
             split_membership_sha256="3" * 64,
             balanced_accuracy=1.0,
-            holm_adjusted_p=0.0054,
+            holm_adjusted_p=9 * 0.0002,
+            probes=tuple(
+                leakage.ShortcutProbeResult(
+                    task=injector.target_task,  # type: ignore[attr-defined]
+                    feature_group=group,
+                    feature_dimension=1,
+                    train_examples=6_400,
+                    test_examples=1_600,
+                    train_class_counts={"0": 3_200, "1": 3_200},
+                    test_class_counts={"0": 800, "1": 800},
+                    raw_accuracy=1.0 if group.value == expected_group else chance,
+                    balanced_accuracy=1.0 if group.value == expected_group else chance,
+                    balanced_chance=chance,
+                    raw_permutation_p=0.0002 if group.value == expected_group else 1.0,
+                    holm_adjusted_p=(9 * 0.0002 if group.value == expected_group else 1.0),
+                    optimizer_iterations=1,
+                    optimizer_converged=True,
+                    passed=group.value != expected_group,
+                )
+                for group in leakage.ShortcutFeatureGroup
+            ),
             passed=True,
         )
 
@@ -631,6 +657,12 @@ def test_phase1_gate_schedules_every_named_positive_control(
         injector.control_id for injector in leakage.NAMED_LEAK_INJECTORS
     )
     assert tuple(item.control_id for item in controls) == tuple(observed)
+
+
+def test_holm_adjustment_has_an_exact_known_answer() -> None:
+    from silent_cascade.env.leakage import _holm_adjusted_p_values
+
+    assert _holm_adjusted_p_values((0.01, 0.04, 0.03)) == (0.03, 0.06, 0.06)
 
 
 @pytest.mark.parametrize(
@@ -3005,7 +3037,7 @@ def test_positive_control_rejects_a_passing_probe_with_the_wrong_identity(
             test_class_counts={"0": 120, "1": 120},
             raw_accuracy=1.0,
             balanced_accuracy=1.0,
-            balanced_chance=0.5,
+            balanced_chance=1.0 / 3.0,
             raw_permutation_p=0.05,
             holm_adjusted_p=0.001,
             optimizer_iterations=1,

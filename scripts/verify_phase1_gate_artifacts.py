@@ -15,6 +15,7 @@ from silent_cascade.env.leakage import (
     CounterfactualCheckId,
     LeakageAuditProfileName,
     LeakageReport,
+    PositiveControlResult,
     ShortcutFeatureGroup,
     ShortcutTask,
     audit_source_descriptor_sha256,
@@ -116,6 +117,51 @@ def _load_validation(path: Path) -> EpisodeManifest:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise _artifact_error(message)
+
+
+def _holm_adjusted_p_values(raw_p_values: tuple[float, ...]) -> tuple[float, ...]:
+    ordered = sorted(enumerate(raw_p_values), key=lambda item: item[1])
+    adjusted = [0.0] * len(raw_p_values)
+    running = 0.0
+    for rank, (index, raw_p) in enumerate(ordered):
+        running = max(running, min(1.0, (len(raw_p_values) - rank) * raw_p))
+        adjusted[index] = running
+    return tuple(adjusted)
+
+
+def _positive_control_is_consistent(control: PositiveControlResult) -> bool:
+    expected_family = tuple((control.target_task, group) for group in ShortcutFeatureGroup)
+    observed_family = tuple((probe.task, probe.feature_group) for probe in control.probes)
+    if observed_family != expected_family:
+        return False
+    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in control.probes))
+    if any(
+        probe.holm_adjusted_p != adjusted[index]
+        or probe.passed
+        != (not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01))
+        for index, probe in enumerate(control.probes)
+    ):
+        return False
+    derived_observed = tuple(
+        f"{probe.task.value}:{probe.feature_group.value}"
+        for index, probe in enumerate(control.probes)
+        if probe.balanced_accuracy >= 0.95
+        and probe.raw_permutation_p <= 0.05
+        and adjusted[index] < 0.01
+    )
+    expected_group = ShortcutFeatureGroup(control.expected_detector_id.split(":", 1)[1])
+    expected_probe = next(
+        (probe for probe in control.probes if probe.feature_group is expected_group),
+        None,
+    )
+    derived_pass = control.expected_detector_id in derived_observed
+    return (
+        control.observed_detector_ids == derived_observed
+        and expected_probe is not None
+        and control.balanced_accuracy == expected_probe.balanced_accuracy
+        and control.holm_adjusted_p == expected_probe.holm_adjusted_p
+        and control.passed is derived_pass
+    )
 
 
 def _common_provenance_key(provenance: EvidenceProvenance) -> tuple[object, ...]:
@@ -278,15 +324,25 @@ def _require_leakage(leakage: LeakageReport) -> None:
         (task, group) for task in ShortcutTask for group in ShortcutFeatureGroup
     )
     observed_probes = tuple((probe.task, probe.feature_group) for probe in leakage.probes)
+    expected_chance = {
+        ShortcutTask.POSITIVE_BINARY: 0.5,
+        ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+        ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
+    }
+    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in leakage.probes))
     _require(
         observed_probes == expected_probes
         and all(
-            probe.passed
+            probe.balanced_chance == expected_chance[probe.task]
             and probe.optimizer_converged
-            and not (
-                probe.balanced_accuracy > probe.balanced_chance and probe.holm_adjusted_p < 0.01
+            and probe.holm_adjusted_p == adjusted[index]
+            and probe.passed
+            == (
+                not (
+                    probe.balanced_accuracy > expected_chance[probe.task] and adjusted[index] < 0.01
+                )
             )
-            for probe in leakage.probes
+            for index, probe in enumerate(leakage.probes)
         ),
         "leakage clean-probe family is absent, incomplete, or failed",
     )
@@ -316,12 +372,7 @@ def _require_leakage(leakage: LeakageReport) -> None:
     _require(
         observed_controls == expected_controls
         and all(
-            control.passed
-            and control.expected_detector_id in control.observed_detector_ids
-            and control.balanced_accuracy is not None
-            and control.balanced_accuracy >= 0.95
-            and control.holm_adjusted_p is not None
-            and control.holm_adjusted_p < 0.01
+            _positive_control_is_consistent(control) and control.passed
             for control in leakage.positive_controls
         )
         and len({control.base_subset_corpus_sha256 for control in leakage.positive_controls}) == 1

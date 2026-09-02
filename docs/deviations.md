@@ -4,6 +4,22 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-02 — Task 18 leakage statistical-evidence consistency
+
+Mutation review found that the artifact verifier trusted serialized balanced
+chance and Holm-adjusted values, and that probability/accuracy fields admitted
+values outside `[0,1]`. Leakage probe schemas now bound every accuracy, chance,
+and p-value; balanced chance is derived exactly from its binary, three-way, or
+four-way task. Both the report and the independently implemented artifact
+verifier recompute Holm adjustment and pass state across the complete ordered
+27-probe clean family. Each positive-control summary now includes its complete
+ordered nine-feature probe family, allowing report and verifier to recompute
+Holm values, observed detector IDs, summary metrics, and pass state instead of
+trusting stored booleans. TEST controls retain their approved raw-p detection
+rule; the Phase 1 profile additionally requires familywise adjusted p below
+0.01. This adds authenticated evidence fields and consistency checks without
+changing a fit, null, threshold, seed, sample, or replicate count.
+
 ## 2026-09-02 — Task 18 exact leakage acceptance-profile binding
 
 Review of the all-nine scheduler correction found that coordinated `--set`

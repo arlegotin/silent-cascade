@@ -132,14 +132,25 @@ class ShortcutProbeResult(StrictModel):
     test_examples: int
     train_class_counts: dict[str, int]
     test_class_counts: dict[str, int]
-    raw_accuracy: float
-    balanced_accuracy: float
-    balanced_chance: float
-    raw_permutation_p: float
-    holm_adjusted_p: float
+    raw_accuracy: float = Field(ge=0.0, le=1.0)
+    balanced_accuracy: float = Field(ge=0.0, le=1.0)
+    balanced_chance: float = Field(ge=0.0, le=1.0)
+    raw_permutation_p: float = Field(ge=0.0, le=1.0)
+    holm_adjusted_p: float = Field(ge=0.0, le=1.0)
     optimizer_iterations: int
     optimizer_converged: bool
     passed: bool
+
+    @model_validator(mode="after")
+    def require_task_derived_chance(self) -> ShortcutProbeResult:
+        expected = {
+            ShortcutTask.POSITIVE_BINARY: 0.5,
+            ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+            ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
+        }[self.task]
+        if self.balanced_chance != expected:
+            raise ValueError("shortcut balanced chance does not match its task")
+        return self
 
 
 class PositiveControlResult(StrictModel):
@@ -150,8 +161,9 @@ class PositiveControlResult(StrictModel):
     base_subset_corpus_sha256: HexDigest
     injected_corpus_sha256: HexDigest
     split_membership_sha256: HexDigest
-    balanced_accuracy: float | None
-    holm_adjusted_p: float | None
+    balanced_accuracy: float | None = Field(ge=0.0, le=1.0)
+    holm_adjusted_p: float | None = Field(ge=0.0, le=1.0)
+    probes: tuple[ShortcutProbeResult, ...]
     passed: bool
 
 
@@ -889,15 +901,28 @@ class LeakageReport(StrictModel):
             raise ValueError(
                 "counterfactual checks must contain every check exactly once in enum order"
             )
-        clean_pass = self.profile is LeakageAuditProfileName.TEST or all(
-            probe.passed for probe in self.probes
-        )
+        clean_pass = self.profile is LeakageAuditProfileName.TEST
         expected_probes = tuple(
             (task, group) for task in ShortcutTask for group in ShortcutFeatureGroup
         )
         observed_probes = tuple((probe.task, probe.feature_group) for probe in self.probes)
         if self.profile is LeakageAuditProfileName.PHASE1_GATE:
-            clean_pass = observed_probes == expected_probes and clean_pass
+            if observed_probes != expected_probes:
+                raise ValueError("phase1 leakage report requires every clean probe in order")
+            adjusted = _holm_adjusted_p_values(
+                tuple(probe.raw_permutation_p for probe in self.probes)
+            )
+            derived_passes = tuple(
+                not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01)
+                for index, probe in enumerate(self.probes)
+            )
+            if any(
+                probe.holm_adjusted_p != adjusted[index]
+                or probe.passed is not derived_passes[index]
+                for index, probe in enumerate(self.probes)
+            ):
+                raise ValueError("phase1 clean probe Holm evidence is inconsistent")
+            clean_pass = all(probe.optimizer_converged and probe.passed for probe in self.probes)
         expected_controls = tuple(
             (injector.control_id, injector.target_task, injector.expected_detector_id)
             for injector in NAMED_LEAK_INJECTORS
@@ -911,6 +936,24 @@ class LeakageReport(StrictModel):
             if self.profile is LeakageAuditProfileName.PHASE1_GATE
             else not observed_controls
         )
+        if self.profile is LeakageAuditProfileName.PHASE1_GATE:
+            if not control_family_complete:
+                raise ValueError("phase1 leakage report requires every positive control in order")
+            if (
+                len({item.base_subset_corpus_sha256 for item in self.positive_controls}) != 1
+                or len({item.split_membership_sha256 for item in self.positive_controls}) != 1
+            ):
+                raise ValueError("phase1 positive controls must share one subset and split")
+            if any(
+                not _positive_control_evidence_is_consistent(item, full_gate=True)
+                for item in self.positive_controls
+            ):
+                raise ValueError("phase1 positive-control evidence is inconsistent")
+        elif any(
+            not _positive_control_evidence_is_consistent(item, full_gate=False)
+            for item in self.positive_controls
+        ):
+            raise ValueError("test positive-control evidence is inconsistent")
         expected = (
             control_family_complete
             and clean_pass
@@ -1936,13 +1979,18 @@ def _permuted_labels(
     return result
 
 
-def _holm(probes: list[ShortcutProbeResult], alpha: float) -> list[ShortcutProbeResult]:
-    ordered = sorted(enumerate(probes), key=lambda item: item[1].raw_permutation_p)
-    adjusted = [0.0] * len(probes)
+def _holm_adjusted_p_values(raw_p_values: Sequence[float]) -> tuple[float, ...]:
+    ordered = sorted(enumerate(raw_p_values), key=lambda item: item[1])
+    adjusted = [0.0] * len(raw_p_values)
     running = 0.0
-    for rank, (index, probe) in enumerate(ordered):
-        running = max(running, min(1.0, (len(probes) - rank) * probe.raw_permutation_p))
+    for rank, (index, raw_p) in enumerate(ordered):
+        running = max(running, min(1.0, (len(raw_p_values) - rank) * raw_p))
         adjusted[index] = running
+    return tuple(adjusted)
+
+
+def _holm(probes: list[ShortcutProbeResult], alpha: float) -> list[ShortcutProbeResult]:
+    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in probes))
     return [
         probe.model_copy(
             update={
@@ -1954,6 +2002,45 @@ def _holm(probes: list[ShortcutProbeResult], alpha: float) -> list[ShortcutProbe
         )
         for index, probe in enumerate(probes)
     ]
+
+
+def _positive_control_evidence_is_consistent(
+    control: PositiveControlResult,
+    *,
+    full_gate: bool,
+) -> bool:
+    expected_family = tuple((control.target_task, group) for group in ShortcutFeatureGroup)
+    observed_family = tuple((probe.task, probe.feature_group) for probe in control.probes)
+    if observed_family != expected_family:
+        return False
+    adjusted = _holm_adjusted_p_values(tuple(probe.raw_permutation_p for probe in control.probes))
+    if any(
+        probe.holm_adjusted_p != adjusted[index]
+        or probe.passed
+        != (not (probe.balanced_accuracy > probe.balanced_chance and adjusted[index] < 0.01))
+        for index, probe in enumerate(control.probes)
+    ):
+        return False
+    derived_observed = tuple(
+        f"{probe.task.value}:{probe.feature_group.value}"
+        for index, probe in enumerate(control.probes)
+        if probe.balanced_accuracy >= 0.95
+        and probe.raw_permutation_p <= 0.05
+        and (not full_gate or adjusted[index] < 0.01)
+    )
+    expected_group = ShortcutFeatureGroup(control.expected_detector_id.split(":", 1)[1])
+    expected_probe = next(
+        (probe for probe in control.probes if probe.feature_group is expected_group),
+        None,
+    )
+    derived_pass = control.expected_detector_id in derived_observed
+    return (
+        control.observed_detector_ids == derived_observed
+        and expected_probe is not None
+        and control.balanced_accuracy == expected_probe.balanced_accuracy
+        and control.holm_adjusted_p == expected_probe.holm_adjusted_p
+        and control.passed is derived_pass
+    )
 
 
 def _feature_bounds(group: ShortcutFeatureGroup) -> tuple[int, int]:
@@ -3320,6 +3407,7 @@ def _execute_positive_control(
         split_membership_sha256=split_hash,
         balanced_accuracy=expected_probe.balanced_accuracy,
         holm_adjusted_p=expected_probe.holm_adjusted_p,
+        probes=tuple(probes),
         passed=passed,
     )
 
