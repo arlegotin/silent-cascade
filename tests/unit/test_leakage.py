@@ -1047,6 +1047,86 @@ def test_count_control_short_observation_window_has_one_precise_admission() -> N
     assert report.check_ids == ("observation_gap",)
 
 
+def test_count_control_admits_exact_phase1_gate_identity_episode() -> None:
+    """An already-48-fact positive must not invent a construction failure."""
+    from silent_cascade.env.episode import EpisodeVariant, episode_sha256
+    from silent_cascade.env.generator import (
+        IndependentEpisodeRequest,
+        generate_independent_episode,
+    )
+    from silent_cascade.env.invariants import validate_episode_invariants
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        ShortcutFeatureGroup,
+        _expected_control_failure_id,
+        _fact_events,
+        _rewrite_positive_control,
+        _StoredExample,
+        extract_shortcut_features,
+    )
+    from silent_cascade.schemas import HazardFact, LinkFact
+
+    config = resolve_config(
+        Phase1Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/data/stress.yaml"),
+        ],
+    ).config
+    request = IndependentEpisodeRequest(
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        suite=SuiteName.DISTRACTOR_FLOOD,
+        root_seed=2026083011,
+        episode_index=341,
+        requested_path_length=2,
+        variant=EpisodeVariant.POSITIVE,
+        allocation_quartet_index=19085,
+    )
+    bundle = generate_independent_episode(config, request, 2026083012)
+    assert bundle.public.init.episode_public_id == "7f8d4768-be0b-4a05-8a84-794136396559"
+    facts = _fact_events(bundle)
+    assert len(facts) == 48
+    assert bundle.truth.recipe.distractor_link_count == 43
+    assert sum(isinstance(event.payload, LinkFact) for event in facts) - 2 == 43
+
+    original = AuditExample(bundle, 76341, "independent", 19085, 341)
+    injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
+    transformed = _rewrite_positive_control(injector, original, 6533)
+    assert transformed == original
+
+    features = extract_shortcut_features(transformed, 8_000)
+    assert features.vectors[ShortcutFeatureGroup.COUNTS][0] == 48 / 64
+    row = _StoredExample(
+        public_id=bundle.public.init.episode_public_id,
+        digest=episode_sha256(bundle),
+        group_id=features.audit_group_id,
+        suite=SuiteName.DISTRACTOR_FLOOD,
+        path_length=2,
+        variant=EpisodeVariant.POSITIVE,
+        hazard_class=bundle.truth.relevant_hazard_type,
+        block=19085,
+        position=341,
+        public_hazard_classes=tuple(
+            sorted(
+                event.payload.hazard_type
+                for event in facts
+                if isinstance(event.payload, HazardFact)
+            )
+        ),
+    )
+    report = validate_episode_invariants(transformed.bundle, config, strict=False)
+    assert report.valid
+    actual_failure = (
+        None
+        if report.valid
+        else (report.check_ids[0] if len(report.check_ids) == 1 else "multiple")
+    )
+    assert actual_failure is None
+    assert _expected_control_failure_id(injector, row, original, transformed, config) is None
+
+
 @pytest.mark.parametrize(
     "attack",
     ("public_id_suffix", "terminal_alternate_code", "hazard_alternate_fill"),
@@ -3164,19 +3244,6 @@ def test_positive_control_overlapping_code_is_refused_before_control_fit(
         "_require_exact_control_public_mutation",
         lambda *_args, **_kwargs: None,
     )
-    real_validate = leakage.validate_episode_invariants
-
-    def authorized_report(bundle, validation_config, strict=True):
-        report = real_validate(bundle, validation_config, strict=strict)
-        if strict is False:
-            return replace(
-                report,
-                valid=False,
-                check_ids=("recipe_distractor_count",),
-            )
-        return report
-
-    monkeypatch.setattr(leakage, "validate_episode_invariants", authorized_report)
 
     def prohibited_control_fit(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("overlapping positive-control features reached fitting")

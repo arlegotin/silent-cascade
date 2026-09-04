@@ -3330,7 +3330,7 @@ def _expected_control_failure_id(
     ):
         return "observation_gap"
     if injector.control_id == "PC_COUNT_BY_LABEL":
-        return "recipe_distractor_count"
+        return "recipe_distractor_count" if changed_fact_count else None
     if (
         injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
         and row.variant is not EpisodeVariant.POSITIVE
