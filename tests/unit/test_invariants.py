@@ -282,6 +282,44 @@ def test_independent_allocation_quartet_and_variant_provenance_fail_closed(
         assert "rng_provenance" in report.check_ids
 
 
+def test_independent_node_permutation_provenance_has_stable_check_id(
+    config: Phase1Config,
+) -> None:
+    """A counterfactually relabeled private path must name its provenance check."""
+    from silent_cascade.env.generator import IndependentEpisodeRequest
+    from silent_cascade.env.invariants import validate_episode_invariants
+
+    bundle = generate_independent_episode(
+        config,
+        IndependentEpisodeRequest(
+            split_namespace=SplitNamespace.PHASE1_GATE,
+            suite=SuiteName.IID_PRIMARY,
+            root_seed=2026083011,
+            episode_index=32,
+            requested_path_length=2,
+            variant=EpisodeVariant.POSITIVE,
+            allocation_quartet_index=8,
+        ),
+        public_id_seed=2026083012,
+    )
+    source = bundle.truth.relevant_node_path[0]
+    relabel = {source: 0, 0: source}
+    counterfactual_path = tuple(relabel.get(node, node) for node in bundle.truth.relevant_node_path)
+    assert counterfactual_path != bundle.truth.relevant_node_path
+    corrupted = _bundle_with(bundle, relevant_node_path=counterfactual_path)
+
+    with pytest.raises(
+        EpisodeInvariantError,
+        match="independent node permutation provenance disagrees",
+    ) as raised:
+        validate_episode_invariants(corrupted, config)
+    assert getattr(raised.value, "check_id") == "node_permutation_provenance"
+
+    report = validate_episode_invariants(corrupted, config, strict=False)
+    assert report.valid is False
+    assert report.check_ids == ("node_permutation_provenance",)
+
+
 @pytest.mark.parametrize(
     ("mutation", "description"),
     [

@@ -601,7 +601,10 @@ def _expected_independent_payloads(
     )
     relabel = {canonical: permutation[canonical] for canonical in range(64)}
     if truth.relevant_node_path != tuple(relabel[node] for node in relevant_nodes):
-        _fail("independent node permutation provenance disagrees")
+        _fail(
+            "independent node permutation provenance disagrees",
+            check_id="node_permutation_provenance",
+        )
     facts: list[object] = [
         LinkFact(relabel[source], relabel[target]) for source, target in pairwise(relevant_nodes)
     ]

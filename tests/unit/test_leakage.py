@@ -1127,6 +1127,92 @@ def test_count_control_admits_exact_phase1_gate_identity_episode() -> None:
     assert _expected_control_failure_id(injector, row, original, transformed, config) is None
 
 
+def test_activation_id_control_identifies_exact_phase1_gate_provenance_failure() -> None:
+    """The first frozen activation-ID row must retain its authorized failure identity."""
+    from silent_cascade.env.episode import EpisodeVariant, episode_sha256
+    from silent_cascade.env.generator import (
+        IndependentEpisodeRequest,
+        generate_independent_episode,
+    )
+    from silent_cascade.env.invariants import validate_episode_invariants
+    from silent_cascade.env.leakage import (
+        NAMED_LEAK_INJECTORS,
+        AuditExample,
+        _expected_control_artifact,
+        _expected_control_failure_id,
+        _fact_events,
+        _rewrite_positive_control,
+        _StoredExample,
+        extract_shortcut_features,
+    )
+    from silent_cascade.schemas import HazardFact
+
+    config = resolve_config(
+        Phase1Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/data/stress.yaml"),
+        ],
+    ).config
+    request = IndependentEpisodeRequest(
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        suite=SuiteName.IID_PRIMARY,
+        root_seed=2026083011,
+        episode_index=32,
+        requested_path_length=2,
+        variant=EpisodeVariant.POSITIVE,
+        allocation_quartet_index=8,
+    )
+    bundle = generate_independent_episode(config, request, 2026083012)
+    assert bundle.public.init.episode_public_id == "366e995a-3211-403b-9da6-b4a376c4829b"
+
+    original = AuditExample(bundle, 32, "independent", 8, 32)
+    injector = next(
+        item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_ACTIVATION_ID_BY_LABEL"
+    )
+    transformed = _rewrite_positive_control(injector, original, 0)
+    expected_public, expected_rank = _expected_control_artifact(
+        injector,
+        original,
+        corpus_position=0,
+        encoded_manifest_rank=0,
+        injected_hazard_target=None,
+    )
+    assert transformed.bundle.public == expected_public
+    assert transformed.manifest_rank == expected_rank
+
+    features = extract_shortcut_features(original, 8_000)
+    facts = _fact_events(bundle)
+    row = _StoredExample(
+        public_id=bundle.public.init.episode_public_id,
+        digest=episode_sha256(bundle),
+        group_id=features.audit_group_id,
+        suite=SuiteName.IID_PRIMARY,
+        path_length=2,
+        variant=EpisodeVariant.POSITIVE,
+        hazard_class=bundle.truth.relevant_hazard_type,
+        block=8,
+        position=32,
+        public_hazard_classes=tuple(
+            sorted(
+                event.payload.hazard_type
+                for event in facts
+                if isinstance(event.payload, HazardFact)
+            )
+        ),
+    )
+    expected_failure = _expected_control_failure_id(injector, row, original, transformed, config)
+    report = validate_episode_invariants(transformed.bundle, config, strict=False)
+    actual_failure = (
+        None
+        if report.valid
+        else (report.check_ids[0] if len(report.check_ids) == 1 else "multiple")
+    )
+    assert expected_failure == "node_permutation_provenance"
+    assert actual_failure == "node_permutation_provenance"
+
+
 @pytest.mark.parametrize(
     "attack",
     ("public_id_suffix", "terminal_alternate_code", "hazard_alternate_fill"),
