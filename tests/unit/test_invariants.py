@@ -313,7 +313,7 @@ def test_independent_node_permutation_provenance_has_stable_check_id(
         match="independent node permutation provenance disagrees",
     ) as raised:
         validate_episode_invariants(corrupted, config)
-    assert getattr(raised.value, "check_id") == "node_permutation_provenance"
+    assert raised.value.check_id == "node_permutation_provenance"
 
     report = validate_episode_invariants(corrupted, config, strict=False)
     assert report.valid is False
