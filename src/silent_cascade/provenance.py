@@ -15,7 +15,9 @@ from silent_cascade.errors import ProvenanceError
 from silent_cascade.validation import StrictModel
 
 GENERATOR_SOURCE_PATHS = (
+    "src/silent_cascade/__init__.py",
     "src/silent_cascade/config.py",
+    "src/silent_cascade/env/__init__.py",
     "src/silent_cascade/env/config.py",
     "src/silent_cascade/env/episode.py",
     "src/silent_cascade/env/generator.py",
@@ -40,22 +42,24 @@ PHASE1_ANALYSIS_SOURCE_PATHS = tuple(
             "src/silent_cascade/env/reproducibility.py",
             "src/silent_cascade/env/services.py",
             "src/silent_cascade/io.py",
+            "src/silent_cascade/logging/__init__.py",
             "src/silent_cascade/logging/manifest.py",
         )
     )
 )
-# Task 14 ships before leakage, the final artifact verifier, and their source
-# modules exist.  Evidence produced at this phase therefore has its own exact,
-# versioned analysis scope; later phases retain the final Phase 1 scope above.
+# The Task 14 label records when this scope was introduced. It remains closed
+# over every current local import of its scoped modules.
 TASK14_ANALYSIS_SOURCE_PATHS = tuple(
     sorted(
         (
             *GENERATOR_SOURCE_PATHS,
             "scripts/check_phase1_reproducibility.py",
+            "src/silent_cascade/env/leakage.py",
             "src/silent_cascade/env/reproducibility.py",
             "src/silent_cascade/env/reward.py",
             "src/silent_cascade/env/services.py",
             "src/silent_cascade/io.py",
+            "src/silent_cascade/logging/__init__.py",
             "src/silent_cascade/logging/manifest.py",
             "src/silent_cascade/provenance.py",
         )

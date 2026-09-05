@@ -2380,7 +2380,7 @@ print(sha256_bytes(canonical_json_bytes(report)))
 
     assert completed.stderr == ""
     assert completed.stdout.strip() == (
-        "ce242bd20077dbc7fe10942c830482ac1c7a15dddb7a80b1645db466d8aa828c"
+        "5af97d0724d7af2e47a40d7726c589fda4b236b7318289ae114242311cc65f10"
     )
 
 

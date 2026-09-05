@@ -22,6 +22,74 @@ from silent_cascade.provenance import (
     source_tree_sha256,
 )
 
+EXPECTED_GENERATOR_SOURCE_PATHS = (
+    "src/silent_cascade/__init__.py",
+    "src/silent_cascade/config.py",
+    "src/silent_cascade/env/__init__.py",
+    "src/silent_cascade/env/config.py",
+    "src/silent_cascade/env/episode.py",
+    "src/silent_cascade/env/generator.py",
+    "src/silent_cascade/env/invariants.py",
+    "src/silent_cascade/env/oracle.py",
+    "src/silent_cascade/env/timing.py",
+    "src/silent_cascade/errors.py",
+    "src/silent_cascade/hashing.py",
+    "src/silent_cascade/rng.py",
+    "src/silent_cascade/schemas.py",
+    "src/silent_cascade/validation.py",
+)
+EXPECTED_PHASE1_ANALYSIS_SOURCE_PATHS = (
+    "scripts/check_phase1_reproducibility.py",
+    "scripts/verify_phase1_gate_artifacts.py",
+    "src/silent_cascade/__init__.py",
+    "src/silent_cascade/config.py",
+    "src/silent_cascade/env/__init__.py",
+    "src/silent_cascade/env/config.py",
+    "src/silent_cascade/env/episode.py",
+    "src/silent_cascade/env/generator.py",
+    "src/silent_cascade/env/invariants.py",
+    "src/silent_cascade/env/leakage.py",
+    "src/silent_cascade/env/oracle.py",
+    "src/silent_cascade/env/reproducibility.py",
+    "src/silent_cascade/env/reward.py",
+    "src/silent_cascade/env/services.py",
+    "src/silent_cascade/env/timing.py",
+    "src/silent_cascade/errors.py",
+    "src/silent_cascade/hashing.py",
+    "src/silent_cascade/io.py",
+    "src/silent_cascade/logging/__init__.py",
+    "src/silent_cascade/logging/manifest.py",
+    "src/silent_cascade/provenance.py",
+    "src/silent_cascade/rng.py",
+    "src/silent_cascade/schemas.py",
+    "src/silent_cascade/validation.py",
+)
+EXPECTED_TASK14_ANALYSIS_SOURCE_PATHS = (
+    "scripts/check_phase1_reproducibility.py",
+    "src/silent_cascade/__init__.py",
+    "src/silent_cascade/config.py",
+    "src/silent_cascade/env/__init__.py",
+    "src/silent_cascade/env/config.py",
+    "src/silent_cascade/env/episode.py",
+    "src/silent_cascade/env/generator.py",
+    "src/silent_cascade/env/invariants.py",
+    "src/silent_cascade/env/leakage.py",
+    "src/silent_cascade/env/oracle.py",
+    "src/silent_cascade/env/reproducibility.py",
+    "src/silent_cascade/env/reward.py",
+    "src/silent_cascade/env/services.py",
+    "src/silent_cascade/env/timing.py",
+    "src/silent_cascade/errors.py",
+    "src/silent_cascade/hashing.py",
+    "src/silent_cascade/io.py",
+    "src/silent_cascade/logging/__init__.py",
+    "src/silent_cascade/logging/manifest.py",
+    "src/silent_cascade/provenance.py",
+    "src/silent_cascade/rng.py",
+    "src/silent_cascade/schemas.py",
+    "src/silent_cascade/validation.py",
+)
+
 
 def test_source_tree_hash_uses_unambiguous_length_framing(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_bytes(b"x")
@@ -78,81 +146,179 @@ def test_source_tree_hash_rejects_symlinks_and_non_regular_files(tmp_path: Path)
         source_tree_sha256(tmp_path, ("directory.py",))
 
 
-def test_frozen_source_path_sets_are_exact_and_sorted() -> None:
-    assert GENERATOR_SOURCE_PATHS == (
-        "src/silent_cascade/config.py",
-        "src/silent_cascade/env/config.py",
-        "src/silent_cascade/env/episode.py",
-        "src/silent_cascade/env/generator.py",
-        "src/silent_cascade/env/invariants.py",
-        "src/silent_cascade/env/oracle.py",
+def test_generator_source_paths_match_the_literal_approved_scope() -> None:
+    assert GENERATOR_SOURCE_PATHS == EXPECTED_GENERATOR_SOURCE_PATHS
+
+
+def test_final_phase1_source_paths_match_the_literal_approved_scope() -> None:
+    assert PHASE1_ANALYSIS_SOURCE_PATHS == EXPECTED_PHASE1_ANALYSIS_SOURCE_PATHS
+
+
+def test_task14_source_paths_match_the_literal_approved_scope() -> None:
+    assert TASK14_ANALYSIS_SOURCE_PATHS == EXPECTED_TASK14_ANALYSIS_SOURCE_PATHS
+
+
+def _source_package_parts(source_path: str) -> tuple[str, ...]:
+    path = Path(source_path)
+    if path.parts[:2] == ("src", "silent_cascade"):
+        module_parts = path.with_suffix("").parts[1:]
+    elif path.parts and path.parts[0] == "scripts":
+        module_parts = path.with_suffix("").parts
+    else:
+        return ()
+    if module_parts[-1] == "__init__":
+        return module_parts[:-1]
+    return module_parts[:-1]
+
+
+def _module_names_from_import(source_path: str, node: ast.Import | ast.ImportFrom) -> set[str]:
+    if isinstance(node, ast.Import):
+        return {alias.name for alias in node.names}
+
+    if node.level:
+        package_parts = _source_package_parts(source_path)
+        retained_count = len(package_parts) - (node.level - 1)
+        if retained_count <= 0:
+            return set()
+        base_parts = package_parts[:retained_count]
+        module_parts = (*base_parts, *(node.module.split(".") if node.module else ()))
+        module = ".".join(module_parts)
+    elif node.module:
+        module = node.module
+    else:
+        return set()
+    return {module, *(f"{module}.{alias.name}" for alias in node.names)}
+
+
+def _existing_local_module_paths(repo_root: Path, module: str) -> set[str]:
+    candidates: tuple[Path, ...]
+    if module == "silent_cascade" or module.startswith("silent_cascade."):
+        base = Path("src", *module.split("."))
+        candidates = (base.with_suffix(".py"), base / "__init__.py")
+    elif module == "scripts" or module.startswith("scripts."):
+        base = Path(*module.split("."))
+        candidates = (base.with_suffix(".py"), base / "__init__.py")
+    else:
+        base = Path("scripts", *module.split("."))
+        candidates = (base.with_suffix(".py"), base / "__init__.py")
+    return {candidate.as_posix() for candidate in candidates if (repo_root / candidate).is_file()}
+
+
+def _existing_ancestor_initializers(repo_root: Path, source_path: str) -> set[str]:
+    path = Path(source_path)
+    if path.parts[:1] == ("src",):
+        root_depth = 1
+    elif path.parts[:1] == ("scripts",):
+        root_depth = 0
+    else:
+        return set()
+    return {
+        initializer.as_posix()
+        for depth in range(root_depth + 1, len(path.parts))
+        if (initializer := Path(*path.parts[:depth], "__init__.py")) != path
+        and (repo_root / initializer).is_file()
+    } | ({path.as_posix()} if path.name == "__init__.py" else set())
+
+
+def _scientific_source_closure(repo_root: Path, declared_paths: tuple[str, ...]) -> set[str]:
+    closure = set(declared_paths)
+    pending = list(declared_paths)
+    while pending:
+        source_path = pending.pop()
+        discovered = _existing_ancestor_initializers(repo_root, source_path)
+        tree = ast.parse((repo_root / source_path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for module in _module_names_from_import(source_path, node):
+                    discovered.update(_existing_local_module_paths(repo_root, module))
+        for path in tuple(discovered):
+            discovered.update(_existing_ancestor_initializers(repo_root, path))
+        new_paths = discovered - closure
+        closure.update(new_paths)
+        pending.extend(new_paths)
+    return closure
+
+
+def _missing_scientific_source_paths(
+    repo_root: Path, declared_paths: tuple[str, ...]
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(_scientific_source_closure(repo_root, declared_paths) - set(declared_paths))
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_missing"),
+    [
+        pytest.param(
+            "from . import timing\nfrom .timing import action_window\n",
+            (
+                "src/silent_cascade/__init__.py",
+                "src/silent_cascade/env/__init__.py",
+                "src/silent_cascade/env/timing.py",
+            ),
+            id="relative-package-and-module-imports",
+        ),
+        pytest.param(
+            "from silent_cascade.env.timing import action_window\n",
+            (
+                "src/silent_cascade/__init__.py",
+                "src/silent_cascade/env/__init__.py",
+                "src/silent_cascade/env/timing.py",
+            ),
+            id="absolute-local-import",
+        ),
+    ],
+)
+def test_import_closure_resolves_relative_absolute_and_ancestor_modules(
+    tmp_path: Path, source: str, expected_missing: tuple[str, ...]
+) -> None:
+    for relative in (
+        "src/silent_cascade/__init__.py",
+        "src/silent_cascade/env/__init__.py",
         "src/silent_cascade/env/timing.py",
-        "src/silent_cascade/errors.py",
-        "src/silent_cascade/hashing.py",
-        "src/silent_cascade/rng.py",
-        "src/silent_cascade/schemas.py",
-        "src/silent_cascade/validation.py",
-    )
-    assert tuple(sorted(PHASE1_ANALYSIS_SOURCE_PATHS)) == PHASE1_ANALYSIS_SOURCE_PATHS
-    assert set(GENERATOR_SOURCE_PATHS) < set(PHASE1_ANALYSIS_SOURCE_PATHS)
+        "src/silent_cascade/env/probe.py",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source if path.name == "probe.py" else "", encoding="utf-8")
+
     assert (
-        tuple(
-            sorted(
-                (
-                    *GENERATOR_SOURCE_PATHS,
-                    "scripts/check_phase1_reproducibility.py",
-                    "src/silent_cascade/env/reproducibility.py",
-                    "src/silent_cascade/env/reward.py",
-                    "src/silent_cascade/env/services.py",
-                    "src/silent_cascade/io.py",
-                    "src/silent_cascade/logging/manifest.py",
-                    "src/silent_cascade/provenance.py",
-                )
-            )
-        )
-        == TASK14_ANALYSIS_SOURCE_PATHS
+        _missing_scientific_source_paths(tmp_path, ("src/silent_cascade/env/probe.py",))
+        == expected_missing
     )
 
 
-def _explicit_project_imports(repo_root: Path, source_path: str) -> set[str]:
-    tree = ast.parse((repo_root / source_path).read_text(encoding="utf-8"))
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            modules.add(node.module)
-            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+def test_import_closure_resolves_local_script_imports_and_initializer(
+    tmp_path: Path,
+) -> None:
+    for relative, contents in (
+        ("scripts/__init__.py", ""),
+        ("scripts/helper.py", ""),
+        ("scripts/probe.py", "import helper\n"),
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
 
-    imports: set[str] = set()
-    for module in modules:
-        if not module.startswith("silent_cascade"):
-            continue
-        candidate = Path("src", *module.split(".")).with_suffix(".py")
-        if candidate.name != "__init__.py" and (repo_root / candidate).is_file():
-            imports.add(candidate.as_posix())
-    return imports
+    assert _missing_scientific_source_paths(tmp_path, ("scripts/probe.py",)) == (
+        "scripts/__init__.py",
+        "scripts/helper.py",
+    )
 
 
 @pytest.mark.parametrize(
     "declared_paths",
-    [GENERATOR_SOURCE_PATHS, PHASE1_ANALYSIS_SOURCE_PATHS],
-    ids=["generator", "phase1_analysis"],
+    [GENERATOR_SOURCE_PATHS, PHASE1_ANALYSIS_SOURCE_PATHS, TASK14_ANALYSIS_SOURCE_PATHS],
+    ids=["generator", "phase1_analysis", "phase1_task14_analysis"],
 )
 def test_scientific_source_scopes_include_explicit_project_import_closure(
     declared_paths: tuple[str, ...],
 ) -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    imported_paths = {
-        imported
-        for source_path in declared_paths
-        for imported in _explicit_project_imports(repo_root, source_path)
-    }
+    missing = _missing_scientific_source_paths(repo_root, declared_paths)
 
-    assert imported_paths <= set(declared_paths), (
-        f"scientific source scope omits explicit local imports: "
-        f"{sorted(imported_paths - set(declared_paths))}"
-    )
+    assert not missing, f"scientific source scope omits exact local dependencies: {missing}"
 
 
 @pytest.mark.parametrize(
@@ -247,7 +413,7 @@ def _git(repo: Path, *arguments: str) -> str:
 
 
 def _committed_provenance_repository(repo: Path) -> Path:
-    for relative in (*PHASE1_ANALYSIS_SOURCE_PATHS, "pyproject.toml", "uv.lock"):
+    for relative in (*EXPECTED_PHASE1_ANALYSIS_SOURCE_PATHS, "pyproject.toml", "uv.lock"):
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"contents for {relative}\n", encoding="utf-8")
@@ -331,8 +497,53 @@ def test_collector_records_committed_source_config_seed_and_scoped_dirty_state(
     ).source_dirty
 
 
-def test_timing_mutation_dirties_and_changes_both_final_source_fingerprints(
+def _collect_final_and_task14_provenance(
+    resolved: object, repo_root: Path
+) -> tuple[EvidenceProvenance, EvidenceProvenance]:
+    common = {
+        "repo_root": repo_root,
+        "generation_mode": "independent",
+        "allocation_id": "phase1-gate-v1",
+        "split_namespace": SplitNamespace.PHASE1_GATE,
+        "root_seed": 17,
+        "public_id_seed": 91,
+        "analysis_seeds": {},
+    }
+    final = collect_final_phase1_provenance(resolved, **common)  # type: ignore[arg-type]
+    task14 = collect_evidence_provenance(
+        resolved,
+        analysis_scope="phase1_task14_analysis",
+        **common,  # type: ignore[arg-type]
+    )
+    return final, task14
+
+
+@pytest.mark.parametrize(
+    ("mutated_path", "expected_changes"),
+    [
+        pytest.param("src/silent_cascade/__init__.py", (True, True, True), id="root-initializer"),
+        pytest.param(
+            "src/silent_cascade/env/__init__.py",
+            (True, True, True),
+            id="env-initializer",
+        ),
+        pytest.param(
+            "src/silent_cascade/logging/__init__.py",
+            (False, True, True),
+            id="logging-initializer",
+        ),
+        pytest.param("src/silent_cascade/env/timing.py", (True, True, True), id="timing-module"),
+        pytest.param(
+            "src/silent_cascade/env/leakage.py",
+            (False, True, True),
+            id="leakage-module",
+        ),
+    ],
+)
+def test_scoped_source_mutation_dirties_and_changes_exact_applicable_fingerprints(
     tmp_path: Path,
+    mutated_path: str,
+    expected_changes: tuple[bool, bool, bool],
 ) -> None:
     resolved_input = _committed_provenance_repository(tmp_path)
     resolved = replace(
@@ -342,30 +553,19 @@ def test_timing_mutation_dirties_and_changes_both_final_source_fingerprints(
         ),
         source_paths=(resolved_input,),
     )
-    before = collect_final_phase1_provenance(
-        resolved,
-        repo_root=tmp_path,
-        generation_mode="independent",
-        allocation_id="phase1-gate-v1",
-        split_namespace=SplitNamespace.PHASE1_GATE,
-        root_seed=17,
-        public_id_seed=91,
-        analysis_seeds={},
-    )
+    final_before, task14_before = _collect_final_and_task14_provenance(resolved, tmp_path)
+    assert not final_before.source_dirty
+    assert not task14_before.source_dirty
 
-    timing_path = tmp_path / "src/silent_cascade/env/timing.py"
-    timing_path.write_text("changed timing behavior\n", encoding="utf-8")
-    after = collect_final_phase1_provenance(
-        resolved,
-        repo_root=tmp_path,
-        generation_mode="independent",
-        allocation_id="phase1-gate-v1",
-        split_namespace=SplitNamespace.PHASE1_GATE,
-        root_seed=17,
-        public_id_seed=91,
-        analysis_seeds={},
-    )
+    path = tmp_path / mutated_path
+    path.write_text(f"changed contents for {mutated_path}\n", encoding="utf-8")
+    final_after, task14_after = _collect_final_and_task14_provenance(resolved, tmp_path)
 
-    assert after.source_dirty
-    assert after.generator_source.sha256 != before.generator_source.sha256
-    assert after.analysis_source.sha256 != before.analysis_source.sha256
+    assert final_after.source_dirty
+    assert task14_after.source_dirty
+    actual_changes = (
+        final_after.generator_source.sha256 != final_before.generator_source.sha256,
+        final_after.analysis_source.sha256 != final_before.analysis_source.sha256,
+        task14_after.analysis_source.sha256 != task14_before.analysis_source.sha256,
+    )
+    assert actual_changes == expected_changes
