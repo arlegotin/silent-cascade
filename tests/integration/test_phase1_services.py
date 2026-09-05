@@ -561,7 +561,7 @@ def test_production_manifest_test_profile_selects_the_frozen_1200_in_canonical_o
     assert coordinates == sorted(coordinates)
     assert (
         sha256_bytes(canonical_json_bytes({"coordinates": coordinates}))
-        == "57f500c7be1182f0f6dd625bb445b5dda066cffc34ba687589ef6d7c5bca9469"
+        == "dc5f756a36f10656ad71f9a02bf3e18a886ff72097db5aa94aabc7dcd8759a50"
     )
 
 

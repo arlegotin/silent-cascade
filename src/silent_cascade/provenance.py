@@ -21,6 +21,8 @@ GENERATOR_SOURCE_PATHS = (
     "src/silent_cascade/env/generator.py",
     "src/silent_cascade/env/invariants.py",
     "src/silent_cascade/env/oracle.py",
+    "src/silent_cascade/env/timing.py",
+    "src/silent_cascade/errors.py",
     "src/silent_cascade/hashing.py",
     "src/silent_cascade/rng.py",
     "src/silent_cascade/schemas.py",

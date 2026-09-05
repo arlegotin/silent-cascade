@@ -1,5 +1,6 @@
 """Contracts for immutable Phase 1 evidence provenance."""
 
+import ast
 import json
 import subprocess
 from dataclasses import replace
@@ -17,6 +18,7 @@ from silent_cascade.provenance import (
     EvidenceProvenance,
     SourceTreeFingerprint,
     collect_evidence_provenance,
+    collect_final_phase1_provenance,
     source_tree_sha256,
 )
 
@@ -84,6 +86,8 @@ def test_frozen_source_path_sets_are_exact_and_sorted() -> None:
         "src/silent_cascade/env/generator.py",
         "src/silent_cascade/env/invariants.py",
         "src/silent_cascade/env/oracle.py",
+        "src/silent_cascade/env/timing.py",
+        "src/silent_cascade/errors.py",
         "src/silent_cascade/hashing.py",
         "src/silent_cascade/rng.py",
         "src/silent_cascade/schemas.py",
@@ -107,6 +111,47 @@ def test_frozen_source_path_sets_are_exact_and_sorted() -> None:
             )
         )
         == TASK14_ANALYSIS_SOURCE_PATHS
+    )
+
+
+def _explicit_project_imports(repo_root: Path, source_path: str) -> set[str]:
+    tree = ast.parse((repo_root / source_path).read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+
+    imports: set[str] = set()
+    for module in modules:
+        if not module.startswith("silent_cascade"):
+            continue
+        candidate = Path("src", *module.split(".")).with_suffix(".py")
+        if candidate.name != "__init__.py" and (repo_root / candidate).is_file():
+            imports.add(candidate.as_posix())
+    return imports
+
+
+@pytest.mark.parametrize(
+    "declared_paths",
+    [GENERATOR_SOURCE_PATHS, PHASE1_ANALYSIS_SOURCE_PATHS],
+    ids=["generator", "phase1_analysis"],
+)
+def test_scientific_source_scopes_include_explicit_project_import_closure(
+    declared_paths: tuple[str, ...],
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    imported_paths = {
+        imported
+        for source_path in declared_paths
+        for imported in _explicit_project_imports(repo_root, source_path)
+    }
+
+    assert imported_paths <= set(declared_paths), (
+        f"scientific source scope omits explicit local imports: "
+        f"{sorted(imported_paths - set(declared_paths))}"
     )
 
 
@@ -284,3 +329,43 @@ def test_collector_records_committed_source_config_seed_and_scoped_dirty_state(
         public_id_seed=91,
         analysis_seeds={},
     ).source_dirty
+
+
+def test_timing_mutation_dirties_and_changes_both_final_source_fingerprints(
+    tmp_path: Path,
+) -> None:
+    resolved_input = _committed_provenance_repository(tmp_path)
+    resolved = replace(
+        resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+        ),
+        source_paths=(resolved_input,),
+    )
+    before = collect_final_phase1_provenance(
+        resolved,
+        repo_root=tmp_path,
+        generation_mode="independent",
+        allocation_id="phase1-gate-v1",
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        root_seed=17,
+        public_id_seed=91,
+        analysis_seeds={},
+    )
+
+    timing_path = tmp_path / "src/silent_cascade/env/timing.py"
+    timing_path.write_text("changed timing behavior\n", encoding="utf-8")
+    after = collect_final_phase1_provenance(
+        resolved,
+        repo_root=tmp_path,
+        generation_mode="independent",
+        allocation_id="phase1-gate-v1",
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        root_seed=17,
+        public_id_seed=91,
+        analysis_seeds={},
+    )
+
+    assert after.source_dirty
+    assert after.generator_source.sha256 != before.generator_source.sha256
+    assert after.analysis_source.sha256 != before.analysis_source.sha256
