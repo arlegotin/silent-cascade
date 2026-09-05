@@ -4,6 +4,29 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-05 — Phase 1 explicit-import provenance closure
+
+The final whole-Phase-1 code audit found that the exact generator and analysis
+source fingerprints omitted `src/silent_cascade/env/timing.py`, even though it
+defines the action-window semantics used by generation, validation, scoring,
+leakage, scaling, and services. A complete explicit-import closure audit also
+found `src/silent_cascade/errors.py` omitted despite its fail-closed publication
+role. Both paths are now required in the generator scope and, through it, the
+analysis scope; tests must enforce complete explicit project-local import
+closure and prove that a timing-only mutation dirties source and changes both
+fingerprints. The CLI remains an excluded adapter because services and the
+final verifier independently authenticate every successful evidence input and
+output. Package initializers remain excluded only while non-semantic; any
+future semantic initializer change must enter each relevant scope before
+evidence generation.
+
+The five existing Phase 1 artifacts are stale acceptance evidence. After the
+source and test repair passes full local verification and review, all five must
+be regenerated from one new clean source revision before Phase 1 can be marked
+complete. This strengthens provenance without changing the OFD task, controls,
+thresholds, seeds, data, metrics, acceptance gates, or zero-foundation-model-call
+requirement.
+
 ## 2026-09-02 — Task 18 complete leakage-report boundary
 
 Mutation review found that the standalone verifier still accepted

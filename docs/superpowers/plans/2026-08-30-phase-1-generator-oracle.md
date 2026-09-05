@@ -3257,6 +3257,8 @@ GENERATOR_SOURCE_PATHS = (
     "src/silent_cascade/env/generator.py",
     "src/silent_cascade/env/invariants.py",
     "src/silent_cascade/env/oracle.py",
+    "src/silent_cascade/env/timing.py",
+    "src/silent_cascade/errors.py",
     "src/silent_cascade/hashing.py",
     "src/silent_cascade/rng.py",
     "src/silent_cascade/schemas.py",
@@ -3277,7 +3279,16 @@ PHASE1_ANALYSIS_SOURCE_PATHS = tuple(sorted((*GENERATOR_SOURCE_PATHS,
 ```
 
 The first tuple is already lexicographically sorted and tests freeze both
-tuples exactly. Start hashing with
+tuples exactly. Both scopes must be closed over every explicit project-local
+import reachable from a scoped file; tests must derive that closure and fail
+when either scope omits such a dependency. `src/silent_cascade/cli.py` is an
+adapter and is excluded from the scientific content fingerprint because all
+successful evidence inputs and outputs are independently authenticated by the
+services and the final verifier. Package initializers are currently
+non-semantic and excluded; any future semantic initializer change must add that
+initializer to every relevant scope before evidence is generated.
+
+Start hashing with
 `b"silent-cascade/source-tree/v1\0"`, append the file count
 as four-byte big-endian, then frame each item as
 `len(path_utf8).to_bytes(4, "big") || path_utf8 ||
@@ -3293,7 +3304,9 @@ YAML inputs, `pyproject.toml`, and `uv.lock`. Tests, docs, and generated output
 artifacts do not alter this scientific-source flag. Task 18 still requires an
 entirely clean worktree before producing evidence. This lets a second identical
 publication verify its own output without treating the first artifact as a
-scientific source change.
+scientific source change. A mutation test must change only
+`src/silent_cascade/env/timing.py` and prove that `source_dirty` becomes true
+and that both the generator and Phase 1 analysis fingerprints change.
 
 Use this exact collector API:
 
