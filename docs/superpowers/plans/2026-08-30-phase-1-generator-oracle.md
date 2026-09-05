@@ -3082,8 +3082,9 @@ git commit -m "feat: add terminal and timing stress suites"
   revision, resolved configuration hash, and independent public ID seed.
 - Produces from `provenance`: `SourceTreeFingerprint`,
   `EvidenceProvenance`, `GENERATOR_SOURCE_PATHS`,
-  `PHASE1_ANALYSIS_SOURCE_PATHS`, `source_tree_sha256`, and
-  `EvidenceProvenanceCollector`/`collect_evidence_provenance`.
+  `PHASE1_ANALYSIS_SOURCE_PATHS`, `TASK14_ANALYSIS_SOURCE_PATHS`,
+  `source_tree_sha256`, `EvidenceProvenanceCollector`,
+  `collect_evidence_provenance`, and `collect_final_phase1_provenance`.
 - Produces from `logging.manifest`: `ManifestAccessClass`,
   `ManifestCoordinate`, `EpisodeManifestEntry`, `EpisodeManifest`, `ManifestEnvelope`,
   `ManifestPublication`, `publish_manifest`, `load_manifest`, and
@@ -3140,7 +3141,9 @@ HexDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 class SourceTreeFingerprint(StrictModel):
     frame_version: Literal["sc-source-tree-v1"]
-    scope: Literal["generator", "phase1_analysis"]
+    scope: Literal[
+        "generator", "phase1_analysis", "phase1_task14_analysis"
+    ]
     paths: tuple[str, ...]
     sha256: HexDigest
 
@@ -3251,7 +3254,9 @@ with a glob:
 
 ```python
 GENERATOR_SOURCE_PATHS = (
+    "src/silent_cascade/__init__.py",
     "src/silent_cascade/config.py",
+    "src/silent_cascade/env/__init__.py",
     "src/silent_cascade/env/config.py",
     "src/silent_cascade/env/episode.py",
     "src/silent_cascade/env/generator.py",
@@ -3274,19 +3279,47 @@ PHASE1_ANALYSIS_SOURCE_PATHS = tuple(sorted((*GENERATOR_SOURCE_PATHS,
     "src/silent_cascade/env/reproducibility.py",
     "src/silent_cascade/env/services.py",
     "src/silent_cascade/io.py",
+    "src/silent_cascade/logging/__init__.py",
     "src/silent_cascade/logging/manifest.py",
+)))
+
+TASK14_ANALYSIS_SOURCE_PATHS = tuple(sorted((*GENERATOR_SOURCE_PATHS,
+    "scripts/check_phase1_reproducibility.py",
+    "src/silent_cascade/env/reproducibility.py",
+    "src/silent_cascade/env/reward.py",
+    "src/silent_cascade/env/services.py",
+    "src/silent_cascade/io.py",
+    "src/silent_cascade/logging/__init__.py",
+    "src/silent_cascade/logging/manifest.py",
+    "src/silent_cascade/provenance.py",
 )))
 ```
 
-The first tuple is already lexicographically sorted and tests freeze both
-tuples exactly. Both scopes must be closed over every explicit project-local
-import reachable from a scoped file; tests must derive that closure and fail
-when either scope omits such a dependency. `src/silent_cascade/cli.py` is an
-adapter and is excluded from the scientific content fingerprint because all
-successful evidence inputs and outputs are independently authenticated by the
-services and the final verifier. Package initializers are currently
-non-semantic and excluded; any future semantic initializer change must add that
-initializer to every relevant scope before evidence is generated.
+The generator tuple is already lexicographically sorted; the two analysis
+tuples sort their explicit unions. Tests freeze all three tuples with literal exact-tuple
+assertions: generator, final Phase 1 analysis, and historical Task 14 analysis.
+A sortedness or generator-superset assertion is not a substitute for any of
+those three literal expectations, and expected analysis tuples must not be
+constructed from `GENERATOR_SOURCE_PATHS`, `sorted`, or the production constants
+under test.
+
+All three scopes must be closed over every explicit project-local import
+reachable from a scoped file and over every package initializer Python executes
+while importing those files. The closure test must parse `ast.Import` and
+`ast.ImportFrom`, resolve both absolute and relative imports against the source
+module's package, map local module candidates beneath both
+`src/silent_cascade/` and `scripts/`, and add each existing ancestor
+`__init__.py` for every scoped or imported package module. Parameterize the
+closure check over `GENERATOR_SOURCE_PATHS`, `PHASE1_ANALYSIS_SOURCE_PATHS`,
+and `TASK14_ANALYSIS_SOURCE_PATHS`; fail with the exact missing paths when any
+derived local module or executed initializer is absent from the applicable
+scope. `src/silent_cascade/cli.py` is an adapter and is excluded from the
+scientific content fingerprint because all successful evidence inputs and
+outputs are independently authenticated by the services and the final
+verifier. No executed package initializer may be omitted because it is empty,
+side-effect-free, or currently believed to be non-semantic: its future contents
+can change import-time scientific behavior, so the initializer itself remains
+fingerprinted.
 
 Start hashing with
 `b"silent-cascade/source-tree/v1\0"`, append the file count
@@ -3304,9 +3337,19 @@ YAML inputs, `pyproject.toml`, and `uv.lock`. Tests, docs, and generated output
 artifacts do not alter this scientific-source flag. Task 18 still requires an
 entirely clean worktree before producing evidence. This lets a second identical
 publication verify its own output without treating the first artifact as a
-scientific source change. A mutation test must change only
-`src/silent_cascade/env/timing.py` and prove that `source_dirty` becomes true
-and that both the generator and Phase 1 analysis fingerprints change.
+scientific source change. Mutation regressions must build a committed
+disposable repository containing all three exact scopes, collect generator,
+final-analysis, and Task-14-analysis provenance, and first assert every
+collector reports `source_dirty is False`. Parameterize a one-file mutation
+over `src/silent_cascade/__init__.py`,
+`src/silent_cascade/env/__init__.py`,
+`src/silent_cascade/logging/__init__.py`, and
+`src/silent_cascade/env/timing.py`. After each mutation, assert applicable
+collectors report `source_dirty is True`; root/environment initializer and
+timing mutations change the generator plus both analysis fingerprints, while a
+logging initializer mutation changes the final and Task 14 analysis
+fingerprints and leaves the generator fingerprint unchanged. A dirty result
+without the corresponding fingerprint change does not satisfy this test.
 
 Use this exact collector API:
 
@@ -3341,6 +3384,22 @@ def collect_evidence_provenance(
     root_seed: int,
     public_id_seed: int,
     analysis_seeds: Mapping[str, int],
+    analysis_scope: Literal[
+        "phase1_analysis", "phase1_task14_analysis"
+    ] = "phase1_task14_analysis",
+) -> EvidenceProvenance: ...
+
+
+def collect_final_phase1_provenance(
+    resolved: ResolvedConfig[Phase1Config],
+    *,
+    repo_root: Path,
+    generation_mode: Literal["matched", "independent"],
+    allocation_id: str,
+    split_namespace: SplitNamespace,
+    root_seed: int,
+    public_id_seed: int,
+    analysis_seeds: Mapping[str, int],
 ) -> EvidenceProvenance: ...
 ```
 
@@ -3351,17 +3410,19 @@ that touched the approved plan, not a caller-supplied label or the current
 source commit by assumption. Require both values to be full lowercase commit
 IDs and fail if the plan is untracked. Set `config_sha256=resolved.sha256` and
 hash exactly `resolved.source_paths` for dirty-state coverage in addition to
-the two frozen source-path sets, `pyproject.toml`, and `uv.lock`. Fingerprint
-contents come only from the frozen source sets. Hash the public-ID seed through
-Task 3's domain-separated fingerprint helper; never place it in a public
-report. Sort and copy `analysis_seeds`, enforce zero foundation calls from the
-resolved runtime config, and reject a missing source path rather than silently
-shrinking a scope.
+the generator and selected exact analysis source-path sets, `pyproject.toml`,
+and `uv.lock`. Fingerprint contents come only from those exact frozen source
+sets. Hash the public-ID seed through Task 3's domain-separated fingerprint
+helper; never place it in a public report. Sort and copy `analysis_seeds`,
+enforce zero foundation calls from the resolved runtime config, and reject a
+missing source path rather than silently shrinking a scope.
 
 Task 13 unit tests create a temporary Git repository containing every frozen
-path and prove the collector's exact revision, dirty, config, source, seed, and
-zero-call behavior. Because `PHASE1_ANALYSIS_SOURCE_PATHS` deliberately names
-later modules and both acceptance scripts, production provenance collection is
+path and prove the collectors' exact revision, dirty, config, source, seed, and
+zero-call behavior. The generic collector defaults to the exact historical
+Task 14 scope; `collect_final_phase1_provenance` selects the exact final Phase 1
+scope. Because `PHASE1_ANALYSIS_SOURCE_PATHS` deliberately names later modules
+and both acceptance scripts, production final-scope provenance collection is
 first exercised after Task 17 creates the final path. Tasks 14–17 tests inject
 a collector and never weaken the production missing-path error.
 

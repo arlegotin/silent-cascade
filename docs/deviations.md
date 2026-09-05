@@ -4,6 +4,28 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-05 — Phase 1 executed-package initializer provenance closure
+
+Adversarial review of the explicit-import repair found that Python executes
+`src/silent_cascade/__init__.py` and `src/silent_cascade/env/__init__.py` while
+loading generator modules, and also executes
+`src/silent_cascade/logging/__init__.py` on the manifest-backed analysis path,
+but those initializers remained outside the corresponding fingerprints. The
+generator scope must include the root and environment initializers; final Phase
+1 and historical Task 14 analysis scopes must additionally include the logging
+initializer. Closure tests must resolve absolute and relative imports beneath
+both local module roots, derive ancestor initializers, enforce literal exact
+tuples for all three scopes, and start initializer/timing mutation regressions
+from an asserted clean provenance baseline.
+
+All five existing Phase 1 evidence artifacts remain invalid acceptance
+evidence. After a new source-and-test correction passes full local verification
+and independent review, every artifact must be regenerated from that one clean
+reviewed source revision before Phase 1 can be marked complete. This closes an
+import-time provenance hole without changing the OFD data, controls,
+thresholds, seeds, metrics, acceptance gates, or exact zero-foundation-model-
+call requirement.
+
 ## 2026-09-05 — Phase 1 explicit-import provenance closure
 
 The final whole-Phase-1 code audit found that the exact generator and analysis
@@ -16,9 +38,9 @@ analysis scope; tests must enforce complete explicit project-local import
 closure and prove that a timing-only mutation dirties source and changes both
 fingerprints. The CLI remains an excluded adapter because services and the
 final verifier independently authenticate every successful evidence input and
-output. Package initializers remain excluded only while non-semantic; any
-future semantic initializer change must enter each relevant scope before
-evidence generation.
+output. Executed package initializers are part of the applicable scientific
+scope regardless of their current contents; the initializer-specific correction
+above supersedes the earlier exclusion rationale.
 
 The five existing Phase 1 artifacts are stale acceptance evidence. After the
 source and test repair passes full local verification and review, all five must
