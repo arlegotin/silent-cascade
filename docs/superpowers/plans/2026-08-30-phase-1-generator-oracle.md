@@ -3285,6 +3285,7 @@ PHASE1_ANALYSIS_SOURCE_PATHS = tuple(sorted((*GENERATOR_SOURCE_PATHS,
 
 TASK14_ANALYSIS_SOURCE_PATHS = tuple(sorted((*GENERATOR_SOURCE_PATHS,
     "scripts/check_phase1_reproducibility.py",
+    "src/silent_cascade/env/leakage.py",
     "src/silent_cascade/env/reproducibility.py",
     "src/silent_cascade/env/reward.py",
     "src/silent_cascade/env/services.py",
@@ -3313,13 +3314,17 @@ module's package, map local module candidates beneath both
 closure check over `GENERATOR_SOURCE_PATHS`, `PHASE1_ANALYSIS_SOURCE_PATHS`,
 and `TASK14_ANALYSIS_SOURCE_PATHS`; fail with the exact missing paths when any
 derived local module or executed initializer is absent from the applicable
-scope. `src/silent_cascade/cli.py` is an adapter and is excluded from the
-scientific content fingerprint because all successful evidence inputs and
-outputs are independently authenticated by the services and the final
-verifier. No executed package initializer may be omitted because it is empty,
-side-effect-free, or currently believed to be non-semantic: its future contents
-can change import-time scientific behavior, so the initializer itself remains
-fingerprinted.
+scope. The `phase1_task14_analysis` label records when that scope was
+introduced; it does not preserve an obsolete dependency snapshot. Because the
+current scoped `env/services.py` explicitly imports `env/leakage.py`, the Task
+14 scope fingerprints the current leakage module and must continue to close
+over any future local imports of its scoped files. `src/silent_cascade/cli.py`
+is an adapter and is excluded from the scientific content fingerprint because
+all successful evidence inputs and outputs are independently authenticated by
+the services and the final verifier. No executed package initializer may be
+omitted because it is empty, side-effect-free, or currently believed to be
+non-semantic: its future contents can change import-time scientific behavior,
+so the initializer itself remains fingerprinted.
 
 Start hashing with
 `b"silent-cascade/source-tree/v1\0"`, append the file count
@@ -3344,12 +3349,14 @@ collector reports `source_dirty is False`. Parameterize a one-file mutation
 over `src/silent_cascade/__init__.py`,
 `src/silent_cascade/env/__init__.py`,
 `src/silent_cascade/logging/__init__.py`, and
-`src/silent_cascade/env/timing.py`. After each mutation, assert applicable
+`src/silent_cascade/env/timing.py`, plus
+`src/silent_cascade/env/leakage.py`. After each mutation, assert applicable
 collectors report `source_dirty is True`; root/environment initializer and
-timing mutations change the generator plus both analysis fingerprints, while a
-logging initializer mutation changes the final and Task 14 analysis
-fingerprints and leaves the generator fingerprint unchanged. A dirty result
-without the corresponding fingerprint change does not satisfy this test.
+timing mutations change the generator plus both analysis fingerprints, while
+logging-initializer and leakage-module mutations change the final and Task 14
+analysis fingerprints and leave the generator fingerprint unchanged. A dirty
+result without the corresponding fingerprint change does not satisfy this
+test.
 
 Use this exact collector API:
 

@@ -18,6 +18,15 @@ both local module roots, derive ancestor initializers, enforce literal exact
 tuples for all three scopes, and start initializer/timing mutation regressions
 from an asserted clean provenance baseline.
 
+The first plan correction still treated `phase1_task14_analysis` as a
+historical dependency snapshot, even though its scoped current
+`src/silent_cascade/env/services.py` explicitly imports
+`src/silent_cascade/env/leakage.py`. The Task 14 scope must therefore include
+the current leakage module as well. Its historical label records introduction
+time, not permission to omit a presently executed dependency; closure and
+mutation tests must prove that leakage changes affect both analysis
+fingerprints while leaving the generator fingerprint unchanged.
+
 All five existing Phase 1 evidence artifacts remain invalid acceptance
 evidence. After a new source-and-test correction passes full local verification
 and independent review, every artifact must be regenerated from that one clean
