@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from silent_cascade.config import ResolvedConfig
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
@@ -28,7 +28,9 @@ from silent_cascade.env.generator import (
     IndependentAllocation,
     IndependentEpisodeRequest,
     generate_independent_episode,
+    independent_seed_tokens,
     iter_independent_requests,
+    matched_seed_tokens,
     regenerate_independent_episode,
     regenerate_matched_episode,
     regenerate_stress_episode,
@@ -51,12 +53,20 @@ from silent_cascade.logging.manifest import (
     load_manifest,
 )
 from silent_cascade.provenance import (
+    ConstructionNamespaceBuilder,
+    ConstructionNamespaceEvidence,
     EvidenceProvenance,
     EvidenceProvenanceCollector,
     collect_final_phase1_provenance,
     public_id_seed_sha256,
+    require_namespace_evidence_provenance,
 )
-from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
+from silent_cascade.rng import (
+    AllocationLabelKey,
+    IndependentPublicIdKey,
+    allocate_independent_public_id,
+    allocate_independent_variants,
+)
 from silent_cascade.validation import StrictModel
 
 
@@ -99,7 +109,7 @@ class ReproducibilityRequest(StrictModel):
 
 
 class ReproducibilityReport(StrictModel):
-    schema_version: Literal["phase1-reproducibility-v1"]
+    schema_version: Literal["phase1-reproducibility-v2"]
     source_mode: Literal["manifest", "independent_allocation"]
     source_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_size: int
@@ -110,8 +120,17 @@ class ReproducibilityReport(StrictModel):
     reference_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_membership_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     mismatch_count: Literal[0]
+    namespace_evidence: ConstructionNamespaceEvidence
     provenance: EvidenceProvenance
     passed: bool
+
+    @model_validator(mode="after")
+    def require_namespace_binding(self) -> "ReproducibilityReport":
+        require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
+        expected_mode = "matched" if self.source_mode == "manifest" else "independent"
+        if self.namespace_evidence.generation_mode != expected_mode:
+            raise ValueError("reproducibility namespace generation mode is inconsistent")
+        return self
 
 
 class FreshProcessResult(StrictModel):
@@ -530,6 +549,81 @@ def _manifest_work_order(
     )
 
 
+def _matched_manifest_namespace(
+    manifest: EpisodeManifest,
+) -> ConstructionNamespaceEvidence:
+    if manifest.provenance.generation_mode != "matched" or len(manifest.entries) % 4:
+        raise ArtifactIntegrityError("matched manifest namespace has incomplete draws")
+    builder = ConstructionNamespaceBuilder(
+        generation_mode="matched",
+        public_id_seed=manifest.public_id_seed,
+        accepted_draw_count=len(manifest.entries) // 4,
+        clock_public_id_count=0,
+    )
+    for start in range(0, len(manifest.entries), 4):
+        members = manifest.entries[start : start + 4]
+        first = members[0]
+        coordinate = first.coordinate
+        if (
+            not isinstance(coordinate, MatchedManifestCoordinate)
+            or tuple(
+                member.coordinate.member_index
+                for member in members
+                if isinstance(member.coordinate, MatchedManifestCoordinate)
+            )
+            != (0, 1, 2, 3)
+            or any(member.accepted_attempt != first.accepted_attempt for member in members)
+        ):
+            raise ArtifactIntegrityError("matched manifest namespace draw is inconsistent")
+        request = CohortRequest(
+            split_namespace=first.split_namespace,
+            suite=first.suite,
+            root_seed=manifest.provenance.root_seed,
+            cohort_index=coordinate.cohort_index,
+            requested_path_length=first.requested_path_length,
+        )
+        builder.add_draw(
+            first.accepted_attempt,
+            matched_seed_tokens(request, first.accepted_attempt),
+            tuple(member.episode_public_id for member in members),
+        )
+    evidence = builder.finalize()
+    require_namespace_evidence_provenance(evidence, manifest.provenance)
+    return evidence
+
+
+def _independent_clock_public_ids(
+    allocation: IndependentAllocation,
+    requests: tuple[IndependentEpisodeRequest, ...],
+    public_id_seed: int,
+    accepted_attempts: dict[tuple[str, int, int, int, int], int],
+) -> Iterator[str]:
+    for suite, count_field in (
+        (SuiteName.CLOCK_SCALE_0_1X, "scale_0_1x_episode_count"),
+        (SuiteName.CLOCK_SCALE_10X, "scale_10x_episode_count"),
+    ):
+        expected = {
+            (block.requested_path_length, block.source_first_episode_index + offset)
+            for block in allocation.clock_blocks
+            for offset in range(getattr(block, count_field))
+        }
+        for item in requests:
+            if (
+                item.suite is SuiteName.IID_PRIMARY
+                and (item.requested_path_length, item.episode_index) in expected
+            ):
+                yield allocate_independent_public_id(
+                    IndependentPublicIdKey(
+                        generator_version="ofd-v1",
+                        split_namespace=item.split_namespace,
+                        suite=suite,
+                        public_id_seed=public_id_seed,
+                        episode_index=item.episode_index,
+                        accepted_attempt=accepted_attempts[_request_key(item)],
+                    )
+                )
+
+
 def check_reproducibility(
     request: ReproducibilityRequest,
     resolved: ResolvedConfig[Phase1Config],
@@ -607,8 +701,9 @@ def check_reproducibility(
                 or output.reference_corpus_sha256 != selected_reference
             ):
                 raise ArtifactIntegrityError("manifest fresh-process reproducibility mismatch")
+        namespace_evidence = _matched_manifest_namespace(manifest)
         return ReproducibilityReport(
-            schema_version="phase1-reproducibility-v1",
+            schema_version="phase1-reproducibility-v2",
             source_mode="manifest",
             source_payload_sha256=source_hash,
             sample_size=len(selected),
@@ -619,6 +714,7 @@ def check_reproducibility(
             reference_corpus_sha256=reference,
             sample_membership_sha256=_manifest_membership_hash(source_hash, selected),
             mismatch_count=0,
+            namespace_evidence=namespace_evidence,
             provenance=current,
             passed=True,
         )
@@ -668,10 +764,33 @@ def check_reproducibility(
     requests = tuple(deps.iter_independent(allocation, source.root_seed))
     expected: dict[tuple[str, int, int, int, int], CorpusDigestEntry] = {}
     accepted_attempts: dict[tuple[str, int, int, int, int], int] = {}
+    namespace_builder = ConstructionNamespaceBuilder(
+        generation_mode="independent",
+        public_id_seed=source.public_id_seed,
+        accepted_draw_count=len(requests),
+        clock_public_id_count=sum(
+            block.scale_0_1x_episode_count + block.scale_10x_episode_count
+            for block in allocation.clock_blocks
+        ),
+    )
     for item in requests:
         bundle = deps.generate_independent(resolved.config, item, source.public_id_seed)
         expected[_request_key(item)] = _entry_for(item, bundle)
         accepted_attempts[_request_key(item)] = bundle.truth.recipe.accepted_attempt
+        namespace_builder.add_draw(
+            bundle.truth.recipe.accepted_attempt,
+            independent_seed_tokens(item, bundle.truth.recipe.accepted_attempt),
+            (bundle.public.init.episode_public_id,),
+        )
+    for public_id in _independent_clock_public_ids(
+        allocation,
+        requests,
+        source.public_id_seed,
+        accepted_attempts,
+    ):
+        namespace_builder.add_clock_public_id(public_id)
+    namespace_evidence = namespace_builder.finalize()
+    require_namespace_evidence_provenance(namespace_evidence, provenance)
     reference = corpus_sha256(
         (expected[_request_key(item)] for item in requests), expected_count=len(requests)
     )
@@ -725,7 +844,7 @@ def check_reproducibility(
         ):
             raise ArtifactIntegrityError("fresh process reproducibility mismatch")
     return ReproducibilityReport(
-        schema_version="phase1-reproducibility-v1",
+        schema_version="phase1-reproducibility-v2",
         source_mode="independent_allocation",
         source_payload_sha256=payload_hash,
         sample_size=len(selected),
@@ -736,6 +855,7 @@ def check_reproducibility(
         reference_corpus_sha256=reference,
         sample_membership_sha256=_membership_hash(payload_hash, selected),
         mismatch_count=0,
+        namespace_evidence=namespace_evidence,
         provenance=provenance,
         passed=True,
     )

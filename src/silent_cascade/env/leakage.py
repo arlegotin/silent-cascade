@@ -45,11 +45,23 @@ from silent_cascade.env.episode import (
     episode_sha256,
     scale_episode_time,
 )
+from silent_cascade.env.generator import (
+    CohortRequest,
+    IndependentEpisodeRequest,
+    independent_seed_tokens,
+    matched_seed_tokens,
+)
 from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
 from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.env.timing import action_window
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.provenance import EvidenceProvenance, LeakageAuditEvidenceAnchor
+from silent_cascade.provenance import (
+    ConstructionNamespaceBuilder,
+    ConstructionNamespaceEvidence,
+    EvidenceProvenance,
+    LeakageAuditEvidenceAnchor,
+    require_namespace_evidence_provenance,
+)
 from silent_cascade.schemas import (
     ActivationPayload,
     ExternalEvent,
@@ -266,6 +278,9 @@ class ReiterableAuditSource(Protocol):
     @property
     def publishable(self) -> bool: ...
 
+    @property
+    def public_id_seed(self) -> int: ...
+
     def iter_examples(self) -> Iterator[AuditExample]: ...
 
     def iter_clock_pairs(self) -> Iterator[PairedClockAuditPair]: ...
@@ -342,6 +357,7 @@ class InMemoryAuditSource:
     authentication: AuditSourceAuthentication | None = None
     clock_pairs: tuple[PairedClockAuditPair, ...] = ()
     publishable: Literal[False] = False
+    public_id_seed: int = 0
 
     @property
     def episode_count(self) -> int:
@@ -444,6 +460,10 @@ class _InjectedAuditSource:
     @property
     def publishable(self) -> bool:
         return self.source.publishable
+
+    @property
+    def public_id_seed(self) -> int:
+        return self.source.public_id_seed
 
     def iter_clock_pairs(self) -> Iterator[PairedClockAuditPair]:
         return self.source.iter_clock_pairs()
@@ -902,8 +922,9 @@ class CounterfactualCheckResult(StrictModel):
 
 
 class LeakageReport(StrictModel):
-    schema_version: Literal["leakage-report-v1"]
+    schema_version: Literal["leakage-report-v2"]
     provenance: EvidenceProvenance
+    namespace_evidence: ConstructionNamespaceEvidence
     generation_mode: Literal["matched", "independent"]
     profile: LeakageAuditProfileName
     corpus_hash: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
@@ -925,6 +946,9 @@ class LeakageReport(StrictModel):
 
     @model_validator(mode="after")
     def require_complete_counterfactual_family(self) -> LeakageReport:
+        require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
+        if self.namespace_evidence.generation_mode != self.generation_mode:
+            raise ValueError("leakage namespace generation mode is inconsistent")
         if tuple(item.check_id for item in self.counterfactual_checks) != tuple(
             CounterfactualCheckId
         ):
@@ -3685,6 +3709,37 @@ def _require_exact_phase1_audit_config(
         raise ValueError("phase1 gate audit config is not exact")
 
 
+def _matched_namespace_request(bundle: EpisodeBundle) -> CohortRequest:
+    truth = bundle.truth
+    coordinate = truth.key.coordinate
+    if not isinstance(coordinate, MatchedEpisodeCoordinate):
+        raise TypeError("matched audit namespace requires a matched coordinate")
+    return CohortRequest(
+        split_namespace=truth.key.split_namespace,
+        suite=truth.key.suite,
+        root_seed=truth.key.root_seed,
+        cohort_index=coordinate.cohort_index,
+        requested_path_length=truth.recipe.requested_path_length,
+    )
+
+
+def _independent_namespace_request(bundle: EpisodeBundle) -> IndependentEpisodeRequest:
+    truth = bundle.truth
+    coordinate = truth.key.coordinate
+    if not isinstance(coordinate, IndependentEpisodeCoordinate):
+        raise TypeError("independent audit namespace requires an independent coordinate")
+    return IndependentEpisodeRequest(
+        split_namespace=truth.key.split_namespace,
+        suite=truth.key.suite,
+        root_seed=truth.key.root_seed,
+        episode_index=coordinate.episode_index,
+        requested_path_length=truth.recipe.requested_path_length,
+        variant=truth.recipe.variant,
+        allocation_quartet_index=coordinate.allocation_quartet_index,
+        quartet_member_index=coordinate.quartet_member_index,
+    )
+
+
 def audit_leakage(
     source: ReiterableAuditSource,
     config: LeakageAuditConfig,
@@ -3707,6 +3762,16 @@ def audit_leakage(
     _validate_provenance(source, config, provenance)
     authentication = _validate_source_authentication(source, profile)
     _validate_independent_trust_anchor(source, profile, provenance, authentication)
+    namespace_builder = ConstructionNamespaceBuilder(
+        generation_mode=source.descriptor.generation_mode,
+        public_id_seed=source.public_id_seed,
+        accepted_draw_count=(
+            source.episode_count // 4
+            if source.descriptor.generation_mode == "matched"
+            else source.episode_count
+        ),
+        clock_public_id_count=sum(authentication.clock_scale_pair_counts.values()),
+    )
     validation_config = source.validation_config  # type: ignore[attr-defined]
     assert isinstance(validation_config, Phase1Config)
     _validate_holm_attainability(config, selected_profile)
@@ -3741,6 +3806,13 @@ def audit_leakage(
         def flush_matched_group() -> None:
             if active_matched_block is not None:
                 validate_cohort_invariants(tuple(active_matched_bundles), validation_config)  # type: ignore[arg-type]
+                first = active_matched_bundles[0]
+                attempt = first.truth.recipe.accepted_attempt
+                namespace_builder.add_draw(
+                    attempt,
+                    matched_seed_tokens(_matched_namespace_request(first), attempt),
+                    tuple(item.public.init.episode_public_id for item in active_matched_bundles),
+                )
 
         for index, example in enumerate(source.iter_examples()):
             if index % config.feature_batch_size == 0:
@@ -3757,6 +3829,15 @@ def audit_leakage(
                     active_matched_block = example.randomization_block_index
                     active_matched_bundles.clear()
                 active_matched_bundles.append(example.bundle)
+            else:
+                attempt = example.bundle.truth.recipe.accepted_attempt
+                namespace_builder.add_draw(
+                    attempt,
+                    independent_seed_tokens(
+                        _independent_namespace_request(example.bundle), attempt
+                    ),
+                    (example.bundle.public.init.episode_public_id,),
+                )
             solution = solve_public_episode(example.bundle.public)
             verify_oracle_truth(solution, example.bundle.truth)
             token = (example.randomization_block_index, example.episode_position)
@@ -3817,6 +3898,10 @@ def audit_leakage(
             flush_matched_group()
         else:
             _validate_independent_quartets(rows)
+        for pair in source.iter_clock_pairs():
+            namespace_builder.add_clock_public_id(pair.child.public.init.episode_public_id)
+        namespace_evidence = namespace_builder.finalize()
+        require_namespace_evidence_provenance(namespace_evidence, provenance)
         corpus_hash = digest.finalize()
         if source_manifest.finalize() != authentication.source_manifest_sha256:
             raise ValueError("audit source order or membership differs from authentication")
@@ -3922,8 +4007,9 @@ def audit_leakage(
             else not controls
         )
         return LeakageReport(
-            schema_version="leakage-report-v1",
+            schema_version="leakage-report-v2",
             provenance=provenance,
+            namespace_evidence=namespace_evidence,
             generation_mode=source.descriptor.generation_mode,
             profile=profile,
             corpus_hash=corpus_hash,

@@ -32,7 +32,12 @@ from silent_cascade.logging.manifest import (
     MatchedManifestCoordinate,
     load_manifest,
 )
-from silent_cascade.provenance import EvidenceProvenance
+from silent_cascade.provenance import (
+    AcceptedAttemptRun,
+    ConstructionNamespaceEvidence,
+    EvidenceProvenance,
+    require_namespace_evidence_provenance,
+)
 from silent_cascade.validation import StrictModel
 
 _VALIDATION_EPISODE_COUNT = 10_000
@@ -76,6 +81,7 @@ _VALIDATION_PUBLIC_ID_SEED_SHA256 = (
     "0454fca622eb08379a5d88ecbe0a5ef70f6a15e9ca7d333acecf840f2df38802"
 )
 _INDEPENDENT_ROOT_SEED = 2026083011
+_INDEPENDENT_PUBLIC_ID_SEED = 2026083012
 _INDEPENDENT_PUBLIC_ID_SEED_SHA256 = (
     "f21ac562825bfd96e875eedf90c8ba5ed09883ebe2c18449843b03acebec778a"
 )
@@ -205,6 +211,68 @@ def _positive_control_primitive_types_are_exact(control: PositiveControlResult) 
     )
 
 
+def _namespace_evidence_primitive_types_are_exact(
+    evidence: ConstructionNamespaceEvidence,
+) -> bool:
+    integer_fields = (
+        evidence.public_id_seed,
+        evidence.accepted_draw_count,
+        evidence.rejected_draw_count,
+        evidence.generation_attempt_count,
+        evidence.seed_token_count,
+        evidence.seed_token_collision_count,
+        evidence.base_public_id_count,
+        evidence.clock_public_id_count,
+        evidence.total_public_id_count,
+        evidence.public_id_collision_count,
+    )
+    return (
+        type(evidence) is ConstructionNamespaceEvidence
+        and type(evidence.schema_version) is str
+        and evidence.schema_version == "construction-namespace-evidence-v1"
+        and type(evidence.generation_mode) is str
+        and all(type(value) is int for value in integer_fields)
+        and type(evidence.accepted_attempt_runs) is tuple
+        and all(
+            type(run) is AcceptedAttemptRun
+            and type(run.first_draw_index) is int
+            and type(run.draw_count) is int
+            and type(run.accepted_attempt) is int
+            for run in evidence.accepted_attempt_runs
+        )
+        and _is_sha256(evidence.seed_token_sequence_sha256)
+        and _is_sha256(evidence.public_id_sequence_sha256)
+    )
+
+
+def _require_namespace_evidence(
+    evidence: ConstructionNamespaceEvidence,
+    provenance: EvidenceProvenance,
+    *,
+    generation_mode: Literal["matched", "independent"],
+    public_id_seed: int,
+    accepted_draw_count: int,
+    seed_token_count: int,
+    base_public_id_count: int,
+    clock_public_id_count: int,
+) -> None:
+    try:
+        require_namespace_evidence_provenance(evidence, provenance)
+    except (TypeError, ValueError) as error:
+        raise _artifact_error("construction namespace evidence contradicts provenance") from error
+    _require(
+        _namespace_evidence_primitive_types_are_exact(evidence)
+        and evidence.generation_mode == generation_mode
+        and evidence.public_id_seed == public_id_seed
+        and evidence.accepted_draw_count == accepted_draw_count
+        and evidence.seed_token_count == seed_token_count
+        and evidence.base_public_id_count == base_public_id_count
+        and evidence.clock_public_id_count == clock_public_id_count
+        and evidence.total_public_id_count == base_public_id_count + clock_public_id_count,
+        "construction namespace evidence has a wrong frozen seed or denominator",
+    )
+
+
 def _leakage_report_primitive_types_are_exact(leakage: LeakageReport) -> bool:
     digest_fields = (
         leakage.corpus_hash,
@@ -216,8 +284,9 @@ def _leakage_report_primitive_types_are_exact(leakage: LeakageReport) -> bool:
     return (
         type(leakage) is LeakageReport
         and type(leakage.schema_version) is str
-        and leakage.schema_version == "leakage-report-v1"
+        and leakage.schema_version == "leakage-report-v2"
         and type(leakage.provenance) is EvidenceProvenance
+        and _namespace_evidence_primitive_types_are_exact(leakage.namespace_evidence)
         and type(leakage.generation_mode) is str
         and type(leakage.profile) is LeakageAuditProfileName
         and all(_is_sha256(value) for value in digest_fields)
@@ -481,6 +550,16 @@ def _require_validation_artifacts(
     manifest: EpisodeManifest,
     reproducibility: ReproducibilityReport,
 ) -> str:
+    _require_namespace_evidence(
+        reproducibility.namespace_evidence,
+        reproducibility.provenance,
+        generation_mode="matched",
+        public_id_seed=_VALIDATION_PUBLIC_ID_SEED,
+        accepted_draw_count=2_500,
+        seed_token_count=50_000,
+        base_public_id_count=10_000,
+        clock_public_id_count=0,
+    )
     _require(
         manifest.access_class is ManifestAccessClass.VALIDATION
         and manifest.suite is SuiteName.VALIDATION
@@ -520,6 +599,16 @@ def _require_validation_artifacts(
 
 
 def _require_oracle(oracle: OracleEvaluationReport) -> None:
+    _require_namespace_evidence(
+        oracle.namespace_evidence,
+        oracle.provenance,
+        generation_mode="independent",
+        public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+        accepted_draw_count=_INDEPENDENT_EPISODE_COUNT,
+        seed_token_count=700_000,
+        base_public_id_count=_INDEPENDENT_EPISODE_COUNT,
+        clock_public_id_count=sum(_CLOCK_COUNTS),
+    )
     _require(oracle.passed, "oracle inner report passed flag is false")
     _require(
         oracle.source_mode == "phase1_gate"
@@ -547,6 +636,16 @@ def _require_oracle(oracle: OracleEvaluationReport) -> None:
 
 
 def _require_leakage(leakage: LeakageReport) -> None:
+    _require_namespace_evidence(
+        leakage.namespace_evidence,
+        leakage.provenance,
+        generation_mode="independent",
+        public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+        accepted_draw_count=_INDEPENDENT_EPISODE_COUNT,
+        seed_token_count=700_000,
+        base_public_id_count=_INDEPENDENT_EPISODE_COUNT,
+        clock_public_id_count=sum(_CLOCK_COUNTS),
+    )
     _require(
         _leakage_report_primitive_types_are_exact(leakage),
         "leakage outer report types or containers are invalid",
@@ -656,6 +755,16 @@ def _require_leakage(leakage: LeakageReport) -> None:
 
 
 def _require_independent_reproducibility(report: ReproducibilityReport) -> None:
+    _require_namespace_evidence(
+        report.namespace_evidence,
+        report.provenance,
+        generation_mode="independent",
+        public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+        accepted_draw_count=_INDEPENDENT_EPISODE_COUNT,
+        seed_token_count=700_000,
+        base_public_id_count=_INDEPENDENT_EPISODE_COUNT,
+        clock_public_id_count=sum(_CLOCK_COUNTS),
+    )
     _require(
         report.passed
         and report.source_mode == "independent_allocation"

@@ -3,6 +3,7 @@
 import ast
 import json
 import subprocess
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,10 +16,16 @@ from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
     TASK14_ANALYSIS_SOURCE_PATHS,
+    AcceptedAttemptRun,
+    ConstructionNamespaceEvidence,
     EvidenceProvenance,
     SourceTreeFingerprint,
+    accepted_attempt_runs,
+    build_construction_namespace_evidence,
     collect_evidence_provenance,
     collect_final_phase1_provenance,
+    construction_token_sequence_sha256,
+    public_id_sequence_sha256,
     source_tree_sha256,
 )
 
@@ -89,6 +96,178 @@ EXPECTED_TASK14_ANALYSIS_SOURCE_PATHS = (
     "src/silent_cascade/schemas.py",
     "src/silent_cascade/validation.py",
 )
+
+
+def _namespace_payload() -> dict[str, object]:
+    return {
+        "schema_version": "construction-namespace-evidence-v1",
+        "generation_mode": "matched",
+        "public_id_seed": 91,
+        "accepted_draw_count": 1,
+        "accepted_attempt_runs": ({"first_draw_index": 0, "draw_count": 1, "accepted_attempt": 0},),
+        "rejected_draw_count": 0,
+        "generation_attempt_count": 1,
+        "seed_token_count": 20,
+        "seed_token_sequence_sha256": "a" * 64,
+        "seed_token_collision_count": 0,
+        "base_public_id_count": 4,
+        "clock_public_id_count": 0,
+        "total_public_id_count": 4,
+        "public_id_sequence_sha256": "b" * 64,
+        "public_id_collision_count": 0,
+    }
+
+
+def test_namespace_sequence_hashes_use_framed_ordered_fixed_width_values() -> None:
+    """Changing order or accepting malformed-width values must break namespace identity."""
+    tokens = ("00" * 32, "11" * 32)
+    identifiers = (
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+    )
+
+    assert construction_token_sequence_sha256(tokens) == (
+        "71e6ce23089f79f685f0af45dbaafb74fe57b0e5d45805be7f2aaf3d637f51c1"
+    )
+    assert public_id_sequence_sha256(identifiers) == (
+        "3040c9f8aa83d45f3228d98277fed044b898630042eb643d459b88316d1010f7"
+    )
+    assert construction_token_sequence_sha256(tuple(reversed(tokens))) != (
+        construction_token_sequence_sha256(tokens)
+    )
+    assert public_id_sequence_sha256(tuple(reversed(identifiers))) != (
+        public_id_sequence_sha256(identifiers)
+    )
+    with pytest.raises(ValueError, match="32-byte"):
+        construction_token_sequence_sha256(("00",))
+    with pytest.raises(ValueError, match="UUID"):
+        public_id_sequence_sha256(("not-a-uuid",))
+
+
+def test_accepted_attempt_runs_are_unique_canonical_run_length_encoding() -> None:
+    """Splitting an equal run or losing a draw must be rejected as noncanonical evidence."""
+    assert accepted_attempt_runs((0, 0, 2, 2, 2, 1)) == (
+        AcceptedAttemptRun(first_draw_index=0, draw_count=2, accepted_attempt=0),
+        AcceptedAttemptRun(first_draw_index=2, draw_count=3, accepted_attempt=2),
+        AcceptedAttemptRun(first_draw_index=5, draw_count=1, accepted_attempt=1),
+    )
+    with pytest.raises(ValueError, match="nonempty"):
+        accepted_attempt_runs(())
+    with pytest.raises(ValueError, match="exact integer"):
+        accepted_attempt_runs((False,))
+    with pytest.raises(ValueError, match="below 1000"):
+        accepted_attempt_runs((1_000,))
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        (),
+        ({"first_draw_index": 1, "draw_count": 1, "accepted_attempt": 0},),
+        (
+            {"first_draw_index": 0, "draw_count": 1, "accepted_attempt": 0},
+            {"first_draw_index": 2, "draw_count": 1, "accepted_attempt": 1},
+        ),
+        (
+            {"first_draw_index": 0, "draw_count": 2, "accepted_attempt": 0},
+            {"first_draw_index": 1, "draw_count": 1, "accepted_attempt": 1},
+        ),
+        (
+            {"first_draw_index": 0, "draw_count": 1, "accepted_attempt": 0},
+            {"first_draw_index": 1, "draw_count": 1, "accepted_attempt": 0},
+        ),
+    ],
+    ids=("empty", "nonzero-start", "gap", "overlap", "adjacent-equal"),
+)
+def test_namespace_evidence_rejects_noncanonical_attempt_run_coverage(
+    runs: tuple[dict[str, int], ...],
+) -> None:
+    payload = _namespace_payload()
+    payload["accepted_attempt_runs"] = runs
+
+    with pytest.raises(ValueError, match="attempt runs"):
+        ConstructionNamespaceEvidence.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("accepted_draw_count", False, "integer"),
+        ("public_id_seed", -1, "greater than or equal"),
+        ("seed_token_sequence_sha256", "0" * 63, "pattern"),
+        ("public_id_sequence_sha256", "g" * 64, "pattern"),
+        ("seed_token_collision_count", 1, "literal"),
+        ("public_id_collision_count", 1, "literal"),
+        ("seed_token_count", 19, "count law"),
+        ("base_public_id_count", 3, "count law"),
+        ("total_public_id_count", 5, "total"),
+        ("rejected_draw_count", 1, "rejected"),
+        ("generation_attempt_count", 2, "generation"),
+    ],
+)
+def test_namespace_evidence_rejects_corrupt_primitives_and_derived_counts(
+    field: str, value: object, message: str
+) -> None:
+    payload = _namespace_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        ConstructionNamespaceEvidence.model_validate(payload)
+
+
+def test_namespace_builder_scans_actual_token_and_id_values_for_collisions() -> None:
+    """Coordinate uniqueness must not hide a reused derived token or emitted public ID."""
+    tokens = tuple(f"{index:064x}" for index in range(20))
+    identifiers = tuple(str(uuid.UUID(int=index + 1)) for index in range(4))
+    evidence = build_construction_namespace_evidence(
+        generation_mode="matched",
+        public_id_seed=91,
+        accepted_attempts=(0,),
+        seed_tokens=tokens,
+        base_public_ids=identifiers,
+        clock_public_ids=(),
+    )
+
+    assert evidence.accepted_attempt_runs == (
+        AcceptedAttemptRun(first_draw_index=0, draw_count=1, accepted_attempt=0),
+    )
+    assert evidence.public_id_seed == 91
+    assert evidence.seed_token_count == 20
+    assert evidence.total_public_id_count == 4
+    with pytest.raises(ProvenanceError, match="construction token collision"):
+        build_construction_namespace_evidence(
+            generation_mode="matched",
+            public_id_seed=91,
+            accepted_attempts=(0,),
+            seed_tokens=(*tokens[:-1], tokens[0]),
+            base_public_ids=identifiers,
+            clock_public_ids=(),
+        )
+    with pytest.raises(ProvenanceError, match="public ID collision"):
+        build_construction_namespace_evidence(
+            generation_mode="matched",
+            public_id_seed=91,
+            accepted_attempts=(0,),
+            seed_tokens=tokens,
+            base_public_ids=(*identifiers[:-1], identifiers[0]),
+            clock_public_ids=(),
+        )
+
+
+def test_namespace_builder_counts_retries_once_per_construction_draw() -> None:
+    """Matched member count must not multiply one cohort retry into four rejections."""
+    evidence = build_construction_namespace_evidence(
+        generation_mode="matched",
+        public_id_seed=91,
+        accepted_attempts=(0, 2, 2),
+        seed_tokens=tuple(f"{index:064x}" for index in range(60)),
+        base_public_ids=tuple(str(uuid.UUID(int=index + 1)) for index in range(12)),
+        clock_public_ids=(),
+    )
+
+    assert evidence.accepted_draw_count == 3
+    assert evidence.rejected_draw_count == 4
+    assert evidence.generation_attempt_count == 7
 
 
 def test_source_tree_hash_uses_unambiguous_length_framing(tmp_path: Path) -> None:

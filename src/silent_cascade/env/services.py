@@ -40,8 +40,10 @@ from silent_cascade.env.generator import (
     IndependentEpisodeRequest,
     generate_independent_episode,
     generate_matched_cohort,
+    independent_seed_tokens,
     iter_cohort_requests,
     iter_independent_requests,
+    matched_seed_tokens,
     regenerate_independent_episode,
     regenerate_matched_episode,
     regenerate_stress_episode,
@@ -100,11 +102,14 @@ from silent_cascade.logging.manifest import (
     require_oracle_inspection_allowed,
 )
 from silent_cascade.provenance import (
+    ConstructionNamespaceBuilder,
+    ConstructionNamespaceEvidence,
     EvidenceProvenance,
     EvidenceProvenanceCollector,
     LeakageAuditEvidenceAnchor,
     collect_final_phase1_provenance,
     public_id_seed_sha256,
+    require_namespace_evidence_provenance,
 )
 from silent_cascade.rng import (
     AllocationLabelKey,
@@ -242,6 +247,7 @@ class ExactRandomCheck(StrictModel):
 class OracleEvaluationReport(StrictModel):
     schema_version: Literal["oracle-evaluation-report-v1"]
     provenance: EvidenceProvenance
+    namespace_evidence: ConstructionNamespaceEvidence
     source_mode: Literal["manifest", "phase1_gate"]
     requested_episode_count: int
     verified_episode_count: int
@@ -268,6 +274,11 @@ class OracleEvaluationReport(StrictModel):
     rejected_draw_rate: float
     corpus_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
     passed: bool
+
+    @model_validator(mode="after")
+    def require_namespace_binding(self) -> "OracleEvaluationReport":
+        require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
+        return self
 
 
 class OracleEvaluationResult(StrictModel):
@@ -901,6 +912,37 @@ def _build_authenticated_trace(
     )
 
 
+def _cohort_request_from_bundle(bundle: EpisodeBundle) -> CohortRequest:
+    truth = bundle.truth
+    coordinate = truth.key.coordinate
+    if not isinstance(coordinate, MatchedEpisodeCoordinate):
+        raise TypeError("matched namespace draw requires a matched coordinate")
+    return CohortRequest(
+        split_namespace=truth.key.split_namespace,
+        suite=truth.key.suite,
+        root_seed=truth.key.root_seed,
+        cohort_index=coordinate.cohort_index,
+        requested_path_length=truth.recipe.requested_path_length,
+    )
+
+
+def _independent_request_from_bundle(bundle: EpisodeBundle) -> IndependentEpisodeRequest:
+    truth = bundle.truth
+    coordinate = truth.key.coordinate
+    if not isinstance(coordinate, IndependentEpisodeCoordinate):
+        raise TypeError("independent namespace draw requires an independent coordinate")
+    return IndependentEpisodeRequest(
+        split_namespace=truth.key.split_namespace,
+        suite=truth.key.suite,
+        root_seed=truth.key.root_seed,
+        episode_index=coordinate.episode_index,
+        requested_path_length=truth.recipe.requested_path_length,
+        variant=truth.recipe.variant,
+        allocation_quartet_index=coordinate.allocation_quartet_index,
+        quartet_member_index=coordinate.quartet_member_index,
+    )
+
+
 def evaluate_oracle(
     request: OracleEvaluationRequest,
     *,
@@ -999,6 +1041,14 @@ def evaluate_oracle(
         manifest_entries_by_id = {}
     else:
         raise TypeError("unsupported oracle source")
+    generation_mode = provenance.generation_mode
+    accepted_draw_count = expected_count // 4 if generation_mode == "matched" else expected_count
+    namespace_builder = ConstructionNamespaceBuilder(
+        generation_mode=generation_mode,
+        public_id_seed=(manifest.public_id_seed if manifest is not None else source.public_id_seed),
+        accepted_draw_count=accepted_draw_count,
+        clock_public_id_count=(clock_01 + clock_10 if generation_mode == "independent" else 0),
+    )
     corpus = CorpusHashBuilder(expected_count)
     denominators: Counter[str] = Counter()
     variants: Counter[EpisodeVariant] = Counter()
@@ -1016,6 +1066,13 @@ def evaluate_oracle(
             if len(active_cohort) != 4:
                 raise ValueError("matched oracle source contains an incomplete cohort")
             validate_cohort_invariants(tuple(active_cohort), resolved.config)  # type: ignore[arg-type]
+            first = active_cohort[0]
+            attempt = first.truth.recipe.accepted_attempt
+            namespace_builder.add_draw(
+                attempt,
+                matched_seed_tokens(_cohort_request_from_bundle(first), attempt),
+                tuple(item.public.init.episode_public_id for item in active_cohort),
+            )
 
     for bundle, source_recipe in ordered:
         if isinstance(source_recipe, EpisodeManifestEntry):
@@ -1037,16 +1094,15 @@ def evaluate_oracle(
         if token in seed_tokens:
             raise ValueError("oracle source contains a seed-token collision")
         seed_tokens.add(token)
+        namespace_bundle = bundle
         if bundle.truth.recipe.parent_public_id is None:
             validate_episode_invariants(bundle, resolved.config)
         else:
             entry = manifest_entries_by_id.get(bundle.public.init.episode_public_id)
             if entry is None:
                 raise ValueError("clock child is absent from its manifest")
-            validate_episode_invariants(
-                _regenerate_manifest_clock_parent(resolved.config, manifest, entry),
-                resolved.config,
-            )
+            namespace_bundle = _regenerate_manifest_clock_parent(resolved.config, manifest, entry)
+            validate_episode_invariants(namespace_bundle, resolved.config)
         if isinstance(coordinate, MatchedEpisodeCoordinate):
             if active_cohort_index is None:
                 active_cohort_index = coordinate.cohort_index
@@ -1057,6 +1113,18 @@ def evaluate_oracle(
             active_cohort.append(bundle)
         elif active_cohort_index is not None:
             raise ValueError("matched and independent oracle entries may not be interleaved")
+        if isinstance(coordinate, IndependentEpisodeCoordinate):
+            namespace_request = (
+                source_recipe
+                if isinstance(source_recipe, IndependentEpisodeRequest)
+                else _independent_request_from_bundle(namespace_bundle)
+            )
+            namespace_attempt = namespace_bundle.truth.recipe.accepted_attempt
+            namespace_builder.add_draw(
+                namespace_attempt,
+                independent_seed_tokens(namespace_request, namespace_attempt),
+                (namespace_bundle.public.init.episode_public_id,),
+            )
         solution = solve_public_episode(
             bundle.public, _oracle_policy_for_suite(bundle.truth.recipe.evaluation_suite)
         )
@@ -1106,6 +1174,7 @@ def evaluate_oracle(
     verified_clock_counts: Counter[str] = Counter()
     clock_decision_mismatches = 0
     for pair in clock_pairs:
+        namespace_builder.add_clock_public_id(pair.child.public.init.episode_public_id)
         if not _clock_decision_matches(pair.parent.bundle, pair.child):
             clock_decision_mismatches += 1
         verified_clock_counts[
@@ -1120,10 +1189,13 @@ def evaluate_oracle(
         raise ValueError("clock source count does not match the frozen allocation")
     if clock_decision_mismatches:
         raise ValueError("clock transform changes the oracle decision")
+    namespace_evidence = namespace_builder.finalize()
+    require_namespace_evidence_provenance(namespace_evidence, provenance)
     pooled = (random_successes["positive"] + random_successes["negative"]) / verified
     report = OracleEvaluationReport(
         schema_version="oracle-evaluation-report-v1",
         provenance=provenance,
+        namespace_evidence=namespace_evidence,
         source_mode=source_mode,
         requested_episode_count=expected_count,
         verified_episode_count=verified,
@@ -1169,6 +1241,7 @@ class _BoundAuditSource:
     descriptor: AuditSourceDescriptor
     validation_config: Phase1Config
     authentication: AuditSourceAuthentication
+    public_id_seed: int
     _examples: Callable[[], Iterator[AuditExample]]
     _clock_pairs: Callable[[], Iterator[PairedClockAuditPair]]
     publishable: bool
@@ -1577,6 +1650,7 @@ def _bind_independent_audit_source(
         descriptor,
         resolved.config,
         authentication,
+        source.public_id_seed,
         examples,
         clock_pairs,
         deps.production_mode,
@@ -1750,7 +1824,13 @@ def _bind_manifest_audit_source(
         clock_scale_pair_counts=dict(clock_counts),
     )
     return _BoundAuditSource(
-        descriptor, resolved.config, authentication, examples, clock_pairs, deps.production_mode
+        descriptor,
+        resolved.config,
+        authentication,
+        manifest.public_id_seed,
+        examples,
+        clock_pairs,
+        deps.production_mode,
     )
 
 

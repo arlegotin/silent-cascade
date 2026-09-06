@@ -883,7 +883,14 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     reused = evaluate_oracle(request, deps=deps)
 
     assert result.report.verified_episode_count == 12
+    assert result.report.schema_version == "oracle-evaluation-report-v1"
     assert result.report.oracle_successes == 12
+    assert result.report.namespace_evidence.generation_mode == "independent"
+    assert result.report.namespace_evidence.public_id_seed == 91
+    assert result.report.namespace_evidence.accepted_draw_count == 12
+    assert result.report.namespace_evidence.seed_token_count == 84
+    assert result.report.namespace_evidence.base_public_id_count == 12
+    assert result.report.namespace_evidence.clock_public_id_count == 0
     assert result.report.corpus_sha256
     assert result.report.provenance.foundation_model_calls == 0
     assert result.report.provenance.analysis_source.scope == "phase1_analysis"
@@ -1180,6 +1187,56 @@ def test_manifest_oracle_runs_the_independent_cohort_authority(
     )
     assert observed == [4, 4, 4]
     assert result.report.invariant_failures == 0
+    assert result.report.namespace_evidence.generation_mode == "matched"
+    assert result.report.namespace_evidence.accepted_draw_count == 3
+    assert result.report.namespace_evidence.seed_token_count == 60
+    assert result.report.namespace_evidence.base_public_id_count == 12
+
+
+def test_oracle_rejects_colliding_actual_construction_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unique coordinates cannot substitute for collision-free derived token evidence."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        OracleEvaluationRequest,
+        Phase1GateCorpusSource,
+        evaluate_oracle,
+    )
+
+    allocation = IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=0,
+                episode_count=8,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        services,
+        "independent_seed_tokens",
+        lambda _request, _attempt: ("0" * 64,) * 7,
+    )
+
+    with pytest.raises(ProvenanceError, match="construction token collision"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=Phase1GateCorpusSource(
+                    allocation_id=allocation.allocation_id,
+                    root_seed=41,
+                    public_id_seed=91,
+                ),
+                output_path=tmp_path / "must-not-exist.json",
+            ),
+            deps=_oracle_dependencies(allocation),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1992,6 +2049,18 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
     reused = _publish_report(output, result.report)
 
     assert result.report.passed is (not scientific_failure)
+    assert result.report.schema_version == "leakage-report-v2"
+    assert result.report.namespace_evidence.public_id_seed == 91
+    assert result.report.namespace_evidence.accepted_draw_count == (
+        3 if source_mode == "manifest" else 12
+    )
+    assert result.report.namespace_evidence.seed_token_count == (
+        60 if source_mode == "manifest" else 84
+    )
+    assert result.report.namespace_evidence.base_public_id_count == 12
+    assert result.report.namespace_evidence.clock_public_id_count == (
+        24 if source_mode == "manifest" else 2
+    )
     assert tuple(item.check_id for item in result.report.counterfactual_checks) == tuple(
         CounterfactualCheckId
     )

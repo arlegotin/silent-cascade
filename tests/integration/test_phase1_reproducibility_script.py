@@ -26,8 +26,11 @@ from silent_cascade.logging.manifest import (
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
+    AcceptedAttemptRun,
+    ConstructionNamespaceEvidence,
     EvidenceProvenance,
     SourceTreeFingerprint,
+    public_id_seed_sha256,
 )
 
 _SCRIPT_SPEC = importlib.util.spec_from_file_location(
@@ -40,6 +43,7 @@ _SCRIPT_SPEC.loader.exec_module(reproducibility_script)
 
 
 def _provenance(*, generation_mode: str) -> EvidenceProvenance:
+    public_id_seed = 2026083002 if generation_mode == "matched" else 2026083012
     return EvidenceProvenance(
         schema_version="phase1-evidence-provenance-v1",
         plan_base_revision="a" * 40,
@@ -69,13 +73,38 @@ def _provenance(*, generation_mode: str) -> EvidenceProvenance:
             sha256="e" * 64,
         ),
         root_seed=41,
-        public_id_seed_sha256="f" * 64,
+        public_id_seed_sha256=public_id_seed_sha256(public_id_seed),
+    )
+
+
+def _namespace(*, generation_mode: str) -> ConstructionNamespaceEvidence:
+    matched = generation_mode == "matched"
+    draw_count = 2_500 if matched else 100_000
+    return ConstructionNamespaceEvidence(
+        schema_version="construction-namespace-evidence-v1",
+        generation_mode=generation_mode,
+        public_id_seed=2026083002 if matched else 2026083012,
+        accepted_draw_count=draw_count,
+        accepted_attempt_runs=(
+            AcceptedAttemptRun(first_draw_index=0, draw_count=draw_count, accepted_attempt=0),
+        ),
+        rejected_draw_count=0,
+        generation_attempt_count=draw_count,
+        seed_token_count=draw_count * (20 if matched else 7),
+        seed_token_sequence_sha256="4" * 64,
+        seed_token_collision_count=0,
+        base_public_id_count=draw_count * (4 if matched else 1),
+        clock_public_id_count=0 if matched else 7_000,
+        total_public_id_count=draw_count * (4 if matched else 1) + (0 if matched else 7_000),
+        public_id_sequence_sha256="5" * 64,
+        public_id_collision_count=0,
     )
 
 
 def _report(*, source_mode: str) -> ReproducibilityReport:
+    generation_mode = "matched" if source_mode == "manifest" else "independent"
     return ReproducibilityReport(
-        schema_version="phase1-reproducibility-v1",
+        schema_version="phase1-reproducibility-v2",
         source_mode=source_mode,
         source_payload_sha256="1" * 64,
         sample_size=1_000,
@@ -86,9 +115,8 @@ def _report(*, source_mode: str) -> ReproducibilityReport:
         reference_corpus_sha256="2" * 64,
         sample_membership_sha256="3" * 64,
         mismatch_count=0,
-        provenance=_provenance(
-            generation_mode="matched" if source_mode == "manifest" else "independent"
-        ),
+        namespace_evidence=_namespace(generation_mode=generation_mode),
+        provenance=_provenance(generation_mode=generation_mode),
         passed=True,
     )
 

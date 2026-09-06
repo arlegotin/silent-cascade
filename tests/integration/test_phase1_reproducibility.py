@@ -177,8 +177,15 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
     )
 
     assert report.passed and report.mismatch_count == 0
+    assert report.schema_version == "phase1-reproducibility-v2"
     assert report.verified_source_entries == 8
     assert report.provenance == provenance
+    assert report.namespace_evidence.generation_mode == "independent"
+    assert report.namespace_evidence.public_id_seed == 91
+    assert report.namespace_evidence.accepted_draw_count == 8
+    assert report.namespace_evidence.seed_token_count == 56
+    assert report.namespace_evidence.base_public_id_count == 8
+    assert report.namespace_evidence.clock_public_id_count == 0
     requests = tuple(iter_independent_requests(allocation, 41))
     expected_coordinates = tuple(
         (
@@ -390,6 +397,72 @@ def test_manifest_source_executes_the_full_authenticated_matrix(tmp_path: Path) 
 
     assert report.modes == ("forward", "reverse", "chunked", "fresh_process")
     assert runs == [0, 1]
+    assert report.schema_version == "phase1-reproducibility-v2"
+    assert report.namespace_evidence.generation_mode == "matched"
+    assert report.namespace_evidence.public_id_seed == 91
+    assert report.namespace_evidence.accepted_draw_count == 2
+    assert report.namespace_evidence.seed_token_count == 40
+    assert report.namespace_evidence.base_public_id_count == 8
+
+
+def test_reproducibility_rejects_colliding_actual_construction_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproducibility must audit derived tokens, not trust unique allocation coordinates."""
+    import silent_cascade.env.reproducibility as reproducibility
+    from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
+    from silent_cascade.env.reproducibility import (
+        IndependentAllocationReproducibilitySource,
+        ReproducibilityDependencies,
+        ReproducibilityRequest,
+        check_reproducibility,
+    )
+    from silent_cascade.logging.manifest import load_manifest
+
+    resolved = _resolved()
+    allocation = IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=5,
+                episode_count=8,
+            ),
+        ),
+    )
+    provenance = _provenance(resolved)
+    deps = ReproducibilityDependencies.for_test(
+        allocation,
+        provenance,
+        collect_provenance=lambda *_args, **_kwargs: provenance,
+        load_verified_manifest=load_manifest,
+        iter_independent=iter_independent_requests,
+        generate_independent=generate_independent_episode,
+    )
+    monkeypatch.setattr(
+        reproducibility,
+        "independent_seed_tokens",
+        lambda _request, _attempt: ("0" * 64,) * 7,
+    )
+
+    with pytest.raises(ProvenanceError, match="construction token collision"):
+        check_reproducibility(
+            ReproducibilityRequest(
+                source=IndependentAllocationReproducibilitySource(
+                    allocation_id=allocation.allocation_id,
+                    root_seed=41,
+                    public_id_seed=91,
+                ),
+                sample_size=8,
+                chunk_sizes=(1, 3, 7),
+                python_hash_seeds=(0, 1),
+                verify_all_source_entries=True,
+            ),
+            resolved,
+            deps=deps,
+        )
 
 
 def test_reproducibility_rejects_noncanonical_fresh_worker_output() -> None:

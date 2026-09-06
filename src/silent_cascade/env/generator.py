@@ -843,9 +843,16 @@ def _seed_token(
     ).token
 
 
-def _matched_seed_tokens(request: CohortRequest, attempt: int) -> tuple[str, ...]:
+def matched_seed_tokens(request: CohortRequest, accepted_attempt: int) -> tuple[str, ...]:
+    """Return every construction token for one matched accepted draw."""
+
+    if not isinstance(request, CohortRequest):
+        raise TypeError("request must be a CohortRequest")
+    _require_exact_int(accepted_attempt, "accepted_attempt")
+    if accepted_attempt >= 1_000:
+        raise ValueError("accepted_attempt must be below 1000")
     cohort_tokens = tuple(
-        _seed_token(request, -1, stream, attempt)
+        _seed_token(request, -1, stream, accepted_attempt)
         for stream in (
             SeedStream.LABEL,
             SeedStream.TEMPLATE,
@@ -854,7 +861,7 @@ def _matched_seed_tokens(request: CohortRequest, attempt: int) -> tuple[str, ...
         )
     )
     member_tokens = tuple(
-        _seed_token(request, member_index, stream, attempt)
+        _seed_token(request, member_index, stream, accepted_attempt)
         for member_index in range(4)
         for stream in (
             SeedStream.NODE_PERMUTATION,
@@ -864,6 +871,11 @@ def _matched_seed_tokens(request: CohortRequest, attempt: int) -> tuple[str, ...
         )
     )
     return (*cohort_tokens, *member_tokens)
+
+
+# Preserve the frozen counter-RNG verification seam while evidence paths use
+# the explicitly named public helper.
+_matched_seed_tokens = matched_seed_tokens
 
 
 def _matched_variants(request: CohortRequest, attempt: int) -> tuple[EpisodeVariant, ...]:
@@ -1174,7 +1186,7 @@ def generate_matched_cohort(
             request=request,
             accepted_attempt=attempt,
             episodes=complete_episodes,
-            seed_tokens=_matched_seed_tokens(request, attempt),
+            seed_tokens=matched_seed_tokens(request, attempt),
             rejections=tuple(
                 RejectionDiagnostic(reason, count) for reason, count in rejection_counts.items()
             ),

@@ -39,6 +39,8 @@ from silent_cascade.logging.manifest import (
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
+    AcceptedAttemptRun,
+    ConstructionNamespaceEvidence,
     EvidenceProvenance,
     LeakageAuditEvidenceAnchor,
     SourceTreeFingerprint,
@@ -155,6 +157,35 @@ def _provenance(*, independent: bool) -> EvidenceProvenance:
         ),
         root_seed=2026083011 if independent else 2026083001,
         public_id_seed_sha256=public_id_seed_sha256(2026083012 if independent else 2026083002),
+    )
+
+
+def _namespace(*, independent: bool) -> ConstructionNamespaceEvidence:
+    accepted_draws = 100_000 if independent else 2_500
+    base_ids = 100_000 if independent else 10_000
+    clock_ids = 7_000 if independent else 0
+    return ConstructionNamespaceEvidence(
+        schema_version="construction-namespace-evidence-v1",
+        generation_mode="independent" if independent else "matched",
+        public_id_seed=2026083012 if independent else 2026083002,
+        accepted_draw_count=accepted_draws,
+        accepted_attempt_runs=(
+            AcceptedAttemptRun(
+                first_draw_index=0,
+                draw_count=accepted_draws,
+                accepted_attempt=0,
+            ),
+        ),
+        rejected_draw_count=0,
+        generation_attempt_count=accepted_draws,
+        seed_token_count=accepted_draws * (7 if independent else 20),
+        seed_token_sequence_sha256=("1" if independent else "2") * 64,
+        seed_token_collision_count=0,
+        base_public_id_count=base_ids,
+        clock_public_id_count=clock_ids,
+        total_public_id_count=base_ids + clock_ids,
+        public_id_sequence_sha256=("3" if independent else "4") * 64,
+        public_id_collision_count=0,
     )
 
 
@@ -338,6 +369,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
     oracle = OracleEvaluationReport(
         schema_version="oracle-evaluation-report-v1",
         provenance=independent,
+        namespace_evidence=_namespace(independent=True),
         source_mode="phase1_gate",
         requested_episode_count=100_000,
         verified_episode_count=100_000,
@@ -395,7 +427,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         episode_count=100_000,
     )
     leakage = LeakageReport(
-        schema_version="leakage-report-v1",
+        schema_version="leakage-report-v2",
         provenance=independent.model_copy(
             update={
                 "analysis_seeds": {
@@ -405,6 +437,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
                 "leakage_audit": anchor,
             }
         ),
+        namespace_evidence=_namespace(independent=True),
         generation_mode="independent",
         profile=LeakageAuditProfileName.PHASE1_GATE,
         corpus_hash=gate_corpus,
@@ -429,7 +462,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         passed=True,
     )
     validation_reproducibility = ReproducibilityReport(
-        schema_version="phase1-reproducibility-v1",
+        schema_version="phase1-reproducibility-v2",
         source_mode="manifest",
         source_payload_sha256=manifest_payload_sha256,
         sample_size=1_000,
@@ -440,11 +473,12 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         reference_corpus_sha256=validation_corpus,
         sample_membership_sha256="c" * 64,
         mismatch_count=0,
+        namespace_evidence=_namespace(independent=False),
         provenance=manifest.provenance,
         passed=True,
     )
     independent_reproducibility = ReproducibilityReport(
-        schema_version="phase1-reproducibility-v1",
+        schema_version="phase1-reproducibility-v2",
         source_mode="independent_allocation",
         source_payload_sha256=INDEPENDENT_SOURCE_PAYLOAD_SHA256,
         sample_size=1_000,
@@ -455,6 +489,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         reference_corpus_sha256=gate_corpus,
         sample_membership_sha256="e" * 64,
         mismatch_count=0,
+        namespace_evidence=_namespace(independent=True),
         provenance=independent,
         passed=True,
     )
@@ -539,6 +574,7 @@ def _replace_validation_seeds(
         report_provenance["public_id_seed_sha256"] = public_id_seed_sha256(  # type: ignore[index]
             public_id_seed
         )
+        value["namespace_evidence"]["public_id_seed"] = public_id_seed  # type: ignore[index]
         value["source_payload_sha256"] = envelope["payload_sha256"]
 
     artifacts["validation-reproducibility.json"] = _mutate_json(
@@ -560,6 +596,7 @@ def _replace_independent_seeds(
             provenance = value["provenance"]  # type: ignore[assignment]
             provenance["root_seed"] = root_seed  # type: ignore[index]
             provenance["public_id_seed_sha256"] = fingerprint  # type: ignore[index]
+            value["namespace_evidence"]["public_id_seed"] = public_id_seed  # type: ignore[index]
             if name == "leakage.json":
                 descriptor = AuditSourceDescriptor(
                     schema_version="leakage-source-v1",
@@ -627,6 +664,30 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
     assert json.loads(completed.stdout) == result.model_dump(mode="json")
     assert completed.stdout.count("\n") == 1
     assert completed.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "stale_schema"),
+    (
+        ("leakage.json", "leakage-report-v1"),
+        ("validation-reproducibility.json", "phase1-reproducibility-v1"),
+        ("independent-reproducibility.json", "phase1-reproducibility-v1"),
+    ),
+)
+def test_verifier_rejects_stale_inner_v1_reports_without_compatibility_loader(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    artifact_name: str,
+    stale_schema: str,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+    artifacts[artifact_name] = _mutate_json(
+        artifacts[artifact_name],
+        lambda value: value.__setitem__("schema_version", stale_schema),
+    )
+
+    with pytest.raises(ArtifactIntegrityError, match="schema"):
+        _verify(_write_artifacts(tmp_path, artifacts))
 
 
 def test_verifier_refuses_a_missing_artifact(

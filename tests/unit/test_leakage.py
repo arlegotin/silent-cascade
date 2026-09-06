@@ -10,6 +10,7 @@ import pytest
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.generator import CohortRequest, generate_matched_cohort
+from silent_cascade.errors import ProvenanceError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
@@ -163,6 +164,7 @@ def _authenticated_test_source(
         validation_config=config,
         authentication=authentication,
         clock_pairs=clock_pairs,
+        public_id_seed=91,
     )
 
 
@@ -269,6 +271,7 @@ def _authenticated_independent_test_source(
         validation_config=config,
         authentication=authentication,
         clock_pairs=clock_pairs,
+        public_id_seed=91,
     )
 
 
@@ -2305,6 +2308,13 @@ def test_independently_authenticated_source_executes_all_fits_with_frozen_config
 
     assert report.generation_mode == "independent"
     assert report.episode_count == 240
+    assert report.schema_version == "leakage-report-v2"
+    assert report.namespace_evidence.generation_mode == "independent"
+    assert report.namespace_evidence.public_id_seed == 91
+    assert report.namespace_evidence.accepted_draw_count == 240
+    assert report.namespace_evidence.seed_token_count == 1_680
+    assert report.namespace_evidence.base_public_id_count == 240
+    assert report.namespace_evidence.clock_public_id_count == 2
     assert len(fit_configs) == 54
     assert {id(item) for item in fit_configs} == {id(audit_config)}
     assert {item.l2_penalty for item in fit_configs} == {0.03}
@@ -2341,12 +2351,59 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
     )
 
     assert report.episode_count == 240
+    assert report.schema_version == "leakage-report-v2"
+    assert report.namespace_evidence.generation_mode == "matched"
+    assert report.namespace_evidence.public_id_seed == 91
+    assert report.namespace_evidence.accepted_draw_count == 60
+    assert report.namespace_evidence.seed_token_count == 1_200
+    assert report.namespace_evidence.base_public_id_count == 240
+    assert report.namespace_evidence.clock_public_id_count == 2
     assert len(report.probes) == 27
     assert tuple(item.check_id for item in report.counterfactual_checks) == tuple(
         CounterfactualCheckId
     )
     assert report.label_shuffled_control_passed
     assert not list(tmp_path.iterdir())
+
+
+def test_audit_rejects_colliding_actual_construction_tokens_before_probe_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The leakage construction check must consume derived tokens rather than coordinates."""
+    import silent_cascade.env.leakage as leakage
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=1)
+    audit_config = config.data.leakage_audit.model_copy(
+        update={
+            "test": config.data.leakage_audit.test.model_copy(
+                update={"episode_count": source.episode_count}
+            )
+        }
+    )
+    probe_calls = 0
+
+    def never_probe(*_args: object, **_kwargs: object):
+        nonlocal probe_calls
+        probe_calls += 1
+        return []
+
+    monkeypatch.setattr(leakage, "_run_probes", never_probe)
+    monkeypatch.setattr(
+        leakage,
+        "matched_seed_tokens",
+        lambda _request, _attempt: ("0" * 64,) * 20,
+    )
+
+    with pytest.raises(ProvenanceError, match="construction token collision"):
+        leakage.audit_leakage(
+            source,
+            audit_config,
+            leakage.LeakageAuditProfileName.TEST,
+            _provenance(_config_sha256(config), source),
+            tmp_path,
+        )
+    assert probe_calls == 0
 
 
 def test_complete_report_hash_is_stable_in_a_fresh_process() -> None:
@@ -2389,7 +2446,7 @@ print(sha256_bytes(canonical_json_bytes(report)))
 
     assert completed.stderr == ""
     assert completed.stdout.strip() == (
-        "5af97d0724d7af2e47a40d7726c589fda4b236b7318289ae114242311cc65f10"
+        "31f0ff07dfd362cc79f03c62eeb009824b0ac43083bc7ed5c7e4fdda8d046dd8"
     )
 
 
@@ -2439,6 +2496,7 @@ def test_feature_store_ceiling_refuses_before_source_iteration(tmp_path: Path) -
         descriptor = source.descriptor
         authentication = source.authentication
         validation_config = source.validation_config
+        public_id_seed = source.public_id_seed
         episode_count = source.episode_count
         iter_calls = 0
 
@@ -2486,6 +2544,7 @@ def test_second_pass_identity_failure_precedes_probe_fitting(
         descriptor = source.descriptor
         authentication = source.authentication
         validation_config = source.validation_config
+        public_id_seed = source.public_id_seed
         episode_count = source.episode_count
         calls = 0
 
@@ -3022,6 +3081,7 @@ def test_clock_corruption_is_refused_before_every_probe_fit(
         descriptor = trusted.descriptor
         authentication = source_authentication
         validation_config = config
+        public_id_seed = trusted.public_id_seed
         episode_count = trusted.episode_count
         publishable = False
 
