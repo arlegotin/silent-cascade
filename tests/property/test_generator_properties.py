@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from silent_cascade.config import resolve_config
@@ -24,6 +24,7 @@ from silent_cascade.env.generator import (
     iter_phase1_gate_requests,
     regenerate_independent_episode,
 )
+from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 
 PRIMARY_PATHS = {
     SuiteName.VALIDATION: (2, 3, 4),
@@ -339,6 +340,7 @@ def test_paired_clock_scaling_preserves_oracle_semantics_and_normalized_windows(
     )
 
     assert scaled.truth.key == bundle.truth.key
+    assert scaled.truth.key.coordinate.quartet_member_index == request.quartet_member_index
     assert scaled.truth.recipe.variant is bundle.truth.recipe.variant
     assert scaled.truth.relevant_node_path == bundle.truth.relevant_node_path
     assert scaled.truth.relevant_record_ids == bundle.truth.relevant_record_ids
@@ -357,20 +359,37 @@ def test_paired_clock_scaling_preserves_oracle_semantics_and_normalized_windows(
     suite=st.sampled_from(STRUCTURAL_STRESS_SUITES),
     root_seed=st.integers(min_value=0, max_value=2**32 - 1),
     episode_index=st.integers(min_value=0, max_value=500),
+    quartet_member_index=st.integers(min_value=0, max_value=3),
 )
 def test_structural_stress_episodes_remain_independently_valid_and_private(
-    suite: SuiteName, root_seed: int, episode_index: int
+    suite: SuiteName,
+    root_seed: int,
+    episode_index: int,
+    quartet_member_index: int,
 ) -> None:
     """Removing stress-specific graph checks would accept a branch or cycle in the wrong place."""
     from silent_cascade.env.episode import EpisodeVariant
     from silent_cascade.env.invariants import validate_episode_invariants
     from silent_cascade.env.oracle import OraclePolicy, OracleTerminalKind, solve_public_episode
 
-    variant = (
+    expected_variant = (
         EpisodeVariant.DISCONNECTED_NEGATIVE
         if suite is SuiteName.NULL_NEAR_MISS_STRESS
         else EpisodeVariant.POSITIVE
     )
+    allocation_quartet_index = episode_index // 4
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            "ofd-v1",
+            SplitNamespace.DEBUG,
+            suite,
+            root_seed,
+            3,
+            allocation_quartet_index,
+        )
+    )
+    variant = variants[quartet_member_index]
+    assume(variant is expected_variant)
     request = IndependentEpisodeRequest(
         SplitNamespace.DEBUG,
         suite,
@@ -378,7 +397,8 @@ def test_structural_stress_episodes_remain_independently_valid_and_private(
         episode_index,
         3,
         variant,
-        episode_index // 4,
+        allocation_quartet_index,
+        quartet_member_index,
     )
     bundle = generate_stress_episode(_stress_config(), request, 91)
     policy = OraclePolicy.BRANCHING if suite is SuiteName.BRANCHING_STRESS else OraclePolicy.PRIMARY
@@ -389,6 +409,7 @@ def test_structural_stress_episodes_remain_independently_valid_and_private(
     )
 
     assert validate_episode_invariants(bundle, _stress_config()).valid
+    assert bundle.truth.key.coordinate.quartet_member_index == quartet_member_index
     assert solve_public_episode(bundle.public, policy).terminal_kind is expected_terminal
     assert "stress_metadata" not in repr(bundle.public)
 

@@ -36,6 +36,7 @@ def _parent_bundle():
         2,
         EpisodeVariant.POSITIVE,
         0,
+        0,
     )
     return generate_independent_episode(_config(), request, public_id_seed=91)
 
@@ -61,6 +62,9 @@ def test_paired_clock_transform_preserves_source_semantics_and_scales_time(
     assert episode_from_bytes(canonical_episode_bytes(child)) == child
     assert child.public.init.episode_public_id == child_id
     assert child.truth.key == parent.truth.key
+    assert parent.truth.key.coordinate.episode_index == 3
+    assert parent.truth.key.coordinate.quartet_member_index == 0
+    assert child.truth.key.coordinate.quartet_member_index == 0
     assert child.truth.recipe.evaluation_suite is target_suite
     assert child.truth.recipe.clock_scale == factor
     assert child.truth.recipe.parent_public_id == parent.public.init.episode_public_id

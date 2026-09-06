@@ -687,6 +687,7 @@ def _require_independent_bundle_matches_request(
         or key.root_seed != request.root_seed
         or coordinate.episode_index != request.episode_index
         or coordinate.allocation_quartet_index != request.allocation_quartet_index
+        or coordinate.quartet_member_index != request.quartet_member_index
         or recipe.requested_path_length != request.requested_path_length
         or recipe.variant is not request.variant
         or recipe.evaluation_suite is not request.suite
@@ -717,6 +718,7 @@ def _require_manifest_bundle_matches_entry(
             isinstance(coordinate, IndependentEpisodeCoordinate)
             and coordinate.episode_index == manifest_coordinate.episode_index
             and coordinate.allocation_quartet_index == manifest_coordinate.allocation_quartet_index
+            and coordinate.quartet_member_index == manifest_coordinate.quartet_member_index
         )
     expected_key_suite = (
         SuiteName.IID_PRIMARY
@@ -784,7 +786,7 @@ def _manifest_matches_independent_allocation(
     requests = tuple(iter_independent_requests(allocation, manifest.provenance.root_seed))
     if len(requests) != len(manifest.entries):
         return False
-    for rank, (entry, request) in enumerate(zip(manifest.entries, requests, strict=True)):
+    for entry, request in zip(manifest.entries, requests, strict=True):
         coordinate = entry.coordinate
         suite_matches = entry.suite is request.suite or (
             request.suite is SuiteName.IID_PRIMARY
@@ -796,7 +798,7 @@ def _manifest_matches_independent_allocation(
             or entry.requested_path_length != request.requested_path_length
             or coordinate.episode_index != request.episode_index
             or coordinate.allocation_quartet_index != request.allocation_quartet_index
-            or coordinate.quartet_member_index != rank % 4
+            or coordinate.quartet_member_index != request.quartet_member_index
         ):
             return False
     return True
@@ -1763,6 +1765,7 @@ def _independent_request_for_manifest_entry(
         requested_path_length=entry.requested_path_length,
         variant=variants[coordinate.quartet_member_index],
         allocation_quartet_index=coordinate.allocation_quartet_index,
+        quartet_member_index=coordinate.quartet_member_index,
     )
 
 

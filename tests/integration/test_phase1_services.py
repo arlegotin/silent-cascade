@@ -943,13 +943,25 @@ def test_oracle_refuses_episode_outside_the_bound_allocation_before_publication(
         Phase1GateCorpusSource,
         evaluate_oracle,
     )
+    from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 
     allocation = _independent_allocation()
 
     def generate_shifted(config: Phase1Config, request: object, public_id_seed: int):
+        shifted = replace(request, root_seed=request.root_seed + 1)  # type: ignore[attr-defined]
+        variants = allocate_independent_variants(
+            AllocationLabelKey(
+                "ofd-v1",
+                shifted.split_namespace,
+                shifted.suite,
+                shifted.root_seed,
+                shifted.requested_path_length,
+                shifted.allocation_quartet_index,
+            )
+        )
         return generate_independent_episode(
             config,
-            replace(request, root_seed=request.root_seed + 1),  # type: ignore[attr-defined]
+            replace(shifted, variant=variants[shifted.quartet_member_index]),
             public_id_seed,
         )
 
@@ -966,6 +978,55 @@ def test_oracle_refuses_episode_outside_the_bound_allocation_before_publication(
                 output_path=output,
             ),
             deps=_oracle_dependencies(allocation, generate_independent=generate_shifted),
+        )
+    assert not output.exists()
+
+
+def test_oracle_refuses_a_same_label_episode_with_the_wrong_explicit_member(
+    tmp_path: Path,
+) -> None:
+    """Allocation services must distinguish the two positive quartet members."""
+    from silent_cascade.env.generator import generate_independent_episode
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        OracleEvaluationRequest,
+        Phase1GateCorpusSource,
+        evaluate_oracle,
+    )
+
+    allocation = _independent_allocation()
+
+    def forge_member(config: Phase1Config, request: object, public_id_seed: int):
+        bundle = generate_independent_episode(config, request, public_id_seed)  # type: ignore[arg-type]
+        if request.episode_index != 1:  # type: ignore[attr-defined]
+            return bundle
+        assert request.quartet_member_index == 1  # type: ignore[attr-defined]
+        assert bundle.truth.recipe.variant.value == "positive"
+        coordinate = bundle.truth.key.coordinate
+        return replace(
+            bundle,
+            truth=replace(
+                bundle.truth,
+                key=replace(
+                    bundle.truth.key,
+                    coordinate=replace(coordinate, quartet_member_index=3),
+                ),
+            ),
+        )
+
+    output = tmp_path / "wrong-member-must-not-exist.json"
+    with pytest.raises(ValueError, match=r"allocation|request|coordinate"):
+        evaluate_oracle(
+            OracleEvaluationRequest(
+                config=ConfigSelection(),
+                source=Phase1GateCorpusSource(
+                    allocation_id=allocation.allocation_id,
+                    root_seed=41,
+                    public_id_seed=91,
+                ),
+                output_path=output,
+            ),
+            deps=_oracle_dependencies(allocation, generate_independent=forge_member),
         )
     assert not output.exists()
 
@@ -2090,7 +2151,7 @@ def _small_access_manifest(
                     coordinate=IndependentManifestCoordinate(
                         episode_index=request.episode_index,
                         allocation_quartet_index=request.allocation_quartet_index,
-                        quartet_member_index=request.episode_index % 4,
+                        quartet_member_index=request.quartet_member_index,
                     ),
                     requested_path_length=2,
                     accepted_attempt=bundle.truth.recipe.accepted_attempt,
@@ -2151,7 +2212,7 @@ def _clock_manifest():
                 coordinate=IndependentManifestCoordinate(
                     episode_index=request.episode_index,
                     allocation_quartet_index=request.allocation_quartet_index,
-                    quartet_member_index=request.episode_index % 4,
+                    quartet_member_index=request.quartet_member_index,
                 ),
                 requested_path_length=request.requested_path_length,
                 accepted_attempt=parent.truth.recipe.accepted_attempt,
@@ -2232,9 +2293,18 @@ def test_regenerate_entry_dispatches_structural_stress_suites(suite: SuiteName) 
         if suite is SuiteName.NULL_NEAR_MISS_STRESS
         else EpisodeVariant.POSITIVE
     )
-    member_index = variants.index(expected_variant)
+    member_index = next(
+        index for index, variant in enumerate(variants) if variant is expected_variant
+    )
     request = IndependentEpisodeRequest(
-        SplitNamespace.DEBUG, suite, 41, 5 + member_index, 2, expected_variant, 2
+        SplitNamespace.DEBUG,
+        suite,
+        41,
+        5 + member_index,
+        2,
+        expected_variant,
+        2,
+        member_index,
     )
     bundle = generate_stress_episode(_stress_config(), request, 91)
     provenance = _provenance().model_copy(
@@ -2273,4 +2343,6 @@ def test_regenerate_entry_dispatches_structural_stress_suites(suite: SuiteName) 
         episode_count=4,
         entries=entries,
     )
-    assert regenerate_entry(_stress_config(), manifest, entry) == bundle
+    regenerated = regenerate_entry(_stress_config(), manifest, entry)
+    assert regenerated == bundle
+    assert regenerated.truth.key.coordinate.quartet_member_index == member_index

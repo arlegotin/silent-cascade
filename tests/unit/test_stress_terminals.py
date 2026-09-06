@@ -1,6 +1,7 @@
 """Adversarial terminal-selection and deadline-boundary contracts."""
 
 import math
+from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 
@@ -17,8 +18,14 @@ from silent_cascade.env.episode import (
 )
 from silent_cascade.env.generator import IndependentEpisodeRequest, generate_stress_episode
 from silent_cascade.env.oracle import OraclePolicy, OracleTerminalKind, solve_public_episode
-from silent_cascade.errors import OracleError
-from silent_cascade.rng import IndependentCounterSeedKey, SeedStream, independent_local_generator
+from silent_cascade.errors import EpisodeInvariantError, OracleError
+from silent_cascade.rng import (
+    AllocationLabelKey,
+    IndependentCounterSeedKey,
+    SeedStream,
+    allocate_independent_variants,
+    independent_local_generator,
+)
 from silent_cascade.schemas import (
     ActivationPayload,
     AgentInit,
@@ -43,14 +50,31 @@ def config() -> Phase1Config:
 
 
 def _request(suite: SuiteName, episode_index: int = 41) -> IndependentEpisodeRequest:
+    quartet_member_index = {
+        SuiteName.CONTRADICTION_STRESS: 2,
+        SuiteName.MINIMUM_DURATION_STRESS: 1,
+        SuiteName.CHECKPOINT_STRESS: 1,
+    }[suite]
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            "ofd-v1",
+            SplitNamespace.DEBUG,
+            suite,
+            20260831,
+            3,
+            10,
+        )
+    )
+    assert variants[quartet_member_index] is EpisodeVariant.POSITIVE
     return IndependentEpisodeRequest(
         split_namespace=SplitNamespace.DEBUG,
         suite=suite,
         root_seed=20260831,
         episode_index=episode_index,
         requested_path_length=3,
-        variant=EpisodeVariant.POSITIVE,
+        variant=variants[quartet_member_index],
         allocation_quartet_index=10,
+        quartet_member_index=quartet_member_index,
     )
 
 
@@ -161,11 +185,37 @@ def test_checkpoint_pause_is_private_and_strictly_between_trace_events(
 def test_terminal_and_timing_stress_metadata_round_trips_only_privately(
     config: Phase1Config,
 ) -> None:
+    from silent_cascade.env.invariants import validate_episode_invariants
+
+    wrong_member_by_suite = {
+        SuiteName.MINIMUM_DURATION_STRESS: 0,
+        SuiteName.CHECKPOINT_STRESS: 0,
+    }
     for suite in (SuiteName.MINIMUM_DURATION_STRESS, SuiteName.CHECKPOINT_STRESS):
         bundle = generate_stress_episode(config, _request(suite), 91)
-        assert episode_from_bytes(canonical_episode_bytes(bundle)) == bundle
+        rebuilt = episode_from_bytes(canonical_episode_bytes(bundle))
+        assert rebuilt == bundle
+        assert (
+            rebuilt.truth.key.coordinate.quartet_member_index
+            == bundle.truth.key.coordinate.quartet_member_index
+        )
         public = public_projection(bundle)
         public_text = repr(public).lower()
         assert "minimum_feasible" not in public_text
         assert "checkpoint" not in public_text
         assert "stress_metadata" not in public_text
+        corrupted = replace(
+            bundle,
+            truth=replace(
+                bundle.truth,
+                key=replace(
+                    bundle.truth.key,
+                    coordinate=replace(
+                        bundle.truth.key.coordinate,
+                        quartet_member_index=wrong_member_by_suite[suite],
+                    ),
+                ),
+            ),
+        )
+        with pytest.raises(EpisodeInvariantError):
+            validate_episode_invariants(corrupted, config)

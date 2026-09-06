@@ -348,6 +348,7 @@ class IndependentEpisodeRequest:
     requested_path_length: int
     variant: EpisodeVariant
     allocation_quartet_index: int
+    quartet_member_index: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.split_namespace, SplitNamespace) or not isinstance(
@@ -357,6 +358,9 @@ class IndependentEpisodeRequest:
         _require_root_seed(self.root_seed)
         _require_exact_int(self.episode_index, "episode_index")
         _require_exact_int(self.allocation_quartet_index, "allocation_quartet_index")
+        _require_exact_int(self.quartet_member_index, "quartet_member_index")
+        if self.quartet_member_index > 3:
+            raise ValueError("quartet_member_index must be at most 3")
         if self.suite not in _PRIMARY_SUITES | _STRUCTURAL_STRESS_SUITES:
             raise ValueError("independent episode suite is not supported")
         _require_exact_int(self.requested_path_length, "requested_path_length", minimum=1)
@@ -676,6 +680,7 @@ def iter_independent_requests(
                     requested_path_length=block.requested_path_length,
                     variant=variant,
                     allocation_quartet_index=quartet_index,
+                    quartet_member_index=within_quartet,
                 )
             quartet_index += 1
 
@@ -1601,7 +1606,10 @@ def _build_independent_candidate(
             request.suite,
             request.root_seed,
             IndependentEpisodeCoordinate(
-                "independent", request.episode_index, request.allocation_quartet_index
+                "independent",
+                request.episode_index,
+                request.allocation_quartet_index,
+                request.quartet_member_index,
             ),
         ),
         recipe=EpisodeRecipe(
@@ -1699,6 +1707,7 @@ def _stress_trace_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[fl
             truth.recipe.requested_path_length,
             truth.recipe.variant,
             coordinate.allocation_quartet_index,
+            coordinate.quartet_member_index,
         ),
         SeedStream.TRACE_JITTER,
         truth.recipe.accepted_attempt,
@@ -1907,6 +1916,7 @@ def _opaque_independent_request_hash(request: IndependentEpisodeRequest) -> str:
                 "requested_path_length": request.requested_path_length,
                 "variant": request.variant.value,
                 "allocation_quartet_index": request.allocation_quartet_index,
+                "quartet_member_index": request.quartet_member_index,
             }
         )
     ).hexdigest()
@@ -1958,6 +1968,19 @@ def _generate_independent_bundle(
     public_id_seed: int,
 ) -> EpisodeBundle:
     """Execute the shared bounded local retry and public-ID binding path."""
+
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            generator_version="ofd-v1",
+            split_namespace=request.split_namespace,
+            suite=request.suite,
+            root_seed=request.root_seed,
+            requested_path_length=request.requested_path_length,
+            allocation_quartet_index=request.allocation_quartet_index,
+        )
+    )
+    if request.variant is not variants[request.quartet_member_index]:
+        raise ValueError("independent variant does not match its explicit quartet member")
 
     rejection_counts: dict[str, int] = {}
     for attempt in range(config.data.max_generation_attempts):

@@ -114,9 +114,11 @@ def test_production_independent_reproducibility_uses_common_gate_provenance() ->
 def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> None:
     from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
     from silent_cascade.env.reproducibility import (
+        FreshWorkOrder,
         IndependentAllocationReproducibilitySource,
         ReproducibilityDependencies,
         ReproducibilityRequest,
+        _run_fresh_process,
         check_reproducibility,
     )
     from silent_cascade.logging.manifest import load_manifest
@@ -143,6 +145,23 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
         iter_independent=iter_independent_requests,
         generate_independent=generate_independent_episode,
     )
+    observed_work_orders: list[tuple[tuple[int, int, int], ...]] = []
+
+    def run_and_observe(work_order: bytes, hash_seed: int) -> bytes:
+        payload = FreshWorkOrder.model_validate_json(work_order)
+        observed_work_orders.append(
+            tuple(
+                (
+                    entry.coordinate.episode_index,
+                    entry.coordinate.allocation_quartet_index,
+                    entry.coordinate.quartet_member_index,
+                )
+                for entry in payload.entries
+            )
+        )
+        return _run_fresh_process(work_order, hash_seed)
+
+    deps = replace(deps, run_fresh_process=run_and_observe)
     report = check_reproducibility(
         ReproducibilityRequest(
             source=IndependentAllocationReproducibilitySource(
@@ -160,6 +179,19 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
     assert report.passed and report.mismatch_count == 0
     assert report.verified_source_entries == 8
     assert report.provenance == provenance
+    requests = tuple(iter_independent_requests(allocation, 41))
+    expected_coordinates = tuple(
+        (
+            request.episode_index,
+            request.allocation_quartet_index,
+            request.quartet_member_index,
+        )
+        for request in requests
+    )
+    assert tuple(member for _, _, member in expected_coordinates) == (0, 1, 2, 3) * 2
+    assert len(observed_work_orders) == 2
+    assert observed_work_orders[0] == observed_work_orders[1]
+    assert tuple(sorted(observed_work_orders[0])) == expected_coordinates
 
 
 def test_independent_rejects_dirty_provenance_before_generation() -> None:

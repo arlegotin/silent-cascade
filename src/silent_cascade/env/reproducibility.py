@@ -219,8 +219,14 @@ PRODUCTION_REPRODUCIBILITY_DEPENDENCIES = ReproducibilityDependencies(
 )
 
 
-def _request_key(request: IndependentEpisodeRequest) -> tuple[str, int, int]:
-    return request.suite.value, request.requested_path_length, request.episode_index
+def _request_key(request: IndependentEpisodeRequest) -> tuple[str, int, int, int, int]:
+    return (
+        request.suite.value,
+        request.requested_path_length,
+        request.episode_index,
+        request.allocation_quartet_index,
+        request.quartet_member_index,
+    )
 
 
 def _entry_for(request: IndependentEpisodeRequest, bundle: EpisodeBundle) -> CorpusDigestEntry:
@@ -405,6 +411,8 @@ def _membership_hash(
                         "suite": request.suite.value,
                         "requested_path_length": request.requested_path_length,
                         "episode_index": request.episode_index,
+                        "allocation_quartet_index": request.allocation_quartet_index,
+                        "quartet_member_index": request.quartet_member_index,
                     }
                     for request in requests
                 ],
@@ -468,8 +476,8 @@ def _fresh_work_order(
     config: Phase1Config,
     source: IndependentAllocationReproducibilitySource,
     selected: tuple[IndependentEpisodeRequest, ...],
-    expected: dict[tuple[str, int, int], CorpusDigestEntry],
-    accepted_attempts: dict[tuple[str, int, int], int],
+    expected: dict[tuple[str, int, int, int, int], CorpusDigestEntry],
+    accepted_attempts: dict[tuple[str, int, int, int, int], int],
 ) -> bytes:
     return canonical_json_bytes(
         FreshWorkOrder(
@@ -480,18 +488,7 @@ def _fresh_work_order(
                     coordinate=IndependentManifestCoordinate(
                         episode_index=item.episode_index,
                         allocation_quartet_index=item.allocation_quartet_index,
-                        quartet_member_index=list(
-                            allocate_independent_variants(
-                                AllocationLabelKey(
-                                    "ofd-v1",
-                                    item.split_namespace,
-                                    item.suite,
-                                    item.root_seed,
-                                    item.requested_path_length,
-                                    item.allocation_quartet_index,
-                                )
-                            )
-                        ).index(item.variant),
+                        quartet_member_index=item.quartet_member_index,
                     ),
                     split_namespace=item.split_namespace,
                     suite=item.suite,
@@ -669,8 +666,8 @@ def check_reproducibility(
     descriptor = _independent_descriptor(allocation, source, resolved, provenance)
     payload_hash = sha256_bytes(canonical_json_bytes(descriptor))
     requests = tuple(deps.iter_independent(allocation, source.root_seed))
-    expected: dict[tuple[str, int, int], CorpusDigestEntry] = {}
-    accepted_attempts: dict[tuple[str, int, int], int] = {}
+    expected: dict[tuple[str, int, int, int, int], CorpusDigestEntry] = {}
+    accepted_attempts: dict[tuple[str, int, int, int, int], int] = {}
     for item in requests:
         bundle = deps.generate_independent(resolved.config, item, source.public_id_seed)
         expected[_request_key(item)] = _entry_for(item, bundle)
@@ -803,6 +800,7 @@ def _worker(path: Path) -> None:
                 value.requested_path_length,
                 variants[value.coordinate.quartet_member_index],
                 value.coordinate.allocation_quartet_index,
+                value.coordinate.quartet_member_index,
             )
             regenerate = (
                 regenerate_independent_episode

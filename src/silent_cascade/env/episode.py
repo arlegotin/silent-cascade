@@ -94,12 +94,16 @@ class IndependentEpisodeCoordinate:
     mode: Literal["independent"]
     episode_index: int
     allocation_quartet_index: int
+    quartet_member_index: int
 
     def __post_init__(self) -> None:
         if self.mode != "independent":
             raise ValueError("independent coordinates require mode='independent'")
         _require_int(self.episode_index, "episode_index")
         _require_int(self.allocation_quartet_index, "allocation_quartet_index")
+        _require_int(self.quartet_member_index, "quartet_member_index")
+        if self.quartet_member_index > 3:
+            raise ValueError("quartet_member_index is out of bounds")
 
 
 type EpisodeCoordinate = MatchedEpisodeCoordinate | IndependentEpisodeCoordinate

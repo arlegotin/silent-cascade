@@ -1,5 +1,6 @@
 """Contracts for suite allocation and cohort-level sampling."""
 
+import ast
 from collections import Counter
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -18,6 +19,7 @@ from silent_cascade.env.generator import (
     CohortTemplate,
     EpisodeBlock,
     IndependentAllocation,
+    IndependentEpisodeRequest,
     iter_cohort_requests,
     iter_independent_requests,
     iter_phase1_gate_requests,
@@ -26,6 +28,7 @@ from silent_cascade.env.generator import (
     validate_phase1_gate_allocation,
     validate_validation_allocation,
 )
+from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 
 
 @pytest.fixture
@@ -105,6 +108,102 @@ def test_phase1_gate_allocation_has_exact_frozen_blocks(config: Phase1Config) ->
     ]
     assert tuple(iter_phase1_gate_requests(41)) == requests
     validate_phase1_gate_allocation(PHASE1_GATE_ALLOCATION, config)
+
+
+def test_independent_block_members_are_local_explicit_and_label_bound() -> None:
+    """An unaligned block start cannot change or hide quartet-member identity."""
+    allocation = IndependentAllocation(
+        allocation_id="test-explicit-members",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=5,
+                episode_count=8,
+            ),
+        ),
+    )
+
+    requests = tuple(iter_independent_requests(allocation, root_seed=41))
+
+    assert tuple(request.episode_index for request in requests) == tuple(range(5, 13))
+    assert tuple(request.quartet_member_index for request in requests) == (0, 1, 2, 3) * 2
+    for request in requests:
+        variants = allocate_independent_variants(
+            AllocationLabelKey(
+                "ofd-v1",
+                request.split_namespace,
+                request.suite,
+                request.root_seed,
+                request.requested_path_length,
+                request.allocation_quartet_index,
+            )
+        )
+        assert request.variant is variants[request.quartet_member_index]
+
+
+@pytest.mark.parametrize("quartet_member_index", (False, -1, 4))
+def test_independent_request_requires_an_exact_bounded_quartet_member(
+    quartet_member_index: object,
+) -> None:
+    """Malformed explicit members must fail before independent generation."""
+    with pytest.raises((TypeError, ValueError), match="quartet_member_index"):
+        IndependentEpisodeRequest(
+            split_namespace=SplitNamespace.DEBUG,
+            suite=SuiteName.IID_PRIMARY,
+            root_seed=41,
+            episode_index=5,
+            requested_path_length=2,
+            variant=EpisodeVariant.POSITIVE,
+            allocation_quartet_index=0,
+            quartet_member_index=quartet_member_index,  # type: ignore[arg-type]
+        )
+
+
+def test_independent_coordinate_paths_do_not_reconstruct_quartet_members() -> None:
+    """Lossy position/rank/variant reconstruction cannot re-enter identity paths."""
+    paths = (
+        Path("src/silent_cascade/env/generator.py"),
+        Path("src/silent_cascade/env/invariants.py"),
+        Path("src/silent_cascade/logging/manifest.py"),
+        Path("src/silent_cascade/env/services.py"),
+        Path("src/silent_cascade/env/reproducibility.py"),
+    )
+    forbidden: list[str] = []
+    reconstruction_names = {"episode_index", "within_block", "rank"}
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.BinOp)
+                and isinstance(node.op, ast.Mod)
+                and isinstance(node.right, ast.Constant)
+                and node.right.value == 4
+                and any(
+                    (isinstance(child, ast.Name) and child.id in reconstruction_names)
+                    or (isinstance(child, ast.Attribute) and child.attr in reconstruction_names)
+                    for child in ast.walk(node.left)
+                )
+            ):
+                forbidden.append(f"{path}:{node.lineno}:modulo-four member reconstruction")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "index"
+                and any(
+                    (isinstance(child, ast.Name) and child.id == "variant")
+                    or (isinstance(child, ast.Attribute) and child.attr == "variant")
+                    for child in ast.walk(node)
+                )
+            ):
+                forbidden.append(f"{path}:{node.lineno}:variant-rank member reconstruction")
+        assert not any(
+            isinstance(node, ast.Name) and node.id == "_INDEPENDENT_ALLOCATION_BLOCKS"
+            for node in ast.walk(tree)
+        ), f"{path} retains the Phase 1 invariant block table"
+
+    assert forbidden == []
 
 
 def test_gate_clock_blocks_are_nested_iid_prefixes() -> None:

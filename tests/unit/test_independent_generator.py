@@ -20,6 +20,7 @@ from silent_cascade.env.generator import (
 )
 from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.errors import GenerationError
+from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 from silent_cascade.schemas import ExternalEventKind, HazardFact, SafeFact
 
 
@@ -48,6 +49,19 @@ def test_independent_quartet_has_exact_labels_and_disjoint_nuisance_tokens(
         EpisodeVariant.SAFE_NEGATIVE: 1,
         EpisodeVariant.DISCONNECTED_NEGATIVE: 1,
     }
+    assert tuple(request.quartet_member_index for request in requests) == (0, 1, 2, 3)
+    for request in requests:
+        variants = allocate_independent_variants(
+            AllocationLabelKey(
+                "ofd-v1",
+                request.split_namespace,
+                request.suite,
+                request.root_seed,
+                request.requested_path_length,
+                request.allocation_quartet_index,
+            )
+        )
+        assert request.variant is variants[request.quartet_member_index]
     token_sets = [set(independent_seed_tokens(request, accepted_attempt=0)) for request in requests]
     assert all(
         left.isdisjoint(right)
@@ -89,6 +103,7 @@ def test_independent_episode_has_requested_public_oracle_and_private_contract(
         assert (
             bundle.truth.key.coordinate.allocation_quartet_index == request.allocation_quartet_index
         )
+        assert bundle.truth.key.coordinate.quartet_member_index == request.quartet_member_index
         assert "root_seed" not in repr(bundle.public)
         assert "private_terminal" not in repr(bundle.public)
         verify_oracle_truth(solution, bundle.truth)

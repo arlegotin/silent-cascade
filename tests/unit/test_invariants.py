@@ -254,7 +254,10 @@ def test_independent_allocation_quartet_and_variant_provenance_fail_closed(
             key=replace(
                 independent_bundle.truth.key,
                 coordinate=IndependentEpisodeCoordinate(
-                    "independent", coordinate.episode_index, coordinate.allocation_quartet_index + 1
+                    "independent",
+                    coordinate.episode_index,
+                    coordinate.allocation_quartet_index + 5,
+                    coordinate.quartet_member_index,
                 ),
             ),
         ),
@@ -263,7 +266,22 @@ def test_independent_allocation_quartet_and_variant_provenance_fail_closed(
             key=replace(
                 independent_bundle.truth.key,
                 coordinate=IndependentEpisodeCoordinate(
-                    "independent", coordinate.episode_index, 999_999
+                    "independent",
+                    coordinate.episode_index,
+                    999_990,
+                    coordinate.quartet_member_index,
+                ),
+            ),
+        ),
+        _bundle_with(
+            independent_bundle,
+            key=replace(
+                independent_bundle.truth.key,
+                coordinate=IndependentEpisodeCoordinate(
+                    "independent",
+                    coordinate.episode_index,
+                    coordinate.allocation_quartet_index,
+                    (coordinate.quartet_member_index + 1) % 4,
                 ),
             ),
         ),
@@ -299,6 +317,7 @@ def test_independent_node_permutation_provenance_has_stable_check_id(
             requested_path_length=2,
             variant=EpisodeVariant.POSITIVE,
             allocation_quartet_index=8,
+            quartet_member_index=0,
         ),
         public_id_seed=2026083012,
     )
@@ -318,6 +337,40 @@ def test_independent_node_permutation_provenance_has_stable_check_id(
     report = validate_episode_invariants(corrupted, config, strict=False)
     assert report.valid is False
     assert report.check_ids == ("node_permutation_provenance",)
+
+
+def test_generic_frozen_allocation_accepts_non_phase1_boundaries(
+    config: Phase1Config,
+) -> None:
+    """Generic invariants authenticate explicit labels, not one Phase 1 block table."""
+    from silent_cascade.env.generator import (
+        EpisodeBlock,
+        IndependentAllocation,
+        iter_independent_requests,
+    )
+    from silent_cascade.env.invariants import validate_episode_invariants
+
+    allocation = IndependentAllocation(
+        allocation_id="frozen-phase6-v1",
+        split_namespace=SplitNamespace.FROZEN,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=5,
+                episode_count=20_000,
+            ),
+        ),
+    )
+    requests = tuple(iter_independent_requests(allocation, root_seed=41))
+
+    assert len(requests) == 20_000
+    assert tuple(request.episode_index for request in requests[:8]) == tuple(range(5, 13))
+    assert tuple(request.quartet_member_index for request in requests[:8]) == (0, 1, 2, 3) * 2
+    for request in (requests[0], requests[-1]):
+        bundle = generate_independent_episode(config, request, public_id_seed=91)
+        assert bundle.truth.key.coordinate.quartet_member_index == request.quartet_member_index
+        assert validate_episode_invariants(bundle, config).valid
 
 
 @pytest.mark.parametrize(

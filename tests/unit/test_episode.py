@@ -119,7 +119,7 @@ def test_public_artifact_and_public_error_payload_do_not_leak_private_sentinel(
             truth.key.split_namespace,
             truth.key.suite,
             numeric_sentinel,
-            IndependentEpisodeCoordinate("independent", 987654, 123),
+            IndependentEpisodeCoordinate("independent", 987654, 123, 2),
         ),
         recipe=truth.recipe,
         relevant_node_path=truth.relevant_node_path,
@@ -152,6 +152,24 @@ def test_public_artifact_and_public_error_payload_do_not_leak_private_sentinel(
     for sentinel in (string_sentinel, str(numeric_sentinel)):
         assert sentinel not in repr(public_error_payload)
         assert sentinel not in canonical_json_bytes(public_error_payload).decode("utf-8")
+
+    rebuilt = episode_from_bytes(canonical_episode_bytes(bundle))
+    assert rebuilt.truth.key.coordinate == private.key.coordinate
+    assert rebuilt.truth.key.coordinate.quartet_member_index == 2
+
+
+@pytest.mark.parametrize("quartet_member_index", (False, -1, 4))
+def test_independent_coordinate_requires_an_exact_bounded_quartet_member(
+    quartet_member_index: object,
+) -> None:
+    """Boolean or out-of-range quartet members cannot become persisted identity."""
+    with pytest.raises((TypeError, ValueError), match="quartet_member_index"):
+        IndependentEpisodeCoordinate(
+            "independent",
+            5,
+            7,
+            quartet_member_index,  # type: ignore[arg-type]
+        )
 
 
 def test_positive_bundle_requires_exact_ofd_window_and_target(

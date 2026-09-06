@@ -18,6 +18,7 @@ from silent_cascade.env.episode import (
 from silent_cascade.env.generator import IndependentEpisodeRequest, independent_seed_tokens
 from silent_cascade.env.oracle import OraclePolicy, OracleTerminalKind, solve_public_episode
 from silent_cascade.errors import EpisodeInvariantError, OracleError
+from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 from silent_cascade.schemas import HazardFact, LinkFact, SafeFact
 
 
@@ -34,19 +35,37 @@ def config() -> Phase1Config:
 
 
 def _request(suite: SuiteName, episode_index: int = 17) -> IndependentEpisodeRequest:
-    variant = (
+    expected_variant = (
         EpisodeVariant.DISCONNECTED_NEGATIVE
         if suite is SuiteName.NULL_NEAR_MISS_STRESS
         else EpisodeVariant.POSITIVE
     )
+    quartet_member_index = {
+        SuiteName.BRANCHING_STRESS: 0,
+        SuiteName.CYCLES_STRESS: 1,
+        SuiteName.MEMORY_OVERFLOW_STRESS: 1,
+        SuiteName.NULL_NEAR_MISS_STRESS: 0,
+    }[suite]
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            "ofd-v1",
+            SplitNamespace.DEBUG,
+            suite,
+            20260831,
+            3,
+            4,
+        )
+    )
+    assert variants[quartet_member_index] is expected_variant
     return IndependentEpisodeRequest(
         split_namespace=SplitNamespace.DEBUG,
         suite=suite,
         root_seed=20260831,
         episode_index=episode_index,
         requested_path_length=3,
-        variant=variant,
+        variant=variants[quartet_member_index],
         allocation_quartet_index=4,
+        quartet_member_index=quartet_member_index,
     )
 
 
@@ -292,6 +311,7 @@ def test_structural_stress_regeneration_order_and_global_rng_are_stable(
     assert np.array_equal(before[1], after[1])
     assert before[2:] == after[2:]
     assert canonical_episode_bytes(first) == canonical_episode_bytes(second)
+    assert first.truth.key.coordinate.quartet_member_index == request.quartet_member_index
     assert (
         regenerate(
             config,

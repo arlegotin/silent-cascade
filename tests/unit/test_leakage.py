@@ -211,6 +211,7 @@ def _authenticated_independent_test_source(
                         requested_path_length=path,
                         variant=variant,
                         allocation_quartet_index=block,
+                        quartet_member_index=local_position,
                     ),
                     91,
                 )
@@ -995,6 +996,7 @@ def test_count_control_minimum_duration_keeps_the_original_time_boundary() -> No
             requested_path_length=3,
             variant=EpisodeVariant.POSITIVE,
             allocation_quartet_index=10,
+            quartet_member_index=1,
         ),
         91,
     )
@@ -1004,6 +1006,7 @@ def test_count_control_minimum_duration_keeps_the_original_time_boundary() -> No
         injector, AuditExample(bundle, 0, "independent", 10, 41), 0
     )
 
+    assert transformed.bundle.truth.key.coordinate.quartet_member_index == 1
     assert transformed.bundle.public.init == bundle.public.init
     assert transformed.bundle.public.events[-1].timestamp == bundle.public.events[-1].timestamp
     assert all(
@@ -1083,6 +1086,7 @@ def test_count_control_admits_exact_phase1_gate_identity_episode() -> None:
         requested_path_length=2,
         variant=EpisodeVariant.POSITIVE,
         allocation_quartet_index=19085,
+        quartet_member_index=1,
     )
     bundle = generate_independent_episode(config, request, 2026083012)
     assert bundle.public.init.episode_public_id == "7f8d4768-be0b-4a05-8a84-794136396559"
@@ -1163,6 +1167,7 @@ def test_activation_id_control_identifies_exact_phase1_gate_provenance_failure()
         requested_path_length=2,
         variant=EpisodeVariant.POSITIVE,
         allocation_quartet_index=8,
+        quartet_member_index=0,
     )
     bundle = generate_independent_episode(config, request, 2026083012)
     assert bundle.public.init.episode_public_id == "366e995a-3211-403b-9da6-b4a376c4829b"
@@ -1181,6 +1186,7 @@ def test_activation_id_control_identifies_exact_phase1_gate_provenance_failure()
     )
     assert transformed.bundle.public == expected_public
     assert transformed.manifest_rank == expected_rank
+    assert transformed.bundle.truth.key.coordinate.quartet_member_index == 0
 
     features = extract_shortcut_features(original, 8_000)
     facts = _fact_events(bundle)
@@ -1451,6 +1457,7 @@ def test_control_value_mutation_table_refuses_before_fit(
                 4,
                 EpisodeVariant.POSITIVE,
                 0,
+                1,
             ),
             91,
         )
@@ -2147,10 +2154,12 @@ def test_independent_coordinate_rejects_forged_source_position() -> None:
         root_seed=41,
         episode_index=7,
         allocation_quartet_index=1,
+        quartet_member_index=0,
         requested_path_length=3,
         variant=EpisodeVariant.POSITIVE,
     )
     bundle = generate_independent_episode(config, request, 91)
+    assert bundle.truth.key.coordinate.quartet_member_index == 0
     descriptor = AuditSourceDescriptor(
         schema_version="leakage-source-v1",
         generation_mode="independent",

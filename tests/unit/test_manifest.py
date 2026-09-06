@@ -311,7 +311,7 @@ def _frozen_manifest(allocation_id: str) -> EpisodeManifest:
             split_namespace=SplitNamespace.FROZEN,
             suite=SuiteName.IID_PRIMARY,
             coordinate=IndependentManifestCoordinate(
-                episode_index=20 + member,
+                episode_index=5 + member,
                 allocation_quartet_index=7,
                 quartet_member_index=member,
             ),
@@ -387,6 +387,33 @@ def test_frozen_manifest_accepts_only_approved_allocation_identity_grammar(
     allocation_id: str,
 ) -> None:
     assert _frozen_manifest(allocation_id).provenance.allocation_id == allocation_id
+
+
+def test_independent_manifest_coordinate_round_trip_keeps_explicit_members() -> None:
+    """Manifest serialization cannot derive members from unaligned episode indices."""
+    manifest = _frozen_manifest("frozen-phase6-v1")
+
+    rebuilt = EpisodeManifest.model_validate_json(manifest.model_dump_json())
+
+    assert tuple(entry.coordinate.episode_index for entry in rebuilt.entries) == (5, 6, 7, 8)
+    assert tuple(entry.coordinate.quartet_member_index for entry in rebuilt.entries) == (
+        0,
+        1,
+        2,
+        3,
+    )
+
+
+@pytest.mark.parametrize("quartet_member_index", (False, -1, 4))
+def test_independent_manifest_coordinate_rejects_malformed_explicit_members(
+    quartet_member_index: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="quartet_member_index"):
+        IndependentManifestCoordinate(
+            episode_index=5,
+            allocation_quartet_index=7,
+            quartet_member_index=quartet_member_index,  # type: ignore[arg-type]
+        )
 
 
 def test_validation_manifest_rejects_wrong_namespace_mode_and_membership(

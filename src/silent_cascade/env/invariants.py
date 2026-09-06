@@ -65,25 +65,6 @@ _STRUCTURAL_STRESS_SUITES = frozenset(
 _STRESS_RESERVED_NODES = frozenset(range(49, 61))
 _TERMINAL_RECORD_COUNT = 3
 
-_INDEPENDENT_ALLOCATION_BLOCKS = (
-    (SuiteName.IID_PRIMARY, 2, 0, 8_000, 0),
-    (SuiteName.IID_PRIMARY, 3, 8_000, 8_000, 2_000),
-    (SuiteName.IID_PRIMARY, 4, 16_000, 8_000, 4_000),
-    (SuiteName.OOD_DEPTH, 5, 0, 4_000, 6_000),
-    (SuiteName.OOD_DEPTH, 6, 4_000, 4_000, 7_000),
-    (SuiteName.OOD_DEPTH, 7, 8_000, 4_000, 8_000),
-    (SuiteName.OOD_DEPTH, 8, 12_000, 4_000, 9_000),
-    (SuiteName.OOD_SHORT_DELAY, 2, 0, 8_000, 10_000),
-    (SuiteName.OOD_SHORT_DELAY, 3, 8_000, 8_000, 12_000),
-    (SuiteName.OOD_SHORT_DELAY, 4, 16_000, 8_000, 14_000),
-    (SuiteName.OOD_LONG_DELAY, 2, 0, 4_000, 16_000),
-    (SuiteName.OOD_LONG_DELAY, 3, 4_000, 4_000, 17_000),
-    (SuiteName.OOD_LONG_DELAY, 4, 8_000, 4_000, 18_000),
-    (SuiteName.DISTRACTOR_FLOOD, 2, 0, 8_000, 19_000),
-    (SuiteName.DISTRACTOR_FLOOD, 3, 8_000, 8_000, 21_000),
-    (SuiteName.DISTRACTOR_FLOOD, 4, 16_000, 8_000, 23_000),
-)
-
 
 @dataclass(frozen=True, slots=True)
 class InvariantReport:
@@ -248,8 +229,8 @@ def _allocation_variants(
     return permutations_without_duplicates[selected_index]
 
 
-def _validate_independent_allocation_provenance(bundle: EpisodeBundle) -> None:
-    """Authenticate fixed gate/frozen allocation position and its private label."""
+def _validate_independent_label_provenance(bundle: EpisodeBundle) -> None:
+    """Authenticate the explicit quartet member against its private label."""
 
     truth = bundle.truth
     key = truth.key
@@ -257,30 +238,14 @@ def _validate_independent_allocation_provenance(bundle: EpisodeBundle) -> None:
     coordinate = key.coordinate
     if not isinstance(coordinate, IndependentEpisodeCoordinate):
         _fail("invalid RNG provenance", check_id="rng_provenance")
-    if key.split_namespace not in {SplitNamespace.PHASE1_GATE, SplitNamespace.FROZEN}:
-        return
-    matching = tuple(
-        block
-        for block in _INDEPENDENT_ALLOCATION_BLOCKS
-        if block[0] is key.suite
-        and block[1] == recipe.requested_path_length
-        and block[2] <= coordinate.episode_index < block[2] + block[3]
-    )
-    if len(matching) != 1:
-        _fail("invalid RNG provenance", check_id="rng_provenance")
-    _, _, first_episode_index, _, first_quartet_index = matching[0]
-    within_block = coordinate.episode_index - first_episode_index
-    expected_quartet = first_quartet_index + within_block // 4
-    if coordinate.allocation_quartet_index != expected_quartet:
-        _fail("invalid RNG provenance", check_id="rng_provenance")
     expected_variants = _allocation_variants(
         key.split_namespace,
         key.suite,
         key.root_seed,
         recipe.requested_path_length,
-        expected_quartet,
+        coordinate.allocation_quartet_index,
     )
-    if recipe.variant is not expected_variants[within_block % 4]:
+    if recipe.variant is not expected_variants[coordinate.quartet_member_index]:
         _fail("invalid RNG provenance", check_id="rng_provenance")
 
 
@@ -539,6 +504,8 @@ def _expected_independent_payloads(
         or coordinate.episode_index < 0
         or type(coordinate.allocation_quartet_index) is not int
         or coordinate.allocation_quartet_index < 0
+        or type(coordinate.quartet_member_index) is not int
+        or coordinate.quartet_member_index not in range(4)
         or type(recipe.accepted_attempt) is not int
         or not 0 <= recipe.accepted_attempt < 1_000
         or type(truth.rejection_count) is not int
@@ -548,7 +515,7 @@ def _expected_independent_payloads(
         or coordinate.mode != "independent"
     ):
         _fail("invalid RNG provenance", check_id="rng_provenance")
-    _validate_independent_allocation_provenance(bundle)
+    _validate_independent_label_provenance(bundle)
     path_lengths, delay_bounds, distractor_bounds = _suite_parameters(config, key.suite)
     if recipe.requested_path_length not in path_lengths:
         _fail("requested path length is invalid for the suite")
