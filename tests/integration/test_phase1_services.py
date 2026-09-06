@@ -891,6 +891,14 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     assert result.report.namespace_evidence.seed_token_count == 84
     assert result.report.namespace_evidence.base_public_id_count == 12
     assert result.report.namespace_evidence.clock_public_id_count == 0
+    assert (
+        result.report.seed_token_collisions
+        == result.report.namespace_evidence.seed_token_collision_count
+    )
+    assert (
+        result.report.public_id_collisions
+        == result.report.namespace_evidence.public_id_collision_count
+    )
     assert result.report.corpus_sha256
     assert result.report.provenance.foundation_model_calls == 0
     assert result.report.provenance.analysis_source.scope == "phase1_analysis"
@@ -1191,6 +1199,60 @@ def test_manifest_oracle_runs_the_independent_cohort_authority(
     assert result.report.namespace_evidence.accepted_draw_count == 3
     assert result.report.namespace_evidence.seed_token_count == 60
     assert result.report.namespace_evidence.base_public_id_count == 12
+
+
+def test_matched_oracle_counts_one_forced_retry_once_per_cohort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Four matched members must not multiply one construction-draw rejection by four."""
+    import silent_cascade.env.generator as generator
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    real_validate = generator._validate_counterfactual_family
+
+    def force_first_attempt_retry(family: tuple[object, ...]) -> None:
+        first = family[0]
+        if first.truth.recipe.accepted_attempt == 0:  # type: ignore[attr-defined]
+            raise ValueError("forced matched review retry")
+        real_validate(family)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(generator, "_validate_counterfactual_family", force_first_attempt_retry)
+    manifest = _matched_manifest()
+    path = tmp_path / "matched-forced-retry.json"
+    publish_manifest(path, manifest)
+
+    def collect(*args: object, **_kwargs: object) -> EvidenceProvenance:
+        resolved = args[0]
+        return manifest.provenance.model_copy(
+            update={"config_sha256": resolved.sha256}  # type: ignore[attr-defined]
+        )
+
+    report = evaluate_oracle(
+        OracleEvaluationRequest(
+            config=ConfigSelection(), source=ManifestCorpusSource(manifest_path=path)
+        ),
+        deps=Phase1ServiceDependencies.for_test(
+            validation_allocation=_audit_validation_allocation(),
+            independent_allocation=_independent_allocation(),
+            collect_provenance=collect,
+            build_manifest=lambda *args: pytest.fail("not used"),
+        ),
+    ).report
+
+    assert report.namespace_evidence.accepted_draw_count == 3
+    assert report.namespace_evidence.rejected_draw_count == 3
+    assert report.namespace_evidence.generation_attempt_count == 6
+    assert report.rejected_draw_count == 3
+    assert report.generation_attempt_count == 6
+    assert report.rejection_reason_counts == {"forced matched review retry": 3}
 
 
 def test_oracle_rejects_colliding_actual_construction_tokens(

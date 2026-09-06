@@ -873,11 +873,6 @@ def matched_seed_tokens(request: CohortRequest, accepted_attempt: int) -> tuple[
     return (*cohort_tokens, *member_tokens)
 
 
-# Preserve the frozen counter-RNG verification seam while evidence paths use
-# the explicitly named public helper.
-_matched_seed_tokens = matched_seed_tokens
-
-
 def _matched_variants(request: CohortRequest, attempt: int) -> tuple[EpisodeVariant, ...]:
     label_rng = _cohort_stream(request, SeedStream.LABEL, attempt)
     order = label_rng.permutation(len(_MATCHED_VARIANTS))

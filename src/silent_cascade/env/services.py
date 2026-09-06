@@ -278,6 +278,11 @@ class OracleEvaluationReport(StrictModel):
     @model_validator(mode="after")
     def require_namespace_binding(self) -> "OracleEvaluationReport":
         require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
+        if (
+            self.seed_token_collisions != self.namespace_evidence.seed_token_collision_count
+            or self.public_id_collisions != self.namespace_evidence.public_id_collision_count
+        ):
+            raise ValueError("oracle collision summaries disagree with namespace evidence")
         return self
 
 
@@ -1054,7 +1059,7 @@ def evaluate_oracle(
     variants: Counter[EpisodeVariant] = Counter()
     rejection_reasons: Counter[str] = Counter()
     random_successes: Counter[str] = Counter()
-    seed_tokens: set[tuple[object, ...]] = set()
+    seen_source_coordinates: set[tuple[object, ...]] = set()
     verified = 0
     rejected_draws = 0
     generation_attempts = 0
@@ -1062,6 +1067,7 @@ def evaluate_oracle(
     active_cohort: list[EpisodeBundle] = []
 
     def flush_cohort() -> None:
+        nonlocal generation_attempts, rejected_draws
         if active_cohort_index is not None:
             if len(active_cohort) != 4:
                 raise ValueError("matched oracle source contains an incomplete cohort")
@@ -1073,6 +1079,9 @@ def evaluate_oracle(
                 matched_seed_tokens(_cohort_request_from_bundle(first), attempt),
                 tuple(item.public.init.episode_public_id for item in active_cohort),
             )
+            rejected_draws += first.truth.rejection_count
+            generation_attempts += first.truth.rejection_count + 1
+            rejection_reasons.update(first.truth.rejection_reasons)
 
     for bundle, source_recipe in ordered:
         if isinstance(source_recipe, EpisodeManifestEntry):
@@ -1091,9 +1100,9 @@ def evaluate_oracle(
             key.root_seed,
             coordinate,
         )
-        if token in seed_tokens:
-            raise ValueError("oracle source contains a seed-token collision")
-        seed_tokens.add(token)
+        if token in seen_source_coordinates:
+            raise ValueError("oracle source contains a duplicate source coordinate")
+        seen_source_coordinates.add(token)
         namespace_bundle = bundle
         if bundle.truth.recipe.parent_public_id is None:
             validate_episode_invariants(bundle, resolved.config)
@@ -1125,6 +1134,9 @@ def evaluate_oracle(
                 independent_seed_tokens(namespace_request, namespace_attempt),
                 (namespace_bundle.public.init.episode_public_id,),
             )
+            rejected_draws += namespace_bundle.truth.rejection_count
+            generation_attempts += namespace_bundle.truth.rejection_count + 1
+            rejection_reasons.update(namespace_bundle.truth.rejection_reasons)
         solution = solve_public_episode(
             bundle.public, _oracle_policy_for_suite(bundle.truth.recipe.evaluation_suite)
         )
@@ -1152,9 +1164,6 @@ def evaluate_oracle(
         ] += 1
         corpus.add(CorpusDigestEntry(bundle.public.init.episode_public_id, episode_sha256(bundle)))
         verified += 1
-        rejected_draws += bundle.truth.rejection_count
-        generation_attempts += bundle.truth.rejection_count + 1
-        rejection_reasons.update(bundle.truth.rejection_reasons)
     flush_cohort()
     if verified != expected_count or dict(sorted(denominators.items())) != dict(
         sorted(expected_denominators.items())
@@ -1191,6 +1200,12 @@ def evaluate_oracle(
         raise ValueError("clock transform changes the oracle decision")
     namespace_evidence = namespace_builder.finalize()
     require_namespace_evidence_provenance(namespace_evidence, provenance)
+    if (
+        rejected_draws != namespace_evidence.rejected_draw_count
+        or generation_attempts != namespace_evidence.generation_attempt_count
+        or sum(rejection_reasons.values()) != rejected_draws
+    ):
+        raise ValueError("oracle rejection accounting disagrees with construction draws")
     pooled = (random_successes["positive"] + random_successes["negative"]) / verified
     report = OracleEvaluationReport(
         schema_version="oracle-evaluation-report-v1",
@@ -1205,8 +1220,8 @@ def evaluate_oracle(
         suite_path_denominators=dict(sorted(denominators.items())),
         invariant_failures=0,
         oracle_ambiguities=0,
-        seed_token_collisions=0,
-        public_id_collisions=0,
+        seed_token_collisions=namespace_evidence.seed_token_collision_count,
+        public_id_collisions=namespace_evidence.public_id_collision_count,
         oracle_successes=verified,
         oracle_failures=0,
         random_positive=random_positive,

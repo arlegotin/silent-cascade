@@ -76,6 +76,11 @@ _PUBLIC_ID_SEQUENCE_DOMAIN = b"silent-cascade/ofd-v1/public-id-sequence/v1"
 _MAX_ACCEPTED_DRAWS = 100_000
 
 
+def _require_clock_public_id_bound(clock_count: int, base_count: int) -> None:
+    if clock_count > 2 * base_count:
+        raise ValueError("clock public ID count exceeds two children per base episode")
+
+
 class AcceptedAttemptRun(StrictModel):
     first_draw_index: int = Field(ge=0)
     draw_count: int = Field(gt=0)
@@ -122,6 +127,10 @@ class ConstructionNamespaceEvidence(StrictModel):
             raise ValueError("construction token count law does not match generation mode")
         if self.base_public_id_count != self.accepted_draw_count * base_ids_per_draw:
             raise ValueError("base public ID count law does not match generation mode")
+        _require_clock_public_id_bound(
+            self.clock_public_id_count,
+            self.base_public_id_count,
+        )
         if self.total_public_id_count != (self.base_public_id_count + self.clock_public_id_count):
             raise ValueError("total public ID count must equal base plus clock IDs")
         return self
@@ -438,6 +447,7 @@ class ConstructionNamespaceBuilder:
         self._base_ids_per_draw = 4 if generation_mode == "matched" else 1
         self._token_count = accepted_draw_count * self._tokens_per_draw
         self._base_id_count = accepted_draw_count * self._base_ids_per_draw
+        _require_clock_public_id_bound(clock_public_id_count, self._base_id_count)
         self._clock_id_count = clock_public_id_count
         self._total_id_count = self._base_id_count + clock_public_id_count
         self._attempts = np.empty(accepted_draw_count, dtype=np.uint16)

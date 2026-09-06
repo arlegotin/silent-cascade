@@ -564,17 +564,30 @@ def _matched_manifest_namespace(
         members = manifest.entries[start : start + 4]
         first = members[0]
         coordinate = first.coordinate
-        if (
-            not isinstance(coordinate, MatchedManifestCoordinate)
-            or tuple(
-                member.coordinate.member_index
-                for member in members
-                if isinstance(member.coordinate, MatchedManifestCoordinate)
-            )
-            != (0, 1, 2, 3)
-            or any(member.accepted_attempt != first.accepted_attempt for member in members)
-        ):
+        if not isinstance(coordinate, MatchedManifestCoordinate):
             raise ArtifactIntegrityError("matched manifest namespace draw is inconsistent")
+        signature = (
+            first.split_namespace,
+            first.suite,
+            coordinate.cohort_index,
+            first.requested_path_length,
+            first.accepted_attempt,
+        )
+        for member_index, member in enumerate(members):
+            member_coordinate = member.coordinate
+            if (
+                not isinstance(member_coordinate, MatchedManifestCoordinate)
+                or member_coordinate.member_index != member_index
+                or (
+                    member.split_namespace,
+                    member.suite,
+                    member_coordinate.cohort_index,
+                    member.requested_path_length,
+                    member.accepted_attempt,
+                )
+                != signature
+            ):
+                raise ArtifactIntegrityError("matched manifest namespace draw is inconsistent")
         request = CohortRequest(
             split_namespace=first.split_namespace,
             suite=first.suite,

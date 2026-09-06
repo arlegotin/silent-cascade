@@ -3709,6 +3709,15 @@ def _require_exact_phase1_audit_config(
         raise ValueError("phase1 gate audit config is not exact")
 
 
+def _construction_checks_from_namespace(
+    evidence: ConstructionNamespaceEvidence,
+) -> dict[str, bool]:
+    checks = {key: True for key in sorted(_CONSTRUCTION_CHECK_IDS)}
+    checks["seed_tokens"] = evidence.seed_token_collision_count == 0
+    checks["public_ids"] = evidence.public_id_collision_count == 0
+    return checks
+
+
 def _matched_namespace_request(bundle: EpisodeBundle) -> CohortRequest:
     truth = bundle.truth
     coordinate = truth.key.coordinate
@@ -3798,7 +3807,7 @@ def audit_leakage(
         rows: list[_StoredExample] = []
         digest = CorpusHashBuilder(source.episode_count)
         source_manifest = _SourceManifestHashBuilder()
-        seen_tokens: set[tuple[int, int]] = set()
+        seen_source_coordinates: set[tuple[int, int]] = set()
         denominators: Counter[str] = Counter()
         active_matched_block: int | None = None
         active_matched_bundles: list[EpisodeBundle] = []
@@ -3841,9 +3850,9 @@ def audit_leakage(
             solution = solve_public_episode(example.bundle.public)
             verify_oracle_truth(solution, example.bundle.truth)
             token = (example.randomization_block_index, example.episode_position)
-            if token in seen_tokens:
-                raise ValueError("audit seed-token collision")
-            seen_tokens.add(token)
+            if token in seen_source_coordinates:
+                raise ValueError("audit source coordinate collision")
+            seen_source_coordinates.add(token)
             feature_set = extract_shortcut_features(example, source.episode_count)
             feature_buffer[index % len(feature_buffer)] = feature_set.vectors[
                 ShortcutFeatureGroup.COMBINED
@@ -4021,7 +4030,7 @@ def audit_leakage(
             randomization_block_count=len({row.block for row in rows}),
             suite_path_denominators=dict(sorted(denominators.items())),
             construction_check_ids=_CONSTRUCTION_CHECK_IDS,
-            construction_checks={key: True for key in sorted(_CONSTRUCTION_CHECK_IDS)},
+            construction_checks=_construction_checks_from_namespace(namespace_evidence),
             probes=tuple(probes),
             label_shuffled_probes=tuple(shuffled_probes),
             positive_controls=controls,

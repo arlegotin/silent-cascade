@@ -1,6 +1,7 @@
 """Contracts for the fail-closed public-feature leakage auditor."""
 
 import hashlib
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from silent_cascade.provenance import (
     PHASE1_ANALYSIS_SOURCE_PATHS,
     EvidenceProvenance,
     SourceTreeFingerprint,
+    build_construction_namespace_evidence,
     public_id_seed_sha256,
 )
 
@@ -2404,6 +2406,26 @@ def test_audit_rejects_colliding_actual_construction_tokens_before_probe_fit(
             tmp_path,
         )
     assert probe_calls == 0
+
+
+def test_construction_check_labels_derive_from_actual_namespace_collisions() -> None:
+    """Coordinate uniqueness cannot make token or public-ID construction checks pass."""
+    import silent_cascade.env.leakage as leakage
+
+    evidence = build_construction_namespace_evidence(
+        generation_mode="matched",
+        public_id_seed=91,
+        accepted_attempts=(0,),
+        seed_tokens=tuple(f"{index:064x}" for index in range(20)),
+        base_public_ids=tuple(str(uuid.UUID(int=index + 1)) for index in range(4)),
+        clock_public_ids=(),
+    )
+
+    assert leakage._construction_checks_from_namespace(evidence)["seed_tokens"] is True
+    token_collision = evidence.model_copy(update={"seed_token_collision_count": 1})
+    public_id_collision = evidence.model_copy(update={"public_id_collision_count": 1})
+    assert leakage._construction_checks_from_namespace(token_collision)["seed_tokens"] is False
+    assert leakage._construction_checks_from_namespace(public_id_collision)["public_ids"] is False
 
 
 def test_complete_report_hash_is_stable_in_a_fresh_process() -> None:

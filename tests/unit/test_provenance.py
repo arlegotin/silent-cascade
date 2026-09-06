@@ -17,6 +17,7 @@ from silent_cascade.provenance import (
     PHASE1_ANALYSIS_SOURCE_PATHS,
     TASK14_ANALYSIS_SOURCE_PATHS,
     AcceptedAttemptRun,
+    ConstructionNamespaceBuilder,
     ConstructionNamespaceEvidence,
     EvidenceProvenance,
     SourceTreeFingerprint,
@@ -268,6 +269,35 @@ def test_namespace_builder_counts_retries_once_per_construction_draw() -> None:
     assert evidence.accepted_draw_count == 3
     assert evidence.rejected_draw_count == 4
     assert evidence.generation_attempt_count == 7
+
+
+def test_namespace_evidence_rejects_more_than_two_clock_children_per_base_episode() -> None:
+    """A serialized clock count cannot exceed the paired-suite child relationship."""
+    payload = _namespace_payload()
+    payload["clock_public_id_count"] = 9
+    payload["total_public_id_count"] = 13
+
+    with pytest.raises(ValueError, match="clock public ID count"):
+        ConstructionNamespaceEvidence.model_validate(payload)
+
+
+def test_namespace_builder_rejects_huge_clock_count_before_numpy_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed clock counts must fail before any attempt/token/UUID buffer allocation."""
+    import silent_cascade.provenance as provenance
+
+    def prohibited_allocation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("malformed count reached NumPy allocation")
+
+    monkeypatch.setattr(provenance.np, "empty", prohibited_allocation)
+    with pytest.raises(ValueError, match="clock public ID count"):
+        ConstructionNamespaceBuilder(
+            generation_mode="independent",
+            public_id_seed=91,
+            accepted_draw_count=1,
+            clock_public_id_count=1_000_000_000,
+        )
 
 
 def test_source_tree_hash_uses_unambiguous_length_framing(tmp_path: Path) -> None:

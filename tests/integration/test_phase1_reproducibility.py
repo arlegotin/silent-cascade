@@ -405,6 +405,60 @@ def test_manifest_source_executes_the_full_authenticated_matrix(tmp_path: Path) 
     assert report.namespace_evidence.base_public_id_count == 8
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("split_namespace", SplitNamespace.VALIDATION),
+        ("suite", SuiteName.OOD_DEPTH),
+        ("cohort_index", 99),
+        ("requested_path_length", 3),
+        ("accepted_attempt", 1),
+    ),
+)
+def test_matched_namespace_rejects_mixed_cohort_signatures(
+    field: str,
+    replacement: object,
+) -> None:
+    """One token stream may authenticate only four entries from the same cohort draw."""
+    from silent_cascade.env.generator import CohortAllocation, CohortBlock
+    from silent_cascade.env.reproducibility import _matched_manifest_namespace
+    from silent_cascade.env.services import build_cohort_manifest
+    from silent_cascade.logging.manifest import ManifestAccessClass
+
+    resolved = _resolved()
+    provenance = _provenance(resolved).model_copy(
+        update={"generation_mode": "matched", "allocation_id": "test-signature-v1"}
+    )
+    allocation = CohortAllocation(
+        allocation_id="test-signature-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            CohortBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_cohort_index=0,
+                cohort_count=1,
+            ),
+        ),
+    )
+    manifest = build_cohort_manifest(
+        resolved.config, allocation, provenance, 41, 91, access_class=ManifestAccessClass.DEBUG
+    )
+    entries = list(manifest.entries)
+    target = entries[1]
+    if field == "cohort_index":
+        target = target.model_copy(
+            update={"coordinate": target.coordinate.model_copy(update={field: replacement})}
+        )
+    else:
+        target = target.model_copy(update={field: replacement})
+    entries[1] = target
+    mixed = manifest.model_copy(update={"entries": tuple(entries)})
+
+    with pytest.raises(ArtifactIntegrityError, match="namespace draw is inconsistent"):
+        _matched_manifest_namespace(mixed)
+
+
 def test_reproducibility_rejects_colliding_actual_construction_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

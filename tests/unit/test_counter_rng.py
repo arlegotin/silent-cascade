@@ -360,11 +360,11 @@ def test_counter_seed_tokens_have_no_collisions_in_a_focused_sample() -> None:
 
 def test_accepted_draw_token_sequences_include_trace_jitter_in_frozen_order() -> None:
     """Omitting acceptance-affecting jitter would make construction evidence incomplete."""
-    import silent_cascade.env.generator as generator_module
     from silent_cascade.env.generator import (
         CohortRequest,
         independent_seed_tokens,
         iter_phase1_gate_requests,
+        matched_seed_tokens,
     )
 
     matched_request = CohortRequest(
@@ -374,7 +374,7 @@ def test_accepted_draw_token_sequences_include_trace_jitter_in_frozen_order() ->
         0,
         2,
     )
-    matched = generator_module._matched_seed_tokens(matched_request, 0)
+    matched = matched_seed_tokens(matched_request, 0)
     independent_request = next(iter_phase1_gate_requests(41))
     independent = independent_seed_tokens(independent_request, 0)
 
