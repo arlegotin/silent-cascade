@@ -7,16 +7,19 @@ from pathlib import Path
 import pytest
 
 from silent_cascade.config import resolve_config
+from silent_cascade.env import timing as timing_module
 from silent_cascade.env.config import OracleTimingConfig, Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import EpisodeVariant
 from silent_cascade.env.generator import CohortRequest
 from silent_cascade.env.oracle import build_oracle_trace, solve_public_episode, verify_oracle_truth
 from silent_cascade.env.reward import action_window, score_actions
-from silent_cascade.errors import GenerationError
+from silent_cascade.errors import GenerationError, OracleError
 from silent_cascade.rng import (
+    AllocationLabelKey,
     CounterSeedKey,
     PublicIdBatchKey,
     SeedStream,
+    allocate_independent_variants,
     allocate_public_ids,
     local_generator,
 )
@@ -115,7 +118,7 @@ def test_matched_cohort_is_private_safe_and_oracle_consistent(config: Phase1Conf
 
     cohort = generate_matched_cohort(config, cohort_request(), public_id_seed=91)
 
-    assert len(cohort.seed_tokens) == 16
+    assert len(cohort.seed_tokens) == 20
     assert len(set(cohort.seed_tokens)) == len(cohort.seed_tokens)
     for bundle in cohort.episodes:
         solution = solve_public_episode(bundle.public)
@@ -260,6 +263,181 @@ def test_invalid_matched_attempt_retries_the_complete_cohort(
         )
     )
     assert cohort.rejections == (generator.RejectionDiagnostic("forced template rejection", 2),)
+
+
+def test_unassigned_matched_counterfactual_failure_retries_the_whole_cohort(
+    config: Phase1Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checking only each member's assigned label would accept a biased cohort draw."""
+    import silent_cascade.env.generator as generator
+
+    request = cohort_request()
+    assigned = generator._matched_variants(request, 0)
+    original = generator._validate_matched_member_shape
+    rejected = False
+
+    def reject_one_unassigned(bundle: object, active: Phase1Config) -> None:
+        nonlocal rejected
+        coordinate = bundle.truth.key.coordinate  # type: ignore[union-attr]
+        variant = bundle.truth.recipe.variant  # type: ignore[union-attr]
+        if not rejected and coordinate.member_index == 0 and variant is not assigned[0]:
+            rejected = True
+            raise ValueError("forced unassigned shape failure")
+        original(bundle, active)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(generator, "_validate_matched_member_shape", reject_one_unassigned)
+    cohort = generator.generate_matched_cohort(config, request, public_id_seed=91)
+
+    assert rejected
+    assert cohort.accepted_attempt == 1
+    assert cohort.rejections == (
+        generator.RejectionDiagnostic("forced unassigned shape failure", 1),
+    )
+
+
+def test_unassigned_matched_timing_failure_retries_before_label_selection(
+    config: Phase1Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feasible assigned trace cannot excuse an infeasible counterfactual label."""
+    import silent_cascade.env.generator as generator
+
+    real_schedule = timing_module.build_trace_timing_schedule
+    calls: list[tuple[float, ...]] = []
+    rejected = False
+
+    def fail_first_counterfactual(**kwargs: object) -> object:
+        nonlocal rejected
+        counts = kwargs["competitive_counts"]
+        assert isinstance(counts, tuple)
+        jitter_normals = kwargs["jitter_normals"]
+        assert isinstance(jitter_normals, tuple)
+        calls.append(jitter_normals)
+        if not rejected:
+            rejected = True
+            raise OracleError("oracle trace is temporally infeasible")
+        return real_schedule(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(generator, "build_trace_timing_schedule", fail_first_counterfactual)
+    cohort = generator.generate_matched_cohort(config, cohort_request(), public_id_seed=91)
+
+    assert cohort.accepted_attempt == 1
+    assert len(calls) == 13
+    for member_start in range(1, 13, 3):
+        positive, safe, disconnected = calls[member_start : member_start + 3]
+        assert positive == safe
+        assert disconnected == positive[: len(disconnected)]
+
+
+@pytest.mark.parametrize(
+    "validator_name",
+    ("_validate_primary_candidate_semantics", "_validate_counterfactual_family"),
+)
+def test_unassigned_matched_semantic_or_leakage_failure_retries_whole_cohort(
+    validator_name: str,
+    config: Phase1Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every retryable acceptance layer must run before matched label selection."""
+    import silent_cascade.env.generator as generator
+
+    original = getattr(generator, validator_name)
+    rejected = False
+
+    def reject_once(*args: object, **kwargs: object) -> object:
+        nonlocal rejected
+        if not rejected:
+            rejected = True
+            raise ValueError(f"forced {validator_name} failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(generator, validator_name, reject_once)
+    cohort = generator.generate_matched_cohort(config, cohort_request(), public_id_seed=91)
+
+    assert rejected
+    assert cohort.accepted_attempt == 1
+    assert cohort.rejections == (
+        generator.RejectionDiagnostic(f"forced {validator_name} failure", 1),
+    )
+
+
+def test_matched_label_selection_occurs_after_all_retryable_family_checks(
+    config: Phase1Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Early label allocation could let construction validity depend on the selected label."""
+    import silent_cascade.env.generator as generator
+
+    real_variants = generator._matched_variants
+    real_family_check = generator._validate_counterfactual_family
+    label_selected = False
+    checked_families = 0
+
+    def select(*args: object, **kwargs: object) -> object:
+        nonlocal label_selected
+        label_selected = True
+        return real_variants(*args, **kwargs)
+
+    def check(*args: object, **kwargs: object) -> object:
+        nonlocal checked_families
+        assert not label_selected
+        checked_families += 1
+        return real_family_check(*args, **kwargs)
+
+    monkeypatch.setattr(generator, "_matched_variants", select)
+    monkeypatch.setattr(generator, "_validate_counterfactual_family", check)
+
+    generator.generate_matched_cohort(config, cohort_request(), public_id_seed=91)
+
+    assert label_selected
+    assert checked_families == 4
+
+
+def test_minimum_duration_feasibility_uses_the_neutral_schedule_primitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retaining a second stress-only scheduler would let timing semantics diverge."""
+    import silent_cascade.env.generator as generator
+
+    stress_config = resolve_config(
+        Phase1Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/data/stress.yaml"),
+        ],
+    ).config
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            "ofd-v1",
+            SplitNamespace.DEBUG,
+            SuiteName.MINIMUM_DURATION_STRESS,
+            20260831,
+            3,
+            10,
+        )
+    )
+    request = generator.IndependentEpisodeRequest(
+        SplitNamespace.DEBUG,
+        SuiteName.MINIMUM_DURATION_STRESS,
+        20260831,
+        41,
+        3,
+        variants[1],
+        10,
+        1,
+    )
+    bundle = generator.generate_stress_episode(stress_config, request, 91)
+    real_schedule = timing_module.build_trace_timing_schedule
+    calls = 0
+
+    def capture(**kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return real_schedule(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(generator, "build_trace_timing_schedule", capture)
+
+    assert generator.minimum_duration_is_feasible(bundle, bundle.truth.episode_delay)
+    assert calls == 1
 
 
 def test_matched_generation_exhaustion_is_opaque_and_aggregated(

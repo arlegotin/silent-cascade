@@ -8,6 +8,7 @@ import numpy as np
 
 from silent_cascade.env.config import OracleTimingConfig
 from silent_cascade.env.episode import EpisodeTruth, EpisodeVariant, PublicEpisode
+from silent_cascade.env.timing import build_trace_timing_schedule
 from silent_cascade.errors import OracleError
 from silent_cascade.schemas import (
     MAX_ENTITY_ID,
@@ -726,36 +727,22 @@ def build_oracle_trace(
             )
         )
 
-    compose_budget = timing.terminal_compose_fraction * delay
-    deltas: list[float] = []
-    elapsed = 0.0
-    for index, (*_, competitive_count) in enumerate(event_specs):
-        current_time = activation_time + elapsed
-        remaining_budget = activation_time + compose_budget - current_time
-        remaining_event_count = len(event_specs) - index
-        urgency = min(
-            1.0,
-            remaining_event_count * timing.delta_0 / max(remaining_budget, timing.delta_min),
-        )
-        raw = timing.delta_0 * (1.0 + 0.15 * competitive_count) / (1.0 + 0.5 * urgency)
-        jittered = raw * math.exp(float(rng.normal(0.0, timing.jitter_log_std)))
-        if not math.isfinite(jittered):
-            raise OracleError("oracle trace jitter produced a nonfinite interval")
-        delta = min(timing.delta_max, max(timing.delta_min, jittered))
-        deltas.append(delta)
-        elapsed += delta
-
-    if elapsed > compose_budget:
-        scale = compose_budget / elapsed
-        deltas = [delta * scale for delta in deltas]
-        if any(delta < timing.delta_min for delta in deltas):
-            raise OracleError("oracle trace is temporally infeasible")
+    jitter_normals = tuple(float(rng.normal()) for _ in event_specs)
+    schedule = build_trace_timing_schedule(
+        activation_time=activation_time,
+        delay=delay,
+        competitive_counts=tuple(spec[-1] for spec in event_specs),
+        jitter_normals=jitter_normals,
+        timing=timing,
+    )
 
     steps: list[OracleTraceStep] = []
     current_time = activation_time
-    for index, (spec, delta) in enumerate(zip(event_specs, deltas, strict=True)):
+    for index, (spec, delta) in enumerate(
+        zip(event_specs, schedule.non_action_deltas, strict=True)
+    ):
         kind, selected_id, before, after, _ = spec
-        current_time += delta
+        current_time = math.fsum((current_time, delta))
         steps.append(
             OracleTraceStep(
                 trace_step_id=index,
@@ -773,7 +760,7 @@ def build_oracle_trace(
     if solution.terminal_kind is OracleTerminalKind.HAZARD:
         if solution.hazard_type is None:
             raise OracleError("hazard solution is missing its hazard type")
-        target = activation_time + timing.action_target_fraction * delay
+        target = schedule.action_target_time
         act_id = len(steps)
         act_delta = target - current_time
         if act_delta < 0.0:

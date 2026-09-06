@@ -68,7 +68,76 @@ def test_independent_quartet_has_exact_labels_and_disjoint_nuisance_tokens(
         for index, left in enumerate(token_sets)
         for right in token_sets[index + 1 :]
     )
-    assert all(len(tokens) == 6 for tokens in token_sets)
+    assert all(len(tokens) == 7 for tokens in token_sets)
+
+
+def test_unassigned_independent_timing_failure_retries_the_episode_draw(
+    config: Phase1Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance must cover all labels before selecting the authenticated member label."""
+    import silent_cascade.env.generator as generator
+    from silent_cascade.env import timing as timing_module
+    from silent_cascade.errors import OracleError
+
+    request = next(
+        item for item in first_quartet() if item.variant is EpisodeVariant.DISCONNECTED_NEGATIVE
+    )
+    real_schedule = timing_module.build_trace_timing_schedule
+    calls: list[tuple[float, ...]] = []
+    rejected = False
+
+    def fail_positive_counterfactual(**kwargs: object) -> object:
+        nonlocal rejected
+        counts = kwargs["competitive_counts"]
+        assert isinstance(counts, tuple)
+        jitter_normals = kwargs["jitter_normals"]
+        assert isinstance(jitter_normals, tuple)
+        calls.append(jitter_normals)
+        if not rejected and len(counts) == 2 * (request.requested_path_length + 1):
+            rejected = True
+            raise OracleError("oracle trace is temporally infeasible")
+        return real_schedule(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(generator, "build_trace_timing_schedule", fail_positive_counterfactual)
+    bundle = generator.generate_independent_episode(config, request, public_id_seed=91)
+
+    assert bundle.truth.recipe.accepted_attempt == 1
+    assert [len(call) for call in calls] == [6, 6, 6, 4]
+    positive, safe, disconnected = calls[1:]
+    assert positive == safe
+    assert disconnected == positive[: len(disconnected)]
+
+
+def test_independent_label_selection_occurs_after_retryable_family_checks(
+    config: Phase1Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The authenticated member label may not influence draw acceptance."""
+    import silent_cascade.env.generator as generator
+
+    request = first_quartet()[0]
+    real_allocation = generator.allocate_independent_variants
+    real_family_check = generator._validate_counterfactual_family
+    label_selected = False
+    family_checked = False
+
+    def select(*args: object, **kwargs: object) -> object:
+        nonlocal label_selected
+        label_selected = True
+        return real_allocation(*args, **kwargs)
+
+    def check(*args: object, **kwargs: object) -> object:
+        nonlocal family_checked
+        assert not label_selected
+        family_checked = True
+        return real_family_check(*args, **kwargs)
+
+    monkeypatch.setattr(generator, "allocate_independent_variants", select)
+    monkeypatch.setattr(generator, "_validate_counterfactual_family", check)
+
+    generator.generate_independent_episode(config, request, public_id_seed=91)
+
+    assert family_checked
+    assert label_selected
 
 
 def test_independent_episode_has_requested_public_oracle_and_private_contract(

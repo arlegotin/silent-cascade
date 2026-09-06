@@ -27,8 +27,12 @@ from silent_cascade.env.episode import (
     StressMetadata,
 )
 from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
-from silent_cascade.env.timing import action_window
-from silent_cascade.errors import GenerationError
+from silent_cascade.env.timing import (
+    TraceTimingSchedule,
+    action_window,
+    build_trace_timing_schedule,
+)
+from silent_cascade.errors import GenerationError, OracleError
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.rng import (
     COHORT_SCOPED_STREAMS,
@@ -790,6 +794,11 @@ _MATCHED_VARIANTS = (
     EpisodeVariant.SAFE_NEGATIVE,
     EpisodeVariant.DISCONNECTED_NEGATIVE,
 )
+_COUNTERFACTUAL_VARIANTS = (
+    EpisodeVariant.POSITIVE,
+    EpisodeVariant.SAFE_NEGATIVE,
+    EpisodeVariant.DISCONNECTED_NEGATIVE,
+)
 
 
 def _member_stream(
@@ -851,6 +860,7 @@ def _matched_seed_tokens(request: CohortRequest, attempt: int) -> tuple[str, ...
             SeedStream.NODE_PERMUTATION,
             SeedStream.TERMINALS,
             SeedStream.PRESENTATION,
+            SeedStream.TRACE_JITTER,
         )
     )
     return (*cohort_tokens, *member_tokens)
@@ -1086,29 +1096,49 @@ def generate_matched_cohort(
     if not isinstance(request, CohortRequest):
         raise TypeError("request must be a CohortRequest")
     rejection_counts: dict[str, int] = {}
+    rejection_sequence: list[str] = []
     for attempt in range(config.data.max_generation_attempts):
         try:
             template = sample_cohort_template(config, request, attempt)
-            variants = _matched_variants(request, attempt)
-            rejection_reasons = tuple(rejection_counts)
-            candidates = tuple(
-                _build_matched_member(
-                    config,
-                    request,
-                    template,
-                    variant,
-                    member_index,
-                    attempt,
-                    rejection_reasons,
-                    "pending-public-id",
+            rejection_reasons = tuple(rejection_sequence)
+            families = tuple(
+                tuple(
+                    _build_matched_member(
+                        config,
+                        request,
+                        template,
+                        variant,
+                        member_index,
+                        attempt,
+                        rejection_reasons,
+                        "pending-public-id",
+                    )
+                    for variant in _COUNTERFACTUAL_VARIANTS
                 )
-                for member_index, variant in enumerate(variants)
+                for member_index in range(4)
             )
-            for candidate in candidates:
-                _validate_matched_member_shape(candidate, config)
-        except ValueError as error:
+            for member_index, family in enumerate(families):
+                for candidate in family:
+                    _validate_matched_member_shape(candidate, config)
+                    _validate_primary_candidate_timing(
+                        candidate,
+                        _member_stream(
+                            request,
+                            member_index,
+                            SeedStream.TRACE_JITTER,
+                            attempt,
+                        ),
+                    )
+                _validate_counterfactual_family(family)
+            variants = _matched_variants(request, attempt)
+            candidates = tuple(
+                next(item for item in family if item.truth.recipe.variant is variant)
+                for family, variant in zip(families, variants, strict=True)
+            )
+        except (ValueError, OracleError) as error:
             reason = str(error)
             rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            rejection_sequence.append(reason)
             continue
 
         public_ids = allocate_public_ids(
@@ -1254,6 +1284,7 @@ def independent_seed_tokens(
             SeedStream.NODE_PERMUTATION,
             SeedStream.TERMINALS,
             SeedStream.PRESENTATION,
+            SeedStream.TRACE_JITTER,
         )
     )
 
@@ -1681,13 +1712,10 @@ def _contradiction_terminal_payloads(
     return (*stale, HazardFact(target, current_hazard_type, delay, confidence=0.90))
 
 
-def _stress_trace_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[float, ...]:
-    """Recompute the Task 5 urgency/difficulty intervals from a fixed jitter draw."""
+def _stress_trace_inputs(bundle: EpisodeBundle) -> tuple[tuple[int, ...], tuple[float, ...]]:
+    """Derive stress records and fixed jitter independently of shared timing math."""
 
-    if type(delay) is not float or not math.isfinite(delay) or delay <= 0.0:
-        return ()
     truth = bundle.truth
-    timing = truth.recipe.oracle_timing
     coordinate = truth.key.coordinate
     if not isinstance(coordinate, IndependentEpisodeCoordinate):
         raise ValueError("stress timing requires an independent episode coordinate")
@@ -1712,11 +1740,8 @@ def _stress_trace_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[fl
         SeedStream.TRACE_JITTER,
         truth.recipe.accepted_attempt,
     )
-    elapsed = 0.0
-    raw_intervals: list[float] = []
-    event_count = 2 * len(selected)
-    for index in range(event_count):
-        event = selected[index // 2]
+    record_counts: list[int] = []
+    for event in selected:
         payload = event.payload
         if not isinstance(payload, (LinkFact, HazardFact, SafeFact)):
             raise ValueError("stress trace selected record is invalid")
@@ -1725,19 +1750,21 @@ def _stress_trace_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[fl
             for candidate in facts
             if candidate is not event and _stress_competes(payload, candidate.payload)
         )
-        remaining_budget = timing.terminal_compose_fraction * delay - elapsed
-        remaining_count = event_count - index
-        urgency = min(
-            1.0,
-            remaining_count * timing.delta_0 / max(remaining_budget, timing.delta_min),
-        )
-        raw = timing.delta_0 * (1.0 + 0.15 * competitors) / (1.0 + 0.5 * urgency)
-        jittered = raw * math.exp(float(jitter_rng.normal(0.0, timing.jitter_log_std)))
-        if not math.isfinite(jittered) or jittered <= 0.0:
-            raise ValueError("stress trace jitter produced an invalid interval")
-        raw_intervals.append(jittered)
-        elapsed += min(timing.delta_max, max(timing.delta_min, jittered))
-    return tuple(raw_intervals)
+        record_counts.append(competitors)
+    competitive_counts = tuple(count for count in record_counts for _ in range(2))
+    jitter_normals = tuple(float(jitter_rng.normal()) for _ in competitive_counts)
+    return competitive_counts, jitter_normals
+
+
+def _stress_trace_schedule(bundle: EpisodeBundle, delay: float) -> TraceTimingSchedule:
+    competitive_counts, jitter_normals = _stress_trace_inputs(bundle)
+    return build_trace_timing_schedule(
+        activation_time=bundle.truth.activation_time,
+        delay=delay,
+        competitive_counts=competitive_counts,
+        jitter_normals=jitter_normals,
+        timing=bundle.truth.recipe.oracle_timing,
+    )
 
 
 def _stress_competes(selected: LinkFact | HazardFact | SafeFact, candidate: object) -> bool:
@@ -1767,12 +1794,11 @@ def minimum_duration_is_feasible(bundle: EpisodeBundle, delay: float) -> bool:
         raise TypeError("bundle must be an EpisodeBundle")
     if type(delay) is not float or not math.isfinite(delay) or delay <= 0.0:
         return False
-    raw = _stress_trace_raw_intervals(bundle, delay)
-    if not raw:
+    try:
+        _stress_trace_schedule(bundle, delay)
+    except (TypeError, OracleError):
         return False
-    timing = bundle.truth.recipe.oracle_timing
-    budget_required = timing.delta_min * sum(raw) / min(raw)
-    return timing.terminal_compose_fraction * delay >= budget_required
+    return True
 
 
 def _minimum_duration_boundary(bundle: EpisodeBundle, config: Phase1Config) -> float:
@@ -1805,15 +1831,10 @@ def _minimum_duration_boundary(bundle: EpisodeBundle, config: Phase1Config) -> f
 
 
 def _stress_trace_deltas(bundle: EpisodeBundle, delay: float) -> tuple[float, ...]:
-    raw = _stress_trace_raw_intervals(bundle, delay)
-    timing = bundle.truth.recipe.oracle_timing
-    deltas = [min(timing.delta_max, max(timing.delta_min, value)) for value in raw]
-    compose_budget = timing.terminal_compose_fraction * delay
-    elapsed = sum(deltas)
-    if elapsed > compose_budget:
-        scale = compose_budget / elapsed
-        deltas = [value * scale for value in deltas]
-    return tuple(deltas)
+    try:
+        return _stress_trace_schedule(bundle, delay).non_action_deltas
+    except (TypeError, OracleError) as error:
+        raise ValueError("stress trace is temporally infeasible") from error
 
 
 def _with_minimum_duration(bundle: EpisodeBundle, config: Phase1Config) -> EpisodeBundle:
@@ -1893,15 +1914,159 @@ def _validate_independent_episode_shape(bundle: EpisodeBundle, config: Phase1Con
             raise ValueError("memory overflow metadata does not match retained facts")
     else:
         _validate_matched_member_shape(bundle, config)
-    minimum_trace_events = 2 * (
-        bundle.truth.recipe.requested_path_length
-        + (0 if bundle.truth.recipe.variant is EpisodeVariant.DISCONNECTED_NEGATIVE else 1)
-    )
-    if (
-        minimum_trace_events * bundle.truth.recipe.oracle_timing.delta_min
-        > bundle.truth.recipe.oracle_timing.terminal_compose_fraction * bundle.truth.episode_delay
+
+
+def _generator_delay_bucket(delay: float) -> int:
+    if not math.isfinite(delay) or delay <= 0.0:
+        raise ValueError("candidate hazard delay must be positive")
+    return math.floor(math.log2(delay))
+
+
+def _generator_records_compete(selected: ExternalEvent, candidate: ExternalEvent) -> bool:
+    if selected.event_id == candidate.event_id or type(selected.payload) is not type(
+        candidate.payload
     ):
-        raise ValueError("minimum legal oracle trace cannot fit the episode delay")
+        return False
+    if isinstance(selected.payload, LinkFact):
+        assert isinstance(candidate.payload, LinkFact)
+        return (
+            selected.payload.source_node == candidate.payload.source_node
+            or selected.payload.target_node == candidate.payload.target_node
+        )
+    if isinstance(selected.payload, HazardFact):
+        assert isinstance(candidate.payload, HazardFact)
+        return (
+            selected.payload.node == candidate.payload.node
+            or selected.payload.hazard_type == candidate.payload.hazard_type
+            or _generator_delay_bucket(selected.payload.delay)
+            == _generator_delay_bucket(candidate.payload.delay)
+        )
+    if isinstance(selected.payload, SafeFact):
+        assert isinstance(candidate.payload, SafeFact)
+        return selected.payload.node == candidate.payload.node
+    raise ValueError("candidate selected record is not a fact")
+
+
+def _validate_primary_candidate_semantics(bundle: EpisodeBundle) -> tuple[int, ...]:
+    """Derive one primary trace and competitor sequence without oracle imports."""
+
+    facts = tuple(bundle.public.events[:-1])
+    activation = bundle.public.events[-1]
+    if activation.kind is not ExternalEventKind.ACTIVATE or not isinstance(
+        activation.payload, ActivationPayload
+    ):
+        raise ValueError("candidate must end in one activation")
+    links_by_source: dict[int, list[ExternalEvent]] = {}
+    terminals_by_node: dict[int, list[ExternalEvent]] = {}
+    for event in facts:
+        if event.kind is not ExternalEventKind.FACT:
+            raise ValueError("candidate observations must all be facts")
+        if isinstance(event.payload, LinkFact):
+            links_by_source.setdefault(event.payload.source_node, []).append(event)
+        elif isinstance(event.payload, (HazardFact, SafeFact)):
+            terminals_by_node.setdefault(event.payload.node, []).append(event)
+        else:
+            raise ValueError("candidate contains an unsupported fact")
+
+    current = activation.payload.start_node
+    visited: set[int] = set()
+    selected: list[ExternalEvent] = []
+    terminal: ExternalEvent | None = None
+    while True:
+        if current in visited:
+            raise ValueError("candidate reachable graph contains a cycle")
+        visited.add(current)
+        terminals = terminals_by_node.get(current, [])
+        outgoing = links_by_source.get(current, [])
+        if len(terminals) > 1 or len(outgoing) > 1:
+            raise ValueError("candidate does not have one unique primary trace")
+        if terminals:
+            if outgoing:
+                raise ValueError("candidate reachable terminal has an outgoing continuation")
+            terminal = terminals[0]
+            selected.append(terminal)
+            break
+        if not outgoing:
+            break
+        link = outgoing[0]
+        assert isinstance(link.payload, LinkFact)
+        selected.append(link)
+        current = link.payload.target_node
+
+    link_count = sum(isinstance(event.payload, LinkFact) for event in selected)
+    if link_count != bundle.truth.recipe.requested_path_length:
+        raise ValueError("candidate reachable path length disagrees with request")
+    variant = bundle.truth.recipe.variant
+    if variant is EpisodeVariant.POSITIVE:
+        if terminal is None or not isinstance(terminal.payload, HazardFact):
+            raise ValueError("positive candidate lacks its reachable hazard")
+    elif variant is EpisodeVariant.SAFE_NEGATIVE:
+        if terminal is None or not isinstance(terminal.payload, SafeFact):
+            raise ValueError("safe candidate lacks its reachable safe terminal")
+    elif variant is EpisodeVariant.DISCONNECTED_NEGATIVE:
+        if terminal is not None:
+            raise ValueError("disconnected candidate has a reachable terminal")
+    else:
+        raise ValueError("candidate has an unsupported primary variant")
+
+    competitor_counts = tuple(
+        sum(_generator_records_compete(event, candidate) for candidate in facts)
+        for event in selected
+    )
+    return tuple(count for count in competitor_counts for _ in range(2))
+
+
+def _validate_counterfactual_family(family: tuple[EpisodeBundle, ...]) -> None:
+    """Require three labels to preserve their complete nuisance construction."""
+
+    if len(family) != 3 or {item.truth.recipe.variant for item in family} != set(
+        _COUNTERFACTUAL_VARIANTS
+    ):
+        raise ValueError("counterfactual family must contain all three primary variants")
+    signatures: set[tuple[object, ...]] = set()
+    for bundle in family:
+        facts = bundle.public.events[:-1]
+        links = tuple(
+            (event.event_id, event.payload.source_node, event.payload.target_node)
+            for event in facts
+            if isinstance(event.payload, LinkFact)
+        )
+        terminal_shape = tuple(not isinstance(event.payload, LinkFact) for event in facts)
+        hazard_signature = tuple(
+            sorted(
+                (event.payload.hazard_type, event.payload.delay)
+                for event in facts
+                if isinstance(event.payload, HazardFact)
+            )
+        )
+        signatures.add(
+            (
+                links,
+                terminal_shape,
+                tuple(event.timestamp for event in bundle.public.events),
+                bundle.public.events[-1].payload,
+                bundle.truth.relevant_node_path,
+                bundle.truth.episode_delay,
+                hazard_signature,
+            )
+        )
+    if len(signatures) != 1:
+        raise ValueError("counterfactual family does not preserve nuisance construction")
+
+
+def _validate_primary_candidate_timing(
+    bundle: EpisodeBundle,
+    jitter_rng: np.random.Generator,
+) -> None:
+    competitive_counts = _validate_primary_candidate_semantics(bundle)
+    jitter_normals = tuple(float(jitter_rng.normal()) for _ in competitive_counts)
+    build_trace_timing_schedule(
+        activation_time=bundle.truth.activation_time,
+        delay=bundle.truth.episode_delay,
+        competitive_counts=competitive_counts,
+        jitter_normals=jitter_normals,
+        timing=bundle.truth.recipe.oracle_timing,
+    )
 
 
 def _opaque_independent_request_hash(request: IndependentEpisodeRequest) -> str:
@@ -1969,30 +2134,54 @@ def _generate_independent_bundle(
 ) -> EpisodeBundle:
     """Execute the shared bounded local retry and public-ID binding path."""
 
-    variants = allocate_independent_variants(
-        AllocationLabelKey(
-            generator_version="ofd-v1",
-            split_namespace=request.split_namespace,
-            suite=request.suite,
-            root_seed=request.root_seed,
-            requested_path_length=request.requested_path_length,
-            allocation_quartet_index=request.allocation_quartet_index,
-        )
-    )
-    if request.variant is not variants[request.quartet_member_index]:
-        raise ValueError("independent variant does not match its explicit quartet member")
-
     rejection_counts: dict[str, int] = {}
+    rejection_sequence: list[str] = []
     for attempt in range(config.data.max_generation_attempts):
         try:
-            candidate = _build_independent_candidate(
-                config, request, attempt, tuple(rejection_counts)
-            )
-            _validate_independent_episode_shape(candidate, config)
-        except ValueError as error:
+            rejection_reasons = tuple(rejection_sequence)
+            if request.suite in _PRIMARY_SUITES:
+                family = tuple(
+                    _build_independent_candidate(
+                        config,
+                        replace(request, variant=variant),
+                        attempt,
+                        rejection_reasons,
+                    )
+                    for variant in _COUNTERFACTUAL_VARIANTS
+                )
+                for counterfactual in family:
+                    _validate_independent_episode_shape(counterfactual, config)
+                    _validate_primary_candidate_timing(
+                        counterfactual,
+                        _independent_stream(request, SeedStream.TRACE_JITTER, attempt),
+                    )
+                _validate_counterfactual_family(family)
+            else:
+                candidate = _build_independent_candidate(
+                    config, request, attempt, rejection_reasons
+                )
+                _validate_independent_episode_shape(candidate, config)
+        except (ValueError, OracleError) as error:
             reason = str(error)
             rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            rejection_sequence.append(reason)
             continue
+        variants = allocate_independent_variants(
+            AllocationLabelKey(
+                generator_version="ofd-v1",
+                split_namespace=request.split_namespace,
+                suite=request.suite,
+                root_seed=request.root_seed,
+                requested_path_length=request.requested_path_length,
+                allocation_quartet_index=request.allocation_quartet_index,
+            )
+        )
+        if request.variant is not variants[request.quartet_member_index]:
+            raise ValueError("independent variant does not match its explicit quartet member")
+        if request.suite in _PRIMARY_SUITES:
+            candidate = next(
+                item for item in family if item.truth.recipe.variant is request.variant
+            )
         public_id = allocate_independent_public_id(
             IndependentPublicIdKey(
                 generator_version="ofd-v1",

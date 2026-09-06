@@ -358,6 +358,92 @@ def test_counter_seed_tokens_have_no_collisions_in_a_focused_sample() -> None:
     assert len(tokens) == 10_000
 
 
+def test_accepted_draw_token_sequences_include_trace_jitter_in_frozen_order() -> None:
+    """Omitting acceptance-affecting jitter would make construction evidence incomplete."""
+    import silent_cascade.env.generator as generator_module
+    from silent_cascade.env.generator import (
+        CohortRequest,
+        independent_seed_tokens,
+        iter_phase1_gate_requests,
+    )
+
+    matched_request = CohortRequest(
+        SplitNamespace.VALIDATION,
+        SuiteName.VALIDATION,
+        41,
+        0,
+        2,
+    )
+    matched = generator_module._matched_seed_tokens(matched_request, 0)
+    independent_request = next(iter_phase1_gate_requests(41))
+    independent = independent_seed_tokens(independent_request, 0)
+
+    matched_stream_groups = (
+        (
+            -1,
+            (
+                SeedStream.LABEL,
+                SeedStream.TEMPLATE,
+                SeedStream.STRUCTURE,
+                SeedStream.TIMESTAMPS,
+            ),
+        ),
+        *(
+            (
+                member,
+                (
+                    SeedStream.NODE_PERMUTATION,
+                    SeedStream.TERMINALS,
+                    SeedStream.PRESENTATION,
+                    SeedStream.TRACE_JITTER,
+                ),
+            )
+            for member in range(4)
+        ),
+    )
+    expected_matched = tuple(
+        derive_counter_seed(
+            CounterSeedKey(
+                "ofd-v1",
+                matched_request.split_namespace,
+                matched_request.suite,
+                matched_request.root_seed,
+                matched_request.cohort_index,
+                member_index,
+                stream,
+                0,
+            )
+        ).token
+        for member_index, streams in matched_stream_groups
+        for stream in streams
+    )
+    expected_independent = tuple(
+        derive_independent_counter_seed(
+            IndependentCounterSeedKey(
+                "ofd-v1",
+                independent_request.split_namespace,
+                independent_request.suite,
+                independent_request.root_seed,
+                independent_request.episode_index,
+                stream,
+                0,
+            )
+        ).token
+        for stream in (
+            SeedStream.TEMPLATE,
+            SeedStream.STRUCTURE,
+            SeedStream.TIMESTAMPS,
+            SeedStream.NODE_PERMUTATION,
+            SeedStream.TERMINALS,
+            SeedStream.PRESENTATION,
+            SeedStream.TRACE_JITTER,
+        )
+    )
+
+    assert matched == expected_matched
+    assert independent == expected_independent
+
+
 def test_independent_and_matched_public_id_domains_have_no_collisions_in_focused_samples() -> None:
     matched = {
         public_id

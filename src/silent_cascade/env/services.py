@@ -61,7 +61,15 @@ from silent_cascade.env.leakage import (
     audit_leakage,
     audit_source_descriptor_sha256,
 )
-from silent_cascade.env.oracle import OraclePolicy, OracleTerminalKind, solve_public_episode
+from silent_cascade.env.oracle import (
+    OraclePolicy,
+    OracleSolution,
+    OracleTerminalKind,
+    OracleTrace,
+    build_oracle_trace,
+    scale_oracle_trace,
+    solve_public_episode,
+)
 from silent_cascade.env.reward import (
     RANDOM_BASELINE_NEGATIVE_SUCCESS_PROBABILITY,
     RANDOM_BASELINE_POSITIVE_SUCCESS_PROBABILITY,
@@ -100,11 +108,15 @@ from silent_cascade.provenance import (
 )
 from silent_cascade.rng import (
     AllocationLabelKey,
+    CounterSeedKey,
+    IndependentCounterSeedKey,
     IndependentPublicIdKey,
+    SeedStream,
     allocate_independent_public_id,
     allocate_independent_variants,
+    independent_local_generator,
+    local_generator,
 )
-from silent_cascade.schemas import Action
 from silent_cascade.validation import StrictModel
 
 type HexDigest = str
@@ -840,6 +852,52 @@ def _bound_manifest_sha256(
     return manifest, digest
 
 
+def _trace_jitter_generator(bundle: EpisodeBundle) -> np.random.Generator:
+    """Reinitialize the accepted draw's exact private trace-jitter stream."""
+
+    truth = bundle.truth
+    coordinate = truth.key.coordinate
+    if isinstance(coordinate, MatchedEpisodeCoordinate):
+        return local_generator(
+            CounterSeedKey(
+                "ofd-v1",
+                truth.key.split_namespace,
+                truth.key.suite,
+                truth.key.root_seed,
+                coordinate.cohort_index,
+                coordinate.member_index,
+                SeedStream.TRACE_JITTER,
+                truth.recipe.accepted_attempt,
+            )
+        )
+    if isinstance(coordinate, IndependentEpisodeCoordinate):
+        return independent_local_generator(
+            IndependentCounterSeedKey(
+                "ofd-v1",
+                truth.key.split_namespace,
+                truth.key.suite,
+                truth.key.root_seed,
+                coordinate.episode_index,
+                SeedStream.TRACE_JITTER,
+                truth.recipe.accepted_attempt,
+            )
+        )
+    raise TypeError("oracle trace requires an authenticated episode coordinate")
+
+
+def _build_authenticated_trace(
+    bundle: EpisodeBundle,
+    solution: OracleSolution,
+) -> OracleTrace:
+    return build_oracle_trace(
+        bundle.public,
+        solution,
+        bundle.truth.private_terminal,
+        bundle.truth.recipe.oracle_timing,
+        _trace_jitter_generator(bundle),
+    )
+
+
 def evaluate_oracle(
     request: OracleEvaluationRequest,
     *,
@@ -854,6 +912,7 @@ def evaluate_oracle(
     resolved = _resolve(request.config)
     source = request.source
     manifest_source_sha256: str | None = None
+    manifest: EpisodeManifest | None = None
     if isinstance(source, ManifestCorpusSource):
         manifest, manifest_source_sha256 = _bound_manifest_sha256(
             source.manifest_path,
@@ -1001,17 +1060,23 @@ def evaluate_oracle(
         from silent_cascade.env.oracle import verify_oracle_truth
 
         verify_oracle_truth(solution, bundle.truth)
-        activation = bundle.public.events[-1]
-        actions: tuple[Action, ...]
-        if solution.terminal_kind is OracleTerminalKind.HAZARD:
-            assert solution.hazard_type is not None and solution.public_delay is not None
-            target = bundle.truth.activation_time + (
-                bundle.truth.recipe.oracle_timing.action_target_fraction * solution.public_delay
+        if bundle.truth.recipe.parent_public_id is not None:
+            if manifest is None:
+                raise ValueError("clock child requires its authenticated manifest parent")
+            entry = manifest_entries_by_id.get(bundle.public.init.episode_public_id)
+            if entry is None:
+                raise ValueError("clock child is absent from its manifest")
+            parent = _regenerate_manifest_clock_parent(resolved.config, manifest, entry)
+            parent_solution = solve_public_episode(
+                parent.public,
+                _oracle_policy_for_suite(parent.truth.recipe.evaluation_suite),
             )
-            actions = (Action(solution.hazard_type, target, activation.event_id),)
+            parent_trace = _build_authenticated_trace(parent, parent_solution)
+            factor = bundle.truth.episode_delay / parent.truth.episode_delay
+            trace = scale_oracle_trace(parent_trace, factor)
         else:
-            actions = ()
-        if not score_actions(bundle.truth, actions).timed_success:
+            trace = _build_authenticated_trace(bundle, solution)
+        if not score_actions(bundle.truth, trace.actions).timed_success:
             raise ValueError("oracle action disagrees with scorer")
         random_score = score_actions(
             bundle.truth,
@@ -1285,9 +1350,39 @@ def _clock_decision_matches(parent: EpisodeBundle, child: EpisodeBundle) -> bool
         (value - child.public.events[-1].timestamp) / child_solution.public_delay
         for value in (child_window.start, child_window.target, child_window.end)
     )
-    return all(
+    if not all(
         abs(left - right) <= 1.0e-12
         for left, right in zip(parent_ratios, child_ratios, strict=True)
+    ):
+        return False
+    factor = child.truth.episode_delay / parent.truth.episode_delay
+    parent_trace = _build_authenticated_trace(parent, parent_solution)
+    child_trace = scale_oracle_trace(parent_trace, factor)
+    if (
+        not score_actions(parent.truth, parent_trace.actions).timed_success
+        or not score_actions(child.truth, child_trace.actions).timed_success
+    ):
+        return False
+    return all(
+        child_step.timestamp == parent_step.timestamp * factor
+        and child_step.delta == parent_step.delta * factor
+        and (
+            child_step.kind,
+            child_step.selected_record_id,
+            child_step.focus_before,
+            child_step.focus_after,
+        )
+        == (
+            parent_step.kind,
+            parent_step.selected_record_id,
+            parent_step.focus_before,
+            parent_step.focus_after,
+        )
+        for parent_step, child_step in zip(
+            parent_trace.steps,
+            child_trace.steps,
+            strict=True,
+        )
     )
 
 

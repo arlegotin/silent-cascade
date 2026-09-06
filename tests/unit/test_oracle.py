@@ -7,6 +7,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from silent_cascade.env import timing as timing_module
 from silent_cascade.env.config import OracleTimingConfig, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
     EpisodeKey,
@@ -710,6 +711,153 @@ def test_trace_records_support_focus_parentage_and_action_target() -> None:
     assert trace.actions[0].timestamp == 119.8
     assert trace.actions[0].caused_by_event_id == 8
     assert oracle_actions(trace) == trace.actions
+
+
+def test_trace_timing_schedule_has_exact_jitter_clamp_and_target_contract() -> None:
+    """Replacing standard-normal transformation or stable timing math changes this KAT."""
+    schedule = timing_module.build_trace_timing_schedule(
+        activation_time=10.0,
+        delay=10.0,
+        competitive_counts=(0,),
+        jitter_normals=(math.log(2.0),),
+        timing=OracleTimingConfig(jitter_log_std=1.0),
+    )
+
+    assert schedule.non_action_deltas == pytest.approx((24.0 / 49.0,))
+    assert schedule.terminal_compose_time == pytest.approx(10.0 + 24.0 / 49.0)
+    assert schedule.action_target_time == 18.25
+
+    clamped = timing_module.build_trace_timing_schedule(
+        activation_time=0.0,
+        delay=10.0,
+        competitive_counts=(0,),
+        jitter_normals=(-1_000.0,),
+        timing=OracleTimingConfig(jitter_log_std=1.0),
+    )
+    assert clamped.non_action_deltas == (0.05,)
+
+
+def test_trace_timing_schedule_uses_one_common_scale_without_reclamping() -> None:
+    """Individually clamping compressed intervals would destroy their supervised ratio."""
+    schedule = timing_module.build_trace_timing_schedule(
+        activation_time=100.0,
+        delay=0.5,
+        competitive_counts=(0, 4),
+        jitter_normals=(0.0, 0.0),
+        timing=OracleTimingConfig(jitter_log_std=0.0),
+    )
+
+    assert schedule.non_action_deltas == pytest.approx((3.0 / 26.0, 12.0 / 65.0))
+    assert schedule.terminal_compose_time == 100.3
+    assert schedule.action_target_time == 100.4125
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"activation_time": True},
+        {"delay": float("nan")},
+        {"competitive_counts": ()},
+        {"competitive_counts": (False,)},
+        {"competitive_counts": (-1,)},
+        {"competitive_counts": (10**10_000,)},
+        {"jitter_normals": (float("inf"),)},
+        {"jitter_normals": ()},
+    ],
+)
+def test_trace_timing_schedule_rejects_malformed_and_nonfinite_inputs(
+    kwargs: dict[str, object],
+) -> None:
+    """Unchecked inputs must never turn invalid timing evidence into a schedule."""
+    arguments: dict[str, object] = {
+        "activation_time": 0.0,
+        "delay": 10.0,
+        "competitive_counts": (0,),
+        "jitter_normals": (0.0,),
+        "timing": OracleTimingConfig(),
+    }
+    arguments.update(kwargs)
+
+    with pytest.raises((TypeError, OracleError)):
+        timing_module.build_trace_timing_schedule(**arguments)  # type: ignore[arg-type]
+
+
+def test_trace_timing_schedule_rejects_overflow_infeasibility_and_action_overlap() -> None:
+    """Nonfinite intermediates and impossible causal ordering must fail closed."""
+    with pytest.raises(OracleError, match="temporally infeasible"):
+        timing_module.build_trace_timing_schedule(
+            activation_time=0.0,
+            delay=1.0,
+            competitive_counts=(0, 0),
+            jitter_normals=(0.0, 0.0),
+            timing=OracleTimingConfig(delta_min=0.2, terminal_compose_fraction=0.3),
+        )
+    with pytest.raises(OracleError, match="temporally infeasible"):
+        timing_module.build_trace_timing_schedule(
+            activation_time=0.0,
+            delay=10.0,
+            competitive_counts=(0,),
+            jitter_normals=(1.0e308,),
+            timing=OracleTimingConfig(jitter_log_std=1.0),
+        )
+
+    invalid_order = OracleTimingConfig.model_construct(
+        **{
+            **OracleTimingConfig().model_dump(),
+            "terminal_compose_fraction": 0.90,
+            "action_target_fraction": 0.80,
+        }
+    )
+    with pytest.raises(OracleError, match="temporally infeasible"):
+        timing_module.build_trace_timing_schedule(
+            activation_time=0.0,
+            delay=1.0,
+            competitive_counts=(0,),
+            jitter_normals=(0.0,),
+            timing=invalid_order,
+        )
+
+
+def test_oracle_derives_graph_inputs_then_delegates_only_timing_math(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Moving graph reasoning into the neutral timing primitive would erase an audit control."""
+    import silent_cascade.env.oracle as oracle_module
+
+    real_schedule = timing_module.build_trace_timing_schedule
+    captured: list[tuple[dict[str, object], object]] = []
+
+    def capture(**kwargs: object) -> object:
+        schedule = real_schedule(**kwargs)  # type: ignore[arg-type]
+        captured.append((kwargs, schedule))
+        return schedule
+
+    monkeypatch.setattr(oracle_module, "build_trace_timing_schedule", capture)
+    public = positive_public()
+    trace = oracle_module.build_oracle_trace(
+        public,
+        solve_public_episode(public),
+        ExternalEvent(99, 124.0, ExternalEventKind.OUTCOME, None),
+        OracleTimingConfig(jitter_log_std=0.0),
+        np.random.default_rng(1),
+    )
+
+    assert len(captured) == 1
+    arguments, schedule = captured[0]
+    assert arguments["competitive_counts"] == (0, 0, 0, 0, 0, 0, 1, 1)
+    assert arguments["jitter_normals"] == pytest.approx(
+        (
+            0.345584192064786,
+            0.8216181435011584,
+            0.33043707618338714,
+            -1.303157231604361,
+            0.9053558666731177,
+            0.4463745723640113,
+            -0.5369532353602852,
+            0.5811181041963531,
+        )
+    )
+    assert trace.steps[-2].timestamp == schedule.terminal_compose_time  # type: ignore[union-attr]
 
 
 def test_nondefault_timing_controls_compression_target_and_feasibility() -> None:

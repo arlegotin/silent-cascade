@@ -1241,6 +1241,117 @@ def test_manifest_oracle_accepts_real_authenticated_clock_children(tmp_path: Pat
     assert result.report.clock_decision_mismatches == 0
 
 
+def test_oracle_service_builds_and_scores_authenticated_traces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthesizing midpoint actions would bypass the accepted TRACE_JITTER schedule."""
+    import silent_cascade.env.oracle as oracle_module
+    import silent_cascade.env.services as services
+    from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        OracleEvaluationRequest,
+        Phase1GateCorpusSource,
+        evaluate_oracle,
+    )
+
+    allocation = IndependentAllocation(
+        allocation_id="test-independent-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=2,
+                first_episode_index=0,
+                episode_count=8,
+            ),
+        ),
+    )
+    built_actions: list[tuple[object, ...]] = []
+    scored_actions: list[tuple[object, ...]] = []
+    real_build = oracle_module.build_oracle_trace
+    real_score = services.score_actions
+
+    def build(*args: object, **kwargs: object):
+        trace = real_build(*args, **kwargs)  # type: ignore[arg-type]
+        built_actions.append(trace.actions)
+        return trace
+
+    def score(truth: object, actions: tuple[object, ...]):
+        scored_actions.append(actions)
+        return real_score(truth, actions)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(services, "build_oracle_trace", build)
+    monkeypatch.setattr(services, "score_actions", score)
+    result = evaluate_oracle(
+        OracleEvaluationRequest(
+            config=ConfigSelection(),
+            source=Phase1GateCorpusSource(
+                allocation_id=allocation.allocation_id,
+                root_seed=41,
+                public_id_seed=91,
+            ),
+            output_path=tmp_path / "trace-scored-oracle.json",
+        ),
+        deps=_oracle_dependencies(allocation),
+    )
+
+    assert result.report.oracle_successes == 8
+    assert len(built_actions) == 8
+    assert all(actions in scored_actions for actions in built_actions)
+
+
+def test_oracle_service_builds_parent_traces_and_scales_clock_traces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Decision-only clock checks cannot authenticate the complete paired event schedule."""
+    import silent_cascade.env.oracle as oracle_module
+    import silent_cascade.env.services as services
+    from silent_cascade.env.services import (
+        ConfigSelection,
+        ManifestCorpusSource,
+        OracleEvaluationRequest,
+        Phase1ServiceDependencies,
+        evaluate_oracle,
+    )
+    from silent_cascade.logging.manifest import publish_manifest
+
+    manifest, _parents = _clock_manifest()
+    path = tmp_path / "clock-trace-manifest.json"
+    publish_manifest(path, manifest)
+    scaled: list[float] = []
+    real_scale = oracle_module.scale_oracle_trace
+
+    def scale(trace: object, factor: float):
+        scaled.append(factor)
+        return real_scale(trace, factor)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(services, "scale_oracle_trace", scale)
+
+    def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
+        del kwargs
+        resolved = args[0]
+        return manifest.provenance.model_copy(
+            update={"config_sha256": resolved.sha256}  # type: ignore[attr-defined]
+        )
+
+    evaluate_oracle(
+        OracleEvaluationRequest(
+            config=ConfigSelection(),
+            source=ManifestCorpusSource(manifest_path=path),
+        ),
+        deps=Phase1ServiceDependencies.for_test(
+            validation_allocation=_allocation(),
+            independent_allocation=_independent_allocation(8),
+            collect_provenance=collect,
+            build_manifest=lambda *args: pytest.fail("not used"),
+        ),
+    )
+
+    assert len(scaled) >= 8
+    assert scaled == pytest.approx([0.1] * len(scaled))
+
+
 def test_manifest_oracle_authenticates_every_regenerated_entry_before_publication(
     tmp_path: Path,
 ) -> None:

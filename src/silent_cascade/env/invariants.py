@@ -21,8 +21,12 @@ from silent_cascade.env.episode import (
     IndependentEpisodeCoordinate,
     MatchedEpisodeCoordinate,
 )
-from silent_cascade.env.timing import action_window
-from silent_cascade.errors import EpisodeInvariantError
+from silent_cascade.env.timing import (
+    TraceTimingSchedule,
+    action_window,
+    build_trace_timing_schedule,
+)
+from silent_cascade.errors import EpisodeInvariantError, OracleError
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.rng import (
     CounterSeedKey,
@@ -798,21 +802,17 @@ def _link_signature(
     )
 
 
-def _stress_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[float, ...]:
-    """Independently reproduce fixed-jitter Task 5 scheduling inputs."""
+def _stress_trace_inputs(bundle: EpisodeBundle) -> tuple[tuple[int, ...], tuple[float, ...]]:
+    """Independently derive fixed stress records and standard-normal jitter."""
 
     truth = bundle.truth
-    timing = truth.recipe.oracle_timing
     facts_by_id = {event.event_id: event for event in bundle.public.events[:-1]}
     selected = tuple(facts_by_id[record_id] for record_id in truth.relevant_record_ids)
     if not isinstance(truth.key.coordinate, IndependentEpisodeCoordinate):
         _fail("stress timing requires an independent coordinate")
     rng = _independent_generator(bundle, SeedStream.TRACE_JITTER)
-    elapsed = 0.0
-    raw: list[float] = []
-    event_count = 2 * len(selected)
-    for index in range(event_count):
-        event = selected[index // 2]
+    record_counts: list[int] = []
+    for event in selected:
         payload = event.payload
         if not isinstance(payload, (LinkFact, HazardFact, SafeFact)):
             _fail("stress trace contains an invalid selected record")
@@ -821,22 +821,21 @@ def _stress_raw_intervals(bundle: EpisodeBundle, delay: float) -> tuple[float, .
             for candidate in facts_by_id.values()
             if candidate is not event and _stress_competes(payload, candidate.payload)
         )
-        remaining = timing.terminal_compose_fraction * delay - elapsed
-        urgency = min(
-            1.0,
-            (event_count - index) * timing.delta_0 / max(remaining, timing.delta_min),
-        )
-        interval = (
-            timing.delta_0
-            * (1.0 + 0.15 * competitors)
-            / (1.0 + 0.5 * urgency)
-            * math.exp(float(rng.normal(0.0, timing.jitter_log_std)))
-        )
-        if not math.isfinite(interval) or interval <= 0.0:
-            _fail("stress trace jitter produced an invalid interval")
-        raw.append(interval)
-        elapsed += min(timing.delta_max, max(timing.delta_min, interval))
-    return tuple(raw)
+        record_counts.append(competitors)
+    competitive_counts = tuple(count for count in record_counts for _ in range(2))
+    jitter_normals = tuple(float(rng.normal()) for _ in competitive_counts)
+    return competitive_counts, jitter_normals
+
+
+def _stress_trace_schedule(bundle: EpisodeBundle, delay: float) -> TraceTimingSchedule:
+    competitive_counts, jitter_normals = _stress_trace_inputs(bundle)
+    return build_trace_timing_schedule(
+        activation_time=bundle.truth.activation_time,
+        delay=delay,
+        competitive_counts=competitive_counts,
+        jitter_normals=jitter_normals,
+        timing=bundle.truth.recipe.oracle_timing,
+    )
 
 
 def _stress_competes(selected: object, candidate: object) -> bool:
@@ -859,10 +858,78 @@ def _stress_competes(selected: object, candidate: object) -> bool:
     return selected.node == candidate.node
 
 
+def _invariant_records_compete(selected: ExternalEvent, candidate: ExternalEvent) -> bool:
+    """Independently derive the Task 5 competitor relation from public records."""
+
+    if selected.event_id == candidate.event_id or type(selected.payload) is not type(
+        candidate.payload
+    ):
+        return False
+    if isinstance(selected.payload, LinkFact):
+        assert isinstance(candidate.payload, LinkFact)
+        return (
+            selected.payload.source_node == candidate.payload.source_node
+            or selected.payload.target_node == candidate.payload.target_node
+        )
+    if isinstance(selected.payload, HazardFact):
+        assert isinstance(candidate.payload, HazardFact)
+        if (
+            not math.isfinite(selected.payload.delay)
+            or selected.payload.delay <= 0.0
+            or not math.isfinite(candidate.payload.delay)
+            or candidate.payload.delay <= 0.0
+        ):
+            _fail("trace competitor has an invalid hazard delay")
+        return (
+            selected.payload.node == candidate.payload.node
+            or selected.payload.hazard_type == candidate.payload.hazard_type
+            or math.floor(math.log2(selected.payload.delay))
+            == math.floor(math.log2(candidate.payload.delay))
+        )
+    if isinstance(selected.payload, SafeFact):
+        assert isinstance(candidate.payload, SafeFact)
+        return selected.payload.node == candidate.payload.node
+    _fail("trace competitor relation requires fact records")
+
+
+def _validate_exact_trace_timing(
+    bundle: EpisodeBundle,
+    selected: tuple[ExternalEvent, ...],
+    facts: tuple[ExternalEvent, ...],
+) -> None:
+    competitor_counts = tuple(
+        sum(_invariant_records_compete(record, candidate) for candidate in facts)
+        for record in selected
+    )
+    expanded_counts = tuple(count for count in competitor_counts for _ in range(2))
+    coordinate = bundle.truth.key.coordinate
+    if isinstance(coordinate, MatchedEpisodeCoordinate):
+        rng = _member_generator(bundle, SeedStream.TRACE_JITTER)
+    elif isinstance(coordinate, IndependentEpisodeCoordinate):
+        rng = _independent_generator(bundle, SeedStream.TRACE_JITTER)
+    else:
+        _fail("trace timing requires an authenticated coordinate", check_id="rng_provenance")
+    jitter_normals = tuple(float(rng.normal()) for _ in expanded_counts)
+    try:
+        build_trace_timing_schedule(
+            activation_time=bundle.truth.activation_time,
+            delay=bundle.truth.episode_delay,
+            competitive_counts=expanded_counts,
+            jitter_normals=jitter_normals,
+            timing=bundle.truth.recipe.oracle_timing,
+        )
+    except (TypeError, OracleError) as error:
+        _fail(f"oracle trace timing is invalid: {error}", check_id="trace_timing")
+
+
 def _minimum_duration_feasible(bundle: EpisodeBundle, delay: float) -> bool:
-    raw = _stress_raw_intervals(bundle, delay)
-    timing = bundle.truth.recipe.oracle_timing
-    return timing.terminal_compose_fraction * delay >= timing.delta_min * sum(raw) / min(raw)
+    if type(delay) is not float or not math.isfinite(delay) or delay <= 0.0:
+        return False
+    try:
+        _stress_trace_schedule(bundle, delay)
+    except (TypeError, OracleError):
+        return False
+    return True
 
 
 def _minimum_duration_boundary(bundle: EpisodeBundle, config: Phase1Config) -> float:
@@ -896,12 +963,10 @@ def _minimum_duration_boundary(bundle: EpisodeBundle, config: Phase1Config) -> f
 
 def _stress_trace_timestamps(bundle: EpisodeBundle) -> tuple[float, ...]:
     timing = bundle.truth.recipe.oracle_timing
-    raw = _stress_raw_intervals(bundle, bundle.truth.episode_delay)
-    deltas = [min(timing.delta_max, max(timing.delta_min, value)) for value in raw]
-    budget = timing.terminal_compose_fraction * bundle.truth.episode_delay
-    if sum(deltas) > budget:
-        scale = budget / sum(deltas)
-        deltas = [value * scale for value in deltas]
+    try:
+        deltas = _stress_trace_schedule(bundle, bundle.truth.episode_delay).non_action_deltas
+    except (TypeError, OracleError) as error:
+        _fail(f"stress trace timing is invalid: {error}", check_id="trace_timing")
     current = bundle.truth.activation_time
     timestamps: list[float] = []
     for delta in deltas:
@@ -1251,6 +1316,8 @@ def _analyze_episode(bundle: EpisodeBundle, config: Phase1Config) -> _Analysis:
     expected_record_ids = tuple(event.event_id for event in selected_links) + (
         () if terminal is None else (terminal.event_id,)
     )
+    selected_trace_records = tuple(selected_links) + ((terminal,) if terminal is not None else ())
+    _validate_exact_trace_timing(bundle, selected_trace_records, tuple(facts))
     if truth.relevant_node_path != tuple(path):
         _fail("private truth path disagrees with independently parsed facts")
     trace_ids_are_unique = len(set(truth.relevant_record_ids)) == len(truth.relevant_record_ids)

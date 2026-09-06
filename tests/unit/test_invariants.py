@@ -114,6 +114,90 @@ def _unused_link_pair(bundle: EpisodeBundle) -> tuple[int, int]:
     raise AssertionError("fixture has no unused disconnected LINK endpoints")
 
 
+def test_invariant_analyzer_independently_derives_exact_trace_schedule(
+    independent_bundle: EpisodeBundle, config: Phase1Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing the invariant-side schedule derivation would leave infeasible evidence unchecked."""
+    import silent_cascade.env.invariants as invariants_module
+    import silent_cascade.env.oracle as oracle_module
+    from silent_cascade.env import timing as timing_module
+
+    real_schedule = timing_module.build_trace_timing_schedule
+    calls: list[tuple[int, ...]] = []
+
+    def capture(**kwargs: object) -> object:
+        counts = kwargs["competitive_counts"]
+        assert isinstance(counts, tuple)
+        calls.append(counts)
+        return real_schedule(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(invariants_module, "build_trace_timing_schedule", capture)
+    monkeypatch.setattr(
+        oracle_module,
+        "_selected_trace_records",
+        lambda *_args, **_kwargs: pytest.fail("invariant analyzer delegated graph reasoning"),
+    )
+
+    report = invariants_module.validate_episode_invariants(independent_bundle, config)
+
+    assert report.valid
+    assert len(calls) == 1
+    assert len(calls[0]) == 2 * len(independent_bundle.truth.relevant_record_ids)
+
+
+def test_invariant_minimum_duration_search_uses_neutral_schedule_primitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The independent boundary audit must not preserve a duplicate timing equation."""
+    import silent_cascade.env.generator as generator
+    import silent_cascade.env.invariants as invariants_module
+    from silent_cascade.env import timing as timing_module
+
+    stress_config = resolve_config(
+        Phase1Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/data/stress.yaml"),
+        ],
+    ).config
+    from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
+
+    variants = allocate_independent_variants(
+        AllocationLabelKey(
+            "ofd-v1",
+            SplitNamespace.DEBUG,
+            SuiteName.MINIMUM_DURATION_STRESS,
+            20260831,
+            3,
+            10,
+        )
+    )
+    request = generator.IndependentEpisodeRequest(
+        SplitNamespace.DEBUG,
+        SuiteName.MINIMUM_DURATION_STRESS,
+        20260831,
+        41,
+        3,
+        variants[1],
+        10,
+        1,
+    )
+    bundle = generator.generate_stress_episode(stress_config, request, 91)
+    real_schedule = timing_module.build_trace_timing_schedule
+    calls = 0
+
+    def capture(**kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return real_schedule(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(invariants_module, "build_trace_timing_schedule", capture)
+
+    assert invariants_module._minimum_duration_feasible(bundle, bundle.truth.episode_delay)
+    assert calls == 1
+
+
 def _identity_node_permutation_bundle(bundle: EpisodeBundle) -> EpisodeBundle:
     coordinate = bundle.truth.key.coordinate
     assert hasattr(coordinate, "cohort_index") and hasattr(coordinate, "member_index")
