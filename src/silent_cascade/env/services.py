@@ -235,54 +235,116 @@ class EpisodeInspectionReport(StrictModel):
 
 
 class ExactRandomCheck(StrictModel):
-    successes: int
-    total: int
-    observed_rate: float
-    expected_rate: float
-    absolute_error: float
-    exact_binomial_p: float
+    successes: int = Field(ge=0)
+    total: int = Field(gt=0)
+    observed_rate: float = Field(ge=0.0, le=1.0)
+    expected_rate: float = Field(ge=0.0, le=1.0)
+    absolute_error: float = Field(ge=0.0, le=1.0)
+    exact_binomial_p: float = Field(ge=0.0, le=1.0)
     passed: bool
+
+    @model_validator(mode="after")
+    def require_derived_random_check(self) -> Self:
+        if self.successes > self.total:
+            raise ValueError("random successes cannot exceed total")
+        observed = self.successes / self.total
+        error = abs(observed - self.expected_rate)
+        exact_p = float(
+            binomtest(
+                self.successes,
+                self.total,
+                self.expected_rate,
+                alternative="two-sided",
+            ).pvalue
+        )
+        if (
+            self.observed_rate != observed
+            or self.absolute_error != error
+            or self.exact_binomial_p != exact_p
+            or self.passed is not (exact_p >= 0.001 and error <= 0.01)
+        ):
+            raise ValueError("random diagnostic fields must be exactly derived")
+        return self
 
 
 class OracleEvaluationReport(StrictModel):
-    schema_version: Literal["oracle-evaluation-report-v1"]
+    schema_version: Literal["oracle-evaluation-report-v2"]
     provenance: EvidenceProvenance
     namespace_evidence: ConstructionNamespaceEvidence
     source_mode: Literal["manifest", "phase1_gate"]
-    requested_episode_count: int
-    verified_episode_count: int
-    positive_count: int
-    safe_negative_count: int
-    disconnected_negative_count: int
+    requested_episode_count: int = Field(gt=0)
+    verified_episode_count: int = Field(gt=0)
+    positive_count: int = Field(gt=0)
+    safe_negative_count: int = Field(gt=0)
+    disconnected_negative_count: int = Field(gt=0)
     suite_path_denominators: dict[str, int]
     invariant_failures: Literal[0]
     oracle_ambiguities: Literal[0]
     seed_token_collisions: Literal[0]
     public_id_collisions: Literal[0]
-    oracle_successes: int
+    oracle_successes: int = Field(ge=0)
     oracle_failures: Literal[0]
     random_positive: ExactRandomCheck
     random_negative: ExactRandomCheck
-    random_pooled_observed_rate: float
+    random_pooled_observed_rate: float = Field(ge=0.0, le=1.0)
     random_pooled_expected_rate: Literal[0.3125]
-    clock_0_1x_episode_count: int
-    clock_10x_episode_count: int
+    clock_0_1x_episode_count: int = Field(ge=0)
+    clock_10x_episode_count: int = Field(ge=0)
     clock_decision_mismatches: Literal[0]
     rejection_reason_counts: dict[str, int]
-    generation_attempt_count: int
-    rejected_draw_count: int
-    rejected_draw_rate: float
+    generation_attempt_count: int = Field(gt=0)
+    rejected_draw_count: int = Field(ge=0)
+    rejected_draw_rate: float = Field(ge=0.0, le=1.0)
     corpus_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
     passed: bool
 
     @model_validator(mode="after")
     def require_namespace_binding(self) -> "OracleEvaluationReport":
         require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
+        expected_draws = (
+            self.verified_episode_count // 4
+            if self.provenance.generation_mode == "matched"
+            else self.verified_episode_count
+        )
+        pooled_observed = (
+            self.random_positive.successes + self.random_negative.successes
+        ) / self.verified_episode_count
+        pooled_expected = (
+            self.random_positive.total * self.random_positive.expected_rate
+            + self.random_negative.total * self.random_negative.expected_rate
+        ) / self.verified_episode_count
         if (
             self.seed_token_collisions != self.namespace_evidence.seed_token_collision_count
             or self.public_id_collisions != self.namespace_evidence.public_id_collision_count
+            or self.requested_episode_count != self.verified_episode_count
+            or self.positive_count + self.safe_negative_count + self.disconnected_negative_count
+            != self.verified_episode_count
+            or sum(self.suite_path_denominators.values()) != self.verified_episode_count
+            or any(
+                type(key) is not str or not key or type(value) is not int or value <= 0
+                for key, value in self.suite_path_denominators.items()
+            )
+            or self.oracle_successes != self.verified_episode_count
+            or self.random_positive.total != self.positive_count
+            or self.random_negative.total
+            != self.safe_negative_count + self.disconnected_negative_count
+            or self.random_positive.expected_rate != RANDOM_BASELINE_POSITIVE_SUCCESS_PROBABILITY
+            or self.random_negative.expected_rate != RANDOM_BASELINE_NEGATIVE_SUCCESS_PROBABILITY
+            or self.random_pooled_observed_rate != pooled_observed
+            or self.random_pooled_expected_rate != pooled_expected
+            or any(
+                type(key) is not str or not key or type(value) is not int or value <= 0
+                for key, value in self.rejection_reason_counts.items()
+            )
+            or sum(self.rejection_reason_counts.values()) != self.rejected_draw_count
+            or self.namespace_evidence.accepted_draw_count != expected_draws
+            or self.rejected_draw_count != self.namespace_evidence.rejected_draw_count
+            or self.generation_attempt_count != self.namespace_evidence.generation_attempt_count
+            or self.generation_attempt_count != expected_draws + self.rejected_draw_count
+            or self.rejected_draw_rate != self.rejected_draw_count / self.generation_attempt_count
+            or self.passed is not (self.random_positive.passed and self.random_negative.passed)
         ):
-            raise ValueError("oracle collision summaries disagree with namespace evidence")
+            raise ValueError("oracle report fields must be exactly derived")
         return self
 
 
@@ -1208,7 +1270,7 @@ def evaluate_oracle(
         raise ValueError("oracle rejection accounting disagrees with construction draws")
     pooled = (random_successes["positive"] + random_successes["negative"]) / verified
     report = OracleEvaluationReport(
-        schema_version="oracle-evaluation-report-v1",
+        schema_version="oracle-evaluation-report-v2",
         provenance=provenance,
         namespace_evidence=namespace_evidence,
         source_mode=source_mode,

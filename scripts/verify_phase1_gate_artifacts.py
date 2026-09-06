@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -9,6 +10,15 @@ from pydantic import ValidationError
 
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
+from silent_cascade.env.generator import (
+    PHASE1_GATE_ALLOCATION,
+    VALIDATION_ALLOCATION,
+    CohortRequest,
+    IndependentEpisodeRequest,
+    independent_seed_tokens,
+    iter_independent_requests,
+    matched_seed_tokens,
+)
 from silent_cascade.env.leakage import (
     NAMED_LEAK_INJECTORS,
     AuditSourceDescriptor,
@@ -22,9 +32,21 @@ from silent_cascade.env.leakage import (
     ShortcutTask,
     audit_source_descriptor_sha256,
 )
-from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
+from silent_cascade.env.reproducibility import (
+    IndependentSourceDescriptor,
+    ReproducibilityReport,
+    independent_sample_membership_sha256,
+    manifest_sample_membership_sha256,
+    select_independent_reproducibility_sample,
+    select_manifest_reproducibility_sample,
+)
 from silent_cascade.env.services import OracleEvaluationReport
-from silent_cascade.errors import ArtifactIntegrityError, ManifestError, SilentCascadeError
+from silent_cascade.errors import (
+    ArtifactIntegrityError,
+    ManifestError,
+    ProvenanceError,
+    SilentCascadeError,
+)
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.logging.manifest import (
     EpisodeManifest,
@@ -34,9 +56,17 @@ from silent_cascade.logging.manifest import (
 )
 from silent_cascade.provenance import (
     AcceptedAttemptRun,
+    ConstructionNamespaceBuilder,
     ConstructionNamespaceEvidence,
     EvidenceProvenance,
+    authenticate_final_phase1_provenance,
     require_namespace_evidence_provenance,
+)
+from silent_cascade.rng import (
+    IndependentPublicIdKey,
+    PublicIdBatchKey,
+    allocate_independent_public_id,
+    allocate_public_ids,
 )
 from silent_cascade.validation import StrictModel
 
@@ -85,6 +115,7 @@ _INDEPENDENT_PUBLIC_ID_SEED = 2026083012
 _INDEPENDENT_PUBLIC_ID_SEED_SHA256 = (
     "f21ac562825bfd96e875eedf90c8ba5ed09883ebe2c18449843b03acebec778a"
 )
+_PRIMARY_CONFIG_SHA256 = "8eede957c7d69cc85d33bddcd1af69eb76bc5d7bba48bd1cbbe166bbb757ecd4"
 _PHASE1_PERMUTATION_DENOMINATOR = 5_000
 _PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.POSITIVE_BINARY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
@@ -114,9 +145,15 @@ _FEATURE_SCHEMA_SHA256 = sha256_bytes(
 class Phase1GateVerificationResult(StrictModel):
     """Canonical summary proving the five files agree at their public boundaries."""
 
-    schema_version: Literal["phase1-gate-verification-v1"]
+    schema_version: Literal["phase1-gate-verification-v2"]
     validation_episode_count: Literal[10_000]
     independent_episode_count: Literal[100_000]
+    matched_accepted_draw_count: Literal[2_500]
+    independent_accepted_draw_count: Literal[100_000]
+    matched_public_id_seed: Literal[2026083002]
+    independent_public_id_seed: Literal[2026083012]
+    construction_token_count: Literal[750_000]
+    public_id_count: Literal[117_000]
     validation_manifest_payload_sha256: str
     independent_corpus_sha256: str
     foundation_model_calls: Literal[0]
@@ -536,6 +573,157 @@ def _require_validation_recipe(manifest: EpisodeManifest) -> None:
         )
 
 
+def _accepted_attempts(
+    evidence: ConstructionNamespaceEvidence,
+) -> tuple[int, ...]:
+    attempts = tuple(
+        run.accepted_attempt
+        for run in evidence.accepted_attempt_runs
+        for _ in range(run.draw_count)
+    )
+    _require(
+        len(attempts) == evidence.accepted_draw_count,
+        "construction attempt runs do not cover the declared corpus",
+    )
+    return attempts
+
+
+def _reconstruct_matched_namespace(
+    manifest: EpisodeManifest,
+) -> tuple[ConstructionNamespaceEvidence, set[bytes], set[bytes]]:
+    builder = ConstructionNamespaceBuilder(
+        generation_mode="matched",
+        public_id_seed=_VALIDATION_PUBLIC_ID_SEED,
+        accepted_draw_count=2_500,
+        clock_public_id_count=0,
+    )
+    token_values: set[bytes] = set()
+    public_id_values: set[bytes] = set()
+    for cohort_index, request in enumerate(
+        CohortRequest(
+            split_namespace=VALIDATION_ALLOCATION.split_namespace,
+            suite=block.suite,
+            root_seed=_VALIDATION_ROOT_SEED,
+            cohort_index=index,
+            requested_path_length=block.requested_path_length,
+        )
+        for block in VALIDATION_ALLOCATION.blocks
+        for index in range(
+            block.first_cohort_index,
+            block.first_cohort_index + block.cohort_count,
+        )
+    ):
+        members = manifest.entries[cohort_index * 4 : cohort_index * 4 + 4]
+        attempt = members[0].accepted_attempt
+        _require(
+            len(members) == 4 and all(member.accepted_attempt == attempt for member in members),
+            "validation cohort accepted attempts disagree",
+        )
+        expected_ids = allocate_public_ids(
+            PublicIdBatchKey(
+                generator_version="ofd-v1",
+                split_namespace=request.split_namespace,
+                suite=request.suite,
+                public_id_seed=_VALIDATION_PUBLIC_ID_SEED,
+                cohort_index=request.cohort_index,
+                accepted_attempt=attempt,
+            )
+        )
+        actual_ids = tuple(member.episode_public_id for member in members)
+        _require(
+            actual_ids == expected_ids,
+            "validation public ID is not derivable from its recipe",
+        )
+        tokens = matched_seed_tokens(request, attempt)
+        builder.add_draw(attempt, tokens, actual_ids)
+        token_values.update(bytes.fromhex(token) for token in tokens)
+        public_id_values.update(uuid.UUID(public_id).bytes for public_id in actual_ids)
+    return builder.finalize(), token_values, public_id_values
+
+
+def _independent_clock_public_ids(
+    requests: tuple[IndependentEpisodeRequest, ...],
+    attempts: tuple[int, ...],
+) -> tuple[str, ...]:
+    request_attempts = {
+        (request.suite, request.requested_path_length, request.episode_index): attempt
+        for request, attempt in zip(requests, attempts, strict=True)
+    }
+    identifiers: list[str] = []
+    for suite, count_field in (
+        (SuiteName.CLOCK_SCALE_0_1X, "scale_0_1x_episode_count"),
+        (SuiteName.CLOCK_SCALE_10X, "scale_10x_episode_count"),
+    ):
+        for block in PHASE1_GATE_ALLOCATION.clock_blocks:
+            for offset in range(getattr(block, count_field)):
+                episode_index = block.source_first_episode_index + offset
+                key = (SuiteName.IID_PRIMARY, block.requested_path_length, episode_index)
+                attempt = request_attempts.get(key)
+                _require(attempt is not None, "independent clock parent is absent")
+                identifiers.append(
+                    allocate_independent_public_id(
+                        IndependentPublicIdKey(
+                            generator_version="ofd-v1",
+                            split_namespace=SplitNamespace.PHASE1_GATE,
+                            suite=suite,
+                            public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+                            episode_index=episode_index,
+                            accepted_attempt=attempt,
+                        )
+                    )
+                )
+    return tuple(identifiers)
+
+
+def _reconstruct_independent_namespace(
+    evidence: ConstructionNamespaceEvidence,
+    *,
+    matched_tokens: set[bytes],
+    matched_public_ids: set[bytes],
+) -> ConstructionNamespaceEvidence:
+    requests = tuple(iter_independent_requests(PHASE1_GATE_ALLOCATION, _INDEPENDENT_ROOT_SEED))
+    attempts = _accepted_attempts(evidence)
+    _require(
+        len(requests) == len(attempts) == _INDEPENDENT_EPISODE_COUNT,
+        "independent namespace draw count is incomplete",
+    )
+    clock_ids = _independent_clock_public_ids(requests, attempts)
+    builder = ConstructionNamespaceBuilder(
+        generation_mode="independent",
+        public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+        accepted_draw_count=_INDEPENDENT_EPISODE_COUNT,
+        clock_public_id_count=len(clock_ids),
+    )
+    for request, attempt in zip(requests, attempts, strict=True):
+        tokens = independent_seed_tokens(request, attempt)
+        public_id = allocate_independent_public_id(
+            IndependentPublicIdKey(
+                generator_version="ofd-v1",
+                split_namespace=request.split_namespace,
+                suite=request.suite,
+                public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+                episode_index=request.episode_index,
+                accepted_attempt=attempt,
+            )
+        )
+        _require(
+            not any(bytes.fromhex(token) in matched_tokens for token in tokens),
+            "matched and independent construction tokens collide",
+        )
+        _require(
+            uuid.UUID(public_id).bytes not in matched_public_ids,
+            "matched and independent base public IDs collide",
+        )
+        builder.add_draw(attempt, tokens, (public_id,))
+    for public_id in clock_ids:
+        _require(
+            uuid.UUID(public_id).bytes not in matched_public_ids,
+            "matched and independent clock public IDs collide",
+        )
+        builder.add_clock_public_id(public_id)
+    return builder.finalize()
+
+
 def _has_frozen_reproducibility_matrix(report: ReproducibilityReport) -> bool:
     return (
         report.sample_size == _REPRODUCIBILITY_SAMPLE_SIZE
@@ -549,7 +737,7 @@ def _has_frozen_reproducibility_matrix(report: ReproducibilityReport) -> bool:
 def _require_validation_artifacts(
     manifest: EpisodeManifest,
     reproducibility: ReproducibilityReport,
-) -> str:
+) -> tuple[str, set[bytes], set[bytes]]:
     _require_namespace_evidence(
         reproducibility.namespace_evidence,
         reproducibility.provenance,
@@ -581,6 +769,15 @@ def _require_validation_artifacts(
         ),
         expected_count=_VALIDATION_EPISODE_COUNT,
     )
+    selected = select_manifest_reproducibility_sample(
+        manifest,
+        manifest_payload_sha256,
+        _REPRODUCIBILITY_SAMPLE_SIZE,
+    )
+    expected_membership = manifest_sample_membership_sha256(
+        manifest_payload_sha256,
+        selected,
+    )
     _require(
         reproducibility.passed
         and reproducibility.source_mode == "manifest"
@@ -588,6 +785,7 @@ def _require_validation_artifacts(
         and reproducibility.verified_source_entries == _VALIDATION_EPISODE_COUNT
         and reproducibility.source_payload_sha256 == manifest_payload_sha256
         and reproducibility.reference_corpus_sha256 == expected_corpus
+        and reproducibility.sample_membership_sha256 == expected_membership
         and reproducibility.modes == _REPRODUCIBILITY_MODES,
         "validation reproducibility artifact is failed or inconsistent",
     )
@@ -595,10 +793,23 @@ def _require_validation_artifacts(
         reproducibility.provenance == manifest.provenance,
         "validation manifest and reproducibility provenance disagree",
     )
-    return manifest_payload_sha256
+    try:
+        namespace, tokens, public_ids = _reconstruct_matched_namespace(manifest)
+    except (TypeError, ValueError, ProvenanceError) as error:
+        raise _artifact_error("validation namespace reconstruction failed") from error
+    _require(
+        reproducibility.namespace_evidence == namespace,
+        "validation namespace evidence is not derivable from the manifest",
+    )
+    return manifest_payload_sha256, tokens, public_ids
 
 
 def _require_oracle(oracle: OracleEvaluationReport) -> None:
+    try:
+        reparsed = OracleEvaluationReport.model_validate(oracle.model_dump(mode="python"))
+    except ValidationError as error:
+        raise _artifact_error("oracle derived report validation failed") from error
+    _require(reparsed == oracle, "oracle report is not its strict derived form")
     _require_namespace_evidence(
         oracle.namespace_evidence,
         oracle.provenance,
@@ -621,6 +832,11 @@ def _require_oracle(oracle: OracleEvaluationReport) -> None:
         )
         == _INDEPENDENT_VARIANT_COUNTS
         and oracle.oracle_successes == _INDEPENDENT_EPISODE_COUNT
+        and oracle.oracle_failures == 0
+        and oracle.invariant_failures == 0
+        and oracle.oracle_ambiguities == 0
+        and oracle.seed_token_collisions == 0
+        and oracle.public_id_collisions == 0
         and oracle.random_positive.total == 50_000
         and oracle.random_negative.total == 50_000
         and oracle.random_positive.passed
@@ -787,6 +1003,17 @@ def _require_independent_reproducibility(report: ReproducibilityReport) -> None:
         report.source_payload_sha256 == sha256_bytes(canonical_json_bytes(expected_source)),
         "independent reproducibility source descriptor disagrees with frozen provenance",
     )
+    requests = tuple(iter_independent_requests(PHASE1_GATE_ALLOCATION, _INDEPENDENT_ROOT_SEED))
+    selected = select_independent_reproducibility_sample(
+        requests,
+        report.source_payload_sha256,
+        _REPRODUCIBILITY_SAMPLE_SIZE,
+    )
+    _require(
+        report.sample_membership_sha256
+        == independent_sample_membership_sha256(report.source_payload_sha256, selected),
+        "independent reproducibility sample membership is not derivable",
+    )
 
 
 def verify_phase1_gate_artifacts(
@@ -812,7 +1039,9 @@ def verify_phase1_gate_artifacts(
         name="independent reproducibility",
     )
 
-    manifest_payload_sha256 = _require_validation_artifacts(manifest, validation_reproducibility)
+    manifest_payload_sha256, matched_tokens, matched_public_ids = _require_validation_artifacts(
+        manifest, validation_reproducibility
+    )
     _require_oracle(oracle)
     _require_leakage(leakage)
     _require_independent_reproducibility(independent_reproducibility)
@@ -825,6 +1054,15 @@ def verify_phase1_gate_artifacts(
         independent_reproducibility.provenance,
     )
     _require_zero_call_common_provenance(provenances)
+    _require(
+        all(item.config_sha256 == _PRIMARY_CONFIG_SHA256 for item in provenances),
+        "Phase 1 evidence does not use the frozen primary configuration",
+    )
+    for provenance in provenances:
+        try:
+            authenticate_final_phase1_provenance(provenance, repo_root=Path.cwd())
+        except (TypeError, ProvenanceError) as error:
+            raise _artifact_error("historical Git provenance authentication failed") from error
     independent_key = _independent_source_key(oracle.provenance)
     _require(
         all(
@@ -847,10 +1085,46 @@ def verify_phase1_gate_artifacts(
         == independent_reproducibility.reference_corpus_sha256,
         "independent gate corpus SHA-256 values disagree",
     )
+    _require(
+        oracle.namespace_evidence
+        == leakage.namespace_evidence
+        == independent_reproducibility.namespace_evidence,
+        "independent namespace evidence disagrees across reports",
+    )
+    try:
+        independent_namespace = _reconstruct_independent_namespace(
+            oracle.namespace_evidence,
+            matched_tokens=matched_tokens,
+            matched_public_ids=matched_public_ids,
+        )
+    except (TypeError, ValueError, ProvenanceError) as error:
+        raise _artifact_error("independent namespace reconstruction failed") from error
+    _require(
+        independent_namespace == oracle.namespace_evidence,
+        "independent namespace evidence is not derivable from frozen coordinates",
+    )
+    construction_token_count = (
+        validation_reproducibility.namespace_evidence.seed_token_count
+        + independent_namespace.seed_token_count
+    )
+    public_id_count = (
+        validation_reproducibility.namespace_evidence.total_public_id_count
+        + independent_namespace.total_public_id_count
+    )
+    _require(
+        construction_token_count == 750_000 and public_id_count == 117_000,
+        "combined Phase 1 namespace counts are not exact",
+    )
     return Phase1GateVerificationResult(
-        schema_version="phase1-gate-verification-v1",
+        schema_version="phase1-gate-verification-v2",
         validation_episode_count=_VALIDATION_EPISODE_COUNT,
         independent_episode_count=_INDEPENDENT_EPISODE_COUNT,
+        matched_accepted_draw_count=2_500,
+        independent_accepted_draw_count=_INDEPENDENT_EPISODE_COUNT,
+        matched_public_id_seed=_VALIDATION_PUBLIC_ID_SEED,
+        independent_public_id_seed=_INDEPENDENT_PUBLIC_ID_SEED,
+        construction_token_count=construction_token_count,
+        public_id_count=public_id_count,
         validation_manifest_payload_sha256=manifest_payload_sha256,
         independent_corpus_sha256=oracle.corpus_sha256,
         foundation_model_calls=0,

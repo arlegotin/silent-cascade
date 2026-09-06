@@ -315,6 +315,135 @@ def source_tree_sha256(repo_root: Path, paths: tuple[str, ...]) -> str:
     return digest.hexdigest()
 
 
+def _git_bytes(repo_root: Path, *arguments: str) -> bytes:
+    try:
+        return subprocess.run(
+            ("git", *arguments),
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ProvenanceError(
+            "git provenance resolution failed", context={"reason": str(error)}
+        ) from error
+
+
+def _resolve_full_commit(repo_root: Path, revision: str) -> str:
+    if type(revision) is not str or _COMMIT_PATTERN.fullmatch(revision) is None:
+        raise ProvenanceError("evidence source commit must be a full lowercase commit ID")
+    try:
+        resolved = _git(repo_root, "rev-parse", "--verify", f"{revision}^{{commit}}")
+    except ProvenanceError as error:
+        raise ProvenanceError("evidence source commit does not exist") from error
+    if resolved != revision:
+        raise ProvenanceError("evidence source commit did not resolve exactly")
+    return resolved
+
+
+def _git_blob_at_revision(repo_root: Path, revision: str, path: str) -> bytes:
+    if Path(path).is_absolute() or ".." in Path(path).parts or not path:
+        raise ProvenanceError("source path escapes repository root", context={"path": path})
+    raw_entry = _git_bytes(repo_root, "ls-tree", "-z", revision, "--", path)
+    entries = tuple(value for value in raw_entry.split(b"\0") if value)
+    if len(entries) != 1:
+        raise ProvenanceError(
+            "source path is missing from historical commit", context={"path": path}
+        )
+    try:
+        metadata, encoded_path = entries[0].split(b"\t", 1)
+        mode, object_type, _object_id = metadata.decode("ascii").split(" ", 2)
+        decoded_path = encoded_path.decode("utf-8")
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ProvenanceError(
+            "historical source entry is malformed", context={"path": path}
+        ) from error
+    if decoded_path != path or mode not in {"100644", "100755"} or object_type != "blob":
+        raise ProvenanceError(
+            "source path is not a regular Git blob",
+            context={"path": path, "mode": mode, "type": object_type},
+        )
+    return _git_bytes(repo_root, "cat-file", "blob", f"{revision}:{path}")
+
+
+def source_tree_sha256_at_revision(
+    repo_root: Path,
+    revision: str,
+    paths: tuple[str, ...],
+) -> str:
+    """Hash exact regular Git blobs from one authenticated historical commit."""
+    if not isinstance(repo_root, Path) or not isinstance(paths, tuple):
+        raise TypeError("repo_root must be a Path and paths must be a tuple")
+    if not paths or len(set(paths)) != len(paths) or tuple(sorted(paths)) != paths:
+        raise ProvenanceError("source paths must be nonempty, unique, and sorted")
+    commit = _resolve_full_commit(repo_root, revision)
+    digest = hashlib.sha256()
+    digest.update(_SOURCE_FRAME)
+    digest.update(len(paths).to_bytes(4, "big"))
+    for path in paths:
+        if type(path) is not str:
+            raise ProvenanceError("source path must be a string")
+        content = _git_blob_at_revision(repo_root, commit, path)
+        encoded_path = path.encode("utf-8")
+        digest.update(len(encoded_path).to_bytes(4, "big"))
+        digest.update(encoded_path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def authenticate_final_phase1_provenance(
+    provenance: EvidenceProvenance,
+    *,
+    repo_root: Path,
+) -> None:
+    """Authenticate final Phase 1 evidence solely from historical Git objects."""
+    if not isinstance(provenance, EvidenceProvenance) or not isinstance(repo_root, Path):
+        raise TypeError("provenance must be EvidenceProvenance and repo_root must be a Path")
+    source_commit = _resolve_full_commit(repo_root, provenance.source_commit)
+    head = _git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
+    try:
+        subprocess.run(
+            ("git", "merge-base", "--is-ancestor", source_commit, head),
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ProvenanceError("evidence source commit is not an ancestor of HEAD") from error
+    plan_path = PHASE1_PLAN_PATH.as_posix()
+    plan_revision = _git(
+        repo_root,
+        "log",
+        "-1",
+        "--format=%H",
+        source_commit,
+        "--",
+        plan_path,
+    )
+    if _COMMIT_PATTERN.fullmatch(plan_revision) is None:
+        raise ProvenanceError("approved Phase 1 plan is absent at evidence source commit")
+    _git_blob_at_revision(repo_root, source_commit, plan_path)
+    if provenance.plan_base_revision != plan_revision:
+        raise ProvenanceError("historical Phase 1 plan base does not match evidence")
+    if (
+        provenance.analysis_source.scope != "phase1_analysis"
+        or provenance.analysis_source.paths != PHASE1_ANALYSIS_SOURCE_PATHS
+    ):
+        raise ProvenanceError("final Phase 1 provenance requires the final Phase 1 scope")
+    generator_sha256 = source_tree_sha256_at_revision(
+        repo_root, source_commit, GENERATOR_SOURCE_PATHS
+    )
+    analysis_sha256 = source_tree_sha256_at_revision(
+        repo_root, source_commit, PHASE1_ANALYSIS_SOURCE_PATHS
+    )
+    if (
+        provenance.generator_source.sha256 != generator_sha256
+        or provenance.analysis_source.sha256 != analysis_sha256
+    ):
+        raise ProvenanceError("historical Git source fingerprint does not match evidence")
+
+
 def public_id_seed_sha256(seed: int) -> str:
     if type(seed) is not int or not 0 <= seed < 2**128:
         raise ProvenanceError("public ID seed must be an exact 128-bit unsigned integer")
@@ -678,8 +807,16 @@ def collect_evidence_provenance(
     }[analysis_scope]
     if resolved.config.runtime.primary_foundation_model_calls != 0:
         raise ProvenanceError("primary execution must record zero foundation-model calls")
-    source_commit = _git(repo_root, "rev-parse", "--verify", "HEAD")
-    plan_base_revision = _git(repo_root, "log", "-1", "--format=%H", "--", str(PHASE1_PLAN_PATH))
+    source_commit = _git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
+    plan_base_revision = _git(
+        repo_root,
+        "log",
+        "-1",
+        "--format=%H",
+        source_commit,
+        "--",
+        PHASE1_PLAN_PATH.as_posix(),
+    )
     if (
         _COMMIT_PATTERN.fullmatch(source_commit) is None
         or _COMMIT_PATTERN.fullmatch(plan_base_revision) is None
@@ -701,13 +838,13 @@ def collect_evidence_provenance(
             frame_version="sc-source-tree-v1",
             scope="generator",
             paths=GENERATOR_SOURCE_PATHS,
-            sha256=source_tree_sha256(repo_root, GENERATOR_SOURCE_PATHS),
+            sha256=source_tree_sha256_at_revision(repo_root, source_commit, GENERATOR_SOURCE_PATHS),
         ),
         analysis_source=SourceTreeFingerprint(
             frame_version="sc-source-tree-v1",
             scope=analysis_scope,
             paths=analysis_paths,
-            sha256=source_tree_sha256(repo_root, analysis_paths),
+            sha256=source_tree_sha256_at_revision(repo_root, source_commit, analysis_paths),
         ),
         root_seed=root_seed,
         public_id_seed_sha256=public_id_seed_sha256(public_id_seed),

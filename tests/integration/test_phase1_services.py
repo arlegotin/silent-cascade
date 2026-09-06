@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
@@ -43,6 +44,43 @@ def test_inspection_request_requires_exactly_one_selector() -> None:
             episode_public_id=UUID("00000000-0000-4000-8000-000000000001"),
             entry_index=0,
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("successes", -1),
+        ("successes", 9),
+        ("total", 0),
+        ("observed_rate", 0.0),
+        ("expected_rate", 0.5),
+        ("absolute_error", 0.5),
+        ("exact_binomial_p", 0.0),
+        ("passed", False),
+    ),
+)
+def test_exact_random_check_rejects_every_underived_field(
+    field: str,
+    replacement: object,
+) -> None:
+    """A report cannot publish hand-written random diagnostics or pass state."""
+    from scipy.stats import binomtest
+
+    from silent_cascade.env.services import ExactRandomCheck
+
+    payload = {
+        "successes": 1,
+        "total": 8,
+        "observed_rate": 0.125,
+        "expected_rate": 0.125,
+        "absolute_error": 0.0,
+        "exact_binomial_p": float(binomtest(1, 8, 0.125).pvalue),
+        "passed": True,
+    }
+    payload[field] = replacement
+
+    with pytest.raises(ValidationError):
+        ExactRandomCheck.model_validate(payload)
 
 
 def test_freeze_with_test_dependencies_publishes_an_immutable_loadable_manifest(
@@ -833,6 +871,7 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
     from silent_cascade.env.services import (
         ConfigSelection,
+        OracleEvaluationReport,
         OracleEvaluationRequest,
         Phase1GateCorpusSource,
         Phase1ServiceDependencies,
@@ -883,7 +922,7 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     reused = evaluate_oracle(request, deps=deps)
 
     assert result.report.verified_episode_count == 12
-    assert result.report.schema_version == "oracle-evaluation-report-v1"
+    assert result.report.schema_version == "oracle-evaluation-report-v2"
     assert result.report.oracle_successes == 12
     assert result.report.namespace_evidence.generation_mode == "independent"
     assert result.report.namespace_evidence.public_id_seed == 91
@@ -933,6 +972,26 @@ def test_oracle_evaluation_streams_bound_test_allocation(tmp_path: Path) -> None
     assert result.report.rejected_draw_rate == pytest.approx(
         result.report.rejected_draw_count / result.report.generation_attempt_count
     )
+    report_payload = result.report.model_dump(mode="python")
+    invalid_reports = (
+        {**report_payload, "requested_episode_count": 13},
+        {**report_payload, "oracle_successes": 11},
+        {
+            **report_payload,
+            "random_pooled_observed_rate": (
+                1.0 if report_payload["random_pooled_observed_rate"] != 1.0 else 0.0
+            ),
+        },
+        {**report_payload, "generation_attempt_count": 1},
+        {
+            **report_payload,
+            "rejected_draw_rate": (1.0 if report_payload["rejected_draw_rate"] != 1.0 else 0.0),
+        },
+        {**report_payload, "passed": not report_payload["passed"]},
+    )
+    for invalid in invalid_reports:
+        with pytest.raises(ValidationError):
+            OracleEvaluationReport.model_validate(invalid)
     assert reused.publication is not None and reused.publication.created is False
     assert output.read_bytes() == saved
     divergent = request.model_copy(

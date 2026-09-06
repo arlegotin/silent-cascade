@@ -248,7 +248,7 @@ def _request_key(request: IndependentEpisodeRequest) -> tuple[str, int, int, int
     )
 
 
-def _entry_for(request: IndependentEpisodeRequest, bundle: EpisodeBundle) -> CorpusDigestEntry:
+def _entry_for(bundle: EpisodeBundle) -> CorpusDigestEntry:
     return CorpusDigestEntry(bundle.public.init.episode_public_id, episode_sha256(bundle))
 
 
@@ -300,7 +300,7 @@ def _validate_independent_provenance(
         raise ProvenanceError("reproducibility provenance mismatch")
 
 
-def _independent_sample(
+def select_independent_reproducibility_sample(
     requests: tuple[IndependentEpisodeRequest, ...], source_payload_sha256: str, count: int
 ) -> tuple[IndependentEpisodeRequest, ...]:
     strata: dict[tuple[str, int], list[IndependentEpisodeRequest]] = {}
@@ -417,7 +417,7 @@ def production_sample_quotas() -> tuple[int, ...]:
     return tuple(63 if index < 8 else 62 for index in range(16))
 
 
-def _membership_hash(
+def independent_sample_membership_sha256(
     source_payload_sha256: str, requests: tuple[IndependentEpisodeRequest, ...]
 ) -> str:
     return sha256_bytes(
@@ -440,7 +440,7 @@ def _membership_hash(
     )
 
 
-def _manifest_sample(
+def select_manifest_reproducibility_sample(
     manifest: EpisodeManifest, source_payload_sha256: str, count: int
 ) -> tuple[EpisodeManifestEntry, ...]:
     strata: dict[tuple[str, int], list[EpisodeManifestEntry]] = {}
@@ -471,7 +471,7 @@ def _manifest_sample(
     return tuple(selected)
 
 
-def _manifest_membership_hash(
+def manifest_sample_membership_sha256(
     source_payload_sha256: str, entries: tuple[EpisodeManifestEntry, ...]
 ) -> str:
     return sha256_bytes(
@@ -666,7 +666,9 @@ def check_reproducibility(
             )
         source_hash = sha256_bytes(canonical_json_bytes(manifest))
         source_entries = tuple(manifest.entries)
-        selected = _manifest_sample(manifest, source_hash, request.sample_size)
+        selected = select_manifest_reproducibility_sample(
+            manifest, source_hash, request.sample_size
+        )
         to_verify = source_entries if request.verify_all_source_entries else selected
         for entry in to_verify:
             bundle = deps.regenerate_manifest_entry(resolved.config, manifest, entry)
@@ -725,7 +727,7 @@ def check_reproducibility(
             chunk_sizes=request.chunk_sizes,
             python_hash_seeds=request.python_hash_seeds,
             reference_corpus_sha256=reference,
-            sample_membership_sha256=_manifest_membership_hash(source_hash, selected),
+            sample_membership_sha256=manifest_sample_membership_sha256(source_hash, selected),
             mismatch_count=0,
             namespace_evidence=namespace_evidence,
             provenance=current,
@@ -788,7 +790,7 @@ def check_reproducibility(
     )
     for item in requests:
         bundle = deps.generate_independent(resolved.config, item, source.public_id_seed)
-        expected[_request_key(item)] = _entry_for(item, bundle)
+        expected[_request_key(item)] = _entry_for(bundle)
         accepted_attempts[_request_key(item)] = bundle.truth.recipe.accepted_attempt
         namespace_builder.add_draw(
             bundle.truth.recipe.accepted_attempt,
@@ -807,7 +809,9 @@ def check_reproducibility(
     reference = corpus_sha256(
         (expected[_request_key(item)] for item in requests), expected_count=len(requests)
     )
-    selected = _independent_sample(requests, payload_hash, request.sample_size)
+    selected = select_independent_reproducibility_sample(
+        requests, payload_hash, request.sample_size
+    )
     if deps.production_mode:
         quotas = tuple(
             sum(
@@ -824,9 +828,7 @@ def check_reproducibility(
     for mode, ordered in (("forward", selected), ("reverse", tuple(reversed(selected)))):
         for item in ordered:
             if (
-                _entry_for(
-                    item, deps.generate_independent(resolved.config, item, source.public_id_seed)
-                )
+                _entry_for(deps.generate_independent(resolved.config, item, source.public_id_seed))
                 != expected[_request_key(item)]
             ):
                 raise ArtifactIntegrityError(f"reproducibility mismatch in {mode}")
@@ -837,8 +839,7 @@ def check_reproducibility(
             for item in selected[start : start + size]:
                 if (
                     _entry_for(
-                        item,
-                        deps.generate_independent(resolved.config, item, source.public_id_seed),
+                        deps.generate_independent(resolved.config, item, source.public_id_seed)
                     )
                     != expected[_request_key(item)]
                 ):
@@ -866,7 +867,7 @@ def check_reproducibility(
         chunk_sizes=request.chunk_sizes,
         python_hash_seeds=request.python_hash_seeds,
         reference_corpus_sha256=reference,
-        sample_membership_sha256=_membership_hash(payload_hash, selected),
+        sample_membership_sha256=independent_sample_membership_sha256(payload_hash, selected),
         mismatch_count=0,
         namespace_evidence=namespace_evidence,
         provenance=provenance,
@@ -901,7 +902,7 @@ def _worker(path: Path) -> None:
                     value.episode_public_id,
                     value.accepted_attempt,
                 )
-                entry = _entry_for(IndependentEpisodeRequest, bundle)
+                entry = _entry_for(bundle)
                 if (
                     entry.episode_public_id != value.episode_public_id
                     or entry.episode_sha256 != value.episode_sha256
@@ -968,7 +969,7 @@ def _worker(path: Path) -> None:
                     value.episode_public_id,
                     value.accepted_attempt,
                 )
-            entry = _entry_for(item, bundle)
+            entry = _entry_for(bundle)
             if (
                 entry.episode_public_id != value.episode_public_id
                 or entry.episode_sha256 != value.episode_sha256

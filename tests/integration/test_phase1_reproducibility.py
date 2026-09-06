@@ -14,6 +14,7 @@ from silent_cascade.errors import (
     ManifestAccessError,
     ProvenanceError,
 )
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
@@ -118,8 +119,11 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
         IndependentAllocationReproducibilitySource,
         ReproducibilityDependencies,
         ReproducibilityRequest,
+        _entry_for,
         _run_fresh_process,
         check_reproducibility,
+        independent_sample_membership_sha256,
+        select_independent_reproducibility_sample,
     )
     from silent_cascade.logging.manifest import load_manifest
 
@@ -187,6 +191,12 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
     assert report.namespace_evidence.base_public_id_count == 8
     assert report.namespace_evidence.clock_public_id_count == 0
     requests = tuple(iter_independent_requests(allocation, 41))
+    known_sample = select_independent_reproducibility_sample(requests, "1" * 64, 4)
+    assert tuple(item.episode_index for item in known_sample) == (9, 10, 8, 5)
+    assert independent_sample_membership_sha256("1" * 64, known_sample) == (
+        "8ea03fe787a7330a598867792072f0f5120e0fc207da7e5ac833e2542cf848e0"
+    )
+    assert _entry_for(generate_independent_episode(resolved.config, requests[0], 91))
     expected_coordinates = tuple(
         (
             request.episode_index,
@@ -344,6 +354,8 @@ def test_manifest_source_executes_the_full_authenticated_matrix(tmp_path: Path) 
         ReproducibilityRequest,
         _run_fresh_process,
         check_reproducibility,
+        manifest_sample_membership_sha256,
+        select_manifest_reproducibility_sample,
     )
     from silent_cascade.env.services import build_cohort_manifest, regenerate_entry
     from silent_cascade.logging.manifest import ManifestAccessClass, load_manifest, publish_manifest
@@ -403,6 +415,10 @@ def test_manifest_source_executes_the_full_authenticated_matrix(tmp_path: Path) 
     assert report.namespace_evidence.accepted_draw_count == 2
     assert report.namespace_evidence.seed_token_count == 40
     assert report.namespace_evidence.base_public_id_count == 8
+    source_hash = sha256_bytes(canonical_json_bytes(manifest))
+    selected = select_manifest_reproducibility_sample(manifest, source_hash, 4)
+    assert len(selected) == 4
+    assert manifest_sample_membership_sha256(source_hash, selected) != "0" * 64
 
 
 @pytest.mark.parametrize(

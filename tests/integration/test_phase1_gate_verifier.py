@@ -5,6 +5,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from runpy import run_path
 
@@ -12,6 +13,14 @@ import pytest
 
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
+from silent_cascade.env.generator import (
+    PHASE1_GATE_ALLOCATION,
+    VALIDATION_ALLOCATION,
+    CohortRequest,
+    independent_seed_tokens,
+    iter_independent_requests,
+    matched_seed_tokens,
+)
 from silent_cascade.env.leakage import (
     NAMED_LEAK_INJECTORS,
     AuditSourceDescriptor,
@@ -25,7 +34,15 @@ from silent_cascade.env.leakage import (
     ShortcutTask,
     audit_source_descriptor_sha256,
 )
-from silent_cascade.env.reproducibility import IndependentSourceDescriptor, ReproducibilityReport
+from silent_cascade.env.reproducibility import (
+    IndependentSourceDescriptor,
+    ReproducibilityReport,
+    _independent_clock_public_ids,
+    independent_sample_membership_sha256,
+    manifest_sample_membership_sha256,
+    select_independent_reproducibility_sample,
+    select_manifest_reproducibility_sample,
+)
 from silent_cascade.env.services import ExactRandomCheck, OracleEvaluationReport
 from silent_cascade.errors import ArtifactIntegrityError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
@@ -39,12 +56,20 @@ from silent_cascade.logging.manifest import (
 from silent_cascade.provenance import (
     GENERATOR_SOURCE_PATHS,
     PHASE1_ANALYSIS_SOURCE_PATHS,
-    AcceptedAttemptRun,
+    TASK14_ANALYSIS_SOURCE_PATHS,
+    ConstructionNamespaceBuilder,
     ConstructionNamespaceEvidence,
     EvidenceProvenance,
     LeakageAuditEvidenceAnchor,
     SourceTreeFingerprint,
     public_id_seed_sha256,
+    source_tree_sha256_at_revision,
+)
+from silent_cascade.rng import (
+    IndependentPublicIdKey,
+    PublicIdBatchKey,
+    allocate_independent_public_id,
+    allocate_public_ids,
 )
 
 _VERIFIER = run_path(
@@ -72,9 +97,7 @@ GATE_DENOMINATORS = {
     "ood_short_delay:4": 8_000,
 }
 GATE_ALLOCATION_SHA256 = "9e032f6993af9f2d53c1dde3a3e3e72e097cf143ae2e72d02609f2d2d6f1ce18"
-INDEPENDENT_SOURCE_PAYLOAD_SHA256 = (
-    "799f4add88eae1e541eff6edf7e3afa35ec22a68e29f7a8309b05f6b315cc121"
-)
+PRIMARY_CONFIG_SHA256 = "8eede957c7d69cc85d33bddcd1af69eb76bc5d7bba48bd1cbbe166bbb757ecd4"
 PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.POSITIVE_BINARY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
     ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
@@ -133,79 +156,160 @@ def _probe_workload(
 
 
 def _provenance(*, independent: bool) -> EvidenceProvenance:
+    repository = Path.cwd()
+    source_commit = subprocess.run(
+        ("git", "rev-parse", "--verify", "HEAD^{commit}"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    plan_base = subprocess.run(
+        (
+            "git",
+            "log",
+            "-1",
+            "--format=%H",
+            source_commit,
+            "--",
+            "docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md",
+        ),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     return EvidenceProvenance(
         schema_version="phase1-evidence-provenance-v1",
-        plan_base_revision="a" * 40,
-        source_commit="b" * 40,
+        plan_base_revision=plan_base,
+        source_commit=source_commit,
         source_dirty=False,
         generator_version="ofd-v1",
         generation_mode="independent" if independent else "matched",
         allocation_id="phase1-independent-gate-v1" if independent else "validation-v1",
         split_namespace=(SplitNamespace.PHASE1_GATE if independent else SplitNamespace.VALIDATION),
-        config_sha256="c" * 64,
+        config_sha256=PRIMARY_CONFIG_SHA256,
         generator_source=SourceTreeFingerprint(
             frame_version="sc-source-tree-v1",
             scope="generator",
             paths=GENERATOR_SOURCE_PATHS,
-            sha256="d" * 64,
+            sha256=source_tree_sha256_at_revision(
+                repository, source_commit, GENERATOR_SOURCE_PATHS
+            ),
         ),
         analysis_source=SourceTreeFingerprint(
             frame_version="sc-source-tree-v1",
             scope="phase1_analysis",
             paths=PHASE1_ANALYSIS_SOURCE_PATHS,
-            sha256="e" * 64,
+            sha256=source_tree_sha256_at_revision(
+                repository, source_commit, PHASE1_ANALYSIS_SOURCE_PATHS
+            ),
         ),
         root_seed=2026083011 if independent else 2026083001,
         public_id_seed_sha256=public_id_seed_sha256(2026083012 if independent else 2026083002),
     )
 
 
+@lru_cache(maxsize=2)
 def _namespace(*, independent: bool) -> ConstructionNamespaceEvidence:
     accepted_draws = 100_000 if independent else 2_500
-    base_ids = 100_000 if independent else 10_000
-    clock_ids = 7_000 if independent else 0
-    return ConstructionNamespaceEvidence(
-        schema_version="construction-namespace-evidence-v1",
+    builder = ConstructionNamespaceBuilder(
         generation_mode="independent" if independent else "matched",
         public_id_seed=2026083012 if independent else 2026083002,
         accepted_draw_count=accepted_draws,
-        accepted_attempt_runs=(
-            AcceptedAttemptRun(
-                first_draw_index=0,
-                draw_count=accepted_draws,
-                accepted_attempt=0,
-            ),
-        ),
-        rejected_draw_count=0,
-        generation_attempt_count=accepted_draws,
-        seed_token_count=accepted_draws * (7 if independent else 20),
-        seed_token_sequence_sha256=("1" if independent else "2") * 64,
-        seed_token_collision_count=0,
-        base_public_id_count=base_ids,
-        clock_public_id_count=clock_ids,
-        total_public_id_count=base_ids + clock_ids,
-        public_id_sequence_sha256=("3" if independent else "4") * 64,
-        public_id_collision_count=0,
+        clock_public_id_count=7_000 if independent else 0,
     )
+    if independent:
+        requests = tuple(iter_independent_requests(PHASE1_GATE_ALLOCATION, 2026083011))
+        attempts: dict[tuple[str, int, int, int, int], int] = {}
+        for request in requests:
+            public_id = allocate_independent_public_id(
+                IndependentPublicIdKey(
+                    "ofd-v1",
+                    request.split_namespace,
+                    request.suite,
+                    2026083012,
+                    request.episode_index,
+                    0,
+                )
+            )
+            builder.add_draw(0, independent_seed_tokens(request, 0), (public_id,))
+            attempts[
+                (
+                    request.suite.value,
+                    request.requested_path_length,
+                    request.episode_index,
+                    request.allocation_quartet_index,
+                    request.quartet_member_index,
+                )
+            ] = 0
+        for public_id in _independent_clock_public_ids(
+            PHASE1_GATE_ALLOCATION,
+            requests,
+            2026083012,
+            attempts,
+        ):
+            builder.add_clock_public_id(public_id)
+    else:
+        for block in VALIDATION_ALLOCATION.blocks:
+            for cohort_index in range(
+                block.first_cohort_index,
+                block.first_cohort_index + block.cohort_count,
+            ):
+                request = CohortRequest(
+                    SplitNamespace.VALIDATION,
+                    block.suite,
+                    2026083001,
+                    cohort_index,
+                    block.requested_path_length,
+                )
+                public_ids = allocate_public_ids(
+                    PublicIdBatchKey(
+                        "ofd-v1",
+                        SplitNamespace.VALIDATION,
+                        block.suite,
+                        2026083002,
+                        cohort_index,
+                        0,
+                    )
+                )
+                builder.add_draw(0, matched_seed_tokens(request, 0), public_ids)
+    return builder.finalize()
 
 
 def _validation_manifest() -> EpisodeManifest:
     provenance = _provenance(independent=False)
-    entries = tuple(
-        EpisodeManifestEntry(
-            episode_public_id=f"00000000-0000-4000-8000-{index + 1:012x}",
-            split_namespace=SplitNamespace.VALIDATION,
-            suite=SuiteName.VALIDATION,
-            coordinate=MatchedManifestCoordinate(
-                cohort_index=index // 4,
-                member_index=index % 4,
-            ),
-            requested_path_length=(2 if index // 4 < 834 else 3 if index // 4 < 1_667 else 4),
-            accepted_attempt=0,
-            episode_sha256=f"{index + 1:064x}",
-        )
-        for index in range(10_000)
-    )
+    entries: list[EpisodeManifestEntry] = []
+    for block in VALIDATION_ALLOCATION.blocks:
+        for cohort_index in range(
+            block.first_cohort_index,
+            block.first_cohort_index + block.cohort_count,
+        ):
+            public_ids = allocate_public_ids(
+                PublicIdBatchKey(
+                    "ofd-v1",
+                    SplitNamespace.VALIDATION,
+                    block.suite,
+                    2026083002,
+                    cohort_index,
+                    0,
+                )
+            )
+            entries.extend(
+                EpisodeManifestEntry(
+                    episode_public_id=public_id,
+                    split_namespace=SplitNamespace.VALIDATION,
+                    suite=SuiteName.VALIDATION,
+                    coordinate=MatchedManifestCoordinate(
+                        cohort_index=cohort_index,
+                        member_index=member_index,
+                    ),
+                    requested_path_length=block.requested_path_length,
+                    accepted_attempt=0,
+                    episode_sha256=f"{cohort_index * 4 + member_index + 1:064x}",
+                )
+                for member_index, public_id in enumerate(public_ids)
+            )
     return EpisodeManifest(
         schema_version=1,
         experiment_version="v1",
@@ -214,7 +318,7 @@ def _validation_manifest() -> EpisodeManifest:
         suite=SuiteName.VALIDATION,
         public_id_seed=2026083002,
         episode_count=10_000,
-        entries=entries,
+        entries=tuple(entries),
     )
 
 
@@ -367,7 +471,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         episode_count=100_000,
     )
     oracle = OracleEvaluationReport(
-        schema_version="oracle-evaluation-report-v1",
+        schema_version="oracle-evaluation-report-v2",
         provenance=independent,
         namespace_evidence=_namespace(independent=True),
         source_mode="phase1_gate",
@@ -471,23 +575,43 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         chunk_sizes=(1, 3, 7),
         python_hash_seeds=(0, 1),
         reference_corpus_sha256=validation_corpus,
-        sample_membership_sha256="c" * 64,
+        sample_membership_sha256=manifest_sample_membership_sha256(
+            manifest_payload_sha256,
+            select_manifest_reproducibility_sample(manifest, manifest_payload_sha256, 1_000),
+        ),
         mismatch_count=0,
         namespace_evidence=_namespace(independent=False),
         provenance=manifest.provenance,
         passed=True,
     )
+    independent_descriptor = IndependentSourceDescriptor(
+        schema_version="phase1-independent-source-v1",
+        allocation_id="phase1-independent-gate-v1",
+        allocation_sha256=GATE_ALLOCATION_SHA256,
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        root_seed=2026083011,
+        public_id_seed_sha256=independent.public_id_seed_sha256,
+        config_sha256=independent.config_sha256,
+        generator_source_sha256=independent.generator_source.sha256,
+    )
+    independent_source_hash = sha256_bytes(canonical_json_bytes(independent_descriptor))
+    independent_requests = tuple(iter_independent_requests(PHASE1_GATE_ALLOCATION, 2026083011))
     independent_reproducibility = ReproducibilityReport(
         schema_version="phase1-reproducibility-v2",
         source_mode="independent_allocation",
-        source_payload_sha256=INDEPENDENT_SOURCE_PAYLOAD_SHA256,
+        source_payload_sha256=independent_source_hash,
         sample_size=1_000,
         verified_source_entries=100_000,
         modes=("forward", "reverse", "chunked", "fresh_process"),
         chunk_sizes=(1, 3, 7),
         python_hash_seeds=(0, 1),
         reference_corpus_sha256=gate_corpus,
-        sample_membership_sha256="e" * 64,
+        sample_membership_sha256=independent_sample_membership_sha256(
+            independent_source_hash,
+            select_independent_reproducibility_sample(
+                independent_requests, independent_source_hash, 1_000
+            ),
+        ),
         mismatch_count=0,
         namespace_evidence=_namespace(independent=True),
         provenance=independent,
@@ -541,7 +665,43 @@ def _mutate_validation_manifest(
     )
 
 
+def _replace_common_provenance(
+    artifacts: dict[str, bytes],
+    mutation: Callable[[dict[str, object]], None],
+) -> None:
+    envelope = json.loads(artifacts["validation.json"])
+    mutation(envelope["payload"]["provenance"])
+    envelope["payload_sha256"] = sha256_bytes(canonical_json_bytes(envelope["payload"]))
+    artifacts["validation.json"] = canonical_json_bytes(envelope)
+    changed_manifest = EpisodeManifest.model_validate_json(
+        canonical_json_bytes(envelope["payload"])
+    )
+    changed_membership = manifest_sample_membership_sha256(
+        envelope["payload_sha256"],
+        select_manifest_reproducibility_sample(
+            changed_manifest,
+            envelope["payload_sha256"],
+            1_000,
+        ),
+    )
+    for name in (
+        "oracle.json",
+        "leakage.json",
+        "validation-reproducibility.json",
+        "independent-reproducibility.json",
+    ):
+
+        def replace(value: dict[str, object], *, artifact_name: str = name) -> None:
+            mutation(value["provenance"])  # type: ignore[arg-type,index]
+            if artifact_name == "validation-reproducibility.json":
+                value["source_payload_sha256"] = envelope["payload_sha256"]
+                value["sample_membership_sha256"] = changed_membership
+
+        artifacts[name] = _mutate_json(artifacts[name], replace)
+
+
 def _independent_descriptor_sha256(**updates: object) -> str:
+    provenance = _provenance(independent=True)
     values: dict[str, object] = {
         "schema_version": "phase1-independent-source-v1",
         "allocation_id": "phase1-independent-gate-v1",
@@ -549,8 +709,8 @@ def _independent_descriptor_sha256(**updates: object) -> str:
         "split_namespace": SplitNamespace.PHASE1_GATE,
         "root_seed": 2026083011,
         "public_id_seed_sha256": public_id_seed_sha256(2026083012),
-        "config_sha256": "c" * 64,
-        "generator_source_sha256": "d" * 64,
+        "config_sha256": provenance.config_sha256,
+        "generator_source_sha256": provenance.generator_source.sha256,
     }
     values.update(updates)
     descriptor = IndependentSourceDescriptor.model_validate(values)
@@ -598,6 +758,7 @@ def _replace_independent_seeds(
             provenance["public_id_seed_sha256"] = fingerprint  # type: ignore[index]
             value["namespace_evidence"]["public_id_seed"] = public_id_seed  # type: ignore[index]
             if name == "leakage.json":
+                current = _provenance(independent=True)
                 descriptor = AuditSourceDescriptor(
                     schema_version="leakage-source-v1",
                     generation_mode="independent",
@@ -606,8 +767,8 @@ def _replace_independent_seeds(
                     split_namespace=SplitNamespace.PHASE1_GATE,
                     root_seed=root_seed,
                     public_id_seed_sha256=fingerprint,
-                    config_sha256="c" * 64,
-                    generator_source_sha256="d" * 64,
+                    config_sha256=current.config_sha256,
+                    generator_source_sha256=current.generator_source.sha256,
                     episode_count=100_000,
                 )
                 provenance["leakage_audit"]["descriptor_sha256"] = (  # type: ignore[index]
@@ -631,9 +792,15 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
     result = _verify(paths)
 
     assert result.model_dump(mode="json") == {
-        "schema_version": "phase1-gate-verification-v1",
+        "schema_version": "phase1-gate-verification-v2",
         "validation_episode_count": 10_000,
         "independent_episode_count": 100_000,
+        "matched_accepted_draw_count": 2_500,
+        "independent_accepted_draw_count": 100_000,
+        "matched_public_id_seed": 2026083002,
+        "independent_public_id_seed": 2026083012,
+        "construction_token_count": 750_000,
+        "public_id_count": 117_000,
         "validation_manifest_payload_sha256": json.loads(
             consistent_artifact_bytes["validation.json"]
         )["payload_sha256"],
@@ -669,6 +836,7 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
 @pytest.mark.parametrize(
     ("artifact_name", "stale_schema"),
     (
+        ("oracle.json", "oracle-evaluation-report-v1"),
         ("leakage.json", "leakage-report-v1"),
         ("validation-reproducibility.json", "phase1-reproducibility-v1"),
         ("independent-reproducibility.json", "phase1-reproducibility-v1"),
@@ -725,7 +893,7 @@ def test_verifier_refuses_a_failed_inner_report(
         artifacts["oracle.json"], lambda value: value.__setitem__("passed", False)
     )
 
-    with pytest.raises(ArtifactIntegrityError, match=r"oracle.*passed"):
+    with pytest.raises(ArtifactIntegrityError, match=r"oracle.*(?:schema|passed)"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 
@@ -754,6 +922,102 @@ def test_verifier_refuses_common_provenance_disagreement(
     )
 
     with pytest.raises(ArtifactIntegrityError, match=r"provenance|schema"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        pytest.param(
+            lambda value: value.__setitem__("source_commit", "f" * 40),
+            id="missing-source-commit",
+        ),
+        pytest.param(
+            lambda value: value.__setitem__("plan_base_revision", "f" * 40),
+            id="wrong-historical-plan-base",
+        ),
+        pytest.param(
+            lambda value: value["analysis_source"].__setitem__(  # type: ignore[index,union-attr]
+                "sha256", "f" * 64
+            ),
+            id="wrong-historical-analysis-blob-hash",
+        ),
+        pytest.param(
+            lambda value: value.__setitem__(
+                "analysis_source",
+                {
+                    "frame_version": "sc-source-tree-v1",
+                    "scope": "phase1_task14_analysis",
+                    "paths": list(TASK14_ANALYSIS_SOURCE_PATHS),
+                    "sha256": source_tree_sha256_at_revision(
+                        Path.cwd(),
+                        subprocess.run(
+                            ("git", "rev-parse", "HEAD^{commit}"),
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        ).stdout.strip(),
+                        TASK14_ANALYSIS_SOURCE_PATHS,
+                    ),
+                },
+            ),
+            id="coordinated-task14-scope-downgrade",
+        ),
+    ),
+)
+def test_verifier_authenticates_coordinated_provenance_against_git_history(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    mutation: Callable[[dict[str, object]], None],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+    _replace_common_provenance(artifacts, mutation)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"historical Git|source|schema"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    ("validation-reproducibility.json", "independent-reproducibility.json"),
+)
+def test_verifier_independently_recomputes_reproducibility_membership(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    artifact_name: str,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+    artifacts[artifact_name] = _mutate_json(
+        artifacts[artifact_name],
+        lambda value: value.__setitem__("sample_membership_sha256", "0" * 64),
+    )
+
+    with pytest.raises(ArtifactIntegrityError, match=r"membership|reproducibility"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "artifact_names",
+    (
+        ("oracle.json",),
+        ("oracle.json", "leakage.json", "independent-reproducibility.json"),
+    ),
+)
+def test_verifier_rederives_independent_namespace_instead_of_trusting_reports(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    artifact_names: tuple[str, ...],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+    for name in artifact_names:
+        artifacts[name] = _mutate_json(
+            artifacts[name],
+            lambda value: value["namespace_evidence"].__setitem__(  # type: ignore[index,union-attr]
+                "seed_token_sequence_sha256", "0" * 64
+            ),
+        )
+
+    with pytest.raises(ArtifactIntegrityError, match=r"namespace"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 
@@ -1416,6 +1680,42 @@ def test_verifier_requires_ordered_construction_check_identity_evidence(
         _verify(_write_artifacts(tmp_path, artifacts))
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value.__setitem__("requested_episode_count", 99_999),
+        lambda value: value.__setitem__("positive_count", 49_999),
+        lambda value: value["suite_path_denominators"].__setitem__(  # type: ignore[index,union-attr]
+            "iid_primary:2", 7_999
+        ),
+        lambda value: value.__setitem__("oracle_successes", 99_999),
+        lambda value: value["random_positive"].__setitem__(  # type: ignore[index,union-attr]
+            "successes", 6_249
+        ),
+        lambda value: value["random_negative"].__setitem__(  # type: ignore[index,union-attr]
+            "exact_binomial_p", 0.5
+        ),
+        lambda value: value.__setitem__("random_pooled_observed_rate", 0.3),
+        lambda value: value.__setitem__("clock_0_1x_episode_count", 4_999),
+        lambda value: value.__setitem__("rejection_reason_counts", {"forged": 1}),
+        lambda value: value.__setitem__("generation_attempt_count", 100_001),
+        lambda value: value.__setitem__("rejected_draw_count", 1),
+        lambda value: value.__setitem__("rejected_draw_rate", 0.5),
+        lambda value: value.__setitem__("passed", False),
+    ),
+)
+def test_verifier_rejects_each_underived_oracle_report_relationship(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    mutation: Callable[[dict[str, object]], None],
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+    artifacts["oracle.json"] = _mutate_json(artifacts["oracle.json"], mutation)
+
+    with pytest.raises(ArtifactIntegrityError, match=r"oracle.*(?:schema|denominator|failed)"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
 def test_verifier_refuses_a_wrong_frozen_denominator(
     tmp_path: Path,
     consistent_artifact_bytes: dict[str, bytes],
@@ -1426,7 +1726,7 @@ def test_verifier_refuses_a_wrong_frozen_denominator(
         lambda value: value.__setitem__("verified_episode_count", 99_999),
     )
 
-    with pytest.raises(ArtifactIntegrityError, match="denominator"):
+    with pytest.raises(ArtifactIntegrityError, match=r"oracle.*(?:schema|denominator)"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 

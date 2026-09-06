@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import silent_cascade.provenance as provenance_module
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace
 from silent_cascade.errors import ProvenanceError
@@ -706,6 +707,89 @@ def test_collector_records_committed_source_config_seed_and_scoped_dirty_state(
     ).source_dirty
 
 
+def test_final_provenance_authenticates_historical_git_blobs_and_plan_ancestry(
+    tmp_path: Path,
+) -> None:
+    """Worktree bytes and later plan edits cannot rewrite committed evidence."""
+    resolved_input = _committed_provenance_repository(tmp_path)
+    resolved = replace(
+        resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+        ),
+        source_paths=(resolved_input,),
+    )
+    evidence = collect_final_phase1_provenance(
+        resolved,
+        repo_root=tmp_path,
+        generation_mode="matched",
+        allocation_id="validation-v1",
+        split_namespace=SplitNamespace.VALIDATION,
+        root_seed=17,
+        public_id_seed=91,
+        analysis_seeds={},
+    )
+    assert hasattr(provenance_module, "source_tree_sha256_at_revision")
+    assert hasattr(provenance_module, "authenticate_final_phase1_provenance")
+    source_tree_sha256_at_revision = provenance_module.source_tree_sha256_at_revision
+    authenticate_final_phase1_provenance = provenance_module.authenticate_final_phase1_provenance
+
+    assert (
+        source_tree_sha256_at_revision(tmp_path, evidence.source_commit, GENERATOR_SOURCE_PATHS)
+        == evidence.generator_source.sha256
+    )
+    authenticate_final_phase1_provenance(evidence, repo_root=tmp_path)
+
+    (tmp_path / GENERATOR_SOURCE_PATHS[0]).write_text("uncommitted divergence\n")
+    plan = tmp_path / "docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md"
+    plan.write_text("later approved plan edit\n", encoding="utf-8")
+    _git(tmp_path, "add", str(plan.relative_to(tmp_path)))
+    _git(tmp_path, "commit", "-qm", "later plan edit")
+
+    authenticate_final_phase1_provenance(evidence, repo_root=tmp_path)
+    assert (
+        source_tree_sha256_at_revision(tmp_path, evidence.source_commit, GENERATOR_SOURCE_PATHS)
+        == evidence.generator_source.sha256
+    )
+
+    with pytest.raises(ProvenanceError, match="commit"):
+        authenticate_final_phase1_provenance(
+            evidence.model_copy(update={"source_commit": "f" * 40}),
+            repo_root=tmp_path,
+        )
+    with pytest.raises(ProvenanceError, match="final Phase 1"):
+        authenticate_final_phase1_provenance(
+            evidence.model_copy(
+                update={
+                    "analysis_source": SourceTreeFingerprint(
+                        frame_version="sc-source-tree-v1",
+                        scope="phase1_task14_analysis",
+                        paths=TASK14_ANALYSIS_SOURCE_PATHS,
+                        sha256=evidence.analysis_source.sha256,
+                    )
+                }
+            ),
+            repo_root=tmp_path,
+        )
+
+
+def test_historical_source_hash_rejects_non_regular_git_modes(tmp_path: Path) -> None:
+    """A symlink blob must never satisfy an authenticated scientific source path."""
+    resolved_input = _committed_provenance_repository(tmp_path)
+    del resolved_input
+    target = tmp_path / GENERATOR_SOURCE_PATHS[0]
+    target.unlink()
+    target.symlink_to("config.py")
+    _git(tmp_path, "add", GENERATOR_SOURCE_PATHS[0])
+    _git(tmp_path, "commit", "-qm", "replace source with symlink")
+    revision = _git(tmp_path, "rev-parse", "HEAD")
+    assert hasattr(provenance_module, "source_tree_sha256_at_revision")
+    source_tree_sha256_at_revision = provenance_module.source_tree_sha256_at_revision
+
+    with pytest.raises(ProvenanceError, match="regular Git blob"):
+        source_tree_sha256_at_revision(tmp_path, revision, GENERATOR_SOURCE_PATHS)
+
+
 def _collect_final_and_task14_provenance(
     resolved: object, repo_root: Path
 ) -> tuple[EvidenceProvenance, EvidenceProvenance]:
@@ -749,11 +833,12 @@ def _collect_final_and_task14_provenance(
         ),
     ],
 )
-def test_scoped_source_mutation_dirties_and_changes_exact_applicable_fingerprints(
+def test_scoped_source_mutation_dirties_without_rewriting_historical_fingerprints(
     tmp_path: Path,
     mutated_path: str,
     expected_changes: tuple[bool, bool, bool],
 ) -> None:
+    del expected_changes
     resolved_input = _committed_provenance_repository(tmp_path)
     resolved = replace(
         resolve_config(
@@ -777,4 +862,4 @@ def test_scoped_source_mutation_dirties_and_changes_exact_applicable_fingerprint
         final_after.analysis_source.sha256 != final_before.analysis_source.sha256,
         task14_after.analysis_source.sha256 != task14_before.analysis_source.sha256,
     )
-    assert actual_changes == expected_changes
+    assert actual_changes == (False, False, False)
