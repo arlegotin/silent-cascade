@@ -1406,7 +1406,9 @@ def test_oracle_service_builds_parent_traces_and_scales_clock_traces(
     }
 
 
-def test_clock_trace_comparison_rejects_corrupted_child_timing() -> None:
+def test_clock_trace_comparison_rejects_corrupted_child_timing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Scaling only the parent trace would conceal a corrupted child scheduler."""
     import silent_cascade.env.services as services
     from silent_cascade.env.episode import scale_episode_time
@@ -1424,6 +1426,94 @@ def test_clock_trace_comparison_rejects_corrupted_child_timing() -> None:
             child.truth,
             recipe=replace(child.truth.recipe, oracle_timing=child_timing),
         ),
+    )
+    monkeypatch.setattr(
+        services,
+        "_build_authenticated_trace",
+        lambda *_args: pytest.fail("trace built before scaled timing validation"),
+    )
+
+    assert not services._clock_decision_matches(parent, corrupted)
+
+
+def test_clock_trace_comparison_rejects_forged_parent_episode_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching parent ID cannot authenticate a child bound to another parent payload."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.episode import scale_episode_time
+
+    manifest, parents = _clock_manifest()
+    entry = manifest.entries[0]
+    parent = parents[0]
+    child = scale_episode_time(parent, entry.suite, entry.episode_public_id)
+    corrupted = replace(
+        child,
+        truth=replace(
+            child.truth,
+            recipe=replace(
+                child.truth.recipe,
+                parent_episode_sha256="0" * 64,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        services,
+        "_build_authenticated_trace",
+        lambda *_args: pytest.fail("trace built before parent provenance validation"),
+    )
+
+    assert not services._clock_decision_matches(parent, corrupted)
+
+
+@pytest.mark.parametrize(
+    "timing_update",
+    (
+        {"jitter_log_std": 0.2},
+        {"terminal_compose_fraction": 0.55},
+        {"action_window_start_fraction": 0.70},
+        {"action_target_fraction": 0.80},
+        {"action_window_end_fraction": 0.95},
+    ),
+)
+def test_clock_trace_comparison_rejects_altered_normalized_window_fractions(
+    timing_update: dict[str, float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consistent absolute child windows cannot excuse changed normalized timing."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.episode import EpisodeVariant, scale_episode_time
+    from silent_cascade.env.timing import action_window
+
+    manifest, parents = _clock_manifest()
+    pair_index = next(
+        index
+        for index, parent in enumerate(parents)
+        if parent.truth.recipe.variant is EpisodeVariant.POSITIVE
+    )
+    entry = manifest.entries[pair_index]
+    parent = parents[pair_index]
+    child = scale_episode_time(parent, entry.suite, entry.episode_public_id)
+    child_timing = child.truth.recipe.oracle_timing.model_copy(update=timing_update)
+    consistent_window = action_window(
+        child.truth.activation_time,
+        child.truth.episode_delay,
+        child_timing,
+    )
+    corrupted = replace(
+        child,
+        truth=replace(
+            child.truth,
+            recipe=replace(child.truth.recipe, oracle_timing=child_timing),
+            action_window_start=consistent_window.start,
+            action_window_end=consistent_window.end,
+            action_target=consistent_window.target,
+        ),
+    )
+    monkeypatch.setattr(
+        services,
+        "_build_authenticated_trace",
+        lambda *_args: pytest.fail("trace built before normalized timing validation"),
     )
 
     assert not services._clock_decision_matches(parent, corrupted)

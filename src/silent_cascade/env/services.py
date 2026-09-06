@@ -1299,8 +1299,98 @@ def _make_manifest_clock_pairs(
         )
 
 
+def _clock_time_matches(child_value: float, parent_value: float, factor: float) -> bool:
+    return math.isclose(
+        child_value,
+        parent_value * factor,
+        rel_tol=_CLOCK_TRACE_REL_TOLERANCE,
+        abs_tol=_CLOCK_TRACE_ABS_TOLERANCE,
+    )
+
+
+def _clock_timing_and_windows_match(
+    parent: EpisodeBundle,
+    child: EpisodeBundle,
+    factor: float,
+) -> bool:
+    """Authenticate normalized timing and independently scaled truth fields."""
+
+    parent_timing = parent.truth.recipe.oracle_timing
+    child_timing = child.truth.recipe.oracle_timing
+    if (
+        child_timing.jitter_log_std,
+        child_timing.terminal_compose_fraction,
+        child_timing.action_window_start_fraction,
+        child_timing.action_target_fraction,
+        child_timing.action_window_end_fraction,
+    ) != (
+        parent_timing.jitter_log_std,
+        parent_timing.terminal_compose_fraction,
+        parent_timing.action_window_start_fraction,
+        parent_timing.action_target_fraction,
+        parent_timing.action_window_end_fraction,
+    ):
+        return False
+    if not all(
+        _clock_time_matches(child_value, parent_value, factor)
+        for parent_value, child_value in zip(
+            (parent_timing.delta_0, parent_timing.delta_min, parent_timing.delta_max),
+            (child_timing.delta_0, child_timing.delta_min, child_timing.delta_max),
+            strict=True,
+        )
+    ):
+        return False
+    if not all(
+        _clock_time_matches(child_value, parent_value, factor)
+        for parent_value, child_value in zip(
+            (
+                parent.truth.activation_time,
+                parent.truth.episode_delay,
+                parent.truth.private_terminal.timestamp,
+            ),
+            (
+                child.truth.activation_time,
+                child.truth.episode_delay,
+                child.truth.private_terminal.timestamp,
+            ),
+            strict=True,
+        )
+    ):
+        return False
+    for parent_value, child_value in zip(
+        (
+            parent.truth.action_window_start,
+            parent.truth.action_target,
+            parent.truth.action_window_end,
+        ),
+        (
+            child.truth.action_window_start,
+            child.truth.action_target,
+            child.truth.action_window_end,
+        ),
+        strict=True,
+    ):
+        if parent_value is None or child_value is None:
+            if parent_value is not None or child_value is not None:
+                return False
+        elif not _clock_time_matches(child_value, parent_value, factor):
+            return False
+    return True
+
+
 def _clock_decision_matches(parent: EpisodeBundle, child: EpisodeBundle) -> bool:
     """Compare independent paired traces with explicit float-time tolerances."""
+
+    factor = child.truth.recipe.clock_scale
+    if (
+        parent.truth.recipe.clock_scale != 1.0
+        or parent.truth.recipe.parent_public_id is not None
+        or parent.truth.recipe.parent_episode_sha256 is not None
+        or child.truth.recipe.parent_public_id != parent.public.init.episode_public_id
+        or child.truth.recipe.parent_episode_sha256 != episode_sha256(parent)
+        or not _clock_timing_and_windows_match(parent, child, factor)
+    ):
+        return False
 
     parent_solution = solve_public_episode(parent.public)
     child_solution = solve_public_episode(child.public)
@@ -1318,13 +1408,6 @@ def _clock_decision_matches(parent: EpisodeBundle, child: EpisodeBundle) -> bool
         child_solution.terminal_record_id,
         child_solution.hazard_type,
         child_solution.superseded_terminal_record_ids,
-    ):
-        return False
-    factor = child.truth.recipe.clock_scale
-    if (
-        parent.truth.recipe.clock_scale != 1.0
-        or parent.truth.recipe.parent_public_id is not None
-        or child.truth.recipe.parent_public_id != parent.public.init.episode_public_id
     ):
         return False
     if (parent_solution.public_delay is None) != (child_solution.public_delay is None):
