@@ -69,11 +69,22 @@ parameter is removed and real matched subprocess coverage stays. This verifies
 every derivable and redundant cross-artifact relationship; it does not promise
 to detect replacement of all mutually consistent artifacts and trust anchors.
 
+Those raw public-ID seeds are forbidden from agent inputs, public episode data,
+public manifests, and public reports. Their only report-level exception is the
+environment-private, agent-inaccessible final Phase 1 acceptance evidence used
+by the local verifier for exact ID rederivation; that evidence is not public.
+The ordered implementation remains independently green: Pass 3 migrates the
+leakage and reproducibility reports plus the standalone verifier/fixtures that
+consume them to inner v2 while the verifier result stays outer v1. Pass 4 alone
+adds final cross-artifact hardening and bumps the outer verifier result to v2.
+
 The exact new outer schemas are `phase1-reproducibility-v2`,
 `oracle-evaluation-report-v2`, `leakage-report-v2`, and
 `phase1-gate-verification-v2`; v2 leakage preserves
 `PositiveControlResult.probes`, `construction_check_ids`,
-`label_shuffled_probes`, and all existing all-nine/27-probe validators. Stale v1
+`label_shuffled_probes`, every existing bounded metric/count/iteration field,
+and all existing exact-primitive, workload, probability, all-nine/27-probe,
+and derived-pass validators. Stale v1
 acceptance artifacts have no compatibility path. Generator version `ofd-v1`
 and episode/manifest schema 1 are retained solely as a pre-completion
 replacement: Phase 1 has not released, construction/rejection semantics and

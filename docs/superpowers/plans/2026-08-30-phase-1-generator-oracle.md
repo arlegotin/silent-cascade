@@ -1811,8 +1811,10 @@ def allocate_public_ids(key: PublicIdBatchKey) -> tuple[str, str, str, str]:
     return assigned[0], assigned[1], assigned[2], assigned[3]
 ```
 
-`seed_key_primitive` returns exactly the nine fields and normalizes each enum
-to `.value`; it does not accept arbitrary mappings. `validate_seed_key_scope`
+`seed_key_primitive` returns exactly the eight non-domain fields shown above
+and normalizes each enum to `.value`; the enclosing domain-framed
+`derive_counter_seed` payload contains nine fields after adding `domain`.
+Neither function accepts arbitrary mappings. `validate_seed_key_scope`
 enforces the integer bounds and cohort/member stream rule from the frozen
 ruling. Implement `PublicIdBatchKey` with generator version, split, suite,
 128-bit public-ID seed, cohort index, and attempt, and
@@ -3714,8 +3716,12 @@ hash mismatch. Do not checkout a revision or mutate the worktree. Set
 `config_sha256=resolved.sha256` and retain current-worktree dirty coverage over
 exactly `resolved.source_paths`, all selected fingerprint paths,
 `pyproject.toml`, and `uv.lock`; Task 18 additionally requires a wholly clean
-tree. Hash the public-ID seed through Task 3's domain-separated helper; never
-place it in a public report. Sort and copy `analysis_seeds`, enforce zero
+tree. Hash the public-ID seed through Task 3's domain-separated helper. The raw
+seed is forbidden from agent inputs, public episode data, public manifests, and
+public reports. The explicit exception is the environment-private,
+agent-inaccessible final Phase 1 acceptance evidence reports whose verifier
+contract must rederive every public ID; those reports are private acceptance
+evidence, not public artifacts. Sort and copy `analysis_seeds`, enforce zero
 foundation calls, and reject a missing source path rather than shrinking a
 scope.
 
@@ -4166,17 +4172,17 @@ class ShortcutFeatureSet:
 class ShortcutProbeResult(StrictModel):
     task: ShortcutTask
     feature_group: ShortcutFeatureGroup
-    feature_dimension: int
-    train_examples: int
-    test_examples: int
+    feature_dimension: int = Field(gt=0)
+    train_examples: int = Field(gt=0)
+    test_examples: int = Field(gt=0)
     train_class_counts: dict[str, int]
     test_class_counts: dict[str, int]
-    raw_accuracy: float
-    balanced_accuracy: float
-    balanced_chance: float
-    raw_permutation_p: float
-    holm_adjusted_p: float
-    optimizer_iterations: int
+    raw_accuracy: float = Field(ge=0.0, le=1.0)
+    balanced_accuracy: float = Field(ge=0.0, le=1.0)
+    balanced_chance: float = Field(ge=0.0, le=1.0)
+    raw_permutation_p: float = Field(ge=0.0, le=1.0)
+    holm_adjusted_p: float = Field(ge=0.0, le=1.0)
+    optimizer_iterations: int = Field(ge=0, le=500)
     optimizer_converged: bool
     passed: bool
 
@@ -4189,8 +4195,8 @@ class PositiveControlResult(StrictModel):
     base_subset_corpus_sha256: HexDigest
     injected_corpus_sha256: HexDigest
     split_membership_sha256: HexDigest
-    balanced_accuracy: float | None
-    holm_adjusted_p: float | None
+    balanced_accuracy: float | None = Field(ge=0.0, le=1.0)
+    holm_adjusted_p: float | None = Field(ge=0.0, le=1.0)
     probes: tuple[ShortcutProbeResult, ...]
     passed: bool
 
@@ -4297,11 +4303,20 @@ This is the exact v2 extension of the current leakage evidence schema: no v1
 evidence field may disappear during migration. In particular,
 `PositiveControlResult.probes`, `LeakageReport.construction_check_ids`, and
 `LeakageReport.label_shuffled_probes` remain mandatory typed tuples, while
-`namespace_evidence` is added. Retain the existing strict validators that
-rederive the construction-check identity/map, complete ordered 27 clean probes,
-complete ordered 27 label-shuffled probes, every positive control's complete
-ordered nine-feature probe family, Holm values, detector identities, summary
-metrics, label-shuffled pass, and outer pass. Validate that
+`namespace_evidence` is added. The displayed `Field` bounds are carried over
+verbatim: every feature/workload count is positive, every probability or
+accuracy is in `[0,1]`, and optimizer iterations are in `[0,500]`; optional
+positive-control summary probabilities, when present, use the same `[0,1]`
+bounds. A positive control's workload remains its complete ordered
+nine-feature `probes` family, so each contained probe retains those exact
+dimension/count/metric/iteration bounds. Port the existing v1 exact-primitive,
+task-derived chance, non-empty/nonnegative class-count and count-sum,
+phase-profile workload, feature-dimension, permutation-grid, convergence,
+Holm, detector-identity, summary-metric, construction-check, label-shuffled
+pass, and outer-pass validators without weakening or replacing them. They must
+still rederive the complete ordered 27 clean probes, complete ordered 27
+label-shuffled probes, and every positive control's complete ordered
+nine-feature probe family. Validate that
 `counterfactual_checks` contains each enum value exactly once in enum order. A
 check passes only with zero decision and temporal mismatches, and the overall
 report passes only when all three checks pass. A scientific-failure report
@@ -5513,6 +5528,7 @@ git commit -m "fix: authenticate independent quartet coordinates"
 - Modify: `tests/unit/test_invariants.py`
 - Modify: `tests/unit/test_counter_rng.py`
 - Create: `tests/integration/test_phase1_trace_feasibility.py`
+- Modify: `tests/integration/test_phase1_services.py`
 
 **Interfaces:**
 
@@ -5588,7 +5604,8 @@ uv run ruff check src/silent_cascade/env/timing.py \
   tests/unit/test_oracle.py tests/unit/test_generator.py \
   tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
   tests/unit/test_counter_rng.py \
-  tests/integration/test_phase1_trace_feasibility.py
+  tests/integration/test_phase1_trace_feasibility.py \
+  tests/integration/test_phase1_services.py
 ```
 
 Expected: both exact OOD-short regressions and all 24,000 streamed schedules
@@ -5602,7 +5619,8 @@ git add src/silent_cascade/env/timing.py src/silent_cascade/env/oracle.py \
   src/silent_cascade/env/services.py tests/unit/test_oracle.py \
   tests/unit/test_generator.py tests/unit/test_independent_generator.py \
   tests/unit/test_invariants.py tests/unit/test_counter_rng.py \
-  tests/integration/test_phase1_trace_feasibility.py
+  tests/integration/test_phase1_trace_feasibility.py \
+  tests/integration/test_phase1_services.py
 git commit -m "fix: enforce feasible oracle trace schedules"
 ```
 
@@ -5615,6 +5633,7 @@ git commit -m "fix: enforce feasible oracle trace schedules"
 - Modify: `src/silent_cascade/env/leakage.py`
 - Modify: `src/silent_cascade/env/services.py`
 - Modify: `src/silent_cascade/env/reproducibility.py`
+- Modify: `scripts/verify_phase1_gate_artifacts.py`
 - Modify: `tests/unit/test_provenance.py`
 - Modify: `tests/unit/test_leakage.py`
 - Modify: `tests/unit/test_generator.py`
@@ -5622,6 +5641,7 @@ git commit -m "fix: enforce feasible oracle trace schedules"
 - Modify: `tests/integration/test_phase1_services.py`
 - Modify: `tests/integration/test_phase1_reproducibility.py`
 - Modify: `tests/integration/test_phase1_reproducibility_script.py`
+- Modify: `tests/integration/test_phase1_gate_verifier.py`
 
 **Interfaces:**
 
@@ -5631,6 +5651,10 @@ git commit -m "fix: enforce feasible oracle trace schedules"
   module.
 - Bumps `ReproducibilityReport` to `phase1-reproducibility-v2` and
   `LeakageReport` to `leakage-report-v2`; stale v1 artifacts are invalid.
+- Migrates `verify_phase1_gate_artifacts.py` and its fixtures only far enough to
+  parse and authenticate those two v2 inner reports. The outer
+  `Phase1GateVerificationResult` deliberately remains
+  `phase1-gate-verification-v1` in this independently green pass.
 - Preserves every current leakage evidence field and validator while adding
   `namespace_evidence`; specifically, `PositiveControlResult.probes`,
   `LeakageReport.construction_check_ids`, and
@@ -5650,10 +5674,16 @@ appear exactly once per construction draw: 2,500 matched cohort draws versus
 rejection reason regardless of how many member counterfactuals fail. Test
 `rejected_draw_count == sum(draw_count * accepted_attempt)` and
 `generation_attempt_count == accepted_draw_count + rejected_draw_count`. Test
-schema-v1 report rejection and exact fixture migration to v2. Assert the v2
-leakage schema and strict validators retain the complete ordered 27 clean
-probes, 27 label-shuffled probes, `construction_check_ids`, and all nine
-positive controls with their complete nine-feature `probes` families.
+inner leakage/reproducibility schema-v1 report rejection and exact fixture
+migration to v2. Assert the v2 leakage schema and strict validators retain the
+complete ordered 27 clean probes, 27 label-shuffled probes,
+`construction_check_ids`, and all nine
+positive controls with their complete nine-feature `probes` families. Update
+the standalone-verifier fixtures and parsing assertions to consume
+`ReproducibilityReport` and `LeakageReport` v2 while asserting its own result
+still has the exact outer literal `phase1-gate-verification-v1`; do not add the
+Pass 4 historical-Git, independent membership, raw-seed ID rederivation,
+derived-oracle, or outer-v2 acceptance checks here.
 
 - [ ] **Step 2: Run RED tests**
 
@@ -5662,7 +5692,8 @@ uv run pytest -q tests/unit/test_provenance.py tests/unit/test_leakage.py \
   tests/unit/test_generator.py tests/unit/test_independent_generator.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py \
-  tests/integration/test_phase1_reproducibility_script.py
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
 ```
 
 Expected: v2 schema, attempt-run, actual-token/ID, and ordered namespace tests
@@ -5683,7 +5714,12 @@ independently derive actual tokens and IDs and fail on collisions; leakage's
 clock IDs in the independent public-ID evidence after base IDs in exact clock
 suite/parent order. Preserve every v1 leakage evidence field and all existing
 strict all-nine/27-probe/derived-pass validators while migrating the outer
-schema to v2; there is no compatibility loader.
+leakage-report schema to v2; there is no compatibility loader. Migrate the
+standalone verifier and its fixtures at the same time so they consume the v2
+leakage and reproducibility reports and validate their new namespace evidence.
+Keep `Phase1GateVerificationResult` and its emitted literal at
+`phase1-gate-verification-v1`; Pass 3 may not pre-implement Pass 4's final
+cross-artifact hardening or outer-schema bump.
 
 - [ ] **Step 4: Run GREEN and resource checks**
 
@@ -5692,16 +5728,19 @@ uv run pytest -q tests/unit/test_provenance.py tests/unit/test_leakage.py \
   tests/unit/test_generator.py tests/unit/test_independent_generator.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py \
-  tests/integration/test_phase1_reproducibility_script.py
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
 uv run ruff check src/silent_cascade/provenance.py \
   src/silent_cascade/env/generator.py src/silent_cascade/env/leakage.py \
   src/silent_cascade/env/services.py \
-  src/silent_cascade/env/reproducibility.py tests/unit/test_provenance.py \
+  src/silent_cascade/env/reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py tests/unit/test_provenance.py \
   tests/unit/test_leakage.py tests/unit/test_generator.py \
   tests/unit/test_independent_generator.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py \
-  tests/integration/test_phase1_reproducibility_script.py
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
 ```
 
 Expected: exact schema and namespace tests pass within the unchanged memory
@@ -5712,12 +5751,14 @@ ceilings; Ruff is clean.
 ```bash
 git add src/silent_cascade/provenance.py src/silent_cascade/env/generator.py \
   src/silent_cascade/env/leakage.py src/silent_cascade/env/services.py \
-  src/silent_cascade/env/reproducibility.py tests/unit/test_provenance.py \
+  src/silent_cascade/env/reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py tests/unit/test_provenance.py \
   tests/unit/test_leakage.py tests/unit/test_generator.py \
   tests/unit/test_independent_generator.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py \
-  tests/integration/test_phase1_reproducibility_script.py
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
 git commit -m "fix: authenticate construction namespaces"
 ```
 
@@ -5746,6 +5787,10 @@ git commit -m "fix: authenticate construction namespaces"
 
 - Bumps `OracleEvaluationReport` to `oracle-evaluation-report-v2` and
   `Phase1GateVerificationResult` to `phase1-gate-verification-v2`.
+- Starts from Pass 3's independently green verifier, which already consumes
+  v2 leakage/reproducibility inputs while emitting outer v1. This pass alone
+  adds final cross-artifact checks and bumps that outer result to v2; do not
+  duplicate the inner-report migration owned by Pass 3.
 - Exposes the four pure reproducibility selection/membership helpers declared in
   Task 14 and changes `_entry_for` to accept only `EpisodeBundle`.
 - Adds read-only historical Git-blob authentication to final provenance and the
