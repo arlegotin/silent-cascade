@@ -29,9 +29,12 @@ Ruff, and `uv`.
 **Plan status:** **Approved and in execution.** The final whole-phase audit
 invalidated the previous Task 18 artifacts and requires the four corrective
 implementation passes in this plan before Task 18 is rerun. The canonical
-design and this Phase 1 plan are approved; the corrections strengthen evidence
-authentication without changing a scientific setting, denominator, control,
-threshold, seed, or the zero-foundation-model-call rule.
+design and this Phase 1 plan are approved. The OFD task, distributions,
+scientific settings, denominators, controls, thresholds, frozen seeds, resource
+ceilings, and zero-foundation-model-call rule are unchanged. The corrections do
+change pre-completion generator construction/rejection semantics, private
+coordinate/schema fields, and evidence schemas; every earlier artifact is
+therefore invalid and has no compatibility path.
 
 ## Execution Preconditions and Superpowers Workflow
 
@@ -70,11 +73,15 @@ best answer.
 - CI/CD remains disabled. Run every lint, test, doctor, gate, and package build
   locally; `make verify` remains the complete routine quality gate.
 - Use `generator_version = "ofd-v1"` and episode/manifest
-  `schema_version = 1`. Evidence reports use the exact versioned literals
-  declared by their owning tasks: Phase 1 reproducibility, oracle evaluation,
-  leakage, and final gate verification are all v2 after the final audit
-  correction. Changing generator or episode/manifest schema semantics requires
-  an explicit migration and a deviations entry.
+  `schema_version = 1`. This retention is permitted only because Phase 1 has
+  not completed or released: the correction is a pre-completion replacement,
+  every artifact made by the earlier construction is invalid, and there is no
+  compatibility/migration promise. Evidence reports use the exact versioned
+  literals declared by their owning tasks: Phase 1 reproducibility, oracle
+  evaluation, leakage, and final gate verification are all v2 after the final
+  audit correction. Any post-completion change to generator construction,
+  rejection, private coordinates, or episode/manifest schema semantics requires
+  a new version and a deviations entry.
 - Use `max_entities=64`, four hazard types, primary memory capacity `64`, an
   EventFlow event ceiling of `64`, and a scheduled-opportunity ceiling of
   `25,000` in the primary data contract.
@@ -332,12 +339,22 @@ bd8da50f-9499-4c1f-a23e-09ceeeb68e53
 8a4f6ea2-4a78-490b-bf96-d007436f1e5c
 ```
 
-Store the independent ID seed only in the environment-private manifest.
-Aggregate reports expose only
+Store a raw public-ID seed only in environment-private manifests and the final
+environment-private Phase 1 acceptance evidence that must rederive IDs.
+Ordinary aggregate provenance exposes only
 `sha256(b"silent-cascade/ofd-v1/public-id-seed-fingerprint/v1\0" +
 public_id_seed.to_bytes(16, "big"))`; for seed `91`, the fingerprint is
 `3acaee04f18b5609e8d4bdd6a5ab1ee2e24e8143bb1b33a3de05204cb195d980`.
 Leakage tests cover public ID and manifest-order prediction.
+
+The final Phase 1 acceptance artifacts bind the exact raw seeds needed for
+independent ID rederivation. Matched validation uses `2026083002`
+with fingerprint
+`0454fca622eb08379a5d88ecbe0a5ef70f6a15e9ca7d333acecf840f2df38802`;
+the independent gate and its clock children use `2026083012` with fingerprint
+`f21ac562825bfd96e875eedf90c8ba5ed09883ebe2c18449843b03acebec778a`.
+These raw seeds remain environment-side artifact evidence and are never passed
+to an agent.
 
 Independent public IDs use the same HMAC key framing but a single typed key and
 domain, with no batch assignment:
@@ -519,8 +536,15 @@ def build_trace_timing_schedule(
 ```
 
 The primitive implements Section 8.3 exactly. It requires equal nonempty count
-and jitter tuples, exact nonnegative integer counts, finite inputs, every final
-non-action delta at least `delta_min`, terminal composition no later than
+and jitter tuples, exact non-boolean nonnegative integer counts, and finite
+`activation_time`, `delay`, every timing scalar, every jitter normal, and every
+intermediate/result value. It consumes the provided `jitter_normals` directly;
+it has no RNG argument, import, callback, or hidden draw. For step `k` it uses
+`math.exp(jitter_normals[k] * timing.jitter_log_std)`, accumulates elapsed
+intervals with `math.fsum`, and derives `current_time` with
+`math.fsum((activation_time, elapsed))`. It also uses `math.fsum` for the
+pre-scale total and terminal composition timestamp. Every final non-action
+delta must be at least `delta_min`, terminal composition must be no later than
 `activation_time + terminal_compose_fraction * delay`, and
 `action_target_time == activation_time + action_target_fraction * delay`
 strictly after terminal composition. It raises
@@ -529,17 +553,24 @@ generator, and the independent invariant analyzer each derive their own
 relevant records and competitive counts before calling it; generator and
 invariants do not import `env.oracle`.
 
-Before accepting an independent primary attempt, the generator constructs the
+Before accepting any primary attempt, label selection is the last retryable
+construction step. For each nuisance draw/member, the generator constructs the
 complete positive, safe-negative, and disconnected-negative counterfactual
-family from the same nuisance attempt. It reinitializes the exact
-`TRACE_JITTER` stream for each member, derives each member's actual schedule,
-and rejects the draw unless all three schedules are legal. The request's label
-is applied only after this family-wide decision. Matched generation rejects the
-whole cohort unless every member's actual trace schedule is legal. The
-independent invariant validator reconstructs the assigned member's exact
-schedule from public facts, explicit quartet provenance, and a rederived
-authenticated jitter stream. These checks freeze OOD-short regressions at gate
-episode indexes `16219` (safe-negative) and `16500` (positive) and exhaustively
+family from exactly the same template/structure, node permutation, terminal
+class/delay multiset, timestamps, presentation-order source, and reinitialized
+member-local `TRACE_JITTER` stream. It runs every retry-causing semantic,
+shape, leakage-prevention, and exact trace-timing check on all three candidate
+variants. Only if all three pass may it select the request/allocation-assigned
+label, materialize that candidate, and proceed to public-ID allocation.
+Independent failure retries only that episode; matched failure of any candidate
+for any of the four member draws rejects the cohort once and retries the whole
+cohort. A post-ID disagreement from Task 8's independently derived invariant
+analyzer is a fatal implementation defect and is never converted to sampling
+rejection. The independent invariant validator reconstructs the assigned
+member's exact schedule from public facts, explicit quartet provenance, and a
+rederived authenticated jitter stream. These checks freeze OOD-short
+regressions at gate episode indexes `16219` (safe-negative) and `16500`
+(positive) and exhaustively
 require all 24,000 OOD-short Phase 1 gate traces to build after deterministic
 rejection/resampling.
 
@@ -2190,12 +2221,20 @@ rng: np.random.Generator) -> OracleTrace`.
 
 The oracle independently selects records and computes the ordered
 `competitive_counts`; it draws exactly one finite standard-normal jitter value
-per non-action step from the supplied RNG. It then calls the frozen neutral
+per non-action step from the supplied RNG, stores those values in an immutable
+tuple, and passes that tuple to the frozen neutral
 `build_trace_timing_schedule` API rather than reimplementing the equations.
-Inside that pure primitive, for each non-action step `k`, compute:
+The primitive never receives or calls an RNG. It first rejects every boolean,
+wrong primitive type, non-finite input/timing scalar/jitter, unequal or empty
+input sequence, negative competitive count, or non-positive delay. Inside that
+pure primitive, for each non-action step `k`, compute:
 
 ```python
-compose_deadline = activation_time + timing.terminal_compose_fraction * delay
+compose_deadline = math.fsum(
+    (activation_time, timing.terminal_compose_fraction * delay)
+)
+elapsed = math.fsum(provisional_deltas)
+current_time = math.fsum((activation_time, elapsed))
 remaining_budget = compose_deadline - current_time
 urgency = min(
     1.0,
@@ -2203,24 +2242,32 @@ urgency = min(
     / max(remaining_budget, timing.delta_min),
 )
 raw = timing.delta_0 * (1.0 + 0.15 * competitive_count) / (1.0 + 0.5 * urgency)
-jittered = raw * math.exp(rng.normal(0.0, timing.jitter_log_std))
+jittered = raw * math.exp(jitter_normals[k] * timing.jitter_log_std)
 delta = min(timing.delta_max, max(timing.delta_min, jittered))
 ```
 
 `remaining_event_count` includes the current non-action step. `current_time` is
-the preceding step timestamp, or activation time for the first step.
+the preceding step timestamp, or activation time for the first step;
+`provisional_deltas` is the exact tuple of already computed unscaled deltas.
+Validate every intermediate above with `math.isfinite` before using it; convert
+`math.exp` overflow into the same typed infeasibility error rather than leaking
+`OverflowError`.
 
 A competitor is a non-teacher record of the same kind matching at least one
 non-null selected-record field among subject, object, hazard type, or
 `floor(log2(delay))`.
 
-If the sum of non-action intervals exceeds
+Use `math.fsum(provisional_deltas)` for the pre-scale total. If the sum of
+non-action intervals exceeds
 `timing.terminal_compose_fraction * delay`, multiply every interval by the
 single factor `(timing.terminal_compose_fraction * delay) / total`. If any
 scaled interval would be below `timing.delta_min`, raise
 `OracleError("oracle trace is temporally infeasible")`.
 Do not clamp individual intervals after common scaling because that would alter
-their ratios.
+their ratios. Use `math.fsum((activation_time, *final_deltas))` for terminal
+composition, reject any non-finite scale/delta/timestamp, and derive the action
+target with `math.fsum((activation_time,
+timing.action_target_fraction * delay))`.
 
 The primitive additionally validates its complete output: each final delta is
 at least `delta_min`, terminal composition is no later than the configured
@@ -2565,8 +2612,16 @@ For one cohort, assert the exact 2/1/1 variant composition, shared delay/path/
 distractor count/timestamp gaps, equal LINK topology signatures after removing
 node labels, two hazards plus one safe, independent node/presentation
 permutations, contiguous post-permutation FACT IDs, and public IDs allocated
-from the accepted attempt. Force deterministic invalid attempts and require the
-whole cohort—not one member—to retry. Exhaustion at 1,000 raises
+from the accepted attempt. Spy on all four member draws and prove each evaluates
+the complete positive/safe/disconnected counterfactual family with identical
+member-local nuisance values and a reinitialized, byte-identical
+`TRACE_JITTER` initial state before selecting its assigned label; each candidate
+draws exactly its own required step count, so differently sized traces share an
+identical jitter prefix rather than an artificially padded vector. Inject a
+failure in
+every retry-causing semantic, shape, leakage-prevention, and timing check for an
+unassigned candidate and require the whole cohort—not one member—to retry
+exactly once. Exhaustion at 1,000 raises
 `GenerationError` with only an opaque cohort hash and aggregate reasons.
 
 ```python
@@ -2594,24 +2649,36 @@ Expected: construction APIs are absent.
 
 For each attempt up to `max_generation_attempts`:
 
-1. sample one valid cohort template and a permutation of `[P,P,S,D]`;
-2. for each member, sample a bijection over all 64 entity IDs from its
-   `node_permutation` stream and relabel the same template topology;
-3. independently permute the two hazard-class assignments from `terminals`;
-4. place exactly two hazards and one safe according to the frozen variant table;
-5. independently permute the completed facts with `presentation`;
-6. assign contiguous FACT event/record IDs `0..N-1` only after that permutation,
-   assign `ACTIVATE` ID `N`, and reserve private-terminal ID `N+1`;
-7. bind the shared strictly increasing gap template and activation gap;
-8. create private terminal/window truth and set `accepted_attempt=attempt`;
-9. reinitialize each member's `TRACE_JITTER` stream, derive its exact actual
-   schedule, and run generator-local shape checks on all four members; if any fails, discard
-   the entire cohort and continue at the next attempt;
-10. only after all local checks pass, allocate the four public IDs using the
-    accepted attempt, bind the immutable bundles, and return the cohort.
+1. sample one unlabeled cohort template, shared delay/path/distractor/timestamp
+   nuisances, and the allocation-only permutation of `[P,P,S,D]` without
+   materializing a selected-label episode;
+2. for each member, sample once its bijection over all 64 entity IDs,
+   terminal-class/delay multiset and presentation permutation source from that
+   member's streams; retain the `TRACE_JITTER` key, not a variant-sized draw;
+3. for that member draw, construct complete positive, safe-negative, and
+   disconnected-negative candidates from the same sampled nuisance values;
+   reinitialize the same `TRACE_JITTER` stream state for each candidate and draw
+   exactly that candidate's finite step-count vector, so shared positions are
+   identical and one candidate cannot advance another's stream;
+4. for each of those three candidates, place exactly two hazards and one safe,
+   apply the same node/presentation permutations, assign provisional contiguous
+   post-presentation FACT IDs, bind the same strictly increasing gap template,
+   and derive private terminal/window truth;
+5. run the complete generator-local retryable acceptance pipeline on every
+   candidate: record/terminal counts, capacity and schema shape, unique
+   reachability/path/terminal semantics, absence of shortcut/answer-correlated
+   structure, timestamp/order rules, and the exact jittered trace schedule;
+6. if any candidate for any member fails, append exactly one stable rejection
+   reason for this cohort attempt, discard the entire four-member attempt, and
+   continue; never count one rejection per failing member/candidate;
+7. only after all twelve candidates pass, use the frozen label permutation to
+   select one candidate per member, set `accepted_attempt=attempt`, and discard
+   the unselected counterfactual materializations;
+8. allocate the four public IDs from the accepted attempt, bind the immutable
+   selected bundles, and return the cohort.
 
 Task 8 subsequently inserts the independent episode/tuple validation call
-after step 10. It is deliberately not imported in the Task 7 commit before the
+after step 8. It is deliberately not imported in the Task 7 commit before the
 module exists. Any later invariant disagreement is fatal, not another retry.
 
 `regenerate_matched_episode` reconstructs the whole cohort from attempt zero,
@@ -2621,8 +2688,9 @@ Task 9 adds the separately named independent primitive used by gate/frozen
 allocations.
 
 Every bundle's rejection-reason sequence contains one stable reason for each
-rejected construction draw represented by its `rejection_count`; do not store
-only distinct reason keys. On exhaustion, raise `GenerationError` with an opaque SHA-256 of the private
+rejected cohort construction draw represented by its `rejection_count`; a
+failed cohort attempt contributes one reason even if several member/candidate
+checks fail. Do not store only distinct reason keys. On exhaustion, raise `GenerationError` with an opaque SHA-256 of the private
 cohort key, attempt count, and aggregated rejection reasons. Its serializable
 context never contains root seed, split, index, or variant. Do not expose richer
 internal diagnostics through a public episode callback or inspection result.
@@ -2823,6 +2891,14 @@ retries; the other three quartet members retain attempt zero and identical
 hashes. Assert exact regeneration by accepted attempt/public ID, failure on a
 mismatch, global-RNG isolation, forward/reverse/chunks `1,3,7`, and a small
 fresh-process check under `PYTHONHASHSEED=0/1`.
+For every independent nuisance draw, spy on all three counterfactual candidates
+and require identical template/structure, node permutation, terminal
+class/delay multiset, timestamps, presentation-order source, and reinitialized
+`TRACE_JITTER` state/common prefix. A retryable semantic, shape,
+leakage-prevention, or timing failure in an unassigned candidate must reject
+that episode attempt
+before the requested label is selected. A post-ID invariant mismatch must raise
+immediately and must not increment the rejection sequence.
 
 ```python
 def test_independent_quartet_shares_labels_but_no_nuisance_seed(
@@ -2857,27 +2933,36 @@ For each request and attempt up to `max_generation_attempts`:
 
 1. authenticate the request's explicit member and variant against
    `allocate_independent_variants(AllocationLabelKey(...))`, then derive only
-   `IndependentCounterSeedKey`s containing that episode index;
-2. sample the suite-specific delay, distractor count, complete unlabeled LINK
-   topology, observation gaps, activation gap, and terminal-class multiset;
-3. sample a 64-entity bijection and apply it to the episode's own topology;
-4. place exactly two hazards and one safe according to the requested private
-   variant, rejecting any second reachable terminal, shortcut, ambiguity, or
-   answer-correlated structural cue;
-5. independently permute the completed facts, then assign contiguous FACT IDs,
-   activation ID, and private-terminal ID;
-6. before applying the requested label, construct positive, safe-negative, and
-   disconnected-negative counterfactuals from this same nuisance attempt,
-   reinitialize the same `TRACE_JITTER` stream for each, derive each member's
-   records/competitor counts independently of `env.oracle`, and call
-   `build_trace_timing_schedule`; reject the draw unless all three complete
-   actual schedules are legal, then compute the assigned member's scorer truth;
-7. run generator-local shape checks; on a normal draw rejection, discard only
-   this episode and increment its attempt;
-8. allocate the single public ID only after a draw passes, construct an
-   `IndependentEpisodeCoordinate` carrying `quartet_member_index`, and run Task 8's independent invariant
-   analyzer. An invariant disagreement is a code defect and raises immediately
-   rather than becoming another sampling retry.
+   `IndependentCounterSeedKey`s containing that episode index; retain the
+   authenticated assigned label outside candidate construction and every
+   retryable acceptance predicate until step 7;
+2. sample once the suite-specific delay, distractor count, complete unlabeled
+   LINK topology, observation/activation gaps, 64-entity bijection,
+   terminal-class/delay multiset and presentation permutation source; retain
+   the exact `TRACE_JITTER` key;
+3. construct complete positive, safe-negative, and disconnected-negative
+   candidates from those identical nuisance values, reinitializing the same
+   `TRACE_JITTER` stream for each candidate and drawing its exact finite trace
+   length (with identical shared prefix), and applying the same node and
+   presentation permutations;
+4. for each candidate, place exactly two hazards and one safe, assign
+   provisional contiguous post-presentation FACT/activation/private-terminal
+   IDs, and derive its private scorer truth independently;
+5. before selecting the requested label, run every retry-causing
+   generator-local semantic, shape, leakage-prevention, and timing check on all
+   three candidates: exact counts/capacity/schema, unique reachability/path,
+   absence of a second terminal/shortcut/ambiguity/answer-correlated cue,
+   timestamp/order rules, independently derived record/competitor inputs, and
+   `build_trace_timing_schedule`;
+6. if any candidate fails, append exactly one stable rejection reason for this
+   episode attempt, discard only this episode attempt, and increment its
+   attempt; do not allocate an ID or expose which counterfactual failed;
+7. only after all three candidates pass, select the request-assigned variant,
+   set `accepted_attempt=attempt`, and discard the other materializations;
+8. allocate the single public ID only after the selected draw passes, construct
+   an `IndependentEpisodeCoordinate` carrying `quartet_member_index`, and run
+   Task 8's independent invariant analyzer. An invariant disagreement is a code
+   defect and raises immediately rather than becoming another sampling retry.
 
 The variant and member position come only from `IndependentEpisodeRequest` and
 must match the allocation-label permutation; generation must never infer,
@@ -3294,8 +3379,11 @@ class AcceptedAttemptRun(StrictModel):
 class ConstructionNamespaceEvidence(StrictModel):
     schema_version: Literal["construction-namespace-evidence-v1"]
     generation_mode: Literal["matched", "independent"]
+    public_id_seed: int = Field(ge=0, lt=2**128)
     accepted_draw_count: int = Field(gt=0)
     accepted_attempt_runs: tuple[AcceptedAttemptRun, ...]
+    rejected_draw_count: int = Field(ge=0)
+    generation_attempt_count: int = Field(gt=0)
     seed_token_count: int = Field(gt=0)
     seed_token_sequence_sha256: HexDigest
     seed_token_collision_count: Literal[0]
@@ -3391,12 +3479,19 @@ class ManifestPublication(StrictModel):
 ```
 
 `AcceptedAttemptRun` is the unique run-length encoding of every accepted draw
-in canonical source order. Runs start at zero, are contiguous and exactly cover
-`accepted_draw_count`; adjacent runs may not carry the same accepted attempt,
-and overlaps/gaps/zero-length runs are invalid. `ConstructionNamespaceEvidence`
-derives total IDs as base plus clock IDs and rejects any noncanonical attempt
+in canonical source order. A matched draw is one whole accepted cohort, not
+one member, so validation contains exactly 2,500 accepted draws; an independent
+draw is one episode, so the Phase 1 gate contains exactly 100,000. Runs start at
+zero, are contiguous and exactly cover `accepted_draw_count`; adjacent runs may
+not carry the same accepted attempt, and overlaps/gaps/zero-length runs are
+invalid. `ConstructionNamespaceEvidence` derives total IDs as base plus clock
+IDs, validates the exact non-boolean raw `public_id_seed` against
+`EvidenceProvenance.public_id_seed_sha256`, and rejects any noncanonical attempt
 run, count mismatch, collision, wrong generation-mode count law, or non-exact
-primitive type.
+primitive type. Derive `rejected_draw_count` as
+`sum(run.draw_count * run.accepted_attempt for run in accepted_attempt_runs)`
+and require `generation_attempt_count == accepted_draw_count +
+rejected_draw_count`; neither counter is trusted serialized arithmetic.
 
 Build ordered namespace digests with explicit length framing and distinct
 domains `silent-cascade/ofd-v1/construction-token-sequence/v1` and
@@ -3405,8 +3500,9 @@ cohort order followed by each cohort's exact 20-token stream order; independent
 token order is allocation-request order followed by each request's exact
 7-token order. Public-ID order is every base source ID in canonical source
 order, then clock suite order and parent order. Evidence builders consume
-actual regenerated bundle coordinates, accepted attempts, derived tokens, and
-emitted IDs—not configured counts or coordinate surrogates. Use fixed-width
+actual regenerated bundle coordinates, accepted attempts, the exact raw
+public-ID seed, derived tokens, and emitted IDs—not configured counts or
+coordinate surrogates. Use fixed-width
 token/UUID storage and a sorted adjacent-duplicate scan so the complete audit
 remains within its frozen memory ceiling.
 
@@ -3949,19 +4045,28 @@ Expose the sample selection and membership hashing algorithms through the four
 pure helpers named in this task. `check_reproducibility` calls those helpers
 directly. The final verifier separately invokes them against the verified
 validation manifest and the exact Phase 1 allocation/descriptor, then requires
-the recomputed digests to equal each report. A coordinated rewrite of a report
-digest cannot alter selection or membership. Remove the unused request from the
+the recomputed digests to equal each report. Editing a stored report digest—even
+with coordinated edits to that report's other membership fields—cannot alter
+the independently selected membership derived from the verified source; this
+is a bounded cross-check, not a claim against replacement of every trust
+anchor. Remove the unused request from the
 entry helper: its exact signature is `_entry_for(bundle: EpisodeBundle) ->
 CorpusDigestEntry`, and every caller passes only the regenerated bundle. Retain
 a real matched-manifest fresh-process regression rather than satisfying this
 gate through an injected fake runner.
 
 Every report includes namespace evidence built from the actual regeneration
-pass. Matched validation records exactly 2,500 accepted draws, 50,000 ordered
-construction tokens, 10,000 base IDs, and zero clock IDs. The independent gate
-records exactly 100,000 accepted draws, 700,000 ordered construction tokens,
+pass. Matched validation records raw public-ID seed `2026083002`, exactly 2,500
+accepted cohort draws, 50,000 ordered construction tokens, 10,000 base IDs, and
+zero clock IDs. The independent gate records raw public-ID seed `2026083012`,
+exactly 100,000 accepted episode draws, 700,000 ordered construction tokens,
 100,000 base IDs, and 7,000 clock IDs. Attempt runs and ordered sequence hashes
-must describe the actual bundles; all collision counts are exact zero.
+must describe the actual bundles; all collision counts are exact zero. Strict
+report validation checks each raw seed's provenance fingerprint. The matched
+validation reproducibility report is the canonical matched namespace summary;
+the oracle, leakage, and independent-reproducibility reports must independently
+construct byte-for-byte equal independent namespace summaries from the same
+100,000 accepted draws and 7,000 derived clock IDs.
 
 - [ ] **Step 5: Run GREEN checks**
 
@@ -4086,6 +4191,7 @@ class PositiveControlResult(StrictModel):
     split_membership_sha256: HexDigest
     balanced_accuracy: float | None
     holm_adjusted_p: float | None
+    probes: tuple[ShortcutProbeResult, ...]
     passed: bool
 
 
@@ -4166,6 +4272,7 @@ class CounterfactualCheckResult(StrictModel):
 class LeakageReport(StrictModel):
     schema_version: Literal["leakage-report-v2"]
     provenance: EvidenceProvenance
+    namespace_evidence: ConstructionNamespaceEvidence
     generation_mode: Literal["matched", "independent"]
     profile: LeakageAuditProfileName
     corpus_hash: HexDigest
@@ -4176,19 +4283,30 @@ class LeakageReport(StrictModel):
     episode_count: int
     randomization_block_count: int
     suite_path_denominators: dict[str, int]
+    construction_check_ids: tuple[str, ...]
     construction_checks: dict[str, bool]
     probes: tuple[ShortcutProbeResult, ...]
+    label_shuffled_probes: tuple[ShortcutProbeResult, ...]
     positive_controls: tuple[PositiveControlResult, ...]
     counterfactual_checks: tuple[CounterfactualCheckResult, ...]
     label_shuffled_control_passed: bool
     passed: bool
 ```
 
-Validate that `counterfactual_checks` contains each enum value exactly once in
-enum order. A check passes only with zero decision and temporal mismatches, and
-the overall report passes only when all three checks pass. A scientific-failure
-report retains nonzero counts and `passed=false`; corruption or a missing check
-raises instead of producing an incomplete report.
+This is the exact v2 extension of the current leakage evidence schema: no v1
+evidence field may disappear during migration. In particular,
+`PositiveControlResult.probes`, `LeakageReport.construction_check_ids`, and
+`LeakageReport.label_shuffled_probes` remain mandatory typed tuples, while
+`namespace_evidence` is added. Retain the existing strict validators that
+rederive the construction-check identity/map, complete ordered 27 clean probes,
+complete ordered 27 label-shuffled probes, every positive control's complete
+ordered nine-feature probe family, Holm values, detector identities, summary
+metrics, label-shuffled pass, and outer pass. Validate that
+`counterfactual_checks` contains each enum value exactly once in enum order. A
+check passes only with zero decision and temporal mismatches, and the overall
+report passes only when all three checks pass. A scientific-failure report
+retains nonzero counts and `passed=false`; corruption or a missing check raises
+instead of producing an incomplete report.
 
 Frame each pair key as SHA-256 of canonical JSON:
 
@@ -4779,6 +4897,7 @@ class ManifestFreezeReport(StrictModel):
 class OracleEvaluationReport(StrictModel):
     schema_version: Literal["oracle-evaluation-report-v2"]
     provenance: EvidenceProvenance
+    namespace_evidence: ConstructionNamespaceEvidence
     source_mode: Literal["manifest", "phase1_gate"]
     requested_episode_count: int
     verified_episode_count: int
@@ -4836,19 +4955,26 @@ passed = exact_binomial_p >= 0.001 and absolute_error <= 0.01
 ```
 
 The serialized values must equal those recomputed values. The oracle report
-likewise derives and cross-checks: requested and verified counts; the exact
-variant sum; the suite/path denominator sum; oracle success/failure sum;
+likewise derives and cross-checks: requested and verified episode counts; the
+exact variant sum; the suite/path denominator sum; oracle success/failure sum;
 positive and negative random totals; pooled random observed and expected rates;
 nonnegative clock, rejection, and generation counters;
-`generation_attempt_count == verified_episode_count + rejected_draw_count`;
-`rejected_draw_rate == rejected_draw_count / generation_attempt_count`; exact
-sum of rejection-reason counts; and outer `passed` from all invariant/oracle/
-collision/clock/random conditions. Every rejected draw appends one reason to
-the private rejection-reason sequence; storing only distinct reason names is
-invalid. The standalone verifier recomputes these relationships from exact
-primitive values even when handed unchecked/model-copy objects, so negative or
-self-consistent-but-wrong coordinated mutations fail through the public
-five-file boundary.
+`generation_attempt_count == namespace_evidence.accepted_draw_count +
+rejected_draw_count`; `rejected_draw_rate == rejected_draw_count /
+generation_attempt_count`; exact sum of rejection-reason counts; namespace
+generation mode/count/token/ID laws; equality of the top-level rejection and
+attempt counters to the namespace fields; and outer `passed` from all invariant/
+oracle/collision/clock/random conditions. For an independent source, an
+accepted draw is one episode; for a matched source, it is one complete cohort,
+so a 10,000-episode validation source has 2,500 accepted draws rather than
+10,000. Every rejected independent episode attempt or matched cohort attempt
+appends one reason to the private rejection-reason sequence; a matched failure
+is recorded once per cohort attempt, never once per member/candidate. Storing
+only distinct reason names is invalid. The standalone verifier recomputes every
+relationship derivable from primitive fields and verified artifacts, and
+cross-checks redundant evidence across the five-file boundary. It does not
+claim to detect an arbitrary coordinated rewrite that replaces all mutually
+consistent evidence and its authenticated source history.
 
 Production `freeze_validation` rejects any report tuple other than
 `(episode_count, cohort_count, positive, safe, disconnected) =
@@ -4972,7 +5098,11 @@ Derive actual construction tokens and public IDs from every accepted source
 draw in canonical order, using exactly 20 tokens per matched cohort or 7 per
 independent episode, and fail on a within-source collision. Rejection reason
 sequences contain one entry per rejected draw and must aggregate exactly to
-`rejected_draw_count`.
+`rejected_draw_count`; matched mode counts one rejected cohort attempt even
+when multiple member/candidate checks fail, while independent mode counts one
+rejected episode attempt. The accepted-attempt runs independently derive that
+count and require `generation_attempt_count == accepted_draw_count +
+rejected_draw_count`.
 The rolling `corpus_sha256` is Task 2's exact hash in canonical source order.
 For allocation mode it covers only the requested 100,000 base episodes; the
 reported paired clock checks are derived counterfactuals and are excluded.
@@ -5080,8 +5210,12 @@ corpus hashes. A complete consistent fixture set returns one canonical success
 object. Also mutate exact primitive report fields, rejection arithmetic,
 accepted-attempt runs, token/ID counts and hashes, sample-membership digests,
 analysis scope, source commit ancestry, historical plan base, and Git blob mode
-or content; each isolated and coordinated mutation must fail through the same
-five-file API.
+or content; each isolated mutation and every coordinated inconsistency that is
+rederivable from raw artifacts, frozen seeds/configuration/allocation,
+authenticated Git history, or another report must fail through the same
+five-file API. No test may assert the impossible guarantee that an arbitrary
+attacker-controlled, fully rewritten, internally consistent evidence set and
+its source history is detectable without an external trust anchor.
 
 - [ ] **Step 2: Run CLI tests and confirm RED**
 
@@ -5160,9 +5294,16 @@ downgrade, nonexistent revision, symlink/tree substitution, or current-
 worktree-only hash is invalid. It independently recomputes both reproducibility
 sample memberships through Task 14's pure functions and independently derives
 matched and independent accepted-attempt runs, construction-token sequences,
-base/clock public-ID sequences, and collision checks. The combined gate is
+base/clock public-ID sequences, and collision checks. It requires the exact raw
+matched validation public-ID seed `2026083002` and independent gate public-ID
+seed `2026083012`, recomputes their provenance fingerprints, and rederives every
+public ID from the authenticated coordinate, accepted attempt, and applicable
+raw seed. The oracle, leakage, and independent-reproducibility namespace
+summaries must be exactly equal; the matched validation reproducibility summary
+is independently derived from the verified manifest. The combined gate is
 exactly 750,000 tokens and 117,000 IDs, all collision-free. It recomputes every
-OracleEvaluationReport v2 relationship even for unchecked model copies.
+OracleEvaluationReport v2 relationship even for unchecked model copies and
+every derivable/cross-artifact relationship at the public five-file boundary.
 
 The verifier never checks out a revision, regenerates episode semantics,
 rewrites artifacts, or accesses the network. Its script adapter emits one
@@ -5176,6 +5317,8 @@ class Phase1GateVerificationResult(StrictModel):
     independent_episode_count: Literal[100_000]
     matched_accepted_draw_count: Literal[2_500]
     independent_accepted_draw_count: Literal[100_000]
+    matched_public_id_seed: Literal[2026083002]
+    independent_public_id_seed: Literal[2026083012]
     construction_token_count: Literal[750_000]
     public_id_count: Literal[117_000]
     validation_manifest_payload_sha256: HexDigest
@@ -5250,6 +5393,10 @@ or zero-foundation-model-call requirement.
 - Modify: `tests/unit/test_independent_generator.py`
 - Modify: `tests/unit/test_invariants.py`
 - Modify: `tests/unit/test_manifest.py`
+- Modify: `tests/unit/test_clock_scaling.py`
+- Modify: `tests/unit/test_leakage.py`
+- Modify: `tests/unit/test_stress_graphs.py`
+- Modify: `tests/unit/test_stress_terminals.py`
 - Modify: `tests/property/test_generator_properties.py`
 - Modify: `tests/integration/test_phase1_services.py`
 - Modify: `tests/integration/test_phase1_reproducibility.py`
@@ -5274,14 +5421,19 @@ it, and mutations to member, quartet, or variant fail. Add a structurally valid
 `FROZEN` allocation totaling 20,000 episodes with non-Phase-1 block boundaries
 and require generic generation/invariants to accept it. Add AST guards against
 `episode_index % 4` and `list.index(variant)` in generator, invariant, manifest,
-service, and reproducibility code.
+service, and reproducibility code. In `test_clock_scaling.py`,
+`test_leakage.py`, `test_stress_graphs.py`, and `test_stress_terminals.py`, add
+round-trip/mutation regressions proving every derived clock, audit, and stress
+coordinate preserves the explicit quartet member and never reconstructs it.
 
 - [ ] **Step 2: Run RED tests**
 
 ```bash
 uv run pytest -q tests/unit/test_episode.py tests/unit/test_generator_spec.py \
   tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
-  tests/unit/test_manifest.py tests/property/test_generator_properties.py \
+  tests/unit/test_manifest.py tests/unit/test_clock_scaling.py \
+  tests/unit/test_leakage.py tests/unit/test_stress_graphs.py \
+  tests/unit/test_stress_terminals.py tests/property/test_generator_properties.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py
 ```
@@ -5307,7 +5459,9 @@ validate their bound allocations and episode-index membership.
 ```bash
 uv run pytest -q tests/unit/test_episode.py tests/unit/test_generator_spec.py \
   tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
-  tests/unit/test_manifest.py tests/property/test_generator_properties.py \
+  tests/unit/test_manifest.py tests/unit/test_clock_scaling.py \
+  tests/unit/test_leakage.py tests/unit/test_stress_graphs.py \
+  tests/unit/test_stress_terminals.py tests/property/test_generator_properties.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py
 uv run ruff check src/silent_cascade/env/episode.py \
@@ -5317,6 +5471,8 @@ uv run ruff check src/silent_cascade/env/episode.py \
   src/silent_cascade/logging/manifest.py tests/unit/test_episode.py \
   tests/unit/test_generator_spec.py tests/unit/test_independent_generator.py \
   tests/unit/test_invariants.py tests/unit/test_manifest.py \
+  tests/unit/test_clock_scaling.py tests/unit/test_leakage.py \
+  tests/unit/test_stress_graphs.py tests/unit/test_stress_terminals.py \
   tests/property/test_generator_properties.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py
@@ -5334,6 +5490,8 @@ git add src/silent_cascade/env/episode.py src/silent_cascade/env/generator.py \
   src/silent_cascade/logging/manifest.py tests/unit/test_episode.py \
   tests/unit/test_generator_spec.py tests/unit/test_independent_generator.py \
   tests/unit/test_invariants.py tests/unit/test_manifest.py \
+  tests/unit/test_clock_scaling.py tests/unit/test_leakage.py \
+  tests/unit/test_stress_graphs.py tests/unit/test_stress_terminals.py \
   tests/property/test_generator_properties.py \
   tests/integration/test_phase1_services.py \
   tests/integration/test_phase1_reproducibility.py
@@ -5367,12 +5525,17 @@ git commit -m "fix: authenticate independent quartet coordinates"
 
 - [ ] **Step 1: Write timing and acceptance RED tests**
 
-Freeze pure timing known answers for difficulty, urgency, jitter, clamp, common
-scaling, infeasibility, and action-after-compose. Spy separately on oracle,
-generator, and invariant record/competitor derivation so none delegates graph
-reasoning to another. Force one counterfactual variant infeasible while the
-assigned variant is feasible and require the independent draw to reject; force
-one matched member infeasible and require the cohort to retry. Assert token
+Freeze pure timing known answers for difficulty, urgency, the exact
+`math.exp(jitter_normals[k] * jitter_log_std)` transformation, `math.fsum`
+accumulation, clamp, common scaling, infeasibility, and action-after-compose.
+Reject NaN/infinity in every input and intermediate and spy that the pure
+primitive has no RNG import/call. Spy separately on oracle, generator, and
+invariant record/competitor derivation so none delegates graph reasoning to
+another. Force one unassigned counterfactual variant infeasible while the
+assigned variant is feasible and require the independent draw to reject; for a
+matched member, force an unassigned candidate to fail each semantic, shape,
+leakage-prevention, and timing check in turn and require one whole-cohort retry
+per failed cohort attempt. Assert token
 order/count `20` and `7` including `TRACE_JITTER`. Add exact gate-root
 regressions for OOD-short episode `16219` (safe-negative) and `16500`
 (positive), and a streaming integration test that constructs all 24,000
@@ -5397,12 +5560,17 @@ and trace-scoring regressions fail against the previous implementation.
 
 Move only the timing equations into `env.timing`. Oracle, generator, and
 invariants independently derive ordered selected records and competitor counts,
-draw/rederive the exact jitter vector, and call the pure primitive. Before an
-independent attempt can be accepted, construct all three label counterfactuals
-from its unchanged nuisance draw and reinitialized `TRACE_JITTER` stream; reject
-unless all three actual schedules pass every timing condition. For a matched
-attempt, reject the complete cohort unless every actual member schedule passes.
-Include `TRACE_JITTER` in the accepted-draw token APIs in the frozen order.
+draw/rederive the exact finite jitter vector, and call the pure primitive. The
+primitive accepts that vector, uses `math.exp(jitter_normals[k] *
+jitter_log_std)` and stable `math.fsum` accumulation, and performs no RNG work.
+Before an independent attempt can be accepted, construct all three label
+counterfactuals from its unchanged nuisance draw and reinitialized
+`TRACE_JITTER` stream; reject unless all three candidates pass every retryable
+semantic, shape, leakage-prevention, and timing condition. For every matched
+member draw, do the same three-candidate check with identical member streams;
+reject the complete cohort once unless all twelve candidates pass, then select
+the allocation-assigned labels. Include `TRACE_JITTER` in the accepted-draw
+token APIs in the frozen order.
 Change oracle evaluation to build the authenticated base trace, score its
 actions, construct paired clock traces, and compare complete scaled outcomes.
 
@@ -5463,17 +5631,29 @@ git commit -m "fix: enforce feasible oracle trace schedules"
   module.
 - Bumps `ReproducibilityReport` to `phase1-reproducibility-v2` and
   `LeakageReport` to `leakage-report-v2`; stale v1 artifacts are invalid.
+- Preserves every current leakage evidence field and validator while adding
+  `namespace_evidence`; specifically, `PositiveControlResult.probes`,
+  `LeakageReport.construction_check_ids`, and
+  `LeakageReport.label_shuffled_probes` remain mandatory.
 
 - [ ] **Step 1: Write namespace-evidence RED tests**
 
-Test exact primitive types, empty/gapped/overlapping attempt runs, adjacent
-equal runs, incomplete coverage, wrong count sums, invalid digests, and
-nonzero collisions. Freeze domain-separated ordered-sequence known answers and
-prove order changes the hash. Mutate actual token or public-ID derivation while
-leaving coordinates/counts unchanged and require oracle, leakage, and
-reproducibility paths to fail. Test canonical run compression and verify that
-accepted retries appear exactly once per construction draw. Test schema-v1
-report rejection and exact fixture migration to v2.
+Test exact primitive types, raw public-ID seed/fingerprint binding,
+empty/gapped/overlapping attempt runs, adjacent equal runs, incomplete
+coverage, wrong count sums, invalid digests, and nonzero collisions. Freeze
+domain-separated ordered-sequence known answers and prove order changes the
+hash. Mutate actual token or public-ID derivation while leaving
+coordinates/counts unchanged and require oracle, leakage, and reproducibility
+paths to fail. Test canonical run compression and verify that accepted retries
+appear exactly once per construction draw: 2,500 matched cohort draws versus
+100,000 independent episode draws. A failed matched attempt contributes one
+rejection reason regardless of how many member counterfactuals fail. Test
+`rejected_draw_count == sum(draw_count * accepted_attempt)` and
+`generation_attempt_count == accepted_draw_count + rejected_draw_count`. Test
+schema-v1 report rejection and exact fixture migration to v2. Assert the v2
+leakage schema and strict validators retain the complete ordered 27 clean
+probes, 27 label-shuffled probes, `construction_check_ids`, and all nine
+positive controls with their complete nine-feature `probes` families.
 
 - [ ] **Step 2: Run RED tests**
 
@@ -5493,14 +5673,17 @@ fail while existing semantic generation remains unchanged.
 Implement the two strict models and helpers in `provenance.py`. Store each
 SHA-256 token as 32 fixed bytes and each UUID as 16 fixed bytes; preserve the
 canonical stream for framed hashing, sort a bounded copy, and scan adjacent
-values for collisions. Build run-length encoded attempts from actual regenerated
-cohorts/episodes. Add namespace evidence to every reproducibility report and
-derive it from the same bundles used for corpus comparison. Oracle and leakage
+values for collisions. Build run-length encoded attempts from actual
+regenerated cohorts/episodes and bind the exact raw public-ID seed plus its
+provenance fingerprint. Add the coherent namespace evidence object to oracle,
+leakage, matched reproducibility, and independent reproducibility reports and
+derive it from the same bundles used for each corpus. Oracle and leakage
 independently derive actual tokens and IDs and fail on collisions; leakage's
 `seed_tokens` construction check no longer accepts coordinate tuples. Include
 clock IDs in the independent public-ID evidence after base IDs in exact clock
-suite/parent order. Migrate strict fixtures to reproducibility/leakage v2 with
-no compatibility loader.
+suite/parent order. Preserve every v1 leakage evidence field and all existing
+strict all-nine/27-probe/derived-pass validators while migrating the outer
+schema to v2; there is no compatibility loader.
 
 - [ ] **Step 4: Run GREEN and resource checks**
 
@@ -5553,6 +5736,11 @@ git commit -m "fix: authenticate construction namespaces"
 - Modify: `tests/integration/test_phase1_reproducibility.py`
 - Modify: `tests/integration/test_phase1_reproducibility_script.py`
 - Modify: `tests/integration/test_phase1_gate_verifier.py`
+- Delete: `manifests/validation/v1/ofd-primary-10000.json`
+- Delete: `manifests/validation/v1/phase1-oracle-gate.json`
+- Delete: `manifests/validation/v1/phase1-leakage-gate.json`
+- Delete: `manifests/validation/v1/phase1-validation-reproducibility.json`
+- Delete: `manifests/validation/v1/phase1-independent-reproducibility-gate.json`
 
 **Interfaces:**
 
@@ -5566,10 +5754,19 @@ git commit -m "fix: authenticate construction namespaces"
 - [ ] **Step 1: Write report, membership, and Git-authentication RED tests**
 
 Mutate every `ExactRandomCheck` derived value/type/bound and each oracle outer
-count, sum, rate, reason, collision, clock, and pass field in isolation and in
-coordinated self-consistent groups; require strict model or verifier rejection.
+count, sum, rate, reason, collision, clock, and pass field in isolation. Add
+coordinated mutations for every relationship independently derivable from raw
+artifact content, frozen configuration/allocation, exact seeds, authenticated
+Git source, or another artifact, and require strict model or verifier rejection;
+do not claim detection of an arbitrary rewrite that consistently replaces all
+of those authorities.
 Expose the pure sample helpers, freeze their known answers, and coordinate-edit
 stored membership hashes to prove the verifier independently recomputes them.
+Build oracle, leakage, and independent-reproducibility fixtures over one source
+and require exact namespace-object equality; mutate one accepted-attempt run,
+raw seed, token/ID digest, or count in any single report and require rejection.
+Build the matched validation reproducibility fixture with 2,500 cohort draws and
+prove the verifier independently reconstructs its run/count equations.
 Create disposable Git histories that cover: exact source commit; descendant
 HEAD; unrelated/missing revision; plan changed before versus after source;
 worktree content diverging from committed blobs; missing path; and regular,
@@ -5594,10 +5791,14 @@ v2 gate, and one-argument entry tests fail.
 
 Add strict derived validators to `ExactRandomCheck` and
 `OracleEvaluationReport`, expand rejection reason sequences one item per draw,
-and migrate report construction to v2. Expose and reuse the pure selection and
-membership helpers; make the final verifier recompute both exact memberships
-from the verified manifest and frozen allocation/descriptor. Remove the unused
-request from `_entry_for` and keep the true subprocess path.
+and migrate report construction to v2 without dropping any current leakage
+field or validator. Enforce `generation_attempt_count ==
+namespace_evidence.accepted_draw_count + rejected_draw_count`; count matched
+acceptance/rejection per cohort draw and independent acceptance/rejection per
+episode draw. Expose and reuse the pure selection and membership helpers; make
+the final verifier recompute both exact memberships from the verified manifest
+and frozen allocation/descriptor. Remove the unused request from `_entry_for`
+and keep the true subprocess path.
 
 Resolve full Git commits and ancestry, derive the plan base as of source commit,
 read every exact generator/final-analysis file from regular Git blobs, and
@@ -5605,7 +5806,24 @@ recompute framed hashes without a checkout. In the final verifier require
 `phase1_analysis`, all exact v2 schemas, both namespace summaries, combined
 750,000-token/117,000-ID collision-free counts, every oracle derived
 relationship, both sample memberships, common provenance, corpus equality, and
-zero foundation calls. Reject every stale v1 artifact without migration.
+zero foundation calls. Require raw matched public-ID seed `2026083002` and raw
+independent public-ID seed `2026083012`, verify each provenance fingerprint,
+regenerate every base/clock ID from its authenticated coordinate, accepted
+attempt, and exact seed, and compare the complete ordered ID sequences/hashes.
+Require byte-for-byte equality of the independent namespace summaries in the
+oracle, leakage, and independent reproducibility reports; independently
+rederive the matched validation reproducibility summary. Reject every stale v1
+artifact without migration. Before running Step 4, delete exactly the five
+stale Task 18 artifacts so verification and both reviews exercise the same
+clean tree that will become the evidence collector HEAD:
+
+```bash
+git rm manifests/validation/v1/ofd-primary-10000.json \
+  manifests/validation/v1/phase1-oracle-gate.json \
+  manifests/validation/v1/phase1-leakage-gate.json \
+  manifests/validation/v1/phase1-validation-reproducibility.json \
+  manifests/validation/v1/phase1-independent-reproducibility-gate.json
+```
 
 - [ ] **Step 4: Run complete local verification**
 
@@ -5646,12 +5864,17 @@ git add src/silent_cascade/provenance.py src/silent_cascade/env/generator.py \
 git commit -m "fix: harden Phase 1 evidence verification"
 ```
 
-After both independent reviews pass for Correction Pass 4, commit deletion of
-only the five invalid Task 18 artifacts. Regenerate all of Task 18 Steps 1–9
-from that one clean reviewed source revision, including the all-nine leakage
-gate. Then repeat terminal artifact, whole-science, and whole-code audits; the
-root agent independently reruns the v2 verifier and `make verify` before any
-completion claim.
+The Pass 4 commit includes deletion of only the five invalid Task 18 artifacts;
+there is no unreviewed post-Pass-4 deletion commit. Both independent reviews
+therefore inspect a clean tree with those deletions. If review requires a fix,
+commit it and repeat both reviews; the final passing descendant is the
+"reviewed Pass 4 tip." Task 18's provenance collector must run at that exact
+tip/HEAD and record its full hash as `source_commit`. Regenerate all of Task 18
+Steps 1–9 from that exact collector HEAD, including the all-nine leakage gate.
+Then repeat
+terminal artifact, whole-science, and whole-code audits; the root agent
+independently reruns the v2 verifier and `make verify` before any completion
+claim.
 
 ---
 
@@ -5668,9 +5891,11 @@ completion claim.
 
 **Interfaces:**
 
-- Consumes: the clean committed and independently reviewed Correction Pass 4
-  revision and every prior Phase 1 API. All five earlier artifacts must already
-  be deleted as invalid evidence.
+- Consumes: the exact clean committed and independently reviewed Correction
+  Pass 4 tip `HEAD` (whose history already deletes the five invalid artifacts)
+  and every prior Phase 1 API. This exact hash is the Task 18 collector HEAD and
+  must be recorded as `source_commit` in every regenerated artifact; no later
+  source/deletion commit may intervene.
 - Produces: immutable validation/gate artifacts tied to source/config/generator
   hashes and the evidence required to start a Phase 2 plan.
 
@@ -5679,16 +5904,20 @@ completion claim.
 ```bash
 git status --short
 git diff --check
+evidence_source_commit="$(git rev-parse HEAD)"
 uv sync --locked --group dev
 make verify
 ```
 
 Expected: status/diff checks print nothing; locked sync, lint, all tests, doctor,
-and both package builds pass locally.
+and both package builds pass locally. Record the full
+`evidence_source_commit`; require it to be the independently reviewed Pass 4
+tip whose tree omits the stale artifacts. Every Step 2–7 collector must
+run without changing `HEAD` and must emit that exact full hash.
 
 - [ ] **Step 2: Create the fixed validation manifest once**
 
-Run from the clean, reviewed Correction Pass 4 revision:
+Run from the exact clean, reviewed `evidence_source_commit` captured in Step 1:
 
 ```bash
 uv run silent-cascade data freeze \
@@ -5755,6 +5984,7 @@ oracle ambiguities                         0
 actual construction-token collisions      0
 public-ID collisions                       0
 accepted construction draws                100000
+raw public-ID seed                          2026083012
 actual construction tokens                 700000
 base / clock public IDs                    100000 / 7000
 rejected draws / generation attempts       recorded / recorded
@@ -5771,8 +6001,11 @@ foundation-model calls                     0
 ```
 
 The report also records suite/path denominators, rejection reasons/rates,
-source commit/dirty state, config hash, generator version/source hash, corpus
-hash, and public-ID seed hash. It uses `oracle-evaluation-report-v2`, builds and
+exact `generation_attempt_count == 100000 + rejected_draw_count`, source
+commit/dirty state, config hash, generator version/source hash, corpus hash,
+the raw public-ID seed, and its fingerprint. It uses
+`oracle-evaluation-report-v2`, embeds complete independent
+`ConstructionNamespaceEvidence`, builds and
 scores the authenticated trace for every base episode, constructs and compares
 paired clock traces, and requires all 24,000 OOD-short traces—including exact
 indexes `16219` and `16500`—to be feasible after deterministic rejection.
@@ -5796,9 +6029,12 @@ every exact construction check, held-out probe, actual 700,000-token and
 107,000-ID namespace check,
 terminal-delay-swap, presentation-permutation, and paired-clock counterfactual,
 label-shuffled control, and injected-leak positive control passes. The report
-contains all three typed counterfactual result IDs exactly once. Any detector
-failure, missing stratum/check, underpowered test, or hash mismatch exits
-nonzero and blocks Phase 1.
+contains all three typed counterfactual result IDs exactly once, all mandatory
+v1-carried evidence (`construction_check_ids`, the complete 27-probe clean and
+label-shuffled families, and every positive control's nine-feature `probes`),
+and complete independent `ConstructionNamespaceEvidence` with raw seed
+`2026083012`. Any detector failure, missing stratum/check, underpowered test,
+or hash mismatch exits nonzero and blocks Phase 1.
 
 - [ ] **Step 6: Run and save deterministic generation-order checks**
 
@@ -5851,11 +6087,17 @@ selected 1,000 also match in every order/chunk/fresh-process mode. Any mismatch
 in either run exits nonzero and publishes no report.
 
 Require the oracle, leakage, and independent-reproducibility reports for the
-shared Phase 1 gate source to contain the identical Task 2 corpus SHA-256. A
-cross-report mismatch is an acceptance failure even when each report passes in
-isolation. The matched v2 report records 2,500 accepted cohort draws, 50,000
-tokens, and 10,000 base IDs. Both reports' sample-membership digests are
-independently recomputable through the frozen pure helper APIs.
+shared Phase 1 gate source to contain the identical Task 2 corpus SHA-256 and
+byte-for-byte identical independently built namespace evidence: raw seed
+`2026083012`, 100,000 accepted episode draws, canonical attempt runs, 700,000
+tokens, 100,000 base IDs, and 7,000 clock IDs. A cross-report mismatch is an
+acceptance failure even when each report passes in isolation. The matched v2
+report records raw seed `2026083002`, 2,500 accepted cohort draws, canonical
+cohort-attempt runs, 50,000 tokens, and 10,000 base IDs. For both modes,
+generation attempts equal accepted draws plus rejected draws and each rejected
+matched cohort attempt is counted once, not per member. Both reports'
+sample-membership digests are independently recomputable through the frozen
+pure helper APIs.
 
 - [ ] **Step 7: Run final local verification**
 
@@ -5878,13 +6120,18 @@ tests, and diff check pass locally. The verifier emits
 `phase1-gate-verification-v2`, authenticates historical Git blobs and the
 historical plan base, requires final `phase1_analysis` scope, independently
 recomputes both sample memberships and both namespace summaries, and confirms
-the combined 750,000 tokens and 117,000 IDs have zero collisions.
+the combined 750,000 tokens and 117,000 IDs have zero collisions. It requires
+raw public-ID seeds `2026083002` and `2026083012`, verifies their fingerprints,
+rederives every base/clock ID from the authenticated coordinate and accepted
+attempt, and requires every artifact's full `source_commit` to equal the Step 1
+`evidence_source_commit` collector HEAD.
 
 - [ ] **Step 8: Record the completed Phase 1 gate and commit artifacts**
 
 Update the Phase 1 row in `docs/PLAN.md` from its planned gate to the exact
-artifact hashes and source revision recorded by the five artifacts. Do not add
-benchmark claims.
+artifact hashes and the Step 1 `evidence_source_commit` recorded by all five
+artifacts. This later evidence/docs commit is not itself the collector source
+revision. Do not add benchmark claims.
 
 ```bash
 git add manifests/validation/v1/ofd-primary-10000.json \
@@ -5910,7 +6157,9 @@ git log --reverse --oneline "${phase1_plan_base_revision}..HEAD"
 Expected: the complete local gate passes, status is clean, and history contains
 the reviewed Phase 1 commits. The resolved value must match
 `plan_base_revision` in every evidence report; report the actual commit count
-rather than assuming one.
+rather than assuming one. The five evidence artifacts must still name the full
+Step 1 `evidence_source_commit` (the reviewed Pass 4 collector HEAD), not the
+later Task 18 evidence commit or whichever commit is current during replay.
 
 ## Phase 1 Completion Boundary
 
@@ -5919,9 +6168,12 @@ Phase 1 is complete only when all of the following are simultaneously true:
 1. strict public projection contains no private scorer/generator/oracle truth;
 2. all primary and declared stress data generators pass their independent
    invariants;
-3. the hand-authored oracle fixtures and generated corpus agree exactly, every
-   accepted primary draw is label-blind trace-feasible, and all 24,000
-   OOD-short gate traces build and score through their authenticated jitter;
+3. the hand-authored oracle fixtures and generated corpus agree exactly; every
+   accepted matched member and independent episode passes all retry-causing
+   semantic, shape, leakage-prevention, and exact timing checks for its complete
+   positive/safe/disconnected counterfactual family before label selection; and
+   all 24,000 OOD-short gate traces build and score through their authenticated
+   jitter;
 4. the fixed 10,000 validation manifest is immutable and fully regenerable;
 5. exactly 100,000 unique accepted episodes from the episode-local independent
    recipe pass independent invariants;
@@ -5931,15 +6183,22 @@ Phase 1 is complete only when all of the following are simultaneously true:
 8. all clean leakage probes pass and every injected leak is detected;
 9. namespace evidence derives exactly 50,000 matched plus 700,000 independent
    construction tokens and 10,000 matched plus 107,000 independent public IDs,
-   and all 750,000 tokens and 117,000 IDs have zero collisions;
+   binds exact raw public-ID seeds `2026083002` and `2026083012` to their
+   fingerprints, records 2,500 matched cohort draws and 100,000 independent
+   episode draws, derives attempts as accepted plus rejected draws, and all
+   750,000 tokens and 117,000 IDs have zero collisions;
 10. `make verify` passes locally with zero foundation-model calls;
 11. matched-validation and independent-allocation v2 reproducibility reports
     both pass, including all 100,000 independent source entries, canonical
-    accepted-attempt runs, and independently recomputed sample memberships;
+    accepted-attempt runs, independently recomputed sample memberships, and
+    namespace evidence coherent with the oracle/leakage reports;
 12. no final frozen-test manifest exists and Phase 6 needs no new episode
     generator implementation; and
 13. every v2 report and the final verifier derives its own pass state and
-    rejects coordinated inconsistent evidence;
+    rejects every inconsistency derivable from raw artifacts, exact frozen
+    seeds/configuration/allocation, authenticated Git history, or redundant
+    cross-artifact evidence, without claiming detection after replacement of
+    all trust anchors;
 14. every evidence source commit, historical plan base, generator hash, and
     final-analysis hash is authenticated from regular Git blobs without a
     checkout, and every artifact uses `phase1_analysis`; and
@@ -5990,7 +6249,9 @@ specification.
 - [ ] The random baseline accepts only `PublicEpisode`.
 - [ ] The oracle accepts only public facts for graph solving.
 - [ ] Generator acceptance is label-blind across all three primary variants,
-  and oracle/generator/invariants independently derive inputs to the same pure
+  for every matched member and independent nuisance draw; every retry-causing
+  semantic/shape/leakage/timing check precedes label selection, and oracle/
+  generator/invariants independently derive inputs to the same RNG-free pure
   trace-timing math.
 - [ ] Manifest access class, not path, controls private inspection.
 - [ ] Existing identical manifests are verified without rewriting.
@@ -5999,11 +6260,19 @@ specification.
   denominator, and all entries pass the independent reproducibility gate.
 - [ ] Both v2 reproducibility reports contain canonical accepted-attempt runs
   and actual ordered token/ID namespace evidence; the final verifier rederives
-  all 750,000 tokens and 117,000 IDs and both sample memberships.
+  all 750,000 tokens and 117,000 IDs from exact raw public-ID seeds
+  `2026083002`/`2026083012`, coordinates, and accepted attempts, and rederives
+  both sample memberships.
+- [ ] `PositiveControlResult.probes`, `LeakageReport.construction_check_ids`,
+  `LeakageReport.label_shuffled_probes`, all nine positive controls, and both
+  complete ordered 27-probe families survive the v2 migration and strict
+  derived validators.
 - [ ] Oracle/random arithmetic and pass flags are derived under strict exact
   schemas and independently recomputed at the five-artifact boundary.
 - [ ] Evidence revisions, historical plan base, and both source fingerprints
   are recomputed from regular Git blobs at the authenticated source commit.
+- [ ] The reviewed Pass 4 commit both removes the stale artifacts and is the
+  exact collector HEAD/source commit for every regenerated Task 18 artifact.
 - [ ] Random positive and negative strata pass separately; no pooled binomial
   law is used.
 - [ ] No final frozen tests, neural/runtime code, hosted automation, or Qwen code

@@ -33,34 +33,58 @@ passes. Independent requests and coordinates carry exact
 `quartet_member_index`; generic invariants authenticate its allocation-label
 relation while allocation-owning services authenticate block membership. A
 neutral pure timing primitive owns the exact difficulty/urgency/jitter/clamp/
-common-scale calculation; independent acceptance checks the complete positive,
-safe-negative, and disconnected-negative counterfactual family with a
-reinitialized `TRACE_JITTER` stream, matched acceptance checks every member,
-and the oracle gate builds/scores actual base and paired-clock traces. Accepted
-construction evidence includes `TRACE_JITTER`, yielding exactly 20 tokens per
-matched cohort and 7 per independent episode.
+common-scale calculation without RNG and uses the provided finite jitter values
+through `math.exp` plus stable `math.fsum` accumulation. For every matched and
+independent member nuisance draw, acceptance checks the complete positive,
+safe-negative, and disconnected-negative counterfactual family under identical
+member streams, including reinitialized `TRACE_JITTER`, and runs every
+retry-causing semantic, shape, leakage-prevention, and timing check before
+selecting the allocation-assigned label. A matched failure rejects one whole
+cohort attempt and contributes one rejection reason; an independent failure
+rejects only that episode attempt. Post-ID invariant disagreement is fatal and
+never a retry. The oracle gate builds/scores actual base and paired-clock
+traces. Accepted construction evidence includes `TRACE_JITTER`, yielding
+exactly 20 tokens per matched cohort and 7 per independent episode.
 
 Strict canonical attempt runs and actual ordered namespace digests must record
-2,500 matched draws / 50,000 tokens / 10,000 base IDs and 100,000 independent
-draws / 700,000 tokens / 100,000 base plus 7,000 clock IDs. The final verifier
-rederives both summaries and requires all combined 750,000 tokens and 117,000
-IDs to be collision-free. Oracle/random fields and pass state become derived
-v2 evidence. Historical Git authentication resolves full commits, ancestry,
-the plan base as of the source commit, and framed generator/final-analysis
-hashes from regular Git blobs without checkout. Pure sample-selection and
-membership helpers let the verifier recompute both report memberships; the
-unused worker parameter is removed and real matched subprocess coverage stays.
+2,500 matched cohort draws / 50,000 tokens / 10,000 base IDs under raw public-ID
+seed `2026083002`, and 100,000 independent episode draws / 700,000 tokens /
+100,000 base plus 7,000 clock IDs under raw seed `2026083012`. Every namespace
+object binds its raw seed to the provenance fingerprint
+(`0454fca622eb08379a5d88ecbe0a5ef70f6a15e9ca7d333acecf840f2df38802`
+matched and
+`f21ac562825bfd96e875eedf90c8ba5ed09883ebe2c18449843b03acebec778a`
+independent). Oracle, leakage, and
+independent reproducibility must independently emit equal independent summaries;
+validation reproducibility owns the matched summary. For either mode,
+generation attempts equal accepted draws plus rejected draws. The final
+verifier rederives all IDs from raw seeds, coordinates, and accepted attempts,
+rederives both summaries, and requires all combined 750,000 tokens and 117,000
+IDs to be collision-free. Oracle/random fields and pass state become derived v2
+evidence. Historical Git authentication resolves full commits, ancestry, the
+plan base as of the source commit, and framed generator/final-analysis hashes
+from regular Git blobs without checkout. Pure sample-selection and membership
+helpers let the verifier recompute both report memberships; the unused worker
+parameter is removed and real matched subprocess coverage stays. This verifies
+every derivable and redundant cross-artifact relationship; it does not promise
+to detect replacement of all mutually consistent artifacts and trust anchors.
 
 The exact new outer schemas are `phase1-reproducibility-v2`,
 `oracle-evaluation-report-v2`, `leakage-report-v2`, and
-`phase1-gate-verification-v2`; stale v1 acceptance artifacts have no
-compatibility path. Generator version `ofd-v1` and episode/manifest schema 1
-remain unchanged because this correction changes evidence authentication, not
-the OFD semantic generator. All five `c8486ae` artifacts are invalid and must
-be deleted, then regenerated in full—including the all-nine leakage gate—from
-one clean reviewed source revision. This ruling changes no scientific setting,
-seed, denominator, control, threshold, resource ceiling, or exact
-zero-foundation-model-call requirement.
+`phase1-gate-verification-v2`; v2 leakage preserves
+`PositiveControlResult.probes`, `construction_check_ids`,
+`label_shuffled_probes`, and all existing all-nine/27-probe validators. Stale v1
+acceptance artifacts have no compatibility path. Generator version `ofd-v1`
+and episode/manifest schema 1 are retained solely as a pre-completion
+replacement: Phase 1 has not released, construction/rejection semantics and
+private coordinate/schema fields do change, and every earlier artifact is
+invalid. The OFD task and public distributions do not change. The reviewed
+Pass 4 commit must include deletion of all five stale artifacts so the exact
+clean final reviewed Pass 4 tip (including any re-reviewed fix descendants) is
+also the Task 18 collector HEAD; all evidence is then regenerated in
+full—including the all-nine leakage gate—from that hash. This
+ruling changes no frozen seed, denominator, control, threshold, resource
+ceiling, or exact zero-foundation-model-call requirement.
 
 ## 2026-09-05 — Phase 1 executed-package initializer provenance closure
 
