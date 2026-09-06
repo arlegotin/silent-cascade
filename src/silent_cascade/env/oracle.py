@@ -742,7 +742,7 @@ def build_oracle_trace(
         zip(event_specs, schedule.non_action_deltas, strict=True)
     ):
         kind, selected_id, before, after, _ = spec
-        current_time = math.fsum((current_time, delta))
+        current_time = math.fsum((activation_time, *schedule.non_action_deltas[: index + 1]))
         steps.append(
             OracleTraceStep(
                 trace_step_id=index,
@@ -755,6 +755,8 @@ def build_oracle_trace(
                 focus_after=after,
             )
         )
+    if not steps or current_time != schedule.terminal_compose_time:
+        raise OracleError("oracle terminal composition disagrees with timing schedule")
 
     actions: tuple[Action, ...] = ()
     if solution.terminal_kind is OracleTerminalKind.HAZARD:

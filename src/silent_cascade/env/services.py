@@ -4,6 +4,7 @@ This module is also the only Phase 1 seam which binds the isolated generator,
 manifest, oracle, and leakage-audit services into publishable evidence.
 """
 
+import math
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -76,7 +77,6 @@ from silent_cascade.env.reward import (
     random_baseline_actions,
     score_actions,
 )
-from silent_cascade.env.timing import action_window
 from silent_cascade.errors import (
     ArtifactError,
     AtomicWriteError,
@@ -120,6 +120,9 @@ from silent_cascade.rng import (
 from silent_cascade.validation import StrictModel
 
 type HexDigest = str
+
+_CLOCK_TRACE_REL_TOLERANCE = 1.0e-12
+_CLOCK_TRACE_ABS_TOLERANCE = 1.0e-9
 
 
 class ConfigSelection(StrictModel):
@@ -1060,22 +1063,7 @@ def evaluate_oracle(
         from silent_cascade.env.oracle import verify_oracle_truth
 
         verify_oracle_truth(solution, bundle.truth)
-        if bundle.truth.recipe.parent_public_id is not None:
-            if manifest is None:
-                raise ValueError("clock child requires its authenticated manifest parent")
-            entry = manifest_entries_by_id.get(bundle.public.init.episode_public_id)
-            if entry is None:
-                raise ValueError("clock child is absent from its manifest")
-            parent = _regenerate_manifest_clock_parent(resolved.config, manifest, entry)
-            parent_solution = solve_public_episode(
-                parent.public,
-                _oracle_policy_for_suite(parent.truth.recipe.evaluation_suite),
-            )
-            parent_trace = _build_authenticated_trace(parent, parent_solution)
-            factor = bundle.truth.episode_delay / parent.truth.episode_delay
-            trace = scale_oracle_trace(parent_trace, factor)
-        else:
-            trace = _build_authenticated_trace(bundle, solution)
+        trace = _build_authenticated_trace(bundle, solution)
         if not score_actions(bundle.truth, trace.actions).timed_success:
             raise ValueError("oracle action disagrees with scorer")
         random_score = score_actions(
@@ -1312,6 +1300,8 @@ def _make_manifest_clock_pairs(
 
 
 def _clock_decision_matches(parent: EpisodeBundle, child: EpisodeBundle) -> bool:
+    """Compare independent paired traces with explicit float-time tolerances."""
+
     parent_solution = solve_public_episode(parent.public)
     child_solution = solve_public_episode(child.public)
     if (
@@ -1320,70 +1310,104 @@ def _clock_decision_matches(parent: EpisodeBundle, child: EpisodeBundle) -> bool
         parent_solution.link_record_ids,
         parent_solution.terminal_record_id,
         parent_solution.hazard_type,
+        parent_solution.superseded_terminal_record_ids,
     ) != (
         child_solution.terminal_kind,
         child_solution.node_path,
         child_solution.link_record_ids,
         child_solution.terminal_record_id,
         child_solution.hazard_type,
+        child_solution.superseded_terminal_record_ids,
     ):
         return False
-    if parent_solution.public_delay is None:
-        return child_solution.public_delay is None
-    if child_solution.public_delay is None:
-        return False
-    parent_window = action_window(
-        parent.public.events[-1].timestamp,
-        parent_solution.public_delay,
-        parent.truth.recipe.oracle_timing,
-    )
-    child_window = action_window(
-        child.public.events[-1].timestamp,
-        child_solution.public_delay,
-        child.truth.recipe.oracle_timing,
-    )
-    parent_ratios = tuple(
-        (value - parent.public.events[-1].timestamp) / parent_solution.public_delay
-        for value in (parent_window.start, parent_window.target, parent_window.end)
-    )
-    child_ratios = tuple(
-        (value - child.public.events[-1].timestamp) / child_solution.public_delay
-        for value in (child_window.start, child_window.target, child_window.end)
-    )
-    if not all(
-        abs(left - right) <= 1.0e-12
-        for left, right in zip(parent_ratios, child_ratios, strict=True)
-    ):
-        return False
-    factor = child.truth.episode_delay / parent.truth.episode_delay
-    parent_trace = _build_authenticated_trace(parent, parent_solution)
-    child_trace = scale_oracle_trace(parent_trace, factor)
+    factor = child.truth.recipe.clock_scale
     if (
-        not score_actions(parent.truth, parent_trace.actions).timed_success
+        parent.truth.recipe.clock_scale != 1.0
+        or parent.truth.recipe.parent_public_id is not None
+        or child.truth.recipe.parent_public_id != parent.public.init.episode_public_id
+    ):
+        return False
+    if (parent_solution.public_delay is None) != (child_solution.public_delay is None):
+        return False
+    if parent_solution.public_delay is not None:
+        assert child_solution.public_delay is not None
+        if not math.isclose(
+            child_solution.public_delay,
+            parent_solution.public_delay * factor,
+            rel_tol=_CLOCK_TRACE_REL_TOLERANCE,
+            abs_tol=_CLOCK_TRACE_ABS_TOLERANCE,
+        ):
+            return False
+
+    parent_trace = _build_authenticated_trace(parent, parent_solution)
+    child_trace = _build_authenticated_trace(child, child_solution)
+    scaled_parent_trace = scale_oracle_trace(parent_trace, factor)
+    if (
+        parent_trace.solution != parent_solution
+        or child_trace.solution != child_solution
+        or not score_actions(parent.truth, parent_trace.actions).timed_success
         or not score_actions(child.truth, child_trace.actions).timed_success
     ):
         return False
-    return all(
-        child_step.timestamp == parent_step.timestamp * factor
-        and child_step.delta == parent_step.delta * factor
-        and (
-            child_step.kind,
-            child_step.selected_record_id,
-            child_step.focus_before,
-            child_step.focus_after,
-        )
-        == (
-            parent_step.kind,
-            parent_step.selected_record_id,
-            parent_step.focus_before,
-            parent_step.focus_after,
-        )
-        for parent_step, child_step in zip(
-            parent_trace.steps,
-            child_trace.steps,
-            strict=True,
-        )
-    )
+    if len(scaled_parent_trace.steps) != len(child_trace.steps) or len(
+        scaled_parent_trace.actions
+    ) != len(child_trace.actions):
+        return False
+    for scaled_step, child_step in zip(
+        scaled_parent_trace.steps,
+        child_trace.steps,
+        strict=True,
+    ):
+        if (
+            (
+                scaled_step.trace_step_id,
+                scaled_step.parent_trace_step_id,
+                scaled_step.kind,
+                scaled_step.selected_record_id,
+                scaled_step.focus_before,
+                scaled_step.focus_after,
+            )
+            != (
+                child_step.trace_step_id,
+                child_step.parent_trace_step_id,
+                child_step.kind,
+                child_step.selected_record_id,
+                child_step.focus_before,
+                child_step.focus_after,
+            )
+            or not math.isclose(
+                child_step.timestamp,
+                scaled_step.timestamp,
+                rel_tol=_CLOCK_TRACE_REL_TOLERANCE,
+                abs_tol=_CLOCK_TRACE_ABS_TOLERANCE,
+            )
+            or not math.isclose(
+                child_step.delta,
+                scaled_step.delta,
+                rel_tol=_CLOCK_TRACE_REL_TOLERANCE,
+                abs_tol=_CLOCK_TRACE_ABS_TOLERANCE,
+            )
+        ):
+            return False
+    for scaled_action, child_action in zip(
+        scaled_parent_trace.actions,
+        child_trace.actions,
+        strict=True,
+    ):
+        if (
+            scaled_action.hazard_type,
+            scaled_action.caused_by_event_id,
+        ) != (
+            child_action.hazard_type,
+            child_action.caused_by_event_id,
+        ) or not math.isclose(
+            child_action.timestamp,
+            scaled_action.timestamp,
+            rel_tol=_CLOCK_TRACE_REL_TOLERANCE,
+            abs_tol=_CLOCK_TRACE_ABS_TOLERANCE,
+        ):
+            return False
+    return True
 
 
 def _bind_independent_audit_source(

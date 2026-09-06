@@ -2,7 +2,9 @@
 
 import inspect
 import math
+import sys
 from dataclasses import replace
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -858,6 +860,102 @@ def test_oracle_derives_graph_inputs_then_delegates_only_timing_math(
         )
     )
     assert trace.steps[-2].timestamp == schedule.terminal_compose_time  # type: ignore[union-attr]
+
+
+def test_oracle_materializes_each_event_from_activation_plus_prefix_fsum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Iterative timestamp addition can drift from the authoritative schedule prefix."""
+    import silent_cascade.env.oracle as oracle_module
+
+    deltas = (0.1,) * 8
+    schedule = timing_module.TraceTimingSchedule(
+        non_action_deltas=deltas,
+        terminal_compose_time=math.fsum((100.0, *deltas)),
+        action_target_time=119.8,
+    )
+    monkeypatch.setattr(
+        oracle_module,
+        "build_trace_timing_schedule",
+        lambda **_kwargs: schedule,
+    )
+
+    trace = oracle_module.build_oracle_trace(
+        positive_public(),
+        solve_public_episode(positive_public()),
+        ExternalEvent(99, 124.0, ExternalEventKind.OUTCOME, None),
+        OracleTimingConfig(jitter_log_std=0.0),
+        np.random.default_rng(1),
+    )
+
+    assert tuple(step.timestamp for step in trace.steps[:-1]) == tuple(
+        math.fsum((100.0, *deltas[:index])) for index in range(1, len(deltas) + 1)
+    )
+    assert trace.steps[-2].timestamp == schedule.terminal_compose_time
+
+
+def test_oracle_rejects_a_schedule_whose_terminal_time_disagrees_with_its_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The oracle must not publish a trace detached from its timing contract."""
+    import silent_cascade.env.oracle as oracle_module
+
+    deltas = (0.1,) * 8
+    monkeypatch.setattr(
+        oracle_module,
+        "build_trace_timing_schedule",
+        lambda **_kwargs: timing_module.TraceTimingSchedule(
+            non_action_deltas=deltas,
+            terminal_compose_time=100.81,
+            action_target_time=119.8,
+        ),
+    )
+
+    with pytest.raises(OracleError, match="terminal composition"):
+        oracle_module.build_oracle_trace(
+            positive_public(),
+            solve_public_episode(positive_public()),
+            ExternalEvent(99, 124.0, ExternalEventKind.OUTCOME, None),
+            OracleTimingConfig(jitter_log_std=0.0),
+            np.random.default_rng(1),
+        )
+
+
+def test_neutral_trace_timing_has_no_rng_import_or_runtime_dependency() -> None:
+    """The shared equation primitive must remain independent of RNG implementations."""
+    function = timing_module.build_trace_timing_schedule
+    rng_modules = {"numpy", "random", "secrets"}
+    global_dependencies = {
+        value.__name__.partition(".")[0]
+        for value in function.__globals__.values()
+        if isinstance(value, ModuleType)
+    } | {
+        module.partition(".")[0]
+        for value in function.__globals__.values()
+        if (module := getattr(value, "__module__", None)) is not None
+    }
+    assert global_dependencies.isdisjoint(rng_modules)
+
+    runtime_calls: set[str] = set()
+
+    def observe(frame: object, event: str, _arg: object) -> None:
+        if event == "call":
+            module = frame.f_globals.get("__name__", "")  # type: ignore[union-attr]
+            runtime_calls.add(module.partition(".")[0])
+
+    prior = sys.getprofile()
+    sys.setprofile(observe)
+    try:
+        function(
+            activation_time=10.0,
+            delay=20.0,
+            competitive_counts=(0, 1),
+            jitter_normals=(0.25, -0.5),
+            timing=OracleTimingConfig(),
+        )
+    finally:
+        sys.setprofile(prior)
+    assert runtime_calls.isdisjoint(rng_modules)
 
 
 def test_nondefault_timing_controls_compression_target_and_feasibility() -> None:

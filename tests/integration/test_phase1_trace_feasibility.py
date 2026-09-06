@@ -1,5 +1,6 @@
 """Acceptance-scale regressions for exact Phase 1 oracle trace feasibility."""
 
+import math
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from silent_cascade.rng import (
     SeedStream,
     independent_local_generator,
 )
+from silent_cascade.schemas import InternalEventKind
 
 _GATE_ROOT_SEED = 2026083011
 _GATE_PUBLIC_ID_SEED = 2026083012
@@ -64,6 +66,39 @@ def test_all_frozen_ood_short_draws_build_exact_authenticated_oracle_traces(
             bundle.truth.recipe.oracle_timing,
             _trace_rng(bundle),
         )
+        non_action_steps = tuple(
+            step for step in trace.steps if step.kind is not InternalEventKind.ACT
+        )
+        trace_delay = bundle.truth.private_terminal.timestamp - bundle.truth.activation_time
+        prefix_deltas: list[float] = []
+        for step in non_action_steps:
+            prefix_deltas.append(step.delta)
+            assert (
+                bundle.truth.recipe.oracle_timing.delta_min
+                <= step.delta
+                <= bundle.truth.recipe.oracle_timing.delta_max
+            )
+            assert step.timestamp == math.fsum((bundle.truth.activation_time, *prefix_deltas))
+        assert non_action_steps[-1].timestamp <= math.fsum(
+            (
+                bundle.truth.activation_time,
+                bundle.truth.recipe.oracle_timing.terminal_compose_fraction * trace_delay,
+            )
+        )
+        if bundle.truth.recipe.variant is EpisodeVariant.POSITIVE:
+            expected_target = math.fsum(
+                (
+                    bundle.truth.activation_time,
+                    bundle.truth.recipe.oracle_timing.action_target_fraction * trace_delay,
+                )
+            )
+            assert trace.steps[-1].kind is InternalEventKind.ACT
+            assert trace.steps[-1].timestamp == expected_target
+            assert trace.steps[-1].delta == (expected_target - non_action_steps[-1].timestamp)
+            assert trace.actions[0].timestamp == expected_target
+        else:
+            assert trace.steps == non_action_steps
+            assert trace.actions == ()
         assert score_actions(bundle.truth, trace.actions).timed_success
         count += 1
         if request.episode_index in {16219, 16500}:

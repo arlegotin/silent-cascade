@@ -1301,12 +1301,17 @@ def test_oracle_service_builds_and_scores_authenticated_traces(
     assert all(actions in scored_actions for actions in built_actions)
 
 
+@pytest.mark.parametrize(
+    "clock_suite",
+    (SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X),
+)
 def test_oracle_service_builds_parent_traces_and_scales_clock_traces(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    clock_suite: SuiteName, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Decision-only clock checks cannot authenticate the complete paired event schedule."""
     import silent_cascade.env.oracle as oracle_module
     import silent_cascade.env.services as services
+    from silent_cascade.env.episode import EpisodeVariant
     from silent_cascade.env.services import (
         ConfigSelection,
         ManifestCorpusSource,
@@ -1316,17 +1321,32 @@ def test_oracle_service_builds_parent_traces_and_scales_clock_traces(
     )
     from silent_cascade.logging.manifest import publish_manifest
 
-    manifest, _parents = _clock_manifest()
+    manifest, parents = _clock_manifest(clock_suite)
     path = tmp_path / "clock-trace-manifest.json"
     publish_manifest(path, manifest)
-    scaled: list[float] = []
+    built: list[tuple[object, object, object]] = []
+    scaled: list[tuple[object, float]] = []
+    scored: list[tuple[object, object]] = []
+    real_build = services._build_authenticated_trace
     real_scale = oracle_module.scale_oracle_trace
+    real_score = services.score_actions
+
+    def build(bundle: object, solution: object):
+        trace = real_build(bundle, solution)  # type: ignore[arg-type]
+        built.append((bundle, solution, trace))
+        return trace
 
     def scale(trace: object, factor: float):
-        scaled.append(factor)
+        scaled.append((trace, factor))
         return real_scale(trace, factor)  # type: ignore[arg-type]
 
+    def score(truth: object, actions: object):
+        scored.append((truth, actions))
+        return real_score(truth, actions)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(services, "_build_authenticated_trace", build)
     monkeypatch.setattr(services, "scale_oracle_trace", scale)
+    monkeypatch.setattr(services, "score_actions", score)
 
     def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
         del kwargs
@@ -1348,8 +1368,65 @@ def test_oracle_service_builds_parent_traces_and_scales_clock_traces(
         ),
     )
 
-    assert len(scaled) >= 8
-    assert scaled == pytest.approx([0.1] * len(scaled))
+    child_ids = tuple(entry.episode_public_id for entry in manifest.entries)
+    parent_ids = tuple(parent.public.init.episode_public_id for parent in parents)
+    expected_build_ids = (
+        *child_ids,
+        *(public_id for pair in zip(parent_ids, child_ids, strict=True) for public_id in pair),
+    )
+    assert tuple(item[0].public.init.episode_public_id for item in built) == expected_build_ids  # type: ignore[union-attr]
+    assert all(item[2].solution is item[1] for item in built)  # type: ignore[union-attr]
+    assert len(scaled) == len(manifest.entries)
+    for pair_index, (scaled_trace, factor) in enumerate(scaled):
+        parent_build = built[len(child_ids) + 2 * pair_index]
+        child_build = built[len(child_ids) + 2 * pair_index + 1]
+        assert scaled_trace is parent_build[2]
+        assert factor == child_build[0].truth.recipe.clock_scale  # type: ignore[union-attr]
+
+    assert len(scored) == 4 * len(manifest.entries)
+    for index, child_build in enumerate(built[: len(child_ids)]):
+        truth, actions = scored[2 * index]
+        assert truth is child_build[0].truth  # type: ignore[union-attr]
+        assert actions is child_build[2].actions  # type: ignore[union-attr]
+    paired_score_offset = 2 * len(manifest.entries)
+    for pair_index in range(len(manifest.entries)):
+        parent_build = built[len(child_ids) + 2 * pair_index]
+        child_build = built[len(child_ids) + 2 * pair_index + 1]
+        parent_score = scored[paired_score_offset + 2 * pair_index]
+        child_score = scored[paired_score_offset + 2 * pair_index + 1]
+        assert parent_score[0] is parent_build[0].truth  # type: ignore[union-attr]
+        assert parent_score[1] is parent_build[2].actions  # type: ignore[union-attr]
+        assert child_score[0] is child_build[0].truth  # type: ignore[union-attr]
+        assert child_score[1] is child_build[2].actions  # type: ignore[union-attr]
+
+    assert {parent.truth.recipe.variant for parent in parents} == {
+        EpisodeVariant.POSITIVE,
+        EpisodeVariant.SAFE_NEGATIVE,
+        EpisodeVariant.DISCONNECTED_NEGATIVE,
+    }
+
+
+def test_clock_trace_comparison_rejects_corrupted_child_timing() -> None:
+    """Scaling only the parent trace would conceal a corrupted child scheduler."""
+    import silent_cascade.env.services as services
+    from silent_cascade.env.episode import scale_episode_time
+
+    manifest, parents = _clock_manifest()
+    entry = manifest.entries[0]
+    parent = parents[0]
+    child = scale_episode_time(parent, entry.suite, entry.episode_public_id)
+    child_timing = child.truth.recipe.oracle_timing.model_copy(
+        update={"delta_0": child.truth.recipe.oracle_timing.delta_0 * 1.5}
+    )
+    corrupted = replace(
+        child,
+        truth=replace(
+            child.truth,
+            recipe=replace(child.truth.recipe, oracle_timing=child_timing),
+        ),
+    )
+
+    assert not services._clock_decision_matches(parent, corrupted)
 
 
 def test_manifest_oracle_authenticates_every_regenerated_entry_before_publication(
@@ -2281,7 +2358,9 @@ def _small_access_manifest(
     )
 
 
-def _clock_manifest():
+def _clock_manifest(
+    target_suite: SuiteName = SuiteName.CLOCK_SCALE_0_1X,
+):
     from silent_cascade.env.episode import episode_sha256, scale_episode_time
     from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
     from silent_cascade.logging.manifest import (
@@ -2308,18 +2387,18 @@ def _clock_manifest():
             IndependentPublicIdKey(
                 generator_version="ofd-v1",
                 split_namespace=SplitNamespace.DEBUG,
-                suite=SuiteName.CLOCK_SCALE_0_1X,
+                suite=target_suite,
                 public_id_seed=91,
                 episode_index=request.episode_index,
                 accepted_attempt=parent.truth.recipe.accepted_attempt,
             )
         )
-        child = scale_episode_time(parent, SuiteName.CLOCK_SCALE_0_1X, child_id)
+        child = scale_episode_time(parent, target_suite, child_id)
         entries.append(
             EpisodeManifestEntry(
                 episode_public_id=child_id,
                 split_namespace=SplitNamespace.DEBUG,
-                suite=SuiteName.CLOCK_SCALE_0_1X,
+                suite=target_suite,
                 coordinate=IndependentManifestCoordinate(
                     episode_index=request.episode_index,
                     allocation_quartet_index=request.allocation_quartet_index,
@@ -2330,7 +2409,7 @@ def _clock_manifest():
                 episode_sha256=episode_sha256(child),
                 parent_public_id=parent.public.init.episode_public_id,
                 parent_episode_sha256=episode_sha256(parent),
-                clock_scale=0.1,
+                clock_scale=(0.1 if target_suite is SuiteName.CLOCK_SCALE_0_1X else 10.0),
             )
         )
     return (
@@ -2339,7 +2418,7 @@ def _clock_manifest():
             experiment_version="v1",
             access_class=ManifestAccessClass.DEBUG,
             provenance=provenance,
-            suite=SuiteName.CLOCK_SCALE_0_1X,
+            suite=target_suite,
             public_id_seed=91,
             episode_count=len(entries),
             entries=tuple(entries),
