@@ -26,9 +26,12 @@ Ruff, and `uv`.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`
 
-**Plan status:** **Draft — implementation starts only after the user explicitly
-approves this Phase 1 plan in the task thread.** The canonical design is already
-approved; this document freezes the Phase 1 implementation details.
+**Plan status:** **Approved and in execution.** The final whole-phase audit
+invalidated the previous Task 18 artifacts and requires the four corrective
+implementation passes in this plan before Task 18 is rerun. The canonical
+design and this Phase 1 plan are approved; the corrections strengthen evidence
+authentication without changing a scientific setting, denominator, control,
+threshold, seed, or the zero-foundation-model-call rule.
 
 ## Execution Preconditions and Superpowers Workflow
 
@@ -66,8 +69,12 @@ best answer.
   calls. No Phase 1 command downloads a model or accesses the network.
 - CI/CD remains disabled. Run every lint, test, doctor, gate, and package build
   locally; `make verify` remains the complete routine quality gate.
-- Use `generator_version = "ofd-v1"` and `schema_version = 1`. Changing either
-  requires an explicit schema/version migration and a deviations entry.
+- Use `generator_version = "ofd-v1"` and episode/manifest
+  `schema_version = 1`. Evidence reports use the exact versioned literals
+  declared by their owning tasks: Phase 1 reproducibility, oracle evaluation,
+  leakage, and final gate verification are all v2 after the final audit
+  correction. Changing generator or episode/manifest schema semantics requires
+  an explicit migration and a deviations entry.
 - Use `max_entities=64`, four hazard types, primary memory capacity `64`, an
   EventFlow event ceiling of `64`, and a scheduled-opportunity ceiling of
   `25,000` in the primary data contract.
@@ -234,6 +241,14 @@ class AllocationLabelKey:
     requested_path_length: int
     allocation_quartet_index: int
 ```
+
+Independent allocation identity is explicit and stable even when an episode
+block begins at an index not divisible by four. Both
+`IndependentEpisodeRequest` and `IndependentEpisodeCoordinate` carry
+`quartet_member_index: int` in `0..3`. The assigned variant is exactly
+`allocate_independent_variants(AllocationLabelKey(...))[quartet_member_index]`.
+No implementation may reconstruct that member with `episode_index % 4`, a
+rank, `list.index(variant)`, or an assumed production block boundary.
 
 `AllocationLabelKey` selects only a permutation of `[P,P,S,D]`; no episode
 generator consumes it. Each `IndependentCounterSeedKey` serializes the same way
@@ -404,13 +419,18 @@ episodes, excluding clock transforms:
 | Distractor flood | 24,000 | 8,000 each for 2, 3, 4 | 6,000 |
 
 Every allocation quartet assigns two positives, one safe-negative, and one
-disconnected-negative, but its four episodes share no nuisance draw. Iteration
-is lexicographic by the table's suite order, requested path length, and local
-episode ordinal. Episode indices are monotonic within each suite, so chunking
-cannot change a key. The first episode index for each path block is the sum of
+disconnected-negative, but its four episodes share no nuisance draw. Every
+independent block contains a positive multiple of four episodes; quartets are
+formed from consecutive local offsets `0..3` within that block, regardless of
+the block's absolute first episode index. Iteration is lexicographic by the
+table's suite order, requested path length, and local episode ordinal. Episode
+indices are monotonic within each suite, so chunking cannot change a key. The
+first episode index for each path block in the Phase 1 gate is the sum of
 earlier same-suite block sizes: IID/short/flood use `0, 8000, 16000`; OOD depth
-uses `0, 4000, 8000, 12000`; OOD long uses `0, 4000, 8000`. Validation remains
-matched and uses cohort starts `0, 834, 1667`.
+uses `0, 4000, 8000, 12000`; OOD long uses `0, 4000, 8000`. Those boundaries
+belong to the Phase 1 gate allocation, not to generic independent or `FROZEN`
+invariant semantics. Validation remains matched and uses cohort starts
+`0, 834, 1667`.
 
 Within the 24,000 IID gate episodes, select the first `1668`, `1668`, and
 `1664` episodes inside path-length blocks 2, 3, and 4 (5,000 parents) for
@@ -445,6 +465,7 @@ class IndependentEpisodeRequest:
     requested_path_length: int
     variant: EpisodeVariant
     allocation_quartet_index: int
+    quartet_member_index: int       # exact 0..3 position in this quartet
 ```
 
 Exact signatures are
@@ -459,13 +480,75 @@ IndependentEpisodeRequest, public_id_seed: int) -> EpisodeBundle`.
 The validation iterator emits 834, 833, and 833 cohorts for lengths 2, 3, and
 4 respectively, for exactly 10,000 matched episodes. The gate iterator emits
 the 100,000 independent requests in the frozen table. For each consecutive
-four indices inside a suite/path block, `AllocationLabelKey` chooses one of the
-12 unique permutations of `[P,P,S,D]`; the assigned variant is stored in the
-private request, never derived by the episode generator or exposed publicly.
+four local offsets inside a suite/path block, `AllocationLabelKey` chooses one
+of the 12 unique permutations of `[P,P,S,D]`; the request stores both the exact
+`quartet_member_index` and the variant at that position. The generator checks
+that identity but never derives or resamples it, and neither value is exposed
+publicly. A generic non-aligned DEBUG block and a future 20,000-episode
+canonical-total `FROZEN` allocation use these same semantics without adding a
+generator algorithm or importing Phase 1 gate block boundaries.
 Tasks 6–9 contain both complete algorithms. There is no Phase 1 Bernoulli
 training sampler or batching API. Phase 3 consumes oracle traces and may wrap
 this frozen independent primitive for online batches without changing its
 episode semantics.
+
+### Label-blind trace feasibility
+
+The difficulty/urgency/jitter/clamp/common-scale calculation is one neutral,
+pure timing primitive in `env.timing`; it accepts only activation time, delay,
+the ordered competitive-record counts, an already drawn jitter vector, and
+`OracleTimingConfig`. It has no graph, record, variant, truth, generator, or
+oracle dependency:
+
+```python
+@dataclass(frozen=True, slots=True)
+class TraceTimingSchedule:
+    non_action_deltas: tuple[float, ...]
+    terminal_compose_time: float
+    action_target_time: float
+
+
+def build_trace_timing_schedule(
+    *,
+    activation_time: float,
+    delay: float,
+    competitive_counts: tuple[int, ...],
+    jitter_normals: tuple[float, ...],
+    timing: OracleTimingConfig,
+) -> TraceTimingSchedule: ...
+```
+
+The primitive implements Section 8.3 exactly. It requires equal nonempty count
+and jitter tuples, exact nonnegative integer counts, finite inputs, every final
+non-action delta at least `delta_min`, terminal composition no later than
+`activation_time + terminal_compose_fraction * delay`, and
+`action_target_time == activation_time + action_target_fraction * delay`
+strictly after terminal composition. It raises
+`OracleError("oracle trace is temporally infeasible")` otherwise. Oracle,
+generator, and the independent invariant analyzer each derive their own
+relevant records and competitive counts before calling it; generator and
+invariants do not import `env.oracle`.
+
+Before accepting an independent primary attempt, the generator constructs the
+complete positive, safe-negative, and disconnected-negative counterfactual
+family from the same nuisance attempt. It reinitializes the exact
+`TRACE_JITTER` stream for each member, derives each member's actual schedule,
+and rejects the draw unless all three schedules are legal. The request's label
+is applied only after this family-wide decision. Matched generation rejects the
+whole cohort unless every member's actual trace schedule is legal. The
+independent invariant validator reconstructs the assigned member's exact
+schedule from public facts, explicit quartet provenance, and a rederived
+authenticated jitter stream. These checks freeze OOD-short regressions at gate
+episode indexes `16219` (safe-negative) and `16500` (positive) and exhaustively
+require all 24,000 OOD-short Phase 1 gate traces to build after deterministic
+rejection/resampling.
+
+`TRACE_JITTER` is construction evidence because it affects acceptance. The
+accepted-attempt token order is exactly cohort-scoped `LABEL`, `TEMPLATE`,
+`STRUCTURE`, `TIMESTAMPS`, then for each matched member `0..3` its
+`NODE_PERMUTATION`, `TERMINALS`, `PRESENTATION`, `TRACE_JITTER` tokens (20 per
+matched cohort); independent order is `TEMPLATE`, `STRUCTURE`, `TIMESTAMPS`,
+`NODE_PERMUTATION`, `TERMINALS`, `PRESENTATION`, `TRACE_JITTER` (7 per episode).
 
 ## Phase 1 File Map
 
@@ -474,7 +557,7 @@ episode semantics.
 | `configs/data/primary.yaml` | Exact primary distributions, suites, timing constants, retry bound, and gate allocation. |
 | `configs/data/stress.yaml` | Exact adversarial generation settings; no runtime/event-engine behavior. |
 | `src/silent_cascade/errors.py` | Typed Phase 1 schema, generation, oracle, scoring, leakage, and manifest errors. |
-| `src/silent_cascade/provenance.py` | Shared evidence provenance and exact scientific source-tree fingerprints. |
+| `src/silent_cascade/provenance.py` | Shared evidence provenance, construction-namespace witnesses, and exact scientific source-tree fingerprints. |
 | `src/silent_cascade/rng.py` | Domain-separated counter digest and local PCG64DXSM construction. |
 | `src/silent_cascade/schemas.py` | Agent-visible enums, fact/event payloads, records, hypotheses, and actions. |
 | `src/silent_cascade/env/__init__.py` | Side-effect-free environment package boundary. |
@@ -483,6 +566,7 @@ episode semantics.
 | `src/silent_cascade/env/invariants.py` | Independent generator-invariant analysis and mutation-safe validation. |
 | `src/silent_cascade/env/generator.py` | Matched-validation, independent claim-data, and stress-suite generation with bounded deterministic rejection. |
 | `src/silent_cascade/env/oracle.py` | Facts-derived graph oracle, unique cognitive trace, and target timing. |
+| `src/silent_cascade/env/timing.py` | Pure action-window and exact trace-schedule timing primitives shared without graph logic. |
 | `src/silent_cascade/env/reward.py` | Half-open scoring, diagnostic random policy, and analytic expectation. |
 | `src/silent_cascade/env/leakage.py` | Exact construction checks, shortcut probes, positive controls, and streaming audit. |
 | `src/silent_cascade/env/services.py` | Freeze, inspect, oracle-evaluate, leakage-audit, and gate orchestration. |
@@ -512,6 +596,8 @@ episode semantics.
 | `tests/integration/test_cli_phase1.py` | All four nested CLI surfaces and failure semantics. |
 | `tests/integration/test_phase1_services.py` | Freeze/regenerate/inspect/evaluate/audit service path. |
 | `tests/integration/test_phase1_reproducibility.py` | Small process/order/chunk reproducibility profile. |
+| `tests/integration/test_phase1_reproducibility_script.py` | Real adapter/fresh-process reproducibility boundary. |
+| `tests/integration/test_phase1_trace_feasibility.py` | Exact-index and exhaustive 24,000-row OOD-short trace-feasibility gate. |
 | `tests/integration/test_phase1_gate_verifier.py` | Cross-artifact provenance, count, counterfactual, and corpus-hash gate. |
 | `tests/regression/test_phase1_fixtures.py` | Exact hand-authored episode/oracle trace regression. |
 | `tests/regression/test_import_boundaries.py` | Public/private and oracle import boundaries. |
@@ -1339,6 +1425,7 @@ class IndependentEpisodeCoordinate:
     mode: Literal["independent"]
     episode_index: int
     allocation_quartet_index: int
+    quartet_member_index: int
 
 
 type EpisodeCoordinate = MatchedEpisodeCoordinate | IndependentEpisodeCoordinate
@@ -1398,7 +1485,8 @@ class EpisodeBundle:
 ```
 
 Validate chronological public events, exactly one final activation, private
-terminal kind/timestamp, discriminated coordinate bounds, recipe consistency,
+terminal kind/timestamp, discriminated coordinate bounds (including exact
+non-boolean `quartet_member_index` in `0..3`), recipe consistency,
 and the absence of
 private terminal events from `PublicEpisode.events`. Validate that stress
 metadata is absent for primary suites, that over-capacity count is present only
@@ -1699,9 +1787,13 @@ ruling. Implement `PublicIdBatchKey` with generator version, split, suite,
 128-bit public-ID seed, cohort index, and attempt, and
 `allocate_public_ids(key: PublicIdBatchKey) -> tuple[str, str, str, str]` with
 the byte framing/HMAC algorithm and both known-answer vectors in the frozen
-ruling. Add a focused 10,000-token unit collision test. The complete
-100,000-token namespace collision test belongs only to Task 18's acceptance
-profile, not routine `make verify`.
+ruling. Add a focused 10,000-token unit collision test. Unit tests exercise
+bounded samples only. Task 18 derives the complete namespace evidence from
+accepted draws and requires exactly 50,000 matched tokens plus 700,000
+independent tokens, and 10,000 matched base IDs plus 100,000 independent base
+IDs and 7,000 independent clock IDs: 750,000 construction tokens and 117,000
+public IDs with zero within-source or cross-split collisions. Coordinate tuples
+are not seed tokens and may not substitute for these actual derived values.
 
 Implement the independent path beside—not by overloading—the cohort path.
 `derive_independent_counter_seed` uses the exact independent domain and payload
@@ -1928,8 +2020,10 @@ git commit -m "feat: score OFD actions and random policy"
 
 **Files:**
 
+- Modify: `src/silent_cascade/env/timing.py`
 - Create: `src/silent_cascade/env/oracle.py`
 - Create: `tests/fixtures/phase1/oracle_cases.json`
+- Modify: `tests/unit/test_reward.py`
 - Create: `tests/unit/test_oracle.py`
 - Create: `tests/regression/test_phase1_fixtures.py`
 
@@ -1937,7 +2031,8 @@ git commit -m "feat: score OFD actions and random policy"
 
 - Consumes: public events, private terminal horizon for trace timing, local
   `trace_jitter` RNG, and Task 4 scoring.
-- Produces: `OraclePolicy`, `OracleTerminalKind`, `OracleSolution`, `OracleTraceStep`,
+- Produces: `TraceTimingSchedule`, `build_trace_timing_schedule`,
+  `OraclePolicy`, `OracleTerminalKind`, `OracleSolution`, `OracleTraceStep`,
   `OracleTrace`, `solve_public_episode`, `build_oracle_trace`,
   `scale_oracle_trace`, `verify_oracle_truth`, and `oracle_actions`.
 
@@ -2093,7 +2188,11 @@ the resolved timing configuration:
 terminal_horizon: ExternalEvent, timing: OracleTimingConfig,
 rng: np.random.Generator) -> OracleTrace`.
 
-For each non-action step `k`, compute:
+The oracle independently selects records and computes the ordered
+`competitive_counts`; it draws exactly one finite standard-normal jitter value
+per non-action step from the supplied RNG. It then calls the frozen neutral
+`build_trace_timing_schedule` API rather than reimplementing the equations.
+Inside that pure primitive, for each non-action step `k`, compute:
 
 ```python
 compose_deadline = activation_time + timing.terminal_compose_fraction * delay
@@ -2122,6 +2221,13 @@ scaled interval would be below `timing.delta_min`, raise
 `OracleError("oracle trace is temporally infeasible")`.
 Do not clamp individual intervals after common scaling because that would alter
 their ratios.
+
+The primitive additionally validates its complete output: each final delta is
+at least `delta_min`, terminal composition is no later than the configured
+fraction, and the exact action target follows terminal composition. The
+generator and invariant analyzer later derive their own selected records and
+competitor counts and call the same math primitive without importing the
+oracle.
 
 Trace contract:
 
@@ -2158,8 +2264,8 @@ normalized action window remain unchanged.
 
 ```bash
 uv run pytest -q tests/unit/test_oracle.py tests/regression/test_phase1_fixtures.py tests/unit/test_reward.py
-uv run ruff check src/silent_cascade/env/oracle.py tests/unit/test_oracle.py tests/regression/test_phase1_fixtures.py
-uv run ruff format --check src/silent_cascade/env/oracle.py tests/unit/test_oracle.py tests/regression/test_phase1_fixtures.py
+uv run ruff check src/silent_cascade/env/timing.py src/silent_cascade/env/oracle.py tests/unit/test_oracle.py tests/unit/test_reward.py tests/regression/test_phase1_fixtures.py
+uv run ruff format --check src/silent_cascade/env/timing.py src/silent_cascade/env/oracle.py tests/unit/test_oracle.py tests/unit/test_reward.py tests/regression/test_phase1_fixtures.py
 ```
 
 Expected: all oracle, fixture, and scoring tests pass.
@@ -2167,8 +2273,9 @@ Expected: all oracle, fixture, and scoring tests pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/silent_cascade/env/oracle.py tests/fixtures/phase1/oracle_cases.json \
-  tests/unit/test_oracle.py tests/regression/test_phase1_fixtures.py
+git add src/silent_cascade/env/timing.py src/silent_cascade/env/oracle.py \
+  tests/fixtures/phase1/oracle_cases.json tests/unit/test_oracle.py \
+  tests/unit/test_reward.py tests/regression/test_phase1_fixtures.py
 git commit -m "feat: add independent OFD graph oracle"
 ```
 
@@ -2238,10 +2345,14 @@ Also assert the exact validation cohort starts `0,834,1667`, independent gate
 episode starts, clock nested counts, exact quartet composition, suite axes,
 inclusive integer/log-uniform real sampling, stable iteration under chunking,
 one shared validation timestamp-gap template, and one validation two-class
-hazard multiset. Construct valid 8- and 16-episode `DEBUG` allocations and
-prove the generic iterators accept them; separately prove the two production
-allocation validators reject those test allocations and accept only their
-corresponding exact frozen constant.
+hazard multiset. Construct valid 8- and 16-episode `DEBUG` allocations,
+including a block whose first episode index is nonzero and not divisible by
+four, and prove the generic iterators emit explicit member indices `0..3` and
+accept them. Construct a generic `FROZEN` allocation with the canonical 20,000
+total episodes but deliberately different block boundaries and prove structural
+validation accepts it without importing the Phase 1 gate layout. Separately
+prove the two production allocation validators reject those test allocations
+and accept only their corresponding exact frozen constant.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
@@ -2340,7 +2451,8 @@ clock IID parents:  (2,0,1668,668), (3,8000,1668,668), (4,16000,1664,664)
 The Pydantic allocation models are structurally reusable: they reject
 overlapping same-suite indices, unsupported paths, nonpositive counts,
 independent counts not divisible by four, and non-nested clock counts, but do
-not hard-code a corpus total. `validate_validation_allocation(allocation,
+not hard-code a corpus total or require a block's first episode index to be
+divisible by four. `validate_validation_allocation(allocation,
 config)` and `validate_phase1_gate_allocation(allocation, config)` are separate
 production guards. The former requires `VALIDATION_ALLOCATION` to contain
 exactly 2,500 matched cohorts; the latter requires
@@ -2372,11 +2484,14 @@ def iter_cohort_requests(
 ```
 
 `iter_independent_requests` walks `EpisodeBlock`s identically at episode
-granularity. Within each consecutive group of four inside one block, it derives one
-`AllocationLabelKey`, assigns the selected `[P,P,S,D]` permutation, and emits
-four requests with the same private `allocation_quartet_index`. A quartet never
-crosses a suite/path block boundary, and quartet indices remain unique across
-the allocation. It is a fixed
+granularity. Within each consecutive group of four local offsets inside one
+block, it derives one `AllocationLabelKey`, assigns the selected `[P,P,S,D]`
+permutation, and emits four requests with the same private
+`allocation_quartet_index` and explicit `quartet_member_index` values `0..3`.
+The variant is exactly `variants[quartet_member_index]`. A quartet never crosses
+a suite/path block boundary, and quartet indices remain unique across the
+allocation. Neither absolute episode-index alignment nor the assigned variant
+is used to recover member identity. It is a fixed
 stratified design: neither request order nor allocation labels are public, and
 each request later receives disjoint episode-local nuisance streams.
 `iter_phase1_gate_requests(root_seed)` is a thin exact wrapper around
@@ -2435,6 +2550,9 @@ class GenerationCohort:
     rejections: tuple[RejectionDiagnostic, ...]
 ```
 
+`seed_tokens` is the exact 20-token accepted-attempt sequence frozen under
+label-blind trace feasibility, including one `TRACE_JITTER` token per member.
+
 Exact signatures are `generate_matched_cohort(config: Phase1Config, request:
 CohortRequest, public_id_seed: int) -> GenerationCohort` and
 `regenerate_matched_episode(config: Phase1Config, request: CohortRequest,
@@ -2486,7 +2604,8 @@ For each attempt up to `max_generation_attempts`:
    assign `ACTIVATE` ID `N`, and reserve private-terminal ID `N+1`;
 7. bind the shared strictly increasing gap template and activation gap;
 8. create private terminal/window truth and set `accepted_attempt=attempt`;
-9. run generator-local shape checks on all four members; if any fails, discard
+9. reinitialize each member's `TRACE_JITTER` stream, derive its exact actual
+   schedule, and run generator-local shape checks on all four members; if any fails, discard
    the entire cohort and continue at the next attempt;
 10. only after all local checks pass, allocate the four public IDs using the
     accepted attempt, bind the immutable bundles, and return the cohort.
@@ -2501,7 +2620,9 @@ selects exactly one member. No online Bernoulli training API is exported;
 Task 9 adds the separately named independent primitive used by gate/frozen
 allocations.
 
-On exhaustion, raise `GenerationError` with an opaque SHA-256 of the private
+Every bundle's rejection-reason sequence contains one stable reason for each
+rejected construction draw represented by its `rejection_count`; do not store
+only distinct reason keys. On exhaustion, raise `GenerationError` with an opaque SHA-256 of the private
 cohort key, attempt count, and aggregated rejection reasons. Its serializable
 context never contains root seed, split, index, or variant. Do not expose richer
 internal diagnostics through a public episode callback or inspection result.
@@ -2596,6 +2717,15 @@ path length, distractor legality, timing, memory capacity, private truth/window
 consistency, and unique record-level trace. It returns a frozen aggregate
 report and raises on the first invalid episode in strict mode.
 
+For independent bundles it authenticates the allocation label from the
+explicit `(suite, requested_path_length, allocation_quartet_index,
+quartet_member_index)` tuple and the `AllocationLabelKey`. It never uses
+`episode_index % 4`, an assigned-variant rank, or Phase 1 gate block boundaries.
+Allocation-owning services—not generic episode invariants—authenticate whether
+an episode index belongs to a declared block. It also independently reconstructs
+the assigned episode's selected records, competitor counts, exact jitter stream,
+and final trace schedule through the neutral timing primitive.
+
 `validate_cohort_invariants` additionally requires exact shared path length,
 delay, distractor count, observation duration/gap template, activation gap,
 hazard class/delay multiset, total/per-kind counts, and LINK-only
@@ -2673,10 +2803,14 @@ def independent_seed_tokens(
 ) -> tuple[str, ...]: ...
 ```
 
+`independent_seed_tokens` returns exactly seven tokens in the frozen order,
+including the accepted attempt's `TRACE_JITTER` token.
+
 - [ ] **Step 1: Write failing independent-allocation and construction tests**
 
 Assert the exact 100,000-request suite/path/variant allocation, monotonic
-episode indices, quartet label composition, and clock-parent counts. For each
+episode indices, explicit quartet member indices, quartet label composition,
+and clock-parent counts. For each
 generated episode assert exact terminal counts, requested reachability/path,
 fact capacity, post-permutation IDs, private/public separation, oracle truth,
 and independent invariants. Record every RNG key consumed by four requests in
@@ -2721,7 +2855,9 @@ Expected: the independent construction/regeneration APIs are absent.
 
 For each request and attempt up to `max_generation_attempts`:
 
-1. derive only `IndependentCounterSeedKey`s containing that episode index;
+1. authenticate the request's explicit member and variant against
+   `allocate_independent_variants(AllocationLabelKey(...))`, then derive only
+   `IndependentCounterSeedKey`s containing that episode index;
 2. sample the suite-specific delay, distractor count, complete unlabeled LINK
    topology, observation gaps, activation gap, and terminal-class multiset;
 3. sample a 64-entity bijection and apply it to the episode's own topology;
@@ -2730,17 +2866,23 @@ For each request and attempt up to `max_generation_attempts`:
    answer-correlated structural cue;
 5. independently permute the completed facts, then assign contiguous FACT IDs,
    activation ID, and private-terminal ID;
-6. compute feasible oracle timing and private scorer truth, rejecting the draw
-   if the legal minimum trace cannot fit;
+6. before applying the requested label, construct positive, safe-negative, and
+   disconnected-negative counterfactuals from this same nuisance attempt,
+   reinitialize the same `TRACE_JITTER` stream for each, derive each member's
+   records/competitor counts independently of `env.oracle`, and call
+   `build_trace_timing_schedule`; reject the draw unless all three complete
+   actual schedules are legal, then compute the assigned member's scorer truth;
 7. run generator-local shape checks; on a normal draw rejection, discard only
    this episode and increment its attempt;
 8. allocate the single public ID only after a draw passes, construct an
-   `IndependentEpisodeCoordinate`, and run Task 8's independent invariant
+   `IndependentEpisodeCoordinate` carrying `quartet_member_index`, and run Task 8's independent invariant
    analyzer. An invariant disagreement is a code defect and raises immediately
    rather than becoming another sampling retry.
 
-The variant comes only from `IndependentEpisodeRequest`; generation must never
-infer or resample it. No nuisance seed contains `allocation_quartet_index`, so
+The variant and member position come only from `IndependentEpisodeRequest` and
+must match the allocation-label permutation; generation must never infer,
+rank-recover, or resample them. No nuisance seed contains
+`allocation_quartet_index`, so
 quartets create exact labels but no shared template, timing, class, or
 presentation variable. An exhausted request raises a privacy-safe
 `GenerationError` containing an opaque request hash and aggregate rejection
@@ -2754,7 +2896,10 @@ same code path, invariant set, serialization schema, and regeneration API are
 used; namespace separation must change seed/ID tokens. There is no
 `generate_frozen_episode` function. Phase 6 may construct an
 `IndependentAllocation` with its predeclared suite counts and frozen roots,
-then call this primitive only.
+then call this primitive only. Add a 20,000-episode-total `FROZEN` allocation
+with different valid block boundaries and prove invariants authenticate the
+explicit quartet/member/variant relationship without consulting the Phase 1
+gate block table.
 
 - [ ] **Step 5: Run GREEN checks**
 
@@ -3081,7 +3226,8 @@ git commit -m "feat: add terminal and timing stress suites"
 - Consumes: Phase 0 hashing/no-clobber I/O, Task 2 artifact identities, source
   revision, resolved configuration hash, and independent public ID seed.
 - Produces from `provenance`: `SourceTreeFingerprint`,
-  `EvidenceProvenance`, `GENERATOR_SOURCE_PATHS`,
+  `EvidenceProvenance`, `AcceptedAttemptRun`,
+  `ConstructionNamespaceEvidence`, `GENERATOR_SOURCE_PATHS`,
   `PHASE1_ANALYSIS_SOURCE_PATHS`, `TASK14_ANALYSIS_SOURCE_PATHS`,
   `source_tree_sha256`, `EvidenceProvenanceCollector`,
   `collect_evidence_provenance`, and `collect_final_phase1_provenance`.
@@ -3137,6 +3283,27 @@ class ManifestAccessClass(str, Enum):
 
 
 HexDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class AcceptedAttemptRun(StrictModel):
+    first_draw_index: int = Field(ge=0)
+    draw_count: int = Field(gt=0)
+    accepted_attempt: int = Field(ge=0, lt=1_000)
+
+
+class ConstructionNamespaceEvidence(StrictModel):
+    schema_version: Literal["construction-namespace-evidence-v1"]
+    generation_mode: Literal["matched", "independent"]
+    accepted_draw_count: int = Field(gt=0)
+    accepted_attempt_runs: tuple[AcceptedAttemptRun, ...]
+    seed_token_count: int = Field(gt=0)
+    seed_token_sequence_sha256: HexDigest
+    seed_token_collision_count: Literal[0]
+    base_public_id_count: int = Field(gt=0)
+    clock_public_id_count: int = Field(ge=0)
+    total_public_id_count: int = Field(gt=0)
+    public_id_sequence_sha256: HexDigest
+    public_id_collision_count: Literal[0]
 
 
 class SourceTreeFingerprint(StrictModel):
@@ -3223,6 +3390,26 @@ class ManifestPublication(StrictModel):
     file_sha256: HexDigest
 ```
 
+`AcceptedAttemptRun` is the unique run-length encoding of every accepted draw
+in canonical source order. Runs start at zero, are contiguous and exactly cover
+`accepted_draw_count`; adjacent runs may not carry the same accepted attempt,
+and overlaps/gaps/zero-length runs are invalid. `ConstructionNamespaceEvidence`
+derives total IDs as base plus clock IDs and rejects any noncanonical attempt
+run, count mismatch, collision, wrong generation-mode count law, or non-exact
+primitive type.
+
+Build ordered namespace digests with explicit length framing and distinct
+domains `silent-cascade/ofd-v1/construction-token-sequence/v1` and
+`silent-cascade/ofd-v1/public-id-sequence/v1`. Matched token order is canonical
+cohort order followed by each cohort's exact 20-token stream order; independent
+token order is allocation-request order followed by each request's exact
+7-token order. Public-ID order is every base source ID in canonical source
+order, then clock suite order and parent order. Evidence builders consume
+actual regenerated bundle coordinates, accepted attempts, derived tokens, and
+emitted IDs—not configured counts or coordinate surrogates. Use fixed-width
+token/UUID storage and a sorted adjacent-duplicate scan so the complete audit
+remains within its frozen memory ceiling.
+
 Do not include wall-clock creation time in the hashed payload. Validate count,
 order, coordinate/ID/hash uniqueness, paired-parent references, and exact
 access-class rules. Validate the raw environment-private `public_id_seed`
@@ -3240,8 +3427,10 @@ For an independent entry, regenerate the private assigned variant from
 `(root_seed, split_namespace, suite, requested_path_length,
 allocation_quartet_index, quartet_member_index)` using Task 6's exact
 `AllocationLabelKey`; never infer member position from `episode_index % 4`.
-Require the four member indices of every complete manifest quartet to be
-exactly `{0,1,2,3}`. This makes a nonzero or non-aligned block independently
+Require every independent manifest base quartet to contain member indices
+exactly `{0,1,2,3}` and reject any independent base-entry set that contains an
+incomplete quartet. Clock children are authenticated through their base parent
+and do not form separate allocation quartets. This makes a nonzero or non-aligned block independently
 regenerable without persisting a per-public-ID label or importing an external
 allocation.
 `subset_memberships`
@@ -3410,23 +3599,36 @@ def collect_final_phase1_provenance(
 ) -> EvidenceProvenance: ...
 ```
 
-Resolve `source_commit` with `git rev-parse --verify HEAD`. Resolve
-`plan_base_revision` with
-`git log -1 --format=%H -- <PHASE1_PLAN_PATH>`: it is the exact latest commit
-that touched the approved plan, not a caller-supplied label or the current
-source commit by assumption. Require both values to be full lowercase commit
-IDs and fail if the plan is untracked. Set `config_sha256=resolved.sha256` and
-hash exactly `resolved.source_paths` for dirty-state coverage in addition to
-the generator and selected exact analysis source-path sets, `pyproject.toml`,
-and `uv.lock`. Fingerprint contents come only from those exact frozen source
-sets. Hash the public-ID seed through Task 3's domain-separated fingerprint
-helper; never place it in a public report. Sort and copy `analysis_seeds`,
-enforce zero foundation calls from the resolved runtime config, and reject a
-missing source path rather than silently shrinking a scope.
+Resolve `source_commit` with `git rev-parse --verify HEAD^{commit}`. Require it
+to be a full lowercase commit ID and an ancestor of the current `HEAD` under
+`git merge-base --is-ancestor`; arbitrary, missing, abbreviated, unrelated, or
+future revisions fail. Resolve `plan_base_revision` historically with
+`git log -1 --format=%H <source_commit> -- <PHASE1_PLAN_PATH>`: it is the exact
+latest commit that touched the approved plan as of the evidence source commit,
+not a caller-supplied label and not the current worktree result. Fail if the
+plan did not exist at that revision.
+
+Fingerprint evidence content from Git objects at `source_commit`, never from a
+possibly coordinated current worktree. For every exact v1 generator and
+selected analysis path, use read-only `git ls-tree` to require one regular
+`100644` or `100755` blob and `git cat-file blob
+<source_commit>:<path>` to obtain its bytes. Reject absent paths, trees,
+submodules, symlinks (`120000`), non-blob modes/types, duplicate paths, or any
+hash mismatch. Do not checkout a revision or mutate the worktree. Set
+`config_sha256=resolved.sha256` and retain current-worktree dirty coverage over
+exactly `resolved.source_paths`, all selected fingerprint paths,
+`pyproject.toml`, and `uv.lock`; Task 18 additionally requires a wholly clean
+tree. Hash the public-ID seed through Task 3's domain-separated helper; never
+place it in a public report. Sort and copy `analysis_seeds`, enforce zero
+foundation calls, and reject a missing source path rather than shrinking a
+scope.
 
 Task 13 unit tests create a temporary Git repository containing every frozen
-path and prove the collectors' exact revision, dirty, config, source, seed, and
-zero-call behavior. The generic collector defaults to the exact historical
+path and prove exact commit resolution/ancestry, historical plan-base lookup,
+Git-blob fingerprints, dirty state, config, seed, and zero-call behavior. They
+mutate the worktree after committing and prove historical bytes still
+authenticate while dirty state changes; missing/unrelated commits and
+blob/tree/symlink substitutions fail without a checkout. The generic collector defaults to the exact historical
 Task 14 scope; `collect_final_phase1_provenance` selects the exact final Phase 1
 scope. Because `PHASE1_ANALYSIS_SOURCE_PATHS` deliberately names later modules
 and both acceptance scripts, production final-scope provenance collection is
@@ -3488,7 +3690,11 @@ git commit -m "feat: publish immutable episode manifests"
   regeneration, Task 10 clock transforms, and Task 13 manifests.
 - Produces: `build_cohort_manifest`, `build_validation_manifest`,
   `regenerate_entry`, `ReproducibilityRequest`, `ReproducibilityReport`, and
-  `check_reproducibility`.
+  `check_reproducibility`; pure
+  `select_manifest_reproducibility_sample`,
+  `select_independent_reproducibility_sample`,
+  `manifest_sample_membership_sha256`, and
+  `independent_sample_membership_sha256` helpers.
 
 - [ ] **Step 1: Write failing small-service and process-order tests**
 
@@ -3557,7 +3763,7 @@ class ReproducibilityRequest(StrictModel):
 
 
 class ReproducibilityReport(StrictModel):
-    schema_version: Literal["phase1-reproducibility-v1"]
+    schema_version: Literal["phase1-reproducibility-v2"]
     source_mode: Literal["manifest", "independent_allocation"]
     source_payload_sha256: HexDigest
     sample_size: int
@@ -3568,6 +3774,7 @@ class ReproducibilityReport(StrictModel):
     reference_corpus_sha256: HexDigest
     sample_membership_sha256: HexDigest
     mismatch_count: Literal[0]
+    namespace_evidence: ConstructionNamespaceEvidence
     provenance: EvidenceProvenance
     passed: bool
 
@@ -3737,6 +3944,24 @@ fixture `[(iid_primary,2,7),(ood_depth,5,3)]`, the membership hash is
 `f18653443059e3af94996faf6cd201d3f2e51f502572b2c52fac7ad06509c8f5`.
 Persist that value as `sample_membership_sha256` and test all three vectors in
 fresh processes.
+
+Expose the sample selection and membership hashing algorithms through the four
+pure helpers named in this task. `check_reproducibility` calls those helpers
+directly. The final verifier separately invokes them against the verified
+validation manifest and the exact Phase 1 allocation/descriptor, then requires
+the recomputed digests to equal each report. A coordinated rewrite of a report
+digest cannot alter selection or membership. Remove the unused request from the
+entry helper: its exact signature is `_entry_for(bundle: EpisodeBundle) ->
+CorpusDigestEntry`, and every caller passes only the regenerated bundle. Retain
+a real matched-manifest fresh-process regression rather than satisfying this
+gate through an injected fake runner.
+
+Every report includes namespace evidence built from the actual regeneration
+pass. Matched validation records exactly 2,500 accepted draws, 50,000 ordered
+construction tokens, 10,000 base IDs, and zero clock IDs. The independent gate
+records exactly 100,000 accepted draws, 700,000 ordered construction tokens,
+100,000 base IDs, and 7,000 clock IDs. Attempt runs and ordered sequence hashes
+must describe the actual bundles; all collision counts are exact zero.
 
 - [ ] **Step 5: Run GREEN checks**
 
@@ -3939,7 +4164,7 @@ class CounterfactualCheckResult(StrictModel):
 
 
 class LeakageReport(StrictModel):
-    schema_version: Literal["leakage-report-v1"]
+    schema_version: Literal["leakage-report-v2"]
     provenance: EvidenceProvenance
     generation_mode: Literal["matched", "independent"]
     profile: LeakageAuditProfileName
@@ -4045,7 +4270,8 @@ Expected: import fails because the construction/feature stream does not exist.
 - [ ] **Step 3: Implement exact construction audits**
 
 Fail immediately on missing strata, mismatched kind/terminal counts, duplicate
-public IDs, seed-token collisions, invalid invariants, nonfinite features, or
+public IDs, actual derived construction-token collisions, invalid invariants,
+nonfinite features, or
 insufficient sample size. In matched mode, require exact within-cohort nuisance
 equality. In independent mode, instead require disjoint episode-local nuisance
 tokens, absence of any cohort-scoped generator call, exact aggregate variant
@@ -4063,6 +4289,14 @@ hash when the source is constructed. Any mismatch fails before
 `analysis_seeds={"audit_seed": config.audit_seed,
 "positive_control_seed": config.positive_control_seed}` exactly; other Phase 1
 reports use only their explicitly named analysis seeds or an empty mapping.
+The `seed_tokens` construction check derives the exact ordered 20-token matched
+or 7-token independent sequence from each accepted attempt, stores fixed-width
+tokens, sorts a bounded copy for adjacent duplicate detection, and hashes the
+canonical ordered sequence. It may not substitute episode coordinates,
+requests, configured counts, or any self-reported boolean for actual counter
+digest tokens. Oracle and leakage acceptance paths independently compute the
+same actual token and public-ID sets and fail on any collision before reporting
+success.
 
 - [ ] **Step 4: Implement fixed feature encoding**
 
@@ -4499,12 +4733,12 @@ class ArtifactPublication(StrictModel):
 
 
 class ExactRandomCheck(StrictModel):
-    successes: int
-    total: int
-    observed_rate: float
-    expected_rate: float
-    absolute_error: float
-    exact_binomial_p: float
+    successes: int = Field(ge=0)
+    total: int = Field(gt=0)
+    observed_rate: float = Field(ge=0.0, le=1.0)
+    expected_rate: Literal[0.125, 0.5]
+    absolute_error: float = Field(ge=0.0, le=1.0)
+    exact_binomial_p: float = Field(ge=0.0, le=1.0)
     passed: bool
 
 
@@ -4543,7 +4777,7 @@ class ManifestFreezeReport(StrictModel):
 
 
 class OracleEvaluationReport(StrictModel):
-    schema_version: Literal["oracle-evaluation-report-v1"]
+    schema_version: Literal["oracle-evaluation-report-v2"]
     provenance: EvidenceProvenance
     source_mode: Literal["manifest", "phase1_gate"]
     requested_episode_count: int
@@ -4587,6 +4821,34 @@ class LeakageAuditResult(StrictModel):
     report: LeakageReport
     publication: ArtifactPublication | None
 ```
+
+Both report models are derived evidence, not permissive storage bags.
+`ExactRandomCheck` rejects booleans/coercions through `StrictModel`, requires
+`successes <= total` and finite fields, and recomputes exactly:
+
+```python
+observed_rate = successes / total
+absolute_error = abs(observed_rate - expected_rate)
+exact_binomial_p = scipy.stats.binomtest(
+    successes, total, expected_rate, alternative="two-sided"
+).pvalue
+passed = exact_binomial_p >= 0.001 and absolute_error <= 0.01
+```
+
+The serialized values must equal those recomputed values. The oracle report
+likewise derives and cross-checks: requested and verified counts; the exact
+variant sum; the suite/path denominator sum; oracle success/failure sum;
+positive and negative random totals; pooled random observed and expected rates;
+nonnegative clock, rejection, and generation counters;
+`generation_attempt_count == verified_episode_count + rejected_draw_count`;
+`rejected_draw_rate == rejected_draw_count / generation_attempt_count`; exact
+sum of rejection-reason counts; and outer `passed` from all invariant/oracle/
+collision/clock/random conditions. Every rejected draw appends one reason to
+the private rejection-reason sequence; storing only distinct reason names is
+invalid. The standalone verifier recomputes these relationships from exact
+primitive values even when handed unchecked/model-copy objects, so negative or
+self-consistent-but-wrong coordinated mutations fail through the public
+five-file boundary.
 
 Production `freeze_validation` rejects any report tuple other than
 `(episode_count, cohort_count, positive, safe, disconnected) =
@@ -4690,6 +4952,12 @@ uv run pytest -q tests/integration/test_phase1_services.py -k "oracle or random 
 `evaluate_oracle` validates each regenerated episode independently, derives its
 denominator from unique successfully deserialized public IDs, scores oracle and
 random actions, and fails on any incomplete denominator or disagreement.
+For every base episode it reconstructs the authenticated `TRACE_JITTER` stream,
+calls `build_oracle_trace`, validates the complete timing contract, and scores
+`trace.actions`; it may not fabricate a midpoint action directly from truth or
+the timing configuration. For every declared clock child it constructs the
+paired scaled episode and `scale_oracle_trace`, then compares the complete
+parent/child decisions, normalized timing, actions, and scores.
 It computes `random_positive` with
 `scipy.stats.binomtest(k, positive_count, 0.125, alternative="two-sided")` and
 `random_negative` with
@@ -4700,6 +4968,11 @@ a pooled binomial test.
 
 Stream the run and retain aggregate counters, rolling corpus hash, bounded
 diagnostic examples, and rejection summaries rather than bundles/traces.
+Derive actual construction tokens and public IDs from every accepted source
+draw in canonical order, using exactly 20 tokens per matched cohort or 7 per
+independent episode, and fail on a within-source collision. Rejection reason
+sequences contain one entry per rejected draw and must aggregate exactly to
+`rejected_draw_count`.
 The rolling `corpus_sha256` is Task 2's exact hash in canonical source order.
 For allocation mode it covers only the requested 100,000 base episodes; the
 reported paired clock checks are derived counterfactuals and are excluded.
@@ -4804,7 +5077,11 @@ for a missing artifact, tampered envelope, failed inner report, source/config/
 plan/generator provenance disagreement, nonzero foundation calls, absent or
 failed counterfactual check, wrong denominator, and unequal independent-gate
 corpus hashes. A complete consistent fixture set returns one canonical success
-object.
+object. Also mutate exact primitive report fields, rejection arithmetic,
+accepted-attempt runs, token/ID counts and hashes, sample-membership digests,
+analysis scope, source commit ancestry, historical plan base, and Git blob mode
+or content; each isolated and coordinated mutation must fail through the same
+five-file API.
 
 - [ ] **Step 2: Run CLI tests and confirm RED**
 
@@ -4866,13 +5143,46 @@ the engine.
 - [ ] **Step 5: Implement the local gate verifier and update documentation**
 
 `verify_phase1_gate_artifacts` accepts the five exact artifact paths, loads them
-through strict verified loaders, and checks frozen validation/gate counts,
-every inner `passed` flag, all three leakage counterfactual IDs, common
+through strict v2 report loaders, and checks frozen validation/gate counts,
+every derived inner `passed` state, all three leakage counterfactual IDs, common
 plan/source/config/generator provenance, zero foundation calls, and exact
-equality of the oracle/leakage/independent-reproducibility corpus SHA-256. It
-never regenerates episodes, rewrites artifacts, or accesses the network. Its
-script adapter emits one canonical JSON result on success and a stable typed
-error on stderr with exit 1 on failure.
+equality of the oracle/leakage/independent-reproducibility corpus SHA-256. Its
+result schema is exactly `phase1-gate-verification-v2`; stale v1 oracle,
+leakage, reproducibility, or gate-verification artifacts are rejected with no
+compatibility path.
+
+The verifier uses read-only Git object access to authenticate each exact full
+`source_commit`, require it to be an ancestor of current `HEAD`, derive the
+historical plan base, and recompute the framed generator and final-analysis
+hashes from regular blobs at that commit. It requires every evidence artifact's
+`analysis_source.scope == "phase1_analysis"`; a coordinated Task-14 scope
+downgrade, nonexistent revision, symlink/tree substitution, or current-
+worktree-only hash is invalid. It independently recomputes both reproducibility
+sample memberships through Task 14's pure functions and independently derives
+matched and independent accepted-attempt runs, construction-token sequences,
+base/clock public-ID sequences, and collision checks. The combined gate is
+exactly 750,000 tokens and 117,000 IDs, all collision-free. It recomputes every
+OracleEvaluationReport v2 relationship even for unchecked model copies.
+
+The verifier never checks out a revision, regenerates episode semantics,
+rewrites artifacts, or accesses the network. Its script adapter emits one
+canonical v2 JSON result on success and a stable typed error on stderr with exit
+1 on failure.
+
+```python
+class Phase1GateVerificationResult(StrictModel):
+    schema_version: Literal["phase1-gate-verification-v2"]
+    validation_episode_count: Literal[10_000]
+    independent_episode_count: Literal[100_000]
+    matched_accepted_draw_count: Literal[2_500]
+    independent_accepted_draw_count: Literal[100_000]
+    construction_token_count: Literal[750_000]
+    public_id_count: Literal[117_000]
+    validation_manifest_payload_sha256: HexDigest
+    independent_corpus_sha256: HexDigest
+    foundation_model_calls: Literal[0]
+    passed: Literal[True]
+```
 
 Keep the Make target set unchanged. Expand `smoke` to include the Phase 1 CLI
 smoke, fixture oracle, gate-verifier fixture, and import-boundary tests. Keep
@@ -4913,6 +5223,438 @@ git commit -m "feat: expose Phase 1 data and oracle commands"
 
 ---
 
+## Required Final-Audit Correction Passes
+
+The first execution of Tasks 1–18 produced well-formed but insufficiently
+authenticated evidence. The whole-phase audit invalidated all five artifacts.
+Execute these four passes in order from the approved current-branch history,
+using TDD and the exact commit subjects below. After each pass, obtain an
+independent specification review and an independent code-quality review. Both
+must pass before the next pass begins; correct a finding in a separate
+meaningful fix commit and repeat both reviews. No pass may weaken a frozen
+scientific setting, seed, denominator, control, threshold, resource ceiling,
+or zero-foundation-model-call requirement.
+
+### Correction Pass 1: Authenticate Independent Quartet Coordinates
+
+**Files:**
+
+- Modify: `src/silent_cascade/env/episode.py`
+- Modify: `src/silent_cascade/env/generator.py`
+- Modify: `src/silent_cascade/env/invariants.py`
+- Modify: `src/silent_cascade/env/services.py`
+- Modify: `src/silent_cascade/env/reproducibility.py`
+- Modify: `src/silent_cascade/logging/manifest.py`
+- Modify: `tests/unit/test_episode.py`
+- Modify: `tests/unit/test_generator_spec.py`
+- Modify: `tests/unit/test_independent_generator.py`
+- Modify: `tests/unit/test_invariants.py`
+- Modify: `tests/unit/test_manifest.py`
+- Modify: `tests/property/test_generator_properties.py`
+- Modify: `tests/integration/test_phase1_services.py`
+- Modify: `tests/integration/test_phase1_reproducibility.py`
+
+**Interfaces:**
+
+- Adds exact `quartet_member_index: int` in `0..3` to
+  `IndependentEpisodeRequest` and `IndependentEpisodeCoordinate`.
+- Preserves `IndependentManifestCoordinate.quartet_member_index` and makes it a
+  lossless copy of the source coordinate rather than a reconstructed value.
+- Makes generic independent invariants authenticate only explicit
+  member/label identity; the allocation-owning service authenticates block
+  membership.
+
+- [ ] **Step 1: Write exact RED regressions**
+
+Add strict bool/range/round-trip tests for both new fields. Add a DEBUG block
+starting at episode index `5` with eight entries and assert emitted member
+indices are `(0,1,2,3,0,1,2,3)`, every variant equals the allocation permutation
+at that explicit member, manifest/service/reproducibility round trips preserve
+it, and mutations to member, quartet, or variant fail. Add a structurally valid
+`FROZEN` allocation totaling 20,000 episodes with non-Phase-1 block boundaries
+and require generic generation/invariants to accept it. Add AST guards against
+`episode_index % 4` and `list.index(variant)` in generator, invariant, manifest,
+service, and reproducibility code.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/unit/test_episode.py tests/unit/test_generator_spec.py \
+  tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
+  tests/unit/test_manifest.py tests/property/test_generator_properties.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py
+```
+
+Expected: explicit-member construction/round-trip/mutation tests fail against
+the implicit coordinate contract.
+
+- [ ] **Step 3: Implement the explicit identity path**
+
+Validate exact non-boolean member indices in both frozen dataclasses.
+`iter_independent_requests` forms each quartet from local block offsets and
+stores `quartet_member_index`; it binds `variant =
+allocate_independent_variants(label_key)[quartet_member_index]`. Propagate the
+member through primary/stress generation, `EpisodeKey`, private artifacts,
+manifest entries, service regeneration, fresh work orders, and reproducibility
+keys. Generic invariants recompute only the label permutation from the explicit
+quartet/member fields. Remove the Phase 1 gate block table and all hard-coded
+PHASE1_GATE/FROZEN boundary logic from `env.invariants`; production services
+validate their bound allocations and episode-index membership.
+
+- [ ] **Step 4: Run GREEN and static checks**
+
+```bash
+uv run pytest -q tests/unit/test_episode.py tests/unit/test_generator_spec.py \
+  tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
+  tests/unit/test_manifest.py tests/property/test_generator_properties.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py
+uv run ruff check src/silent_cascade/env/episode.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
+  src/silent_cascade/env/services.py \
+  src/silent_cascade/env/reproducibility.py \
+  src/silent_cascade/logging/manifest.py tests/unit/test_episode.py \
+  tests/unit/test_generator_spec.py tests/unit/test_independent_generator.py \
+  tests/unit/test_invariants.py tests/unit/test_manifest.py \
+  tests/property/test_generator_properties.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py
+```
+
+Expected: every explicit-member and generic-allocation regression passes; Ruff
+is clean.
+
+- [ ] **Step 5: Commit and independently review**
+
+```bash
+git add src/silent_cascade/env/episode.py src/silent_cascade/env/generator.py \
+  src/silent_cascade/env/invariants.py src/silent_cascade/env/services.py \
+  src/silent_cascade/env/reproducibility.py \
+  src/silent_cascade/logging/manifest.py tests/unit/test_episode.py \
+  tests/unit/test_generator_spec.py tests/unit/test_independent_generator.py \
+  tests/unit/test_invariants.py tests/unit/test_manifest.py \
+  tests/property/test_generator_properties.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py
+git commit -m "fix: authenticate independent quartet coordinates"
+```
+
+### Correction Pass 2: Enforce Feasible Oracle Trace Schedules
+
+**Files:**
+
+- Modify: `src/silent_cascade/env/timing.py`
+- Modify: `src/silent_cascade/env/oracle.py`
+- Modify: `src/silent_cascade/env/generator.py`
+- Modify: `src/silent_cascade/env/invariants.py`
+- Modify: `src/silent_cascade/env/services.py`
+- Modify: `tests/unit/test_oracle.py`
+- Modify: `tests/unit/test_generator.py`
+- Modify: `tests/unit/test_independent_generator.py`
+- Modify: `tests/unit/test_invariants.py`
+- Modify: `tests/unit/test_counter_rng.py`
+- Create: `tests/integration/test_phase1_trace_feasibility.py`
+
+**Interfaces:**
+
+- Produces the neutral `TraceTimingSchedule` and
+  `build_trace_timing_schedule` contract frozen above.
+- Changes construction token counts to exactly 20 per accepted matched cohort
+  and 7 per accepted independent episode.
+- Makes generator acceptance label-blind and oracle evaluation consume complete
+  authenticated traces.
+
+- [ ] **Step 1: Write timing and acceptance RED tests**
+
+Freeze pure timing known answers for difficulty, urgency, jitter, clamp, common
+scaling, infeasibility, and action-after-compose. Spy separately on oracle,
+generator, and invariant record/competitor derivation so none delegates graph
+reasoning to another. Force one counterfactual variant infeasible while the
+assigned variant is feasible and require the independent draw to reject; force
+one matched member infeasible and require the cohort to retry. Assert token
+order/count `20` and `7` including `TRACE_JITTER`. Add exact gate-root
+regressions for OOD-short episode `16219` (safe-negative) and `16500`
+(positive), and a streaming integration test that constructs all 24,000
+OOD-short gate requests and successfully builds every exact oracle trace.
+Assert oracle evaluation calls `build_oracle_trace`, scores `trace.actions`, and
+builds/scales clock traces rather than synthesizing a target action.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/unit/test_oracle.py tests/unit/test_generator.py \
+  tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
+  tests/unit/test_counter_rng.py \
+  tests/integration/test_phase1_trace_feasibility.py \
+  tests/integration/test_phase1_services.py
+```
+
+Expected: neutral scheduling, label-blind rejection, jitter-token, exact-index,
+and trace-scoring regressions fail against the previous implementation.
+
+- [ ] **Step 3: Implement exact shared timing math and independent derivations**
+
+Move only the timing equations into `env.timing`. Oracle, generator, and
+invariants independently derive ordered selected records and competitor counts,
+draw/rederive the exact jitter vector, and call the pure primitive. Before an
+independent attempt can be accepted, construct all three label counterfactuals
+from its unchanged nuisance draw and reinitialized `TRACE_JITTER` stream; reject
+unless all three actual schedules pass every timing condition. For a matched
+attempt, reject the complete cohort unless every actual member schedule passes.
+Include `TRACE_JITTER` in the accepted-draw token APIs in the frozen order.
+Change oracle evaluation to build the authenticated base trace, score its
+actions, construct paired clock traces, and compare complete scaled outcomes.
+
+- [ ] **Step 4: Run GREEN and local checks**
+
+```bash
+uv run pytest -q tests/unit/test_oracle.py tests/unit/test_generator.py \
+  tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
+  tests/unit/test_counter_rng.py \
+  tests/integration/test_phase1_trace_feasibility.py \
+  tests/integration/test_phase1_services.py
+uv run ruff check src/silent_cascade/env/timing.py \
+  src/silent_cascade/env/oracle.py src/silent_cascade/env/generator.py \
+  src/silent_cascade/env/invariants.py src/silent_cascade/env/services.py \
+  tests/unit/test_oracle.py tests/unit/test_generator.py \
+  tests/unit/test_independent_generator.py tests/unit/test_invariants.py \
+  tests/unit/test_counter_rng.py \
+  tests/integration/test_phase1_trace_feasibility.py
+```
+
+Expected: both exact OOD-short regressions and all 24,000 streamed schedules
+pass after deterministic retry; focused tests and Ruff are clean.
+
+- [ ] **Step 5: Commit and independently review**
+
+```bash
+git add src/silent_cascade/env/timing.py src/silent_cascade/env/oracle.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
+  src/silent_cascade/env/services.py tests/unit/test_oracle.py \
+  tests/unit/test_generator.py tests/unit/test_independent_generator.py \
+  tests/unit/test_invariants.py tests/unit/test_counter_rng.py \
+  tests/integration/test_phase1_trace_feasibility.py
+git commit -m "fix: enforce feasible oracle trace schedules"
+```
+
+### Correction Pass 3: Authenticate Construction Namespaces
+
+**Files:**
+
+- Modify: `src/silent_cascade/provenance.py`
+- Modify: `src/silent_cascade/env/generator.py`
+- Modify: `src/silent_cascade/env/leakage.py`
+- Modify: `src/silent_cascade/env/services.py`
+- Modify: `src/silent_cascade/env/reproducibility.py`
+- Modify: `tests/unit/test_provenance.py`
+- Modify: `tests/unit/test_leakage.py`
+- Modify: `tests/unit/test_generator.py`
+- Modify: `tests/unit/test_independent_generator.py`
+- Modify: `tests/integration/test_phase1_services.py`
+- Modify: `tests/integration/test_phase1_reproducibility.py`
+- Modify: `tests/integration/test_phase1_reproducibility_script.py`
+
+**Interfaces:**
+
+- Produces strict `AcceptedAttemptRun`, `ConstructionNamespaceEvidence`,
+  `accepted_attempt_runs`, `construction_token_sequence_sha256`, and
+  `public_id_sequence_sha256` under the already fingerprinted provenance
+  module.
+- Bumps `ReproducibilityReport` to `phase1-reproducibility-v2` and
+  `LeakageReport` to `leakage-report-v2`; stale v1 artifacts are invalid.
+
+- [ ] **Step 1: Write namespace-evidence RED tests**
+
+Test exact primitive types, empty/gapped/overlapping attempt runs, adjacent
+equal runs, incomplete coverage, wrong count sums, invalid digests, and
+nonzero collisions. Freeze domain-separated ordered-sequence known answers and
+prove order changes the hash. Mutate actual token or public-ID derivation while
+leaving coordinates/counts unchanged and require oracle, leakage, and
+reproducibility paths to fail. Test canonical run compression and verify that
+accepted retries appear exactly once per construction draw. Test schema-v1
+report rejection and exact fixture migration to v2.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/unit/test_provenance.py tests/unit/test_leakage.py \
+  tests/unit/test_generator.py tests/unit/test_independent_generator.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py
+```
+
+Expected: v2 schema, attempt-run, actual-token/ID, and ordered namespace tests
+fail while existing semantic generation remains unchanged.
+
+- [ ] **Step 3: Implement streaming actual namespace evidence**
+
+Implement the two strict models and helpers in `provenance.py`. Store each
+SHA-256 token as 32 fixed bytes and each UUID as 16 fixed bytes; preserve the
+canonical stream for framed hashing, sort a bounded copy, and scan adjacent
+values for collisions. Build run-length encoded attempts from actual regenerated
+cohorts/episodes. Add namespace evidence to every reproducibility report and
+derive it from the same bundles used for corpus comparison. Oracle and leakage
+independently derive actual tokens and IDs and fail on collisions; leakage's
+`seed_tokens` construction check no longer accepts coordinate tuples. Include
+clock IDs in the independent public-ID evidence after base IDs in exact clock
+suite/parent order. Migrate strict fixtures to reproducibility/leakage v2 with
+no compatibility loader.
+
+- [ ] **Step 4: Run GREEN and resource checks**
+
+```bash
+uv run pytest -q tests/unit/test_provenance.py tests/unit/test_leakage.py \
+  tests/unit/test_generator.py tests/unit/test_independent_generator.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py
+uv run ruff check src/silent_cascade/provenance.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/leakage.py \
+  src/silent_cascade/env/services.py \
+  src/silent_cascade/env/reproducibility.py tests/unit/test_provenance.py \
+  tests/unit/test_leakage.py tests/unit/test_generator.py \
+  tests/unit/test_independent_generator.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py
+```
+
+Expected: exact schema and namespace tests pass within the unchanged memory
+ceilings; Ruff is clean.
+
+- [ ] **Step 5: Commit and independently review**
+
+```bash
+git add src/silent_cascade/provenance.py src/silent_cascade/env/generator.py \
+  src/silent_cascade/env/leakage.py src/silent_cascade/env/services.py \
+  src/silent_cascade/env/reproducibility.py tests/unit/test_provenance.py \
+  tests/unit/test_leakage.py tests/unit/test_generator.py \
+  tests/unit/test_independent_generator.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py
+git commit -m "fix: authenticate construction namespaces"
+```
+
+### Correction Pass 4: Harden Phase 1 Evidence Verification
+
+**Files:**
+
+- Modify: `src/silent_cascade/provenance.py`
+- Modify: `src/silent_cascade/env/generator.py`
+- Modify: `src/silent_cascade/env/services.py`
+- Modify: `src/silent_cascade/env/reproducibility.py`
+- Modify: `scripts/check_phase1_reproducibility.py`
+- Modify: `scripts/verify_phase1_gate_artifacts.py`
+- Modify: `tests/unit/test_provenance.py`
+- Modify: `tests/integration/test_phase1_services.py`
+- Modify: `tests/integration/test_phase1_reproducibility.py`
+- Modify: `tests/integration/test_phase1_reproducibility_script.py`
+- Modify: `tests/integration/test_phase1_gate_verifier.py`
+
+**Interfaces:**
+
+- Bumps `OracleEvaluationReport` to `oracle-evaluation-report-v2` and
+  `Phase1GateVerificationResult` to `phase1-gate-verification-v2`.
+- Exposes the four pure reproducibility selection/membership helpers declared in
+  Task 14 and changes `_entry_for` to accept only `EpisodeBundle`.
+- Adds read-only historical Git-blob authentication to final provenance and the
+  five-artifact verifier.
+
+- [ ] **Step 1: Write report, membership, and Git-authentication RED tests**
+
+Mutate every `ExactRandomCheck` derived value/type/bound and each oracle outer
+count, sum, rate, reason, collision, clock, and pass field in isolation and in
+coordinated self-consistent groups; require strict model or verifier rejection.
+Expose the pure sample helpers, freeze their known answers, and coordinate-edit
+stored membership hashes to prove the verifier independently recomputes them.
+Create disposable Git histories that cover: exact source commit; descendant
+HEAD; unrelated/missing revision; plan changed before versus after source;
+worktree content diverging from committed blobs; missing path; and regular,
+executable, symlink, tree, and submodule modes. Require final analysis scope and
+reject Task-14 scope. Retain a real matched fresh-process regression. Assert
+`_entry_for(bundle)` and remove all two-argument callers.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/unit/test_provenance.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
+```
+
+Expected: derived-report, independent-membership, historical-Git, final-scope,
+v2 gate, and one-argument entry tests fail.
+
+- [ ] **Step 3: Implement fail-closed v2 evidence verification**
+
+Add strict derived validators to `ExactRandomCheck` and
+`OracleEvaluationReport`, expand rejection reason sequences one item per draw,
+and migrate report construction to v2. Expose and reuse the pure selection and
+membership helpers; make the final verifier recompute both exact memberships
+from the verified manifest and frozen allocation/descriptor. Remove the unused
+request from `_entry_for` and keep the true subprocess path.
+
+Resolve full Git commits and ancestry, derive the plan base as of source commit,
+read every exact generator/final-analysis file from regular Git blobs, and
+recompute framed hashes without a checkout. In the final verifier require
+`phase1_analysis`, all exact v2 schemas, both namespace summaries, combined
+750,000-token/117,000-ID collision-free counts, every oracle derived
+relationship, both sample memberships, common provenance, corpus equality, and
+zero foundation calls. Reject every stale v1 artifact without migration.
+
+- [ ] **Step 4: Run complete local verification**
+
+```bash
+uv run pytest -q tests/unit/test_provenance.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
+uv run ruff check src/silent_cascade/provenance.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/services.py \
+  src/silent_cascade/env/reproducibility.py \
+  scripts/check_phase1_reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py tests/unit/test_provenance.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
+uv run ruff format --check src scripts tests
+make verify
+```
+
+Expected: all focused adversarial mutations and the full local quality gate
+pass; no hosted automation or foundation-model call occurs.
+
+- [ ] **Step 5: Commit and independently review**
+
+```bash
+git add src/silent_cascade/provenance.py src/silent_cascade/env/generator.py \
+  src/silent_cascade/env/services.py \
+  src/silent_cascade/env/reproducibility.py \
+  scripts/check_phase1_reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py tests/unit/test_provenance.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_reproducibility.py \
+  tests/integration/test_phase1_reproducibility_script.py \
+  tests/integration/test_phase1_gate_verifier.py
+git commit -m "fix: harden Phase 1 evidence verification"
+```
+
+After both independent reviews pass for Correction Pass 4, commit deletion of
+only the five invalid Task 18 artifacts. Regenerate all of Task 18 Steps 1–9
+from that one clean reviewed source revision, including the all-nine leakage
+gate. Then repeat terminal artifact, whole-science, and whole-code audits; the
+root agent independently reruns the v2 verifier and `make verify` before any
+completion claim.
+
+---
+
 ### Task 18: Fixed Validation Manifest and 100,000-Episode Independent Gate
 
 **Files:**
@@ -4926,7 +5668,9 @@ git commit -m "feat: expose Phase 1 data and oracle commands"
 
 **Interfaces:**
 
-- Consumes: the clean committed Task 17 revision and every prior Phase 1 API.
+- Consumes: the clean committed and independently reviewed Correction Pass 4
+  revision and every prior Phase 1 API. All five earlier artifacts must already
+  be deleted as invalid evidence.
 - Produces: immutable validation/gate artifacts tied to source/config/generator
   hashes and the evidence required to start a Phase 2 plan.
 
@@ -4944,7 +5688,7 @@ and both package builds pass locally.
 
 - [ ] **Step 2: Create the fixed validation manifest once**
 
-Run from the clean Task 17 revision:
+Run from the clean, reviewed Correction Pass 4 revision:
 
 ```bash
 uv run silent-cascade data freeze \
@@ -5008,8 +5752,11 @@ unique accepted/deserialized denominator   100000
 positive / safe / disconnected             50000 / 25000 / 25000
 invariant failures                         0
 oracle ambiguities                         0
-seed-token collisions                      0
+actual construction-token collisions      0
 public-ID collisions                       0
+accepted construction draws                100000
+actual construction tokens                 700000
+base / clock public IDs                    100000 / 7000
 rejected draws / generation attempts       recorded / recorded
 rejected draw rate                         recorded
 oracle timed success                       100000 / 100000
@@ -5025,7 +5772,10 @@ foundation-model calls                     0
 
 The report also records suite/path denominators, rejection reasons/rates,
 source commit/dirty state, config hash, generator version/source hash, corpus
-hash, and public-ID seed hash.
+hash, and public-ID seed hash. It uses `oracle-evaluation-report-v2`, builds and
+scores the authenticated trace for every base episode, constructs and compares
+paired clock traces, and requires all 24,000 OOD-short traces—including exact
+indexes `16219` and `16500`—to be feasible after deterministic rejection.
 
 - [ ] **Step 5: Run the exact streaming leakage gate**
 
@@ -5041,8 +5791,9 @@ uv run silent-cascade leakage audit \
   --json
 ```
 
-Expected: `generation_mode=independent`; every exact construction check,
-held-out probe, seed-namespace check,
+Expected: `generation_mode=independent`, `schema_version=leakage-report-v2`;
+every exact construction check, held-out probe, actual 700,000-token and
+107,000-ID namespace check,
 terminal-delay-swap, presentation-permutation, and paired-clock counterfactual,
 label-shuffled control, and injected-leak positive control passes. The report
 contains all three typed counterfactual result IDs exactly once. Any detector
@@ -5093,14 +5844,18 @@ uv run python scripts/check_phase1_reproducibility.py \
 ```
 
 Expected: all 100,000 independent requests regenerate with identical IDs,
-accepted attempts, episode hashes, seed tokens, and aggregate corpus hash; the
+accepted attempts, episode hashes, exact 7-token construction sequences, and
+aggregate corpus hash; `phase1-reproducibility-v2` records canonical attempt
+runs, 700,000 tokens, 100,000 base IDs, and 7,000 clock IDs; the
 selected 1,000 also match in every order/chunk/fresh-process mode. Any mismatch
 in either run exits nonzero and publishes no report.
 
 Require the oracle, leakage, and independent-reproducibility reports for the
 shared Phase 1 gate source to contain the identical Task 2 corpus SHA-256. A
 cross-report mismatch is an acceptance failure even when each report passes in
-isolation.
+isolation. The matched v2 report records 2,500 accepted cohort draws, 50,000
+tokens, and 10,000 base IDs. Both reports' sample-membership digests are
+independently recomputable through the frozen pure helper APIs.
 
 - [ ] **Step 7: Run final local verification**
 
@@ -5119,7 +5874,11 @@ git diff --check
 
 Expected: the cross-artifact gate verifier, locked sync, lint, formatting, all
 tests, doctor, source/wheel build, focused property/regression/integration
-tests, and diff check pass locally.
+tests, and diff check pass locally. The verifier emits
+`phase1-gate-verification-v2`, authenticates historical Git blobs and the
+historical plan base, requires final `phase1_analysis` scope, independently
+recomputes both sample memberships and both namespace summaries, and confirms
+the combined 750,000 tokens and 117,000 IDs have zero collisions.
 
 - [ ] **Step 8: Record the completed Phase 1 gate and commit artifacts**
 
@@ -5160,7 +5919,9 @@ Phase 1 is complete only when all of the following are simultaneously true:
 1. strict public projection contains no private scorer/generator/oracle truth;
 2. all primary and declared stress data generators pass their independent
    invariants;
-3. the hand-authored oracle fixtures and generated corpus agree exactly;
+3. the hand-authored oracle fixtures and generated corpus agree exactly, every
+   accepted primary draw is label-blind trace-feasible, and all 24,000
+   OOD-short gate traces build and score through their authenticated jitter;
 4. the fixed 10,000 validation manifest is immutable and fully regenerable;
 5. exactly 100,000 unique accepted episodes from the episode-local independent
    recipe pass independent invariants;
@@ -5168,13 +5929,21 @@ Phase 1 is complete only when all of the following are simultaneously true:
 7. positive and negative random strata pass their separate frozen exact-binomial
    and absolute-error checks; pooled expectation `0.3125` is diagnostic only;
 8. all clean leakage probes pass and every injected leak is detected;
-9. split seed tokens and public IDs have zero collisions;
+9. namespace evidence derives exactly 50,000 matched plus 700,000 independent
+   construction tokens and 10,000 matched plus 107,000 independent public IDs,
+   and all 750,000 tokens and 117,000 IDs have zero collisions;
 10. `make verify` passes locally with zero foundation-model calls;
-11. matched-validation and independent-allocation reproducibility reports both
-    pass, including all 100,000 independent source entries;
+11. matched-validation and independent-allocation v2 reproducibility reports
+    both pass, including all 100,000 independent source entries, canonical
+    accepted-attempt runs, and independently recomputed sample memberships;
 12. no final frozen-test manifest exists and Phase 6 needs no new episode
     generator implementation; and
-13. reports call this generator/oracle engineering evidence, not model or
+13. every v2 report and the final verifier derives its own pass state and
+    rejects coordinated inconsistent evidence;
+14. every evidence source commit, historical plan base, generator hash, and
+    final-analysis hash is authenticated from regular Git blobs without a
+    checkout, and every artifact uses `phase1_analysis`; and
+15. reports call this generator/oracle engineering evidence, not model or
     benchmark evidence.
 
 Do not begin Phase 2 from this plan. After this gate, write and explicitly
@@ -5207,6 +5976,9 @@ specification.
 - [ ] Record IDs are assigned only after presentation permutation.
 - [ ] Cohort rejection cannot alter variant matching.
 - [ ] Independent rejection cannot alter any other allocation-quartet member.
+- [ ] Independent quartet member identity is explicit through request,
+  coordinate, artifact, manifest, service, invariant, and reproducibility
+  paths; no absolute-index/rank reconstruction remains.
 - [ ] Phase 1 leakage splits/permutations keep whole matched cohorts or
   independent label-allocation quartets together as appropriate.
 - [ ] Shared LINK topology is sampled once per cohort and only relabeled.
@@ -5217,11 +5989,21 @@ specification.
 - [ ] Both hazard delays are identical in every primary episode.
 - [ ] The random baseline accepts only `PublicEpisode`.
 - [ ] The oracle accepts only public facts for graph solving.
+- [ ] Generator acceptance is label-blind across all three primary variants,
+  and oracle/generator/invariants independently derive inputs to the same pure
+  trace-timing math.
 - [ ] Manifest access class, not path, controls private inspection.
 - [ ] Existing identical manifests are verified without rewriting.
 - [ ] Divergent existing manifests cannot be forced or overwritten.
 - [ ] The 100,000 independent gate streams and reports its actual verified
   denominator, and all entries pass the independent reproducibility gate.
+- [ ] Both v2 reproducibility reports contain canonical accepted-attempt runs
+  and actual ordered token/ID namespace evidence; the final verifier rederives
+  all 750,000 tokens and 117,000 IDs and both sample memberships.
+- [ ] Oracle/random arithmetic and pass flags are derived under strict exact
+  schemas and independently recomputed at the five-artifact boundary.
+- [ ] Evidence revisions, historical plan base, and both source fingerprints
+  are recomputed from regular Git blobs at the authenticated source commit.
 - [ ] Random positive and negative strata pass separately; no pooled binomial
   law is used.
 - [ ] No final frozen tests, neural/runtime code, hosted automation, or Qwen code

@@ -4,6 +4,64 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-06 — Final Phase 1 evidence-authentication audit correction
+
+The final whole-phase scientific and adversarial code audits rejected the five
+artifacts generated from source `c8486ae2423beb3f48e62675f90d76de733eecb3`.
+Seven pre-completion gaps allowed apparently self-consistent evidence to omit
+or reconstruct facts that the acceptance boundary must authenticate directly:
+
+1. independent quartet member identity was reconstructed from absolute block
+   position instead of being explicit in the request and coordinate;
+2. primary generation checked only a minimum timing proxy rather than every
+   assigned/counterfactual trace under the exact jittered schedule, and the
+   oracle gate synthesized an action instead of scoring a built trace;
+3. collision evidence used coordinate surrogates and counts rather than actual
+   accepted-draw construction tokens and emitted public IDs;
+4. oracle/random report fields and outer pass state were not all independently
+   derived from exact primitive evidence;
+5. provenance authenticated current-worktree bytes without rederiving source
+   and plan history from the named Git commit;
+6. reproducibility sample-membership digests were trusted rather than
+   independently recomputed, and one worker helper retained an unused request
+   argument; and
+7. report schema literals did not distinguish the expanded acceptance
+   contracts from the invalid v1 evidence.
+
+The corrective ruling is to execute four ordered, independently reviewed TDD
+passes. Independent requests and coordinates carry exact
+`quartet_member_index`; generic invariants authenticate its allocation-label
+relation while allocation-owning services authenticate block membership. A
+neutral pure timing primitive owns the exact difficulty/urgency/jitter/clamp/
+common-scale calculation; independent acceptance checks the complete positive,
+safe-negative, and disconnected-negative counterfactual family with a
+reinitialized `TRACE_JITTER` stream, matched acceptance checks every member,
+and the oracle gate builds/scores actual base and paired-clock traces. Accepted
+construction evidence includes `TRACE_JITTER`, yielding exactly 20 tokens per
+matched cohort and 7 per independent episode.
+
+Strict canonical attempt runs and actual ordered namespace digests must record
+2,500 matched draws / 50,000 tokens / 10,000 base IDs and 100,000 independent
+draws / 700,000 tokens / 100,000 base plus 7,000 clock IDs. The final verifier
+rederives both summaries and requires all combined 750,000 tokens and 117,000
+IDs to be collision-free. Oracle/random fields and pass state become derived
+v2 evidence. Historical Git authentication resolves full commits, ancestry,
+the plan base as of the source commit, and framed generator/final-analysis
+hashes from regular Git blobs without checkout. Pure sample-selection and
+membership helpers let the verifier recompute both report memberships; the
+unused worker parameter is removed and real matched subprocess coverage stays.
+
+The exact new outer schemas are `phase1-reproducibility-v2`,
+`oracle-evaluation-report-v2`, `leakage-report-v2`, and
+`phase1-gate-verification-v2`; stale v1 acceptance artifacts have no
+compatibility path. Generator version `ofd-v1` and episode/manifest schema 1
+remain unchanged because this correction changes evidence authentication, not
+the OFD semantic generator. All five `c8486ae` artifacts are invalid and must
+be deleted, then regenerated in full—including the all-nine leakage gate—from
+one clean reviewed source revision. This ruling changes no scientific setting,
+seed, denominator, control, threshold, resource ceiling, or exact
+zero-foundation-model-call requirement.
+
 ## 2026-09-05 — Phase 1 executed-package initializer provenance closure
 
 Adversarial review of the explicit-import repair found that Python executes
