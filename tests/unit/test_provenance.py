@@ -773,6 +773,150 @@ def test_final_provenance_authenticates_historical_git_blobs_and_plan_ancestry(
         )
 
 
+def test_final_provenance_rejects_a_self_consistent_stale_analysis_ancestor(
+    tmp_path: Path,
+) -> None:
+    """An ancestor predating the latest scientific-source commit cannot authenticate evidence."""
+    resolved_input = _committed_provenance_repository(tmp_path)
+    resolved = replace(
+        resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+        ),
+        source_paths=(resolved_input,),
+    )
+    stale = collect_final_phase1_provenance(
+        resolved,
+        repo_root=tmp_path,
+        generation_mode="matched",
+        allocation_id="validation-v1",
+        split_namespace=SplitNamespace.VALIDATION,
+        root_seed=17,
+        public_id_seed=91,
+        analysis_seeds={},
+    )
+    source_path = tmp_path / "src/silent_cascade/env/services.py"
+    source_path.write_text("new authenticated analysis source\n", encoding="utf-8")
+    _git(tmp_path, "add", "src/silent_cascade/env/services.py")
+    _git(tmp_path, "commit", "-qm", "newer analysis source")
+
+    with pytest.raises(ProvenanceError, match=r"latest.*analysis"):
+        provenance_module.authenticate_final_phase1_provenance(stale, repo_root=tmp_path)
+
+
+def test_final_provenance_accepts_plan_before_source_and_plan_after_source(
+    tmp_path: Path,
+) -> None:
+    """Plan authority is historical while the exact analysis-source tip remains binding."""
+    resolved_input = _committed_provenance_repository(tmp_path)
+    resolved = replace(
+        resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+        ),
+        source_paths=(resolved_input,),
+    )
+    plan_path = "docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md"
+    (tmp_path / plan_path).write_text("plan before source\n", encoding="utf-8")
+    _git(tmp_path, "add", plan_path)
+    _git(tmp_path, "commit", "-qm", "plan before source")
+    plan_revision = _git(tmp_path, "rev-parse", "HEAD")
+    analysis_path = "src/silent_cascade/env/services.py"
+    (tmp_path / analysis_path).write_text("source after plan\n", encoding="utf-8")
+    _git(tmp_path, "add", analysis_path)
+    _git(tmp_path, "commit", "-qm", "source after plan")
+    evidence = collect_final_phase1_provenance(
+        resolved,
+        repo_root=tmp_path,
+        generation_mode="matched",
+        allocation_id="validation-v1",
+        split_namespace=SplitNamespace.VALIDATION,
+        root_seed=17,
+        public_id_seed=91,
+        analysis_seeds={},
+    )
+    assert evidence.plan_base_revision == plan_revision
+    provenance_module.authenticate_final_phase1_provenance(evidence, repo_root=tmp_path)
+
+    (tmp_path / plan_path).write_text("plan after source\n", encoding="utf-8")
+    _git(tmp_path, "add", plan_path)
+    _git(tmp_path, "commit", "-qm", "plan after source")
+    provenance_module.authenticate_final_phase1_provenance(evidence, repo_root=tmp_path)
+
+
+def test_final_provenance_rejects_an_existing_unrelated_commit(tmp_path: Path) -> None:
+    """Commit existence cannot substitute for ancestry from the current repository tip."""
+    resolved_input = _committed_provenance_repository(tmp_path)
+    resolved = replace(
+        resolve_config(
+            Phase1Config,
+            [Path("configs/base.yaml"), Path("configs/data/primary.yaml")],
+        ),
+        source_paths=(resolved_input,),
+    )
+    evidence = collect_final_phase1_provenance(
+        resolved,
+        repo_root=tmp_path,
+        generation_mode="matched",
+        allocation_id="validation-v1",
+        split_namespace=SplitNamespace.VALIDATION,
+        root_seed=17,
+        public_id_seed=91,
+        analysis_seeds={},
+    )
+    tree = _git(tmp_path, "rev-parse", "HEAD^{tree}")
+    unrelated = subprocess.run(
+        ("git", "commit-tree", tree),
+        cwd=tmp_path,
+        input="unrelated root\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    unrelated_evidence = evidence.model_copy(
+        update={"source_commit": unrelated, "plan_base_revision": unrelated}
+    )
+
+    with pytest.raises(ProvenanceError, match="ancestor"):
+        provenance_module.authenticate_final_phase1_provenance(
+            unrelated_evidence,
+            repo_root=tmp_path,
+        )
+
+
+def test_historical_source_hash_accepts_an_executable_regular_blob(tmp_path: Path) -> None:
+    """Git's executable regular-file mode remains valid scientific source evidence."""
+    _committed_provenance_repository(tmp_path)
+    target = tmp_path / GENERATOR_SOURCE_PATHS[0]
+    target.chmod(0o755)
+    _git(tmp_path, "add", GENERATOR_SOURCE_PATHS[0])
+    _git(tmp_path, "commit", "-qm", "make source executable")
+    revision = _git(tmp_path, "rev-parse", "HEAD")
+
+    assert provenance_module.source_tree_sha256_at_revision(
+        tmp_path,
+        revision,
+        GENERATOR_SOURCE_PATHS,
+    )
+
+
+def test_historical_source_hash_rejects_a_missing_path(tmp_path: Path) -> None:
+    """Every exact source-scope path must exist at the authenticated revision."""
+    _committed_provenance_repository(tmp_path)
+    target = tmp_path / GENERATOR_SOURCE_PATHS[0]
+    target.unlink()
+    _git(tmp_path, "add", "-u", GENERATOR_SOURCE_PATHS[0])
+    _git(tmp_path, "commit", "-qm", "delete source")
+    revision = _git(tmp_path, "rev-parse", "HEAD")
+
+    with pytest.raises(ProvenanceError, match="missing"):
+        provenance_module.source_tree_sha256_at_revision(
+            tmp_path,
+            revision,
+            GENERATOR_SOURCE_PATHS,
+        )
+
+
 def test_historical_source_hash_rejects_non_regular_git_modes(tmp_path: Path) -> None:
     """A symlink blob must never satisfy an authenticated scientific source path."""
     resolved_input = _committed_provenance_repository(tmp_path)
@@ -788,6 +932,41 @@ def test_historical_source_hash_rejects_non_regular_git_modes(tmp_path: Path) ->
 
     with pytest.raises(ProvenanceError, match="regular Git blob"):
         source_tree_sha256_at_revision(tmp_path, revision, GENERATOR_SOURCE_PATHS)
+
+
+@pytest.mark.parametrize("mode", ("tree", "submodule"))
+def test_historical_source_hash_rejects_tree_and_submodule_modes(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    """Tree and gitlink entries cannot masquerade as regular historical source blobs."""
+    _committed_provenance_repository(tmp_path)
+    source_path = GENERATOR_SOURCE_PATHS[0]
+    target = tmp_path / source_path
+    target.unlink()
+    if mode == "tree":
+        target.mkdir()
+        (target / "nested.py").write_text("not the source blob\n", encoding="utf-8")
+        _git(tmp_path, "add", "-A", source_path)
+    else:
+        commit = _git(tmp_path, "rev-parse", "HEAD")
+        _git(tmp_path, "update-index", "--remove", source_path)
+        _git(
+            tmp_path,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{commit},{source_path}",
+        )
+    _git(tmp_path, "commit", "-qm", f"replace source with {mode}")
+    revision = _git(tmp_path, "rev-parse", "HEAD")
+
+    with pytest.raises(ProvenanceError, match="regular Git blob"):
+        provenance_module.source_tree_sha256_at_revision(
+            tmp_path,
+            revision,
+            GENERATOR_SOURCE_PATHS,
+        )
 
 
 def _collect_final_and_task14_provenance(
@@ -812,23 +991,20 @@ def _collect_final_and_task14_provenance(
 
 
 @pytest.mark.parametrize(
-    ("mutated_path", "expected_changes"),
+    "mutated_path",
     [
-        pytest.param("src/silent_cascade/__init__.py", (True, True, True), id="root-initializer"),
+        pytest.param("src/silent_cascade/__init__.py", id="root-initializer"),
         pytest.param(
             "src/silent_cascade/env/__init__.py",
-            (True, True, True),
             id="env-initializer",
         ),
         pytest.param(
             "src/silent_cascade/logging/__init__.py",
-            (False, True, True),
             id="logging-initializer",
         ),
-        pytest.param("src/silent_cascade/env/timing.py", (True, True, True), id="timing-module"),
+        pytest.param("src/silent_cascade/env/timing.py", id="timing-module"),
         pytest.param(
             "src/silent_cascade/env/leakage.py",
-            (False, True, True),
             id="leakage-module",
         ),
     ],
@@ -836,9 +1012,7 @@ def _collect_final_and_task14_provenance(
 def test_scoped_source_mutation_dirties_without_rewriting_historical_fingerprints(
     tmp_path: Path,
     mutated_path: str,
-    expected_changes: tuple[bool, bool, bool],
 ) -> None:
-    del expected_changes
     resolved_input = _committed_provenance_repository(tmp_path)
     resolved = replace(
         resolve_config(

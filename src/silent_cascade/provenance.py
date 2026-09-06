@@ -341,6 +341,25 @@ def _resolve_full_commit(repo_root: Path, revision: str) -> str:
     return resolved
 
 
+def _latest_source_commit(
+    repo_root: Path,
+    revision: str,
+    paths: tuple[str, ...],
+) -> str:
+    latest = _git(
+        repo_root,
+        "log",
+        "-1",
+        "--format=%H",
+        revision,
+        "--",
+        *paths,
+    )
+    if _COMMIT_PATTERN.fullmatch(latest) is None:
+        raise ProvenanceError("scientific source scope is absent from Git history")
+    return latest
+
+
 def _git_blob_at_revision(repo_root: Path, revision: str, path: str) -> bytes:
     if Path(path).is_absolute() or ".." in Path(path).parts or not path:
         raise ProvenanceError("source path escapes repository root", context={"path": path})
@@ -411,6 +430,15 @@ def authenticate_final_phase1_provenance(
         )
     except (OSError, subprocess.CalledProcessError) as error:
         raise ProvenanceError("evidence source commit is not an ancestor of HEAD") from error
+    latest_analysis_commit = _latest_source_commit(
+        repo_root,
+        head,
+        PHASE1_ANALYSIS_SOURCE_PATHS,
+    )
+    if source_commit != latest_analysis_commit:
+        raise ProvenanceError(
+            "evidence source commit is not the latest Phase 1 analysis source commit"
+        )
     plan_path = PHASE1_PLAN_PATH.as_posix()
     plan_revision = _git(
         repo_root,
@@ -807,7 +835,8 @@ def collect_evidence_provenance(
     }[analysis_scope]
     if resolved.config.runtime.primary_foundation_model_calls != 0:
         raise ProvenanceError("primary execution must record zero foundation-model calls")
-    source_commit = _git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
+    head = _git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
+    source_commit = _latest_source_commit(repo_root, head, analysis_paths)
     plan_base_revision = _git(
         repo_root,
         "log",

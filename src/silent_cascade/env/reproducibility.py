@@ -313,16 +313,9 @@ def select_independent_reproducibility_sample(
         ranked = sorted(
             values,
             key=lambda request: (
-                sha256_bytes(
-                    canonical_json_bytes(
-                        {
-                            "domain": "silent-cascade/ofd-v1/repro-sample-rank/v1",
-                            "source_payload_sha256": source_payload_sha256,
-                            "suite": request.suite.value,
-                            "requested_path_length": request.requested_path_length,
-                            "episode_index": request.episode_index,
-                        }
-                    )
+                _independent_reproducibility_rank_sha256(
+                    source_payload_sha256,
+                    request,
                 ),
                 request.episode_index,
             ),
@@ -331,6 +324,23 @@ def select_independent_reproducibility_sample(
             raise ConfigurationError("source stratum lacks its reproducibility quota")
         selected.extend(ranked[:quota])
     return tuple(selected)
+
+
+def _independent_reproducibility_rank_sha256(
+    source_payload_sha256: str,
+    request: IndependentEpisodeRequest,
+) -> str:
+    return sha256_bytes(
+        canonical_json_bytes(
+            {
+                "domain": "silent-cascade/ofd-v1/repro-sample-rank/v1",
+                "source_payload_sha256": source_payload_sha256,
+                "suite": request.suite.value,
+                "requested_path_length": request.requested_path_length,
+                "episode_index": request.episode_index,
+            }
+        )
+    )
 
 
 PRODUCTION_CHUNK_SIZES = (1, 3, 7)
@@ -430,8 +440,6 @@ def independent_sample_membership_sha256(
                         "suite": request.suite.value,
                         "requested_path_length": request.requested_path_length,
                         "episode_index": request.episode_index,
-                        "allocation_quartet_index": request.allocation_quartet_index,
-                        "quartet_member_index": request.quartet_member_index,
                     }
                     for request in requests
                 ],

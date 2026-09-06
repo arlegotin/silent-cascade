@@ -83,6 +83,71 @@ def test_exact_random_check_rejects_every_underived_field(
         ExactRandomCheck.model_validate(payload)
 
 
+def test_matched_oracle_report_rejects_a_noncohort_episode_denominator() -> None:
+    """Matched accepted-draw derivation must not truncate an incomplete four-member cohort."""
+    from scipy.stats import binomtest
+
+    from silent_cascade.env.services import OracleEvaluationReport
+    from silent_cascade.provenance import build_construction_namespace_evidence
+
+    def random_check(successes: int, total: int, expected: float) -> dict[str, object]:
+        observed = successes / total
+        error = abs(observed - expected)
+        exact_p = float(binomtest(successes, total, expected).pvalue)
+        return {
+            "successes": successes,
+            "total": total,
+            "observed_rate": observed,
+            "expected_rate": expected,
+            "absolute_error": error,
+            "exact_binomial_p": exact_p,
+            "passed": exact_p >= 0.001 and error <= 0.01,
+        }
+
+    namespace = build_construction_namespace_evidence(
+        generation_mode="matched",
+        public_id_seed=91,
+        accepted_attempts=(0,),
+        seed_tokens=tuple(f"{index:064x}" for index in range(1, 21)),
+        base_public_ids=tuple(f"00000000-0000-4000-8000-{index:012x}" for index in range(1, 5)),
+        clock_public_ids=(),
+    )
+    payload = {
+        "schema_version": "oracle-evaluation-report-v2",
+        "provenance": _provenance(),
+        "namespace_evidence": namespace,
+        "source_mode": "manifest",
+        "requested_episode_count": 6,
+        "verified_episode_count": 6,
+        "positive_count": 3,
+        "safe_negative_count": 1,
+        "disconnected_negative_count": 2,
+        "suite_path_denominators": {"iid_primary:2": 6},
+        "invariant_failures": 0,
+        "oracle_ambiguities": 0,
+        "seed_token_collisions": 0,
+        "public_id_collisions": 0,
+        "oracle_successes": 6,
+        "oracle_failures": 0,
+        "random_positive": random_check(0, 3, 0.125),
+        "random_negative": random_check(1, 3, 0.5),
+        "random_pooled_observed_rate": 1 / 6,
+        "random_pooled_expected_rate": 0.3125,
+        "clock_0_1x_episode_count": 0,
+        "clock_10x_episode_count": 0,
+        "clock_decision_mismatches": 0,
+        "rejection_reason_counts": {},
+        "generation_attempt_count": 1,
+        "rejected_draw_count": 0,
+        "rejected_draw_rate": 0.0,
+        "corpus_sha256": "f" * 64,
+        "passed": False,
+    }
+
+    with pytest.raises(ValidationError, match="divisible by four"):
+        OracleEvaluationReport.model_validate(payload)
+
+
 def test_freeze_with_test_dependencies_publishes_an_immutable_loadable_manifest(
     tmp_path: Path,
 ) -> None:

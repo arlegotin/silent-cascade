@@ -1,5 +1,11 @@
 """Task 14 deterministic order/chunk/fresh-process contracts."""
 
+import ast
+import inspect
+import os
+import subprocess
+import sys
+import textwrap
 from dataclasses import replace
 from pathlib import Path
 
@@ -7,6 +13,7 @@ import pytest
 
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
+from silent_cascade.env.episode import CorpusDigestEntry
 from silent_cascade.env.generator import EpisodeBlock, IndependentAllocation
 from silent_cascade.errors import (
     ArtifactIntegrityError,
@@ -122,7 +129,6 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
         _entry_for,
         _run_fresh_process,
         check_reproducibility,
-        independent_sample_membership_sha256,
         select_independent_reproducibility_sample,
     )
     from silent_cascade.logging.manifest import load_manifest
@@ -193,10 +199,27 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
     requests = tuple(iter_independent_requests(allocation, 41))
     known_sample = select_independent_reproducibility_sample(requests, "1" * 64, 4)
     assert tuple(item.episode_index for item in known_sample) == (9, 10, 8, 5)
-    assert independent_sample_membership_sha256("1" * 64, known_sample) == (
-        "8ea03fe787a7330a598867792072f0f5120e0fc207da7e5ac833e2542cf848e0"
+    bundle = generate_independent_episode(resolved.config, requests[0], 91)
+    assert _entry_for(bundle) == CorpusDigestEntry(
+        episode_public_id="3cbf2139-7f26-409d-b86d-bc511845a74f",
+        episode_sha256="0e6992585c0e518a6eee188aa707de867e2be999973657830faa3899360e365b",
     )
-    assert _entry_for(generate_independent_episode(resolved.config, requests[0], 91))
+    signature = inspect.signature(_entry_for)
+    assert tuple(signature.parameters) == ("bundle",)
+    assert signature.return_annotation is CorpusDigestEntry
+    import silent_cascade.env.reproducibility as reproducibility_module
+
+    tree = ast.parse(Path(reproducibility_module.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "_entry_for")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "_entry_for")
+        )
+    ]
+    assert calls and all(len(call.args) == 1 and not call.keywords for call in calls)
     expected_coordinates = tuple(
         (
             request.episode_index,
@@ -209,6 +232,107 @@ def test_independent_reproducibility_is_order_chunk_and_hash_seed_stable() -> No
     assert len(observed_work_orders) == 2
     assert observed_work_orders[0] == observed_work_orders[1]
     assert tuple(sorted(observed_work_orders[0])) == expected_coordinates
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    (
+        pytest.param(
+            """
+            from silent_cascade.env.config import SplitNamespace
+            from silent_cascade.env.reproducibility import IndependentSourceDescriptor
+            from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+            descriptor = IndependentSourceDescriptor(
+                schema_version="phase1-independent-source-v1",
+                allocation_id="phase1-independent-gate-v1",
+                allocation_sha256="3" * 64,
+                split_namespace=SplitNamespace.PHASE1_GATE,
+                root_seed=41,
+                public_id_seed_sha256="0" * 64,
+                config_sha256="1" * 64,
+                generator_source_sha256="2" * 64,
+            )
+            print(sha256_bytes(canonical_json_bytes(descriptor)))
+            """,
+            "02bfb26fe2cd5d84bfcea48ef60175e5a31cc6b28e59958dc5ec0ae0ac32cb8b",
+            id="descriptor",
+        ),
+        pytest.param(
+            """
+            from silent_cascade.env.config import SplitNamespace, SuiteName
+            from silent_cascade.env.episode import EpisodeVariant
+            from silent_cascade.env.generator import IndependentEpisodeRequest
+            from silent_cascade.env.reproducibility import _independent_reproducibility_rank_sha256
+
+            request = IndependentEpisodeRequest(
+                split_namespace=SplitNamespace.DEBUG,
+                suite=SuiteName.IID_PRIMARY,
+                root_seed=41,
+                episode_index=7,
+                requested_path_length=2,
+                variant=EpisodeVariant.POSITIVE,
+                allocation_quartet_index=1,
+                quartet_member_index=3,
+            )
+            source_hash = (
+                "02bfb26fe2cd5d84bfcea48ef60175e5a31cc6b28e59958dc5ec0ae0ac32cb8b"
+            )
+            print(_independent_reproducibility_rank_sha256(source_hash, request))
+            """,
+            "9f0db840b7386858370339a548c8b785b5560be30c39968d2c427a587e2fb80b",
+            id="rank",
+        ),
+        pytest.param(
+            """
+            from silent_cascade.env.config import SplitNamespace, SuiteName
+            from silent_cascade.env.episode import EpisodeVariant
+            from silent_cascade.env.generator import IndependentEpisodeRequest
+            from silent_cascade.env.reproducibility import independent_sample_membership_sha256
+
+            def request(suite, path, episode):
+                return IndependentEpisodeRequest(
+                    split_namespace=SplitNamespace.DEBUG,
+                    suite=suite,
+                    root_seed=41,
+                    episode_index=episode,
+                    requested_path_length=path,
+                    variant=EpisodeVariant.POSITIVE,
+                    allocation_quartet_index=0,
+                    quartet_member_index=0,
+                )
+
+            selected = (
+                request(SuiteName.IID_PRIMARY, 2, 7),
+                request(SuiteName.OOD_DEPTH, 5, 3),
+            )
+            source_hash = (
+                "02bfb26fe2cd5d84bfcea48ef60175e5a31cc6b28e59958dc5ec0ae0ac32cb8b"
+            )
+            print(independent_sample_membership_sha256(source_hash, selected))
+            """,
+            "f18653443059e3af94996faf6cd201d3f2e51f502572b2c52fac7ad06509c8f5",
+            id="membership",
+        ),
+    ),
+)
+def test_task14_known_answer_vectors_are_stable_in_fresh_processes(
+    program: str,
+    expected: str,
+) -> None:
+    """Descriptor, rank, and frozen-v1 membership bytes must survive a fresh interpreter."""
+    completed = subprocess.run(
+        (sys.executable, "-c", textwrap.dedent(program)),
+        cwd=Path.cwd(),
+        env={**os.environ, "PYTHONHASHSEED": "0"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert completed.stdout == f"{expected}\n"
 
 
 def test_independent_rejects_dirty_provenance_before_generation() -> None:

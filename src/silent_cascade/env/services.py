@@ -301,6 +301,8 @@ class OracleEvaluationReport(StrictModel):
     @model_validator(mode="after")
     def require_namespace_binding(self) -> "OracleEvaluationReport":
         require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
+        if self.provenance.generation_mode == "matched" and self.verified_episode_count % 4 != 0:
+            raise ValueError("matched verified episode count must be divisible by four")
         expected_draws = (
             self.verified_episode_count // 4
             if self.provenance.generation_mode == "matched"

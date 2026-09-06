@@ -10,6 +10,7 @@ from pathlib import Path
 from runpy import run_path
 
 import pytest
+from pydantic import ValidationError
 
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
@@ -77,6 +78,7 @@ _VERIFIER = run_path(
 )
 verify_phase1_gate_artifacts = _VERIFIER["verify_phase1_gate_artifacts"]
 _require_leakage = _VERIFIER["_require_leakage"]
+Phase1GateVerificationResult = _VERIFIER["Phase1GateVerificationResult"]
 
 GATE_DENOMINATORS = {
     "distractor_flood:2": 8_000,
@@ -834,6 +836,41 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
 
 
 @pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("validation_manifest_payload_sha256", "A" * 64),
+        ("validation_manifest_payload_sha256", "a" * 63),
+        ("independent_corpus_sha256", "G" * 64),
+        ("independent_corpus_sha256", False),
+    ),
+)
+def test_outer_gate_result_requires_strict_lowercase_sha256_digests(
+    field: str,
+    replacement: object,
+) -> None:
+    """The success envelope cannot emit malformed or coerced artifact digests."""
+    payload = {
+        "schema_version": "phase1-gate-verification-v2",
+        "validation_episode_count": 10_000,
+        "independent_episode_count": 100_000,
+        "matched_accepted_draw_count": 2_500,
+        "independent_accepted_draw_count": 100_000,
+        "matched_public_id_seed": 2026083002,
+        "independent_public_id_seed": 2026083012,
+        "construction_token_count": 750_000,
+        "public_id_count": 117_000,
+        "validation_manifest_payload_sha256": "a" * 64,
+        "independent_corpus_sha256": "b" * 64,
+        "foundation_model_calls": 0,
+        "passed": True,
+    }
+    payload[field] = replacement
+
+    with pytest.raises(ValidationError):
+        Phase1GateVerificationResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
     ("artifact_name", "stale_schema"),
     (
         ("oracle.json", "oracle-evaluation-report-v1"),
@@ -922,6 +959,45 @@ def test_verifier_refuses_common_provenance_disagreement(
     )
 
     with pytest.raises(ArtifactIntegrityError, match=r"provenance|schema"):
+        _verify(_write_artifacts(tmp_path, artifacts))
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    (
+        "validation.json",
+        "oracle.json",
+        "validation-reproducibility.json",
+        "independent-reproducibility.json",
+    ),
+)
+@pytest.mark.parametrize("field", ("analysis_seeds", "leakage_audit"))
+def test_verifier_requires_exact_empty_non_leakage_metadata(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    artifact_name: str,
+    field: str,
+) -> None:
+    """Only the leakage report may carry audit seeds or a leakage authority anchor."""
+    artifacts = dict(consistent_artifact_bytes)
+    leakage = json.loads(artifacts["leakage.json"])
+    replacement = (
+        {"unexpected_seed": 1}
+        if field == "analysis_seeds"
+        else leakage["provenance"]["leakage_audit"]
+    )
+    if artifact_name == "validation.json":
+        envelope = json.loads(artifacts[artifact_name])
+        envelope["payload"]["provenance"][field] = replacement
+        envelope["payload_sha256"] = sha256_bytes(canonical_json_bytes(envelope["payload"]))
+        artifacts[artifact_name] = canonical_json_bytes(envelope)
+    else:
+        artifacts[artifact_name] = _mutate_json(
+            artifacts[artifact_name],
+            lambda value: value["provenance"].__setitem__(field, replacement),  # type: ignore[index,union-attr]
+        )
+
+    with pytest.raises(ArtifactIntegrityError, match="non-leakage provenance metadata"):
         _verify(_write_artifacts(tmp_path, artifacts))
 
 

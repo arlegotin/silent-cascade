@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from silent_cascade.env.config import SplitNamespace, SuiteName
 from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
@@ -141,6 +141,8 @@ _FEATURE_SCHEMA_SHA256 = sha256_bytes(
     )
 )
 
+type HexDigest = str
+
 
 class Phase1GateVerificationResult(StrictModel):
     """Canonical summary proving the five files agree at their public boundaries."""
@@ -154,8 +156,8 @@ class Phase1GateVerificationResult(StrictModel):
     independent_public_id_seed: Literal[2026083012]
     construction_token_count: Literal[750_000]
     public_id_count: Literal[117_000]
-    validation_manifest_payload_sha256: str
-    independent_corpus_sha256: str
+    validation_manifest_payload_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+    independent_corpus_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
     foundation_model_calls: Literal[0]
     passed: Literal[True]
 
@@ -546,6 +548,15 @@ def _require_zero_call_common_provenance(
     _require(
         all(_common_provenance_key(item) == expected for item in provenances[1:]),
         "Phase 1 plan/source/config/generator provenance disagrees",
+    )
+
+
+def _require_empty_non_leakage_metadata(
+    provenances: tuple[EvidenceProvenance, ...],
+) -> None:
+    _require(
+        all(not item.analysis_seeds and item.leakage_audit is None for item in provenances),
+        "non-leakage provenance metadata must be exactly empty",
     )
 
 
@@ -1037,6 +1048,15 @@ def verify_phase1_gate_artifacts(
         independent_reproducibility_path,
         ReproducibilityReport,
         name="independent reproducibility",
+    )
+
+    _require_empty_non_leakage_metadata(
+        (
+            manifest.provenance,
+            oracle.provenance,
+            validation_reproducibility.provenance,
+            independent_reproducibility.provenance,
+        )
     )
 
     manifest_payload_sha256, matched_tokens, matched_public_ids = _require_validation_artifacts(
