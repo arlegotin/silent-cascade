@@ -159,8 +159,23 @@ def _probe_workload(
 
 def _provenance(*, independent: bool) -> EvidenceProvenance:
     repository = Path.cwd()
-    source_commit = subprocess.run(
+    head = subprocess.run(
         ("git", "rev-parse", "--verify", "HEAD^{commit}"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    source_commit = subprocess.run(
+        (
+            "git",
+            "log",
+            "-1",
+            "--format=%H",
+            head,
+            "--",
+            *PHASE1_ANALYSIS_SOURCE_PATHS,
+        ),
         cwd=repository,
         check=True,
         capture_output=True,
