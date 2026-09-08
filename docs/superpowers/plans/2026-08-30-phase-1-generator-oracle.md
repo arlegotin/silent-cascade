@@ -4395,9 +4395,14 @@ clock-child pack combines with the source pack, reconstructed parent/child
 public IDs, exact scale values, and authenticated parent ranks to reconstruct
 the complete canonical
 `silent-cascade/ofd-v1/leakage-clock-pair-manifest/v2` payload and digest. That
-digest must equal both `AuditSourceAuthentication.clock_pair_manifest_sha256`
-and the v2 `LeakageAuditEvidenceAnchor.clock_pair_manifest_sha256`; no stored
-clock-manifest hash is accepted without this reconstruction. Its
+digest is checked at production time against both the live
+`AuditSourceAuthentication.clock_pair_manifest_sha256` and the serialized v2
+`LeakageAuditEvidenceAnchor.clock_pair_manifest_sha256`. The standalone
+verifier has no live `AuditSourceAuthentication` object, so it independently
+reconstructs the digest from the two packs and frozen recipe and checks the
+serialized v2 anchor (plus a redundant serialized report field only if one is
+introduced explicitly). No stored clock-manifest hash is accepted without
+this reconstruction. Its
 invariant, feature, finite-feature, second-pass, and second-pass-match counts
 must all equal `episode_count`; both source-manifest hashes must be equal.
 Derive the six ordered construction checks exactly: `provenance` from the
@@ -6392,9 +6397,10 @@ Add strict pack known answers and mutations for Base64 alphabet/padding,
 decoded length, item count, order, payload digest, truncation, duplicate/missing
 items, and the 100,000-item bound. Assert exactly one 100,000-item source pack,
 one 7,000-item clock-child pack in exact `0.1x`-then-`10x` parent order, and nine
-exact 8,000-item control packs. Mutate the clock-child pack alone and the
-authenticated clock-pair-manifest hash alone and require rejection. Reject a
-canonical leakage artifact larger than 16 MiB at
+exact 8,000-item control packs. Mutate the clock-child pack alone and the live
+`AuditSourceAuthentication.clock_pair_manifest_sha256` alone or the serialized
+v2 anchor alone and require producer rejection. Reject a canonical leakage
+artifact larger than 16 MiB at
 construction/publication/loading boundaries. Reject stale `leakage-report-v2`.
 
 Freeze the literal two-member
@@ -6444,6 +6450,14 @@ invariant/feature/finite/second-pass counts, and equal authenticated hashes.
 Derive every probe workload from its task-filtered membership rather than
 copying the main split count.
 
+Before publication, the producer must combine the base source and clock-child
+packs with the live frozen source recipe to reconstruct the complete v2 clock
+manifest payload. It must require that reconstructed digest to equal both the
+live `AuditSourceAuthentication.clock_pair_manifest_sha256` and the serialized
+v2 `LeakageAuditEvidenceAnchor.clock_pair_manifest_sha256`. This live check is
+a producer responsibility and is not an input invented for the later
+standalone verifier.
+
 - [ ] **Step 4: Run transitional GREEN and commit**
 
 ```bash
@@ -6491,7 +6505,7 @@ and resolve every finding before Pass 5C.
 Use a literal nonaligned-quartet fixture and hand-computed ordered hashes.
 Require rejection when only one of these values changes while its strict SHA
 shape remains valid: source digest pack item/order/payload; clock-child digest
-pack item/order/payload; corpus hash; source-manifest hash; authenticated or
+pack item/order/payload; corpus hash; source-manifest hash; serialized v2
 anchor clock-pair-manifest hash; split/train/test membership hash; membership
 count; one positive-control subset membership, base subset corpus, split
 membership, injected digest, injected corpus, or pack order; one of the six
@@ -6522,9 +6536,12 @@ Decode the 7,000-item clock-child pack in its exact `0.1x`-then-`10x`
 authenticated parent order. Combine it with source-pack parent digests,
 reconstructed parent/child public IDs, parent manifest ranks, and scale values
 to rebuild every canonical v2 clock-pair-manifest row and the complete framed
-payload. Independently hash that payload and require equality with both the
-source authentication and v2 provenance anchor. Neither stored clock hash is a
-substitute for the child pack or the reconstruction.
+payload. Independently hash that payload and require equality with the
+serialized v2 provenance anchor. The standalone verifier does not receive the
+producer's live `AuditSourceAuthentication` object. A redundant serialized
+report hash may be compared only if the schema explicitly carries one; neither
+such a field nor the anchor is a substitute for the child pack and independent
+reconstruction.
 
 Reproduce the frozen main group ranking and 80/20 split to derive the exact
 split/train/test payload hashes and counts. For each clean and shuffled task,
@@ -6597,7 +6614,8 @@ evidence_source_commit="$(git log -1 --format=%H "${collector_head}" -- \
   src/silent_cascade/env/services.py src/silent_cascade/io.py \
   src/silent_cascade/logging/__init__.py \
   src/silent_cascade/logging/manifest.py \
-  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
+  src/silent_cascade/__init__.py src/silent_cascade/config.py \
+  src/silent_cascade/env/__init__.py \
   src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
   src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
   src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
@@ -6636,45 +6654,61 @@ commit, and no post-evidence source or fixture correction is allowed.
 - Produces: immutable validation/gate artifacts tied to source/config/generator
   hashes and the evidence required to start a Phase 2 plan.
 
+Run Steps 1–7 in one shell session so the captured path array, collector
+revision, evidence-source revision, and guard function remain in scope. Invoke
+the guard exactly where shown; it checks committed history and also compares
+the current index/worktree bytes with `collector_head`, so an uncommitted edit
+to any final-analysis path aborts collection.
+
 - [ ] **Step 1: Verify the implementation revision is clean**
 
 ```bash
 git status --short
 git diff --check
+phase1_analysis_paths=(
+  scripts/check_phase1_reproducibility.py
+  scripts/verify_phase1_gate_artifacts.py
+  src/silent_cascade/provenance.py
+  src/silent_cascade/env/reward.py
+  src/silent_cascade/env/leakage.py
+  src/silent_cascade/env/reproducibility.py
+  src/silent_cascade/env/services.py
+  src/silent_cascade/io.py
+  src/silent_cascade/logging/__init__.py
+  src/silent_cascade/logging/manifest.py
+  src/silent_cascade/__init__.py
+  src/silent_cascade/config.py
+  src/silent_cascade/env/__init__.py
+  src/silent_cascade/env/config.py
+  src/silent_cascade/env/episode.py
+  src/silent_cascade/env/generator.py
+  src/silent_cascade/env/invariants.py
+  src/silent_cascade/env/oracle.py
+  src/silent_cascade/env/timing.py
+  src/silent_cascade/errors.py
+  src/silent_cascade/hashing.py
+  src/silent_cascade/rng.py
+  src/silent_cascade/schemas.py
+  src/silent_cascade/validation.py
+)
 collector_head="$(git rev-parse HEAD)"
 evidence_source_commit="$(git log -1 --format=%H "${collector_head}" -- \
-  scripts/check_phase1_reproducibility.py \
-  scripts/verify_phase1_gate_artifacts.py \
-  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
-  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
-  src/silent_cascade/env/services.py src/silent_cascade/io.py \
-  src/silent_cascade/logging/__init__.py \
-  src/silent_cascade/logging/manifest.py \
-  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
-  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
-  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
-  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
-  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
-  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
-  src/silent_cascade/validation.py)"
-git merge-base --is-ancestor "${evidence_source_commit}" "${collector_head}"
-git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
-  scripts/check_phase1_reproducibility.py \
-  scripts/verify_phase1_gate_artifacts.py \
-  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
-  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
-  src/silent_cascade/env/services.py src/silent_cascade/io.py \
-  src/silent_cascade/logging/__init__.py \
-  src/silent_cascade/logging/manifest.py \
-  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
-  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
-  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
-  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
-  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
-  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
-  src/silent_cascade/validation.py
+  "${phase1_analysis_paths[@]}")"
+assert_phase1_analysis_immutable() {
+  test "$(git rev-parse HEAD)" = "${collector_head}" &&
+    test "$(git log -1 --format=%H "${collector_head}" -- \
+      "${phase1_analysis_paths[@]}")" = "${evidence_source_commit}" &&
+    git merge-base --is-ancestor \
+      "${evidence_source_commit}" "${collector_head}" &&
+    git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
+      "${phase1_analysis_paths[@]}" &&
+    git diff --quiet "${collector_head}" -- \
+      "${phase1_analysis_paths[@]}"
+}
+assert_phase1_analysis_immutable
 uv sync --locked --group dev
 make verify
+assert_phase1_analysis_immutable
 ```
 
 Expected: status/diff checks print nothing; locked sync, lint, all tests, doctor,
@@ -6697,7 +6731,7 @@ The manifest and every later report must record `evidence_source_commit`, not
 the test-only collector descendant:
 
 ```bash
-test "$(git rev-parse HEAD)" = "${collector_head}"
+assert_phase1_analysis_immutable
 uv run silent-cascade data freeze \
   --config configs/base.yaml \
   --data-config configs/data/primary.yaml \
@@ -6705,36 +6739,52 @@ uv run silent-cascade data freeze \
   --root-seed 2026083001 \
   --public-id-seed 2026083002 \
   --json
-test "$(git rev-parse HEAD)" = "${collector_head}"
-git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
-  scripts/check_phase1_reproducibility.py \
-  scripts/verify_phase1_gate_artifacts.py \
-  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
-  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
-  src/silent_cascade/env/services.py src/silent_cascade/io.py \
-  src/silent_cascade/logging/__init__.py \
-  src/silent_cascade/logging/manifest.py \
-  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
-  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
-  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
-  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
-  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
-  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
-  src/silent_cascade/validation.py
+assert_phase1_analysis_immutable
 ```
 
 Expected: exit 0, 10,000 unique entries, 5,000 positive, 2,500 safe-negative,
 2,500 disconnected-negative, verified hashes, and zero foundation calls.
 
-Run it once more with identical arguments. Expected: verified no-op,
-`created=false`, unchanged bytes/mtime. Change the root seed while retaining the
-path. Expected: exit 1 with `manifest_error` and unchanged bytes.
+Run the same collector once more with identical arguments, guarding both sides.
+Expected: verified no-op, `created=false`, unchanged bytes/mtime:
+
+```bash
+assert_phase1_analysis_immutable
+uv run silent-cascade data freeze \
+  --config configs/base.yaml \
+  --data-config configs/data/primary.yaml \
+  --output manifests/validation/v1/ofd-primary-10000.json \
+  --root-seed 2026083001 \
+  --public-id-seed 2026083002 \
+  --json
+assert_phase1_analysis_immutable
+```
+
+Change the root seed while retaining the path and require the refusal rather
+than allowing the shell to treat it as an optional diagnostic. Expected: exit
+1 with `manifest_error` and unchanged bytes:
+
+```bash
+assert_phase1_analysis_immutable
+if uv run silent-cascade data freeze \
+  --config configs/base.yaml \
+  --data-config configs/data/primary.yaml \
+  --output manifests/validation/v1/ofd-primary-10000.json \
+  --root-seed 2026083003 \
+  --public-id-seed 2026083002 \
+  --json; then
+  echo "expected divergent existing manifest refusal" >&2
+  exit 1
+fi
+assert_phase1_analysis_immutable
+```
 
 - [ ] **Step 3: Inspect public and authorized oracle views**
 
 Select the first deterministic manifest entry without manual ID substitution:
 
 ```bash
+assert_phase1_analysis_immutable
 uv run silent-cascade episode inspect \
   manifests/validation/v1/ofd-primary-10000.json \
   --entry-index 0 \
@@ -6745,6 +6795,7 @@ uv run silent-cascade episode inspect \
   --entry-index 0 \
   --oracle \
   --json
+assert_phase1_analysis_immutable
 ```
 
 Expected: public output contains facts/activation only; authorized validation
@@ -6754,6 +6805,7 @@ the private sentinel field names from Task 2.
 - [ ] **Step 4: Run the exact streaming oracle/random gate**
 
 ```bash
+assert_phase1_analysis_immutable
 uv run silent-cascade oracle evaluate \
   --config configs/base.yaml \
   --data-config configs/data/primary.yaml \
@@ -6762,6 +6814,7 @@ uv run silent-cascade oracle evaluate \
   --public-id-seed 2026083012 \
   --output manifests/validation/v1/phase1-oracle-gate.json \
   --json
+assert_phase1_analysis_immutable
 ```
 
 Expected report:
@@ -6807,6 +6860,7 @@ indexes `16219` and `16500`—to be feasible after deterministic rejection.
 - [ ] **Step 5: Run the exact streaming leakage gate**
 
 ```bash
+assert_phase1_analysis_immutable
 uv run silent-cascade leakage audit \
   --config configs/base.yaml \
   --data-config configs/data/primary.yaml \
@@ -6816,6 +6870,7 @@ uv run silent-cascade leakage audit \
   --profile phase1-gate \
   --output manifests/validation/v1/phase1-leakage-gate.json \
   --json
+assert_phase1_analysis_immutable
 ```
 
 Expected: `generation_mode=independent`, `schema_version=leakage-report-v3`;
@@ -6843,6 +6898,7 @@ mismatch, or oversize artifact exits nonzero and blocks Phase 1.
 First verify the matched validation artifact:
 
 ```bash
+assert_phase1_analysis_immutable
 uv run python scripts/check_phase1_reproducibility.py \
   --config configs/base.yaml \
   --data-config configs/data/primary.yaml \
@@ -6855,6 +6911,7 @@ uv run python scripts/check_phase1_reproducibility.py \
   --python-hash-seed 1 \
   --verify-all-source-entries \
   --output manifests/validation/v1/phase1-validation-reproducibility.json
+assert_phase1_analysis_immutable
 ```
 
 The harness runs forward, reverse, one-at-a-time, every declared chunk size,
@@ -6865,6 +6922,7 @@ manifest entries, and uses no shell interpolation or network access.
 Then gate the independent recipe that Phase 6 will instantiate:
 
 ```bash
+assert_phase1_analysis_immutable
 uv run python scripts/check_phase1_reproducibility.py \
   --config configs/base.yaml \
   --data-config configs/data/primary.yaml \
@@ -6879,6 +6937,7 @@ uv run python scripts/check_phase1_reproducibility.py \
   --python-hash-seed 1 \
   --verify-all-source-entries \
   --output manifests/validation/v1/phase1-independent-reproducibility-gate.json
+assert_phase1_analysis_immutable
 ```
 
 Expected: all 100,000 independent requests regenerate with identical IDs,
@@ -6904,12 +6963,14 @@ pure helper APIs.
 - [ ] **Step 7: Run pre-freeze evidence verification**
 
 ```bash
+assert_phase1_analysis_immutable
 uv run python scripts/verify_phase1_gate_artifacts.py \
   --validation manifests/validation/v1/ofd-primary-10000.json \
   --oracle manifests/validation/v1/phase1-oracle-gate.json \
   --leakage manifests/validation/v1/phase1-leakage-gate.json \
   --validation-reproducibility manifests/validation/v1/phase1-validation-reproducibility.json \
   --independent-reproducibility manifests/validation/v1/phase1-independent-reproducibility-gate.json
+assert_phase1_analysis_immutable
 uv sync --locked --group dev
 uv run ruff check .
 uv run ruff format --check .
@@ -6917,6 +6978,7 @@ uv run pytest -q tests/property tests/regression tests/integration/test_cli_phas
 uv run silent-cascade doctor
 uv build
 git diff --check
+assert_phase1_analysis_immutable
 ```
 
 Expected: the cross-artifact gate verifier, locked sync, lint, formatting,

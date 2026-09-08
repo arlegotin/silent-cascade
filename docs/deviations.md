@@ -67,10 +67,13 @@ to rederive the six construction checks, independent corpus and source-manifest
 hashes, split/train/test membership hashes, and every positive-control subset,
 split, and injected-corpus hash. The source and clock-child packs additionally
 reconstruct the complete v2 clock-pair manifest and bind its digest to source
-authentication and the v2 anchor. The final verifier reconstructs the complete
-ordered public-ID and coordinate stream from frozen allocation, seeds, and
-accepted-attempt runs, then performs those derivations without calling the
-producer helpers. It also independently reconstructs all three counterfactual
+authentication and the v2 anchor during production. The final verifier has no
+live source-authentication object: it reconstructs the complete ordered
+public-ID and coordinate stream from frozen allocation, seeds, and
+accepted-attempt runs, independently rebuilds the clock manifest from the
+serialized packs and frozen recipe, and compares that digest with the
+serialized v2 anchor. It performs those derivations without calling the
+producer helpers and also independently reconstructs all three counterfactual
 result payload hashes from their canonical pair keys and primitive mismatch
 counts.
 
@@ -95,10 +98,20 @@ foundation-model calls.
 A pre-implementation re-review tightened this correction without changing a
 scientific setting. Leakage v3 now carries an eleventh bounded digest pack for
 the 7,000 clock children in exact `0.1x`-then-`10x` authenticated parent order.
-The final verifier must combine it with the 100,000-item source pack to rebuild
-the complete v2 clock-pair-manifest payload and compare its hash with both
-source authentication and the v2 leakage anchor. This closes the prior gap in
-which child public IDs were reconstructable but child episode digests were not.
+The producer must combine it with the 100,000-item source pack to rebuild the
+complete v2 clock-pair-manifest payload and compare its hash with both live
+source authentication and the serialized v2 leakage anchor before publication.
+The standalone verifier independently performs the same reconstruction but,
+because it has no live producer object, compares the digest with the serialized
+v2 anchor. This closes the prior gap in which child public IDs were
+reconstructable but child episode digests were not.
+
+The same review made the Task 18 byte-immutability rule executable rather than
+prose-only. Steps 1–7 now retain one exact final-analysis path array and abort
+before and after each collector when either committed history changes or the
+index/worktree differs from the captured clean `collector_head` on any of those
+paths. Evidence commands still run from that captured head and reports still
+record the last reviewed analysis-source revision.
 
 The same review made the Pass 5A anchor-fixture migration explicit, froze the
 delivery-index regression before collection to accept only a wholly absent
