@@ -2198,6 +2198,9 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
         test_examples=4,
         train_class_counts={"0": 4, "1": 4},
         test_class_counts={"0": 2, "1": 2},
+        test_confusion_counts={"0": {"0": 2, "1": 0}, "1": {"0": 0, "1": 2}},
+        permutation_exceedance_count=0,
+        permutation_replicate_count=999,
         raw_accuracy=1.0,
         balanced_accuracy=1.0,
         balanced_chance=0.5,
@@ -2235,7 +2238,18 @@ def test_leakage_service_executes_task15_and_publishes_complete_scientific_resul
     reused = _publish_report(output, result.report)
 
     assert result.report.passed is (not scientific_failure)
-    assert result.report.schema_version == "leakage-report-v2"
+    assert result.report.schema_version == "leakage-report-v3"
+    statistics = result.report.construction_statistics
+    assert statistics.source_episode_sha256s.item_count == 12
+    assert statistics.invariant_verified_count == 12
+    assert statistics.feature_row_count == statistics.finite_feature_row_count == 12
+    assert statistics.second_pass_verified_count == statistics.second_pass_match_count == 12
+    assert (
+        statistics.first_pass_source_manifest_sha256
+        == statistics.second_pass_source_manifest_sha256
+    )
+    assert result.report.membership_evidence.train_episode_count == 8
+    assert result.report.membership_evidence.test_episode_count == 4
     assert result.report.namespace_evidence.public_id_seed == 91
     assert result.report.namespace_evidence.accepted_draw_count == (
         3 if source_mode == "manifest" else 12

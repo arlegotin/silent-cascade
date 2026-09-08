@@ -489,6 +489,15 @@ def _resolve(selection: ConfigSelection) -> ResolvedConfig[Phase1Config]:
 def _publish_report(path: Path, report: StrictModel) -> ArtifactPublication:
     """Atomically publish report-only canonical bytes with manifest-equivalent reuse."""
     payload = canonical_json_bytes(report)
+    if isinstance(report, LeakageReport):
+        from silent_cascade.env.leakage import MAX_LEAKAGE_REPORT_BYTES
+
+        if len(payload) > MAX_LEAKAGE_REPORT_BYTES:
+            raise ArtifactError("canonical leakage report exceeds 16 MiB")
+        try:
+            LeakageReport.model_validate_json(payload)
+        except ValueError as error:
+            raise ArtifactError("leakage report evidence is inconsistent") from error
     payload_sha256 = sha256_bytes(payload)
     try:
         atomic_create_bytes(path, payload)

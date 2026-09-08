@@ -8,6 +8,8 @@ named positive-control mode, to synthesize a known leak.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import math
 import shutil
@@ -76,6 +78,128 @@ from silent_cascade.validation import StrictModel
 type HexDigest = str
 _FEATURE_DIMENSIONS = (17, 256, 278, 4, 768, 194, 10, 33)
 _TOTAL_FEATURE_DIMENSION = sum(_FEATURE_DIMENSIONS)
+MAX_LEAKAGE_REPORT_BYTES = 16 * 1024 * 1024
+PC_BASE_SUBSET_MEMBERSHIP_DOMAIN = "silent-cascade/ofd-v1/pc-base-subset-membership/v1"
+
+
+class OrderedSha256Pack(StrictModel):
+    """Bounded raw arithmetic anchors, not episode payloads or prediction vectors.
+
+    A coherent replacement of all trust anchors cannot be detected by a pack.
+    """
+
+    schema_version: Literal["ordered-sha256-pack-v1"]
+    encoding: Literal["base64-concatenated-sha256-v1"]
+    item_count: int = Field(gt=0, le=100_000)
+    payload_base64: str
+    payload_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def require_canonical_payload(self) -> OrderedSha256Pack:
+        self.digests()
+        return self
+
+    def digests(self) -> tuple[str, ...]:
+        if type(self.item_count) is not int or not 0 < self.item_count <= 100_000:
+            raise ValueError("ordered digest pack count is invalid")
+        if type(self.payload_base64) is not str or len(self.payload_base64) != 4 * (
+            (32 * self.item_count + 2) // 3
+        ):
+            raise ValueError("ordered digest pack encoded length is invalid")
+        try:
+            raw = base64.b64decode(self.payload_base64, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("ordered digest pack Base64 is invalid") from error
+        if (
+            len(raw) != 32 * self.item_count
+            or base64.b64encode(raw).decode("ascii") != self.payload_base64
+            or sha256_bytes(raw) != self.payload_sha256
+        ):
+            raise ValueError("ordered digest pack length, canonical form, or hash differs")
+        result = tuple(raw[index : index + 32].hex() for index in range(0, len(raw), 32))
+        if len(set(result)) != len(result):
+            raise ValueError("ordered digest pack contains duplicate items")
+        return result
+
+
+def _ordered_digest_pack(digests: Sequence[str]) -> OrderedSha256Pack:
+    raw = b"".join(bytes.fromhex(digest) for digest in digests)
+    return OrderedSha256Pack(
+        schema_version="ordered-sha256-pack-v1",
+        encoding="base64-concatenated-sha256-v1",
+        item_count=len(digests),
+        payload_base64=base64.b64encode(raw).decode("ascii"),
+        payload_sha256=sha256_bytes(raw),
+    )
+
+
+class LeakageConstructionStatistics(StrictModel):
+    schema_version: Literal["leakage-construction-statistics-v1"]
+    source_episode_sha256s: OrderedSha256Pack
+    clock_child_episode_sha256s: OrderedSha256Pack
+    invariant_verified_count: int = Field(ge=0)
+    feature_row_count: int = Field(ge=0)
+    finite_feature_row_count: int = Field(ge=0)
+    second_pass_verified_count: int = Field(ge=0)
+    second_pass_match_count: int = Field(ge=0)
+    first_pass_source_manifest_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+    second_pass_source_manifest_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class LeakageMembershipEvidence(StrictModel):
+    schema_version: Literal["leakage-membership-evidence-v1"]
+    split_membership_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+    train_membership_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+    test_membership_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+    train_episode_count: int = Field(gt=0)
+    test_episode_count: int = Field(gt=0)
+
+
+def _confusion_statistics(
+    counts: dict[str, int], confusion: dict[str, dict[str, int]]
+) -> tuple[float, float]:
+    """Derive both metrics using the same exact integer sufficient statistics."""
+    if (
+        type(counts) is not dict
+        or not counts
+        or any(
+            type(key) is not str or type(value) is not int or value <= 0
+            for key, value in counts.items()
+        )
+    ):
+        raise ValueError("confusion class counts must be positive exact integers")
+    if type(confusion) is not dict or set(confusion) != set(counts):
+        raise ValueError("confusion rows must cover every test class exactly")
+    for label, row in confusion.items():
+        if (
+            type(row) is not dict
+            or set(row) != set(counts)
+            or any(
+                type(key) is not str or type(value) is not int or value < 0
+                for key, value in row.items()
+            )
+            or sum(row.values()) != counts[label]
+        ):
+            raise ValueError("confusion columns or row counts are inconsistent")
+    labels = sorted(counts)
+    correct = sum(confusion[label][label] for label in labels)
+    return correct / sum(counts.values()), sum(
+        confusion[label][label] / counts[label] for label in labels
+    ) / len(labels)
+
+
+def _test_confusion_counts(
+    labels: np.ndarray, predictions: np.ndarray, classes: np.ndarray
+) -> dict[str, dict[str, int]]:
+    if labels.shape != predictions.shape or not np.all(np.isin(predictions, classes)):
+        raise ValueError("held-out predictions must cover the declared labels")
+    return {
+        str(label): {
+            str(predicted): int(np.count_nonzero((labels == label) & (predictions == predicted)))
+            for predicted in classes
+        }
+        for label in classes
+    }
 
 
 class LeakageAuditProfileName(StrEnum):
@@ -164,6 +288,9 @@ class ShortcutProbeResult(StrictModel):
     test_examples: int = Field(gt=0)
     train_class_counts: dict[str, int]
     test_class_counts: dict[str, int]
+    test_confusion_counts: dict[str, dict[str, int]]
+    permutation_exceedance_count: int = Field(ge=0)
+    permutation_replicate_count: int = Field(gt=0)
     raw_accuracy: float = Field(ge=0.0, le=1.0)
     balanced_accuracy: float = Field(ge=0.0, le=1.0)
     balanced_chance: float = Field(ge=0.0, le=1.0)
@@ -191,6 +318,15 @@ class ShortcutProbeResult(StrictModel):
             or sum(self.test_class_counts.values()) != self.test_examples
         ):
             raise ValueError("shortcut class counts do not match the probe workload")
+        raw, balanced = _confusion_statistics(self.test_class_counts, self.test_confusion_counts)
+        if self.raw_accuracy != raw or self.balanced_accuracy != balanced:
+            raise ValueError("shortcut accuracy is not derived from confusion counts")
+        if (
+            self.permutation_exceedance_count > self.permutation_replicate_count
+            or self.raw_permutation_p
+            != (1 + self.permutation_exceedance_count) / (1 + self.permutation_replicate_count)
+        ):
+            raise ValueError("shortcut permutation probability is not derived from counts")
         return self
 
 
@@ -200,6 +336,8 @@ class PositiveControlResult(StrictModel):
     expected_detector_id: str
     observed_detector_ids: tuple[str, ...]
     base_subset_corpus_sha256: HexDigest
+    base_subset_membership_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
+    injected_episode_sha256s: OrderedSha256Pack
     injected_corpus_sha256: HexDigest
     split_membership_sha256: HexDigest
     balanced_accuracy: float | None = Field(ge=0.0, le=1.0)
@@ -930,7 +1068,9 @@ class CounterfactualCheckResult(StrictModel):
 
 
 class LeakageReport(StrictModel):
-    schema_version: Literal["leakage-report-v2"]
+    schema_version: Literal["leakage-report-v3"]
+    construction_statistics: LeakageConstructionStatistics
+    membership_evidence: LeakageMembershipEvidence
     provenance: EvidenceProvenance
     namespace_evidence: ConstructionNamespaceEvidence
     generation_mode: Literal["matched", "independent"]
@@ -954,6 +1094,38 @@ class LeakageReport(StrictModel):
 
     @model_validator(mode="after")
     def require_complete_counterfactual_family(self) -> LeakageReport:
+        if len(canonical_json_bytes(self)) > MAX_LEAKAGE_REPORT_BYTES:
+            raise ValueError("canonical leakage report exceeds 16 MiB")
+        statistics = self.construction_statistics
+        membership = self.membership_evidence
+        anchor = self.provenance.leakage_audit
+        if not isinstance(anchor, LeakageAuditEvidenceAnchor):
+            raise ValueError("leakage construction requires an authenticated anchor")
+        if (
+            statistics.source_episode_sha256s.item_count != self.episode_count
+            or statistics.clock_child_episode_sha256s.item_count
+            != sum(anchor.clock_scale_pair_counts.values())
+            or membership.train_episode_count + membership.test_episode_count != self.episode_count
+            or membership.split_membership_sha256 != self.split_membership_hash
+            or membership.train_membership_sha256 != self.train_membership_hash
+            or membership.test_membership_sha256 != self.test_membership_hash
+        ):
+            raise ValueError("leakage construction or membership evidence is inconsistent")
+        derived_checks = _construction_checks_from_statistics(
+            self.namespace_evidence, statistics, anchor, self.episode_count
+        )
+        if self.construction_checks != derived_checks or not all(derived_checks.values()):
+            raise ValueError("leakage construction checks contradict sufficient evidence")
+        if self.profile is LeakageAuditProfileName.PHASE1_GATE and (
+            membership.train_episode_count != 80_000
+            or membership.test_episode_count != 20_000
+            or statistics.clock_child_episode_sha256s.item_count != 7_000
+            or any(
+                control.injected_episode_sha256s.item_count != 8_000
+                for control in self.positive_controls
+            )
+        ):
+            raise ValueError("phase1 sufficient evidence counts are not exact")
         require_namespace_evidence_provenance(self.namespace_evidence, self.provenance)
         if self.namespace_evidence.generation_mode != self.generation_mode:
             raise ValueError("leakage namespace generation mode is inconsistent")
@@ -1017,6 +1189,7 @@ class LeakageReport(StrictModel):
                 raise ValueError("phase1 leakage report requires every positive control in order")
             if (
                 len({item.base_subset_corpus_sha256 for item in self.positive_controls}) != 1
+                or len({item.base_subset_membership_sha256 for item in self.positive_controls}) != 1
                 or len({item.split_membership_sha256 for item in self.positive_controls}) != 1
             ):
                 raise ValueError("phase1 positive controls must share one subset and split")
@@ -1978,10 +2151,8 @@ def _fit_predict_batched(
 
 
 def _balanced_accuracy(labels: np.ndarray, predictions: np.ndarray, classes: np.ndarray) -> float:
-    recalls = [np.mean(predictions[labels == value] == value) for value in classes]
-    if any(not np.isfinite(value) for value in recalls):
-        raise ValueError("balanced accuracy has a missing class")
-    return float(np.mean(recalls))
+    counts = {str(value): int(np.count_nonzero(labels == value)) for value in classes}
+    return _confusion_statistics(counts, _test_confusion_counts(labels, predictions, classes))[1]
 
 
 def _permutation_exceeds_observed(
@@ -2133,6 +2304,9 @@ def _probe_primitive_types_are_exact(probe: ShortcutProbeResult) -> bool:
         and type(probe.test_examples) is int
         and type(probe.train_class_counts) is dict
         and type(probe.test_class_counts) is dict
+        and type(probe.permutation_exceedance_count) is int
+        and type(probe.permutation_replicate_count) is int
+        and _probe_sufficient_statistics_are_consistent(probe)
         and all(
             type(key) is str and type(value) is int
             for counts in (probe.train_class_counts, probe.test_class_counts)
@@ -2147,6 +2321,24 @@ def _probe_primitive_types_are_exact(probe: ShortcutProbeResult) -> bool:
         and type(probe.optimizer_converged) is bool
         and type(probe.passed) is bool
     )
+
+
+def _probe_sufficient_statistics_are_consistent(probe: ShortcutProbeResult) -> bool:
+    try:
+        raw, balanced = _confusion_statistics(probe.test_class_counts, probe.test_confusion_counts)
+        return (
+            type(probe.permutation_exceedance_count) is int
+            and type(probe.permutation_replicate_count) is int
+            and 0 <= probe.permutation_exceedance_count <= probe.permutation_replicate_count
+            and probe.permutation_replicate_count > 0
+            and sum(probe.test_class_counts.values()) == probe.test_examples
+            and probe.raw_accuracy == raw
+            and probe.balanced_accuracy == balanced
+            and probe.raw_permutation_p
+            == (1 + probe.permutation_exceedance_count) / (1 + probe.permutation_replicate_count)
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def _positive_control_primitive_types_are_exact(control: PositiveControlResult) -> bool:
@@ -2212,6 +2404,7 @@ def _phase1_probe_metadata_is_consistent(
         probe.feature_dimension == _expected_probe_dimension(probe.task, probe.feature_group)
         and probe.train_examples == expected_train
         and probe.test_examples == expected_test
+        and probe.permutation_replicate_count == 4_999
         and set(probe.train_class_counts) == expected_labels
         and set(probe.test_class_counts) == expected_labels
         and min(probe.train_class_counts.values()) >= 200
@@ -2402,7 +2595,9 @@ def _run_probes(
                 continuous_mask,
                 config,
             )
-            observed = _balanced_accuracy(source_labels[task_test], predictions, classes)
+            confusion = _test_confusion_counts(source_labels[task_test], predictions, classes)
+            test_counts = {label: sum(row.values()) for label, row in confusion.items()}
+            raw_accuracy, observed = _confusion_statistics(test_counts, confusion)
             exceed = 0
             for replicate_start in range(
                 0, profile.permutation_replicates, config.permutation_batch_size
@@ -2441,7 +2636,10 @@ def _run_probes(
                         str(value): int(np.sum(source_labels[task_test] == value))
                         for value in classes
                     },
-                    raw_accuracy=float(np.mean(predictions == source_labels[task_test])),
+                    test_confusion_counts=confusion,
+                    permutation_exceedance_count=int(exceed),
+                    permutation_replicate_count=profile.permutation_replicates,
+                    raw_accuracy=raw_accuracy,
                     balanced_accuracy=observed,
                     balanced_chance=1.0 / len(classes),
                     raw_permutation_p=raw_p,
@@ -2838,6 +3036,76 @@ def _positive_control_subset(
     return selected
 
 
+def _base_subset_membership_sha256(
+    source_public_ids: Sequence[str], selected: Sequence[int]
+) -> str:
+    if (
+        not source_public_ids
+        or not selected
+        or any(
+            type(index) is not int or not 0 <= index < len(source_public_ids) for index in selected
+        )
+        or any(left >= right for left, right in pairwise(selected))
+    ):
+        raise ValueError("positive-control subset requires increasing unique source indices")
+    if any(
+        type(public_id) is not str or str(uuid.UUID(public_id)) != public_id
+        for public_id in source_public_ids
+    ):
+        raise ValueError("positive-control source public IDs must be canonical UUIDs")
+    return _base_subset_membership_payload_sha256(
+        {
+            "domain": PC_BASE_SUBSET_MEMBERSHIP_DOMAIN,
+            "source_episode_count": len(source_public_ids),
+            "item_count": len(selected),
+            "members": [
+                {"source_index": index, "episode_public_id": source_public_ids[index]}
+                for index in selected
+            ],
+        },
+        source_public_ids,
+    )
+
+
+def _base_subset_membership_payload_sha256(
+    payload: object, source_public_ids: Sequence[str]
+) -> str:
+    """Authenticate the exact versioned membership object before hashing it."""
+    if type(payload) is not dict or set(payload) != {
+        "domain",
+        "source_episode_count",
+        "item_count",
+        "members",
+    }:
+        raise ValueError("positive-control subset payload has wrong keys")
+    members = payload["members"]
+    if (
+        payload["domain"] != PC_BASE_SUBSET_MEMBERSHIP_DOMAIN
+        or type(payload["source_episode_count"]) is not int
+        or payload["source_episode_count"] != len(source_public_ids)
+        or not 0 < len(source_public_ids) <= 100_000
+        or type(payload["item_count"]) is not int
+        or type(members) is not list
+        or not 0 < len(members) <= len(source_public_ids)
+        or payload["item_count"] != len(members)
+    ):
+        raise ValueError("positive-control subset domain or counts are invalid")
+    prior = -1
+    for member in members:
+        if type(member) is not dict or set(member) != {"source_index", "episode_public_id"}:
+            raise ValueError("positive-control subset member has wrong keys")
+        index = member["source_index"]
+        if (
+            type(index) is not int
+            or not prior < index < len(source_public_ids)
+            or type(member["episode_public_id"]) is not str
+            or member["episode_public_id"] != source_public_ids[index]
+        ):
+            raise ValueError("positive-control subset member is not its indexed source ID")
+        prior = index
+    return sha256_bytes(canonical_json_bytes(payload))
+
+
 def _positive_control_split(
     rows: Sequence[_StoredExample],
     positive_control_seed: int,
@@ -2963,7 +3231,9 @@ def _run_positive_control_probe(
         continuous,
         config,
     )
-    observed = _balanced_accuracy(labels[task_test], predictions, classes)
+    confusion = _test_confusion_counts(labels[task_test], predictions, classes)
+    test_counts = {label: sum(row.values()) for label, row in confusion.items()}
+    raw_accuracy, observed = _confusion_statistics(test_counts, confusion)
     exceed = 0
     for replicate in range(profile.positive_control_permutation_replicates):
         if replicate % config.permutation_batch_size == 0:
@@ -2995,7 +3265,10 @@ def _run_positive_control_probe(
         test_class_counts={
             str(value): int(np.sum(labels[task_test] == value)) for value in classes
         },
-        raw_accuracy=float(np.mean(predictions == labels[task_test])),
+        test_confusion_counts=confusion,
+        permutation_exceedance_count=int(exceed),
+        permutation_replicate_count=profile.positive_control_permutation_replicates,
+        raw_accuracy=raw_accuracy,
         balanced_accuracy=observed,
         balanced_chance=1.0 / len(classes),
         raw_permutation_p=raw_p,
@@ -3526,6 +3799,9 @@ def _execute_positive_control(
     selected = _positive_control_subset(rows, profile, config.audit_seed, corpus_hash)
     selected_rows = tuple(rows[index] for index in selected)
     clean_hash = _corpus_hash_for_rows(rows, selected)
+    subset_membership_hash = _base_subset_membership_sha256(
+        tuple(row.public_id for row in rows), tuple(int(index) for index in selected)
+    )
     train, test, split_hash = _positive_control_split(
         selected_rows, config.positive_control_seed, clean_hash
     )
@@ -3558,6 +3834,12 @@ def _execute_positive_control(
             local = global_to_local.get(source_index)
             if local is None:
                 continue
+            if (
+                local != seen
+                or example.bundle.public.init.episode_public_id != selected_rows[local].public_id
+                or episode_sha256(example.bundle) != selected_rows[local].digest
+            ):
+                raise ValueError("positive-control selected source order or identity differs")
             if local % config.feature_batch_size == 0:
                 _resource_guard(config, "control")
             transformed = _rewrite_positive_control(
@@ -3681,6 +3963,8 @@ def _execute_positive_control(
         expected_detector_id=injector.expected_detector_id,
         observed_detector_ids=observed,
         base_subset_corpus_sha256=clean_hash,
+        base_subset_membership_sha256=subset_membership_hash,
+        injected_episode_sha256s=_ordered_digest_pack(tuple(row.digest for row in control_rows)),
         injected_corpus_sha256=injected_hash,
         split_membership_sha256=split_hash,
         balanced_accuracy=expected_probe.balanced_accuracy,
@@ -3762,6 +4046,77 @@ def _construction_checks_from_namespace(
     return checks
 
 
+def _construction_checks_from_statistics(
+    namespace: ConstructionNamespaceEvidence,
+    statistics: LeakageConstructionStatistics,
+    anchor: LeakageAuditEvidenceAnchor,
+    episode_count: int,
+) -> dict[str, bool]:
+    return dict(
+        sorted(
+            {
+                "provenance": statistics.first_pass_source_manifest_sha256
+                == anchor.source_manifest_sha256
+                and anchor.episode_count == episode_count,
+                "public_ids": namespace.public_id_collision_count == 0
+                and namespace.base_public_id_count == episode_count,
+                "seed_tokens": namespace.seed_token_collision_count == 0,
+                "invariants": statistics.invariant_verified_count == episode_count,
+                "finite_features": statistics.feature_row_count
+                == statistics.finite_feature_row_count
+                == episode_count,
+                "two_pass_identity": statistics.second_pass_verified_count
+                == statistics.second_pass_match_count
+                == episode_count
+                and statistics.first_pass_source_manifest_sha256
+                == statistics.second_pass_source_manifest_sha256,
+            }.items()
+        )
+    )
+
+
+def _authenticate_clock_digest_packs(
+    source: ReiterableAuditSource,
+    rows: Sequence[_StoredExample],
+    source_pack: OrderedSha256Pack,
+    clock_pack: OrderedSha256Pack,
+    anchor: LeakageAuditEvidenceAnchor,
+) -> None:
+    """Bind packed anchors to the actual frozen recipe before publication.
+
+    The standalone verifier independently reconstructs the recipe in Pass 5C.
+    """
+    source_digests, child_digests = source_pack.digests(), clock_pack.digests()
+    if source_digests != tuple(row.digest for row in rows):
+        raise ValueError("source digest pack differs from authenticated rows")
+    builder = _ClockPairManifestHashBuilder()
+    count = 0
+    prior_order = None
+    for count, pair in enumerate(source.iter_clock_pairs(), start=1):
+        rank = pair.parent.manifest_rank
+        scale = pair.child.truth.recipe.clock_scale
+        order = (0 if scale == 0.1 else 1, rank)
+        if (
+            rank < 0
+            or rank >= len(rows)
+            or (prior_order is not None and order <= prior_order)
+            or count > len(child_digests)
+            or source_digests[rank] != episode_sha256(pair.parent.bundle)
+            or rows[rank].public_id != pair.parent.bundle.public.init.episode_public_id
+            or child_digests[count - 1] != episode_sha256(pair.child)
+        ):
+            raise ValueError("clock digest pack differs from authenticated source/child order")
+        prior_order = order
+        builder.add(pair)
+    digest = builder.finalize()
+    if (
+        count != len(child_digests)
+        or digest != source.authentication.clock_pair_manifest_sha256
+        or digest != anchor.clock_pair_manifest_sha256
+    ):
+        raise ValueError("clock digest packs disagree with authenticated clock manifest")
+
+
 def _matched_namespace_request(bundle: EpisodeBundle) -> CohortRequest:
     truth = bundle.truth
     coordinate = truth.key.coordinate
@@ -3814,7 +4169,7 @@ def audit_leakage(
         _require_exact_phase1_audit_config(config, selected_profile)
     _validate_provenance(source, config, provenance)
     authentication = _validate_source_authentication(source, profile)
-    _validate_independent_trust_anchor(source, profile, provenance, authentication)
+    anchor = _validate_independent_trust_anchor(source, profile, provenance, authentication)
     namespace_builder = ConstructionNamespaceBuilder(
         generation_mode=source.descriptor.generation_mode,
         public_id_seed=source.public_id_seed,
@@ -3853,6 +4208,7 @@ def audit_leakage(
         source_manifest = _SourceManifestHashBuilder()
         seen_source_coordinates: set[tuple[int, int]] = set()
         denominators: Counter[str] = Counter()
+        invariant_count = feature_count = finite_feature_count = 0
         active_matched_block: int | None = None
         active_matched_bundles: list[EpisodeBundle] = []
 
@@ -3874,6 +4230,7 @@ def audit_leakage(
                 raise ValueError("example generation mode differs from source")
             _validate_audit_coordinate(example, index, source.descriptor)
             validate_episode_invariants(example.bundle, validation_config)
+            invariant_count += 1
             if example.generation_mode == "matched":
                 if active_matched_block is None:
                     active_matched_block = example.randomization_block_index
@@ -3898,6 +4255,10 @@ def audit_leakage(
                 raise ValueError("audit source coordinate collision")
             seen_source_coordinates.add(token)
             feature_set = extract_shortcut_features(example, source.episode_count)
+            feature_count += 1
+            finite_feature_count += int(
+                np.all(np.isfinite(feature_set.vectors[ShortcutFeatureGroup.COMBINED]))
+            )
             feature_buffer[index % len(feature_buffer)] = feature_set.vectors[
                 ShortcutFeatureGroup.COMBINED
             ]
@@ -3952,28 +4313,55 @@ def audit_leakage(
             flush_matched_group()
         else:
             _validate_independent_quartets(rows, source.descriptor)
+        clock_digests: list[str] = []
         for pair in source.iter_clock_pairs():
             namespace_builder.add_clock_public_id(pair.child.public.init.episode_public_id)
+            clock_digests.append(episode_sha256(pair.child))
         namespace_evidence = namespace_builder.finalize()
         require_namespace_evidence_provenance(namespace_evidence, provenance)
         corpus_hash = digest.finalize()
-        if source_manifest.finalize() != authentication.source_manifest_sha256:
+        first_manifest_hash = source_manifest.finalize()
+        if first_manifest_hash != authentication.source_manifest_sha256:
             raise ValueError("audit source order or membership differs from authentication")
         if dict(sorted(denominators.items())) != authentication.suite_path_denominators:
             raise ValueError("audit source strata differ from authenticated profile denominators")
         # Regeneration authentication includes source order, public ID, and digest.
         second_count = 0
+        second_matches = 0
+        second_manifest = _SourceManifestHashBuilder()
         for second_count, example in enumerate(source.iter_examples(), start=1):
             if (second_count - 1) % config.feature_batch_size == 0:
                 _resource_guard(config, "extraction")
             index = second_count - 1
+            _validate_audit_coordinate(example, index, source.descriptor)
             if index >= len(rows) or (
                 example.bundle.public.init.episode_public_id,
                 episode_sha256(example.bundle),
             ) != (rows[index].public_id, rows[index].digest):
                 raise ValueError("audit source second pass differs from first pass")
+            second_matches += 1
+            second_manifest.add(example, rows[index].digest)
         if second_count != len(rows):
             raise ValueError("audit source second pass differs from first pass")
+        statistics = LeakageConstructionStatistics(
+            schema_version="leakage-construction-statistics-v1",
+            source_episode_sha256s=_ordered_digest_pack(tuple(row.digest for row in rows)),
+            clock_child_episode_sha256s=_ordered_digest_pack(clock_digests),
+            invariant_verified_count=invariant_count,
+            feature_row_count=feature_count,
+            finite_feature_row_count=finite_feature_count,
+            second_pass_verified_count=second_count,
+            second_pass_match_count=second_matches,
+            first_pass_source_manifest_sha256=first_manifest_hash,
+            second_pass_source_manifest_sha256=second_manifest.finalize(),
+        )
+        _authenticate_clock_digest_packs(
+            source,
+            rows,
+            statistics.source_episode_sha256s,
+            statistics.clock_child_episode_sha256s,
+            anchor,
+        )
         train, test, split_hash = _split_memberships(
             rows,
             config.audit_seed,
@@ -4061,7 +4449,16 @@ def audit_leakage(
             else not controls
         )
         return LeakageReport(
-            schema_version="leakage-report-v2",
+            schema_version="leakage-report-v3",
+            construction_statistics=statistics,
+            membership_evidence=LeakageMembershipEvidence(
+                schema_version="leakage-membership-evidence-v1",
+                split_membership_sha256=split_hash,
+                train_membership_sha256=train_hash,
+                test_membership_sha256=test_hash,
+                train_episode_count=len(train),
+                test_episode_count=len(test),
+            ),
             provenance=provenance,
             namespace_evidence=namespace_evidence,
             generation_mode=source.descriptor.generation_mode,
@@ -4075,7 +4472,9 @@ def audit_leakage(
             randomization_block_count=len({row.block for row in rows}),
             suite_path_denominators=dict(sorted(denominators.items())),
             construction_check_ids=_CONSTRUCTION_CHECK_IDS,
-            construction_checks=_construction_checks_from_namespace(namespace_evidence),
+            construction_checks=_construction_checks_from_statistics(
+                namespace_evidence, statistics, anchor, len(rows)
+            ),
             probes=tuple(probes),
             label_shuffled_probes=tuple(shuffled_probes),
             positive_controls=controls,

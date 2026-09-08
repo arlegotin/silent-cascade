@@ -547,6 +547,218 @@ def _authenticated_independent_test_source(
     )
 
 
+def _sufficient_probe_payload() -> dict[str, object]:
+    from silent_cascade.env.leakage import ShortcutFeatureGroup, ShortcutTask
+
+    return dict(
+        task=ShortcutTask.POSITIVE_BINARY,
+        feature_group=ShortcutFeatureGroup.COUNTS,
+        feature_dimension=4,
+        train_examples=30,
+        test_examples=30,
+        train_class_counts={"0": 10, "1": 20},
+        test_class_counts={"0": 10, "1": 20},
+        test_confusion_counts={"0": {"0": 8, "1": 2}, "1": {"0": 10, "1": 10}},
+        permutation_exceedance_count=4,
+        permutation_replicate_count=99,
+        raw_accuracy=0.6,
+        balanced_accuracy=0.65,
+        balanced_chance=0.5,
+        raw_permutation_p=0.05,
+        holm_adjusted_p=0.05,
+        optimizer_iterations=1,
+        optimizer_converged=True,
+        passed=True,
+    )
+
+
+def test_unequal_class_statistics_have_an_integer_known_answer() -> None:
+    from silent_cascade.env import leakage
+
+    probe = leakage.ShortcutProbeResult(**_sufficient_probe_payload())
+    assert (probe.raw_accuracy, probe.balanced_accuracy, probe.raw_permutation_p) == (
+        0.6,
+        0.65,
+        0.05,
+    )
+    statistics = getattr(leakage, "_confusion_statistics", None)
+    assert statistics is not None, "integer-statistics producer is missing"
+    assert statistics(probe.test_class_counts, probe.test_confusion_counts) == (0.6, 0.65)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("test_confusion_counts", {"0": {"0": 8, "1": 2}}),
+        ("test_confusion_counts", {"0": {"0": 8}, "1": {"0": 10, "1": 10}}),
+        ("test_confusion_counts", {"0": {"0": 8, "1": 2, "2": 0}, "1": {"0": 10, "1": 10}}),
+        ("test_confusion_counts", {"0": {"0": True, "1": 9}, "1": {"0": 10, "1": 10}}),
+        ("test_confusion_counts", {"0": {"0": -1, "1": 11}, "1": {"0": 10, "1": 10}}),
+        ("test_confusion_counts", {"0": {"0": 8.0, "1": 2}, "1": {"0": 10, "1": 10}}),
+        ("test_confusion_counts", {"0": {"0": 8, "1": 3}, "1": {"0": 10, "1": 10}}),
+        ("raw_accuracy", 0.65),
+        ("balanced_accuracy", 0.6),
+        ("permutation_exceedance_count", 100),
+        ("permutation_exceedance_count", True),
+        ("permutation_exceedance_count", -1),
+        ("permutation_replicate_count", 0),
+        ("permutation_replicate_count", 99.0),
+        ("raw_permutation_p", 0.04),
+    ],
+)
+def test_probe_rejects_mutated_integer_statistics(field: str, value: object) -> None:
+    from silent_cascade.env.leakage import ShortcutProbeResult
+
+    payload = _sufficient_probe_payload()
+    ShortcutProbeResult(**payload)  # The unmutated known answer must be accepted.
+    payload[field] = value
+    with pytest.raises(ValueError):
+        ShortcutProbeResult(**payload)
+
+
+def test_ordered_digest_pack_has_a_raw_byte_known_answer() -> None:
+    import base64
+    import hashlib
+
+    from silent_cascade.env import leakage
+
+    pack_type = getattr(leakage, "OrderedSha256Pack", None)
+    assert pack_type is not None, "ordered digest evidence is missing"
+    raw = bytes(range(64))
+    payload = dict(
+        schema_version="ordered-sha256-pack-v1",
+        encoding="base64-concatenated-sha256-v1",
+        item_count=2,
+        payload_base64=base64.b64encode(raw).decode("ascii"),
+        payload_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    assert pack_type(**payload).digests() == (raw[:32].hex(), raw[32:].hex())
+    mutations = [
+        {"item_count": True},
+        {"item_count": 0},
+        {"item_count": 100_001},
+        {"item_count": 1},
+        {"payload_sha256": "0" * 64},
+        {"payload_base64": payload["payload_base64"] + "="},
+        {"payload_base64": payload["payload_base64"][:-1]},
+        {"payload_base64": "!" + payload["payload_base64"][1:]},
+        {"payload_base64": base64.b64encode(raw[::-1]).decode("ascii")},
+        {
+            "payload_base64": base64.b64encode(raw[:32] * 2).decode("ascii"),
+            "payload_sha256": hashlib.sha256(raw[:32] * 2).hexdigest(),
+        },
+    ]
+    for mutation in mutations:
+        with pytest.raises(ValueError):
+            pack_type(**(payload | mutation))
+
+
+def test_positive_subset_membership_has_an_independent_known_answer() -> None:
+    from silent_cascade.env import leakage
+
+    builder = getattr(leakage, "_base_subset_membership_sha256", None)
+    assert builder is not None, "positive-control membership commitment is missing"
+    ids = tuple(f"00000000-0000-4000-8000-{index:012d}" for index in (0, 1, 9, 2))
+    assert (
+        builder(ids, (1, 3)) == "d9abb33f9eeb7d56d585590565a586cb0c32f955948aee98dfafee0fb1e92bf1"
+    )
+    for selected in ((3, 1), (1, 1), (-1, 3), (1, 4), (True, 3), ()):
+        with pytest.raises((ValueError, TypeError)):
+            builder(ids, selected)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("domain", "extra_key", "missing_key", "source_count", "item_count", "index", "order", "id"),
+)
+def test_subset_membership_payload_rejects_unbound_fields(mutation: str) -> None:
+    import silent_cascade.env.leakage as leakage
+
+    validate = getattr(leakage, "_base_subset_membership_payload_sha256", None)
+    assert validate is not None, "subset membership payload validation is missing"
+    ids = tuple(f"00000000-0000-4000-8000-{index:012d}" for index in (0, 1, 9, 2))
+    payload = {
+        "domain": "silent-cascade/ofd-v1/pc-base-subset-membership/v1",
+        "item_count": 2,
+        "source_episode_count": 4,
+        "members": [
+            {"episode_public_id": ids[1], "source_index": 1},
+            {"episode_public_id": ids[3], "source_index": 3},
+        ],
+    }
+    assert (
+        validate(payload, ids) == "d9abb33f9eeb7d56d585590565a586cb0c32f955948aee98dfafee0fb1e92bf1"
+    )
+    if mutation == "domain":
+        payload["domain"] += "wrong"
+    elif mutation == "extra_key":
+        payload["unexpected"] = 0
+    elif mutation == "missing_key":
+        del payload["item_count"]
+    elif mutation == "source_count":
+        payload["source_episode_count"] = 5
+    elif mutation == "item_count":
+        payload["item_count"] = True
+    elif mutation == "index":
+        payload["members"][1]["source_index"] = 1
+    elif mutation == "order":
+        payload["members"].reverse()
+    else:
+        payload["members"][1]["episode_public_id"] = ids[2]
+    with pytest.raises(ValueError):
+        validate(payload, ids)
+
+
+def test_prior_plausible_accuracy_mutation_is_rejected() -> None:
+    from silent_cascade.env.leakage import ShortcutProbeResult
+
+    payload = _sufficient_probe_payload() | dict(
+        train_examples=80000,
+        test_examples=20000,
+        train_class_counts={"0": 40000, "1": 40000},
+        test_class_counts={"0": 10000, "1": 10000},
+        test_confusion_counts={"0": {"0": 4900, "1": 5100}, "1": {"0": 5051, "1": 4949}},
+        raw_accuracy=0.49245,
+        balanced_accuracy=0.49245,
+    )
+    ShortcutProbeResult(**payload)
+    with pytest.raises(ValueError, match="confusion"):
+        ShortcutProbeResult(**(payload | {"balanced_accuracy": 0.1}))
+
+
+@pytest.mark.parametrize(
+    "mutation", ("clock", "source", "live_authentication", "serialized_anchor")
+)
+def test_clock_pack_reconstruction_is_bound_to_both_anchors(mutation: str) -> None:
+    from silent_cascade.env import leakage
+    from silent_cascade.env.episode import episode_sha256
+
+    config = _config()
+    source = _authenticated_test_source(config, groups_per_path=20)
+    rows = _quartet_rows(tuple(source.iter_examples()))
+    source_pack = leakage._ordered_digest_pack(tuple(row.digest for row in rows))
+    clock_pack = leakage._ordered_digest_pack(
+        tuple(episode_sha256(pair.child) for pair in source.iter_clock_pairs())
+    )
+    anchor = _provenance(_config_sha256(config), source).leakage_audit
+    leakage._authenticate_clock_digest_packs(source, rows, source_pack, clock_pack, anchor)
+    if mutation == "clock":
+        clock_pack = leakage._ordered_digest_pack(tuple(reversed(clock_pack.digests())))
+    elif mutation == "source":
+        source_pack = leakage._ordered_digest_pack(tuple(reversed(source_pack.digests())))
+    elif mutation == "live_authentication":
+        source = replace(
+            source,
+            authentication=source.authentication.model_copy(
+                update={"clock_pair_manifest_sha256": "0" * 64}
+            ),
+        )
+    else:
+        anchor = anchor.model_copy(update={"clock_pair_manifest_sha256": "0" * 64})
+    with pytest.raises(ValueError, match="digest pack"):
+        leakage._authenticate_clock_digest_packs(source, rows, source_pack, clock_pack, anchor)
+
+
 def test_shortcut_features_have_fixed_public_only_dimensions() -> None:
     """Adding a private field or changing one declared feature width must fail this contract."""
     from silent_cascade.env.leakage import (
@@ -897,7 +1109,7 @@ def test_phase1_gate_schedules_every_named_positive_control(
             leakage.ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
             leakage.ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
         }[injector.target_task]  # type: ignore[attr-defined]
-        return leakage.PositiveControlResult(
+        return leakage.PositiveControlResult.model_construct(
             control_id=injector.control_id,  # type: ignore[attr-defined]
             target_task=injector.target_task,  # type: ignore[attr-defined]
             expected_detector_id=injector.expected_detector_id,  # type: ignore[attr-defined]
@@ -908,7 +1120,7 @@ def test_phase1_gate_schedules_every_named_positive_control(
             balanced_accuracy=1.0,
             holm_adjusted_p=9 * 0.0002,
             probes=tuple(
-                leakage.ShortcutProbeResult(
+                leakage.ShortcutProbeResult.model_construct(
                     task=injector.target_task,  # type: ignore[attr-defined]
                     feature_group=group,
                     feature_dimension=1,
@@ -2694,7 +2906,7 @@ def test_independently_authenticated_source_executes_all_fits_with_frozen_config
 
     assert report.generation_mode == "independent"
     assert report.episode_count == 240
-    assert report.schema_version == "leakage-report-v2"
+    assert report.schema_version == "leakage-report-v3"
     assert report.namespace_evidence.generation_mode == "independent"
     assert report.namespace_evidence.public_id_seed == 91
     assert report.namespace_evidence.accepted_draw_count == 240
@@ -2737,7 +2949,23 @@ def test_audit_streams_a_small_complete_source_and_cleans_its_memmaps(tmp_path: 
     )
 
     assert report.episode_count == 240
-    assert report.schema_version == "leakage-report-v2"
+    assert report.schema_version == "leakage-report-v3"
+    from silent_cascade.env.episode import episode_sha256
+
+    statistics = report.construction_statistics
+    assert statistics.source_episode_sha256s.digests() == tuple(
+        episode_sha256(item.bundle) for item in source.iter_examples()
+    )
+    assert statistics.clock_child_episode_sha256s.digests() == tuple(
+        episode_sha256(pair.child) for pair in source.iter_clock_pairs()
+    )
+    assert (
+        statistics.invariant_verified_count
+        == statistics.feature_row_count
+        == statistics.finite_feature_row_count
+        == 240
+    )
+    assert statistics.second_pass_verified_count == statistics.second_pass_match_count == 240
     assert report.namespace_evidence.generation_mode == "matched"
     assert report.namespace_evidence.public_id_seed == 91
     assert report.namespace_evidence.accepted_draw_count == 60
@@ -2852,7 +3080,7 @@ print(sha256_bytes(canonical_json_bytes(report)))
 
     assert completed.stderr == ""
     assert completed.stdout.strip() == (
-        "3723b8c8baf310cc9134e2630b24cc3cc1a20fd50bd837f254fdb0f1c45a1e35"
+        "6529422b764c5d26ac631e8ddcd01bccc79439017df63322c20cd935c06a7f38"
     )
 
 
@@ -3606,6 +3834,26 @@ def test_named_positive_control_executes_exact_isolated_detector_end_to_end(
     assert not report.passed
     assert len(report.positive_controls) == 1
     result = report.positive_controls[0]
+    assert result.injected_episode_sha256s.item_count == clean_source.episode_count
+    assert len(set(result.injected_episode_sha256s.digests())) == clean_source.episode_count
+    from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256
+
+    source_ids = tuple(
+        example.bundle.public.init.episode_public_id for example in clean_source.iter_examples()
+    )
+    if injector.control_id != "PC_PUBLIC_ID_BY_LABEL":
+        assert (
+            corpus_sha256(
+                tuple(
+                    CorpusDigestEntry(public_id, digest)
+                    for public_id, digest in zip(
+                        source_ids, result.injected_episode_sha256s.digests(), strict=True
+                    )
+                ),
+                expected_count=len(source_ids),
+            )
+            == result.injected_corpus_sha256
+        )
     assert audit_config.test.positive_control_permutation_replicates == 199
     assert result.control_id == injector.control_id
     assert result.target_task is injector.target_task
@@ -3723,6 +3971,9 @@ def test_positive_control_rejects_a_passing_probe_with_the_wrong_identity(
             test_examples=240,
             train_class_counts={"0": 480, "1": 480},
             test_class_counts={"0": 120, "1": 120},
+            test_confusion_counts={"0": {"0": 120, "1": 0}, "1": {"0": 0, "1": 120}},
+            permutation_exceedance_count=4,
+            permutation_replicate_count=99,
             raw_accuracy=1.0,
             balanced_accuracy=1.0,
             balanced_chance=1.0 / 3.0,
@@ -3989,6 +4240,12 @@ def test_holm_and_threshold_boundaries_are_exact() -> None:
             test_examples=4,
             train_class_counts={"0": 4, "1": 4},
             test_class_counts={"0": 2, "1": 2},
+            test_confusion_counts={
+                "0": {"0": 2, "1": 0},
+                "1": {"0": (1 if balanced == 0.75 else 2), "1": (1 if balanced == 0.75 else 0)},
+            },
+            permutation_exceedance_count=round(raw_p * 1000) - 1,
+            permutation_replicate_count=999,
             raw_accuracy=balanced,
             balanced_accuracy=balanced,
             balanced_chance=0.5,

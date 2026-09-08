@@ -362,6 +362,8 @@ def _positive_controls() -> tuple[PositiveControlResult, ...]:
             expected_detector_id=injector.expected_detector_id,
             observed_detector_ids=(injector.expected_detector_id,),
             base_subset_corpus_sha256="1" * 64,
+            base_subset_membership_sha256="2" * 64,
+            injected_episode_sha256s=_digest_pack(8_000, index + 2),
             injected_corpus_sha256=f"{index + 17:064x}",
             split_membership_sha256="3" * 64,
             balanced_accuracy=1.0,
@@ -379,10 +381,23 @@ def _positive_controls() -> tuple[PositiveControlResult, ...]:
                         2
                     ],
                     test_class_counts=_probe_workload(injector.target_task, episode_count=8_000)[3],
+                    test_confusion_counts=_test_confusion(
+                        injector.target_task,
+                        8_000,
+                        perfect=group.value == injector.expected_detector_id.split(":", 1)[1],
+                    ),
+                    permutation_exceedance_count=(
+                        0 if group.value == injector.expected_detector_id.split(":", 1)[1] else 4999
+                    ),
+                    permutation_replicate_count=4999,
                     raw_accuracy=(
                         1.0
                         if group.value == injector.expected_detector_id.split(":", 1)[1]
-                        else 0.5
+                        else (
+                            0.25
+                            if injector.target_task is ShortcutTask.POSITIVE_HAZARD_CLASS
+                            else 0.5
+                        )
                     ),
                     balanced_accuracy=(
                         1.0
@@ -420,6 +435,38 @@ def _positive_controls() -> tuple[PositiveControlResult, ...]:
     )
 
 
+def _digest_pack(count: int, namespace: int = 0):
+    import base64
+    import hashlib
+
+    from silent_cascade.env import leakage
+
+    pack_type = getattr(leakage, "OrderedSha256Pack", None)
+    assert pack_type is not None, "leakage v3 ordered digest evidence is missing"
+    raw = b"".join(
+        hashlib.sha256(f"test:{namespace}:{index}".encode()).digest() for index in range(count)
+    )
+    return pack_type(
+        schema_version="ordered-sha256-pack-v1",
+        encoding="base64-concatenated-sha256-v1",
+        item_count=count,
+        payload_base64=base64.b64encode(raw).decode(),
+        payload_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _test_confusion(task: ShortcutTask, episode_count: int, *, perfect: bool = False):
+    counts = _probe_workload(task, episode_count=episode_count)[3]
+    # Perfect detector, otherwise a constant prediction of class zero.
+    return {
+        label: {
+            predicted: (count if predicted == (label if perfect else "0") else 0)
+            for predicted in counts
+        }
+        for label, count in counts.items()
+    }
+
+
 def _clean_probes() -> tuple[ShortcutProbeResult, ...]:
     return tuple(
         ShortcutProbeResult(
@@ -432,9 +479,12 @@ def _clean_probes() -> tuple[ShortcutProbeResult, ...]:
             test_examples=_probe_workload(task, episode_count=100_000)[1],
             train_class_counts=_probe_workload(task, episode_count=100_000)[2],
             test_class_counts=_probe_workload(task, episode_count=100_000)[3],
+            test_confusion_counts=_test_confusion(task, 100_000),
+            permutation_exceedance_count=4999,
+            permutation_replicate_count=4999,
             raw_accuracy={
                 ShortcutTask.POSITIVE_BINARY: 0.5,
-                ShortcutTask.VARIANT_THREE_WAY: 1.0 / 3.0,
+                ShortcutTask.VARIANT_THREE_WAY: 0.5,
                 ShortcutTask.POSITIVE_HAZARD_CLASS: 0.25,
             }[task],
             balanced_accuracy={
@@ -460,6 +510,11 @@ def _clean_probes() -> tuple[ShortcutProbeResult, ...]:
 
 @pytest.fixture(scope="session")
 def consistent_artifact_bytes() -> dict[str, bytes]:
+    from silent_cascade.env import leakage as leakage_module
+
+    assert hasattr(leakage_module, "LeakageConstructionStatistics"), (
+        "leakage v3 sufficient construction evidence is missing"
+    )
     manifest = _validation_manifest()
     manifest_payload_sha256 = sha256_bytes(canonical_json_bytes(manifest))
     envelope = ManifestEnvelope(
@@ -548,7 +603,27 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         episode_count=100_000,
     )
     leakage = LeakageReport(
-        schema_version="leakage-report-v2",
+        schema_version="leakage-report-v3",
+        construction_statistics=leakage_module.LeakageConstructionStatistics(
+            schema_version="leakage-construction-statistics-v1",
+            source_episode_sha256s=_digest_pack(100_000),
+            clock_child_episode_sha256s=_digest_pack(7_000, 1),
+            invariant_verified_count=100_000,
+            feature_row_count=100_000,
+            finite_feature_row_count=100_000,
+            second_pass_verified_count=100_000,
+            second_pass_match_count=100_000,
+            first_pass_source_manifest_sha256="3" * 64,
+            second_pass_source_manifest_sha256="3" * 64,
+        ),
+        membership_evidence=leakage_module.LeakageMembershipEvidence(
+            schema_version="leakage-membership-evidence-v1",
+            split_membership_sha256="6" * 64,
+            train_membership_sha256="7" * 64,
+            test_membership_sha256="8" * 64,
+            train_episode_count=80_000,
+            test_episode_count=20_000,
+        ),
         provenance=independent.model_copy(
             update={
                 "analysis_seeds": {
@@ -641,6 +716,158 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         "validation-reproducibility.json": canonical_json_bytes(validation_reproducibility),
         "independent-reproducibility.json": canonical_json_bytes(independent_reproducibility),
     }
+
+
+@pytest.mark.parametrize("family", ("probes", "label_shuffled_probes", "controls"))
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("balanced_accuracy", 0.1),
+        ("raw_accuracy", 0.123),
+        ("permutation_replicate_count", 4998),
+        ("permutation_exceedance_count", 4998),
+        ("test_confusion_counts", {}),
+    ),
+)
+def test_v3_rejects_isolated_sufficient_statistic_mutations(
+    consistent_artifact_bytes, family, field, value
+):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    records = payload[family] if family != "controls" else payload["positive_controls"][0]["probes"]
+    records[0][field] = value
+    with pytest.raises(ValueError):
+        LeakageReport.model_validate_json(json.dumps(payload))
+
+
+def test_v3_publishes_eleven_bounded_packs_and_exact_workloads(consistent_artifact_bytes):
+    raw = consistent_artifact_bytes["leakage.json"]
+    payload = json.loads(raw)
+    assert len(raw) <= 16 * 1024 * 1024
+    statistics = payload["construction_statistics"]
+    assert statistics["source_episode_sha256s"]["item_count"] == 100_000
+    assert statistics["clock_child_episode_sha256s"]["item_count"] == 7_000
+    assert [
+        control["injected_episode_sha256s"]["item_count"]
+        for control in payload["positive_controls"]
+    ] == [8000] * 9
+    records = payload["probes"] + payload["label_shuffled_probes"]
+    assert len(records) == 54
+    for probe in records:
+        assert (probe["train_examples"], probe["test_examples"]) == (
+            (40_000, 10_000) if probe["task"] == "positive_hazard_class" else (80_000, 20_000)
+        )
+    for control in payload["positive_controls"]:
+        assert len(control["probes"]) == 9
+        for probe in control["probes"]:
+            assert (probe["train_examples"], probe["test_examples"]) == (
+                (3200, 800) if probe["task"] == "positive_hazard_class" else (6400, 1600)
+            )
+            assert probe["permutation_replicate_count"] == 4999
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "invariant_verified_count",
+        "finite_feature_row_count",
+        "second_pass_match_count",
+        "second_pass_source_manifest_sha256",
+    ),
+)
+def test_v3_construction_checks_cannot_contradict_counters(consistent_artifact_bytes, field):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    payload["construction_statistics"][field] = "0" * 64 if field.endswith("sha256") else 0
+    with pytest.raises(ValueError):
+        LeakageReport.model_validate_json(json.dumps(payload))
+
+
+def test_standalone_computes_statistics_without_producer_helper():
+    function = _VERIFIER.get("_probe_sufficient_statistics_are_consistent")
+    assert function is not None, "standalone sufficient-statistics arithmetic is missing"
+    probe = ShortcutProbeResult.model_construct(
+        task=ShortcutTask.POSITIVE_BINARY,
+        test_examples=30,
+        test_class_counts={"0": 10, "1": 20},
+        test_confusion_counts={"0": {"0": 8, "1": 2}, "1": {"0": 10, "1": 10}},
+        raw_accuracy=0.6,
+        balanced_accuracy=0.65,
+        permutation_exceedance_count=4,
+        permutation_replicate_count=99,
+        raw_permutation_p=0.05,
+    )
+    assert function(probe)
+    assert not function(probe.model_copy(update={"balanced_accuracy": 0.1}))
+
+
+def test_standalone_positive_subset_membership_known_answer():
+    function = _VERIFIER.get("_base_subset_membership_sha256")
+    assert function is not None, "standalone subset membership arithmetic is missing"
+    source_ids = (
+        "00000000-0000-4000-8000-000000000000",
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000009",
+        "00000000-0000-4000-8000-000000000002",
+    )
+    assert (
+        function(source_ids, (1, 3))
+        == "d9abb33f9eeb7d56d585590565a586cb0c32f955948aee98dfafee0fb1e92bf1"
+    )
+    for selection in ((3, 1), (1, 1), (-1, 3), (1, 4), (True, 3), ()):
+        with pytest.raises((ValueError, TypeError)):
+            function(source_ids, selection)
+    validate = _VERIFIER.get("_base_subset_membership_payload_sha256")
+    assert validate is not None, "standalone subset membership payload validation is missing"
+    payload = {
+        "domain": "silent-cascade/ofd-v1/pc-base-subset-membership/v1",
+        "item_count": 2,
+        "source_episode_count": 4,
+        "members": [
+            {"episode_public_id": source_ids[1], "source_index": 1},
+            {"episode_public_id": source_ids[3], "source_index": 3},
+        ],
+    }
+    assert (
+        validate(payload, source_ids)
+        == "d9abb33f9eeb7d56d585590565a586cb0c32f955948aee98dfafee0fb1e92bf1"
+    )
+    for mutation in (
+        {"domain": "wrong"},
+        {"item_count": 1},
+        {"source_episode_count": 3},
+        {"extra": 1},
+        {"members": list(reversed(payload["members"]))},
+        {"members": [payload["members"][0]] * 2},
+        {
+            "members": [
+                payload["members"][0],
+                {"source_index": 3, "episode_public_id": source_ids[2]},
+            ]
+        },
+    ):
+        with pytest.raises(ValueError):
+            validate(payload | mutation, source_ids)
+
+
+def test_v3_size_limit_precedes_model_loading_and_publication(tmp_path, consistent_artifact_bytes):
+    from silent_cascade.env.services import _publish_report
+    from silent_cascade.errors import ArtifactError
+
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    payload["construction_check_ids"] = ["x" * (16 * 1024 * 1024)]
+    with pytest.raises(ValueError, match="16 MiB"):
+        LeakageReport.model_validate_json(json.dumps(payload))
+    path = tmp_path / "oversized.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ArtifactIntegrityError):
+        _VERIFIER["_load_report"](path, LeakageReport, name="leakage")
+    valid = LeakageReport.model_validate_json(consistent_artifact_bytes["leakage.json"])
+    forged = valid.model_copy(
+        update={"construction_check_ids": tuple(payload["construction_check_ids"])}
+    )
+    destination = tmp_path / "publication.json"
+    with pytest.raises(ArtifactError):
+        _publish_report(destination, forged)
+    assert not destination.exists()
 
 
 def _write_artifacts(tmp_path: Path, artifacts: dict[str, bytes]) -> dict[str, Path]:
@@ -860,7 +1087,7 @@ def test_verifier_requires_member_authenticated_anchor_without_later_report_vers
 ) -> None:
     artifacts = dict(consistent_artifact_bytes)
     leakage = json.loads(artifacts["leakage.json"])
-    assert leakage["schema_version"] == "leakage-report-v2"
+    assert leakage["schema_version"] == "leakage-report-v3"
     leakage["provenance"]["leakage_audit"]["schema_version"] = anchor_version
     artifacts["leakage.json"] = canonical_json_bytes(leakage)
     paths = _write_artifacts(tmp_path, artifacts)
@@ -913,6 +1140,7 @@ def test_outer_gate_result_requires_strict_lowercase_sha256_digests(
     (
         ("oracle.json", "oracle-evaluation-report-v1"),
         ("leakage.json", "leakage-report-v1"),
+        ("leakage.json", "leakage-report-v2"),
         ("validation-reproducibility.json", "phase1-reproducibility-v1"),
         ("independent-reproducibility.json", "phase1-reproducibility-v1"),
     ),
@@ -1606,6 +1834,9 @@ def test_verifier_requires_full_label_shuffled_probe_evidence(
         ("train_class_counts", {"0": 40_000.0, "1": 40_000.0}),
         ("test_class_counts", {"0": 10_000.0, "1": 10_000.0}),
         ("raw_accuracy", True),
+        ("raw_accuracy", float("nan")),
+        ("raw_accuracy", float("inf")),
+        ("raw_accuracy", float("-inf")),
         ("balanced_accuracy", True),
         ("raw_permutation_p", True),
         ("holm_adjusted_p", True),

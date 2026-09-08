@@ -21,10 +21,13 @@ from silent_cascade.env.generator import (
 )
 from silent_cascade.env.leakage import (
     NAMED_LEAK_INJECTORS,
+    PC_BASE_SUBSET_MEMBERSHIP_DOMAIN,
     AuditSourceDescriptor,
     CounterfactualCheckId,
     CounterfactualCheckResult,
     LeakageAuditProfileName,
+    LeakageConstructionStatistics,
+    LeakageMembershipEvidence,
     LeakageReport,
     PositiveControlResult,
     ShortcutFeatureGroup,
@@ -117,6 +120,7 @@ _INDEPENDENT_PUBLIC_ID_SEED_SHA256 = (
 )
 _PRIMARY_CONFIG_SHA256 = "8eede957c7d69cc85d33bddcd1af69eb76bc5d7bba48bd1cbbe166bbb757ecd4"
 _PHASE1_PERMUTATION_DENOMINATOR = 5_000
+_MAX_LEAKAGE_REPORT_BYTES = 16 * 1024 * 1024
 _PHASE1_FEATURE_DIMENSIONS = {
     ShortcutTask.POSITIVE_BINARY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
     ShortcutTask.VARIANT_THREE_WAY: (17, 256, 278, 4, 768, 194, 10, 33, 1_560),
@@ -169,7 +173,11 @@ def _artifact_error(message: str, *, path: Path | None = None) -> ArtifactIntegr
 
 def _load_report[ReportT: StrictModel](path: Path, model: type[ReportT], *, name: str) -> ReportT:
     try:
+        if model is LeakageReport and path.stat().st_size > _MAX_LEAKAGE_REPORT_BYTES:
+            raise ValueError("canonical leakage report exceeds 16 MiB")
         raw = path.read_bytes()
+        if model is LeakageReport and len(raw) > _MAX_LEAKAGE_REPORT_BYTES:
+            raise ValueError("canonical leakage report exceeds 16 MiB")
         report = model.model_validate_json(raw)
     except (OSError, ValidationError, TypeError, ValueError) as error:
         raise _artifact_error(f"{name} artifact schema verification failed", path=path) from error
@@ -208,6 +216,112 @@ def _holm_adjusted_p_values(raw_p_values: tuple[float, ...]) -> tuple[float, ...
     return tuple(adjusted)
 
 
+def _probe_sufficient_statistics_are_consistent(probe: ShortcutProbeResult) -> bool:
+    """Independently derive arithmetic; no producer statistics helper is trusted."""
+    try:
+        counts = probe.test_class_counts
+        matrix = probe.test_confusion_counts
+        if (
+            type(counts) is not dict
+            or not counts
+            or type(matrix) is not dict
+            or set(matrix) != set(counts)
+            or any(
+                type(label) is not str or type(count) is not int or count <= 0
+                for label, count in counts.items()
+            )
+        ):
+            return False
+        correct = 0
+        recall_sum = 0.0
+        for label in sorted(counts):
+            row = matrix[label]
+            if (
+                type(row) is not dict
+                or set(row) != set(counts)
+                or any(
+                    type(key) is not str or type(value) is not int or value < 0
+                    for key, value in row.items()
+                )
+                or sum(row.values()) != counts[label]
+            ):
+                return False
+            correct += row[label]
+            recall_sum += row[label] / counts[label]
+        return (
+            type(probe.permutation_exceedance_count) is int
+            and type(probe.permutation_replicate_count) is int
+            and 0 <= probe.permutation_exceedance_count <= probe.permutation_replicate_count
+            and probe.permutation_replicate_count > 0
+            and sum(counts.values()) == probe.test_examples
+            and probe.raw_accuracy == correct / sum(counts.values())
+            and probe.balanced_accuracy == recall_sum / len(counts)
+            and probe.raw_permutation_p
+            == (probe.permutation_exceedance_count + 1) / (probe.permutation_replicate_count + 1)
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _base_subset_membership_sha256(source_public_ids, selected) -> str:
+    """Independent canonical subset commitment; full recipe recovery follows in 5C."""
+    import uuid
+
+    if not source_public_ids or not selected:
+        raise ValueError("subset source and members must be nonempty")
+    members = []
+    prior = -1
+    for index in selected:
+        if type(index) is not int or index <= prior or index >= len(source_public_ids):
+            raise ValueError("subset indices must increase within the source")
+        public_id = source_public_ids[index]
+        if type(public_id) is not str or str(uuid.UUID(public_id)) != public_id:
+            raise ValueError("subset source ID is not a canonical UUID")
+        members.append({"episode_public_id": public_id, "source_index": index})
+        prior = index
+    return _base_subset_membership_payload_sha256(
+        {
+            "domain": PC_BASE_SUBSET_MEMBERSHIP_DOMAIN,
+            "item_count": len(members),
+            "members": members,
+            "source_episode_count": len(source_public_ids),
+        },
+        source_public_ids,
+    )
+
+
+def _base_subset_membership_payload_sha256(payload, source_public_ids) -> str:
+    required = {"domain", "item_count", "members", "source_episode_count"}
+    if type(payload) is not dict or set(payload) != required:
+        raise ValueError("subset payload keys are invalid")
+    if (
+        payload["domain"] != PC_BASE_SUBSET_MEMBERSHIP_DOMAIN
+        or type(payload["source_episode_count"]) is not int
+        or payload["source_episode_count"] != len(source_public_ids)
+        or not 1 <= len(source_public_ids) <= 100_000
+        or type(payload["item_count"]) is not int
+        or type(payload["members"]) is not list
+        or payload["item_count"] != len(payload["members"])
+        or not 1 <= payload["item_count"] <= len(source_public_ids)
+    ):
+        raise ValueError("subset payload domain or counts are invalid")
+    last_index = -1
+    for item in payload["members"]:
+        if type(item) is not dict or set(item) != {"episode_public_id", "source_index"}:
+            raise ValueError("subset member keys are invalid")
+        index = item["source_index"]
+        if (
+            type(index) is not int
+            or index <= last_index
+            or index >= len(source_public_ids)
+            or type(item["episode_public_id"]) is not str
+            or item["episode_public_id"] != source_public_ids[index]
+        ):
+            raise ValueError("subset source order or public ID differs")
+        last_index = index
+    return sha256_bytes(canonical_json_bytes(payload))
+
+
 def _probe_primitive_types_are_exact(probe: ShortcutProbeResult) -> bool:
     return (
         type(probe.task) is ShortcutTask
@@ -217,6 +331,7 @@ def _probe_primitive_types_are_exact(probe: ShortcutProbeResult) -> bool:
         and type(probe.test_examples) is int
         and type(probe.train_class_counts) is dict
         and type(probe.test_class_counts) is dict
+        and _probe_sufficient_statistics_are_consistent(probe)
         and all(
             type(key) is str and type(value) is int
             for counts in (probe.train_class_counts, probe.test_class_counts)
@@ -323,7 +438,7 @@ def _leakage_report_primitive_types_are_exact(leakage: LeakageReport) -> bool:
     return (
         type(leakage) is LeakageReport
         and type(leakage.schema_version) is str
-        and leakage.schema_version == "leakage-report-v2"
+        and leakage.schema_version == "leakage-report-v3"
         and type(leakage.provenance) is EvidenceProvenance
         and _namespace_evidence_primitive_types_are_exact(leakage.namespace_evidence)
         and type(leakage.generation_mode) is str
@@ -425,6 +540,7 @@ def _probe_metadata_is_consistent(
         and probe.feature_dimension == _PHASE1_FEATURE_DIMENSIONS[probe.task][group_index]
         and probe.train_examples == expected_train
         and probe.test_examples == expected_test
+        and probe.permutation_replicate_count == 4_999
         and set(probe.train_class_counts) == expected_labels
         and set(probe.test_class_counts) == expected_labels
         and all(value >= 0 for value in probe.train_class_counts.values())
@@ -862,7 +978,60 @@ def _require_oracle(oracle: OracleEvaluationReport) -> None:
     )
 
 
+def _require_sufficient_leakage_evidence(leakage: LeakageReport) -> None:
+    try:
+        payload = leakage.model_dump(mode="json", warnings="error")
+        payload_size = len(canonical_json_bytes(payload))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _artifact_error("leakage sufficient evidence cannot be serialized exactly") from error
+    _require(
+        payload_size <= _MAX_LEAKAGE_REPORT_BYTES,
+        "canonical leakage report exceeds 16 MiB",
+    )
+    try:
+        statistics = LeakageConstructionStatistics.model_validate(
+            leakage.construction_statistics.model_dump(mode="python")
+        )
+        membership = LeakageMembershipEvidence.model_validate(
+            leakage.membership_evidence.model_dump(mode="python")
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _artifact_error("leakage sufficient evidence schema is invalid") from error
+    anchor = leakage.provenance.leakage_audit
+    _require(anchor is not None, "leakage sufficient evidence anchor is missing")
+    _require(
+        statistics.source_episode_sha256s.item_count == leakage.episode_count == 100_000
+        and statistics.clock_child_episode_sha256s.item_count == 7_000
+        and statistics.invariant_verified_count == 100_000
+        and statistics.feature_row_count == statistics.finite_feature_row_count == 100_000
+        and statistics.second_pass_verified_count == statistics.second_pass_match_count == 100_000
+        and statistics.first_pass_source_manifest_sha256
+        == statistics.second_pass_source_manifest_sha256
+        == anchor.source_manifest_sha256
+        and membership.train_episode_count == 80_000
+        and membership.test_episode_count == 20_000
+        and membership.split_membership_sha256 == leakage.split_membership_hash
+        and membership.train_membership_sha256 == leakage.train_membership_hash
+        and membership.test_membership_sha256 == leakage.test_membership_hash,
+        "leakage sufficient construction or membership evidence is inconsistent",
+    )
+    for control in leakage.positive_controls:
+        try:
+            validated = PositiveControlResult.model_validate(control.model_dump(mode="python"))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _artifact_error("leakage control sufficient evidence is invalid") from error
+        _require(
+            validated.injected_episode_sha256s.item_count == 8_000,
+            "leakage control digest pack count is not exact",
+        )
+    _require(
+        len({control.base_subset_membership_sha256 for control in leakage.positive_controls}) == 1,
+        "leakage control subset memberships disagree",
+    )
+
+
 def _require_leakage(leakage: LeakageReport) -> None:
+    _require_sufficient_leakage_evidence(leakage)
     _require_namespace_evidence(
         leakage.namespace_evidence,
         leakage.provenance,
