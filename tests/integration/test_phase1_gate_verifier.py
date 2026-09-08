@@ -1,5 +1,7 @@
 """Task 17 contracts for local, read-only Phase 1 evidence verification."""
 
+import base64
+import hashlib
 import json
 import subprocess
 import sys
@@ -8,6 +10,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from runpy import run_path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -127,6 +130,49 @@ LEAKAGE_FEATURE_SCHEMA_SHA256 = sha256_bytes(
 
 class _GenerationMode(StrEnum):
     INDEPENDENT = "independent"
+
+
+def _literal_gate_commitments():
+    """Frozen KATs: SHA-256(test:namespace:index), zero attempts, Task 2 framing.
+
+    Computed before verifier implementation from explicit canonical JSON objects
+    with stdlib json/hashlib, never producer or verifier aggregation helpers.
+    Main groups rank with seed 2026083091; each of 16 control strata selects
+    125 quartets and splits 100/25 with seed 2026083092 in source-index order.
+    """
+    return {
+        "corpus": "d75badd73613cddb1d83b061b6e1ddb314a2ff53acf038c830430f617e741e5e",
+        "source_manifest": "a3a4cae0906da48ef4fda1c6a6f26963a6cf61c5e03a7096b7e14022db67d7df",
+        "clock_manifest": "b5362848b9d00a221413e9e46703df52ce8a148d9fdb8912944c8a3cbc505f27",
+        "split": "40ca4cae713efbc930e296e7963c4cd0bc311ef828b227a18d7e6db598b81739",
+        "train": "bc813d16e4844ea3a739fcdb70bb5009235589cef820084a077537ce8d2ea2ff",
+        "test": "15ed47724fcf6f82bfe6e4659f0c3384d71419b01a3a8529bbc96434d2d532ea",
+        "subset_membership": "1d8c759fb56bdf5b3670d4b6b25060c6c86b81c71b8d094cf5a20f8d7d85c132",
+        "subset_corpus": "4572ef07b305adfe73b685e754e028acf5fdba0142f5345f8e8c5889db09687c",
+        "control_split": "81e8e622f12b2b559a77f9dd86173fe0250cff0de987717207f687c4ab9a299c",
+        "injected": (
+            "7900d8b414171b5aa276daf9d1ae7f9773e9e7b7fb8cbe26d65b241bda5fa427",
+            "dee4fcc5c8056c985812e85726a1f8a7504e0862520b4dbaf3fa65db1a355969",
+            "bc19be7a01b4d684cbc41918127a6039fae38b58bf1309029a6e1c9e83074fd9",
+            "dfc802555b166e40407174462a9bcf8007af6c0db7d1016e43b825d35d8850a3",
+            "fd88a095b62405ad843f26be3c180677662b724d9a445af13fc9a374fcc33954",
+            "ab7bd9ca03b38d3cb1c85e731f719d66036caf884edd02f0ea922116e42b6622",
+            "eeeb01a4441e979276086864f63c224e5de6cf9e886b84b6042ead43e321ad11",
+            "b863326a3548d93b9c8326b570b26e383d1a9e65d6b9867329fed5510c615335",
+            "79adaaa9f48a5c87ab5340a26b80a9101fbbdfbac021665bc6df3411749fba2d",
+        ),
+        "counterfactuals": {
+            "terminal_delay_swap": (
+                "2036f5a5d99bb1ebe39169e562a086e0bc29a77021731b57d6b83f8ecdeae66b"
+            ),
+            "presentation_permutation": (
+                "d558574bf063a4c1ee2992b320c4b70d563e1c0152db669293a77394f3f041dd"
+            ),
+            "paired_clock_scale": (
+                "4348af432ade45c62e2b3fe655a7900edd2324b698addf0eb5635ac103f2c862"
+            ),
+        },
+    }
 
 
 def _probe_workload(
@@ -349,7 +395,7 @@ def _counterfactual(
         checked_pairs=checked_pairs,
         decision_mismatch_count=0,
         temporal_mismatch_count=0,
-        result_payload_sha256=marker * 64,
+        result_payload_sha256=_literal_gate_commitments()["counterfactuals"][check_id.value],
         passed=True,
     )
 
@@ -361,11 +407,11 @@ def _positive_controls() -> tuple[PositiveControlResult, ...]:
             target_task=injector.target_task,
             expected_detector_id=injector.expected_detector_id,
             observed_detector_ids=(injector.expected_detector_id,),
-            base_subset_corpus_sha256="1" * 64,
-            base_subset_membership_sha256="2" * 64,
+            base_subset_corpus_sha256=_literal_gate_commitments()["subset_corpus"],
+            base_subset_membership_sha256=_literal_gate_commitments()["subset_membership"],
             injected_episode_sha256s=_digest_pack(8_000, index + 2),
-            injected_corpus_sha256=f"{index + 17:064x}",
-            split_membership_sha256="3" * 64,
+            injected_corpus_sha256=_literal_gate_commitments()["injected"][index],
+            split_membership_sha256=_literal_gate_commitments()["control_split"],
             balanced_accuracy=1.0,
             holm_adjusted_p=9 * 0.0002,
             probes=tuple(
@@ -528,7 +574,8 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         ),
         expected_count=10_000,
     )
-    gate_corpus = "f" * 64
+    commitments = _literal_gate_commitments()
+    gate_corpus = commitments["corpus"]
     independent = _provenance(independent=True)
     descriptor = AuditSourceDescriptor(
         schema_version="leakage-source-v1",
@@ -596,9 +643,9 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         allocation_or_manifest_sha256=GATE_ALLOCATION_SHA256,
         config_sha256=independent.config_sha256,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
-        source_manifest_sha256="3" * 64,
+        source_manifest_sha256=commitments["source_manifest"],
         suite_path_denominators=GATE_DENOMINATORS,
-        clock_pair_manifest_sha256="4" * 64,
+        clock_pair_manifest_sha256=commitments["clock_manifest"],
         clock_scale_pair_counts={"scale_0_1x": 5_000, "scale_10x": 2_000},
         episode_count=100_000,
     )
@@ -613,14 +660,14 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
             finite_feature_row_count=100_000,
             second_pass_verified_count=100_000,
             second_pass_match_count=100_000,
-            first_pass_source_manifest_sha256="3" * 64,
-            second_pass_source_manifest_sha256="3" * 64,
+            first_pass_source_manifest_sha256=commitments["source_manifest"],
+            second_pass_source_manifest_sha256=commitments["source_manifest"],
         ),
         membership_evidence=leakage_module.LeakageMembershipEvidence(
             schema_version="leakage-membership-evidence-v1",
-            split_membership_sha256="6" * 64,
-            train_membership_sha256="7" * 64,
-            test_membership_sha256="8" * 64,
+            split_membership_sha256=commitments["split"],
+            train_membership_sha256=commitments["train"],
+            test_membership_sha256=commitments["test"],
             train_episode_count=80_000,
             test_episode_count=20_000,
         ),
@@ -638,9 +685,9 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         profile=LeakageAuditProfileName.PHASE1_GATE,
         corpus_hash=gate_corpus,
         feature_schema_hash=LEAKAGE_FEATURE_SCHEMA_SHA256,
-        split_membership_hash="6" * 64,
-        train_membership_hash="7" * 64,
-        test_membership_hash="8" * 64,
+        split_membership_hash=commitments["split"],
+        train_membership_hash=commitments["train"],
+        test_membership_hash=commitments["test"],
         episode_count=100_000,
         randomization_block_count=25_000,
         suite_path_denominators=GATE_DENOMINATORS,
@@ -769,8 +816,11 @@ def test_v3_publishes_eleven_bounded_packs_and_exact_workloads(consistent_artifa
     "field",
     (
         "invariant_verified_count",
+        "feature_row_count",
         "finite_feature_row_count",
+        "second_pass_verified_count",
         "second_pass_match_count",
+        "first_pass_source_manifest_sha256",
         "second_pass_source_manifest_sha256",
     ),
 )
@@ -880,6 +930,279 @@ def test_standalone_positive_subset_membership_known_answer():
     ):
         with pytest.raises(ValueError):
             validate(payload | mutation, source_ids)
+
+
+def test_transitional_v3_loader_accepts_hand_framed_fixture(tmp_path, consistent_artifact_bytes):
+    path = tmp_path / "literal-leakage.json"
+    path.write_bytes(consistent_artifact_bytes["leakage.json"])
+    report = _VERIFIER["_load_report"](path, LeakageReport, name="leakage")
+    assert report.schema_version == "leakage-report-v3"
+    assert report.corpus_hash == _literal_gate_commitments()["corpus"]
+
+
+def test_nonaligned_explicit_members_bind_ordered_source_and_clock_hashes():
+    # Absolute positions 13..16 belong to private block 73 with explicit members
+    # 0..3. Position modulo four cannot recover this identity; the second
+    # literal below also distinguishes explicit members from manifest rank.
+    requests = tuple(
+        SimpleNamespace(
+            episode_index=position, allocation_quartet_index=73, quartet_member_index=member
+        )
+        for position, member in ((13, 0), (14, 1), (15, 2), (16, 3))
+    )
+    ids = (
+        "00000000-0000-4000-8000-000000000000",
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003",
+    )
+    digests = ("0" * 64, "1" * 64, "2" * 64, "3" * 64)
+    corpus = _VERIFIER.get("_leakage_corpus_sha256")
+    source = _VERIFIER.get("_leakage_source_manifest_sha256")
+    clock = _VERIFIER.get("_leakage_clock_manifest_sha256")
+    assert callable(corpus) and callable(source) and callable(clock), "independent framing missing"
+    assert (
+        corpus(ids, digests) == "b1fc4855221921492cb25508565c4e52f00e412d019135c902addeb322dc06e5"
+    )
+    assert (
+        source(requests, ids, digests)
+        == "e942233f7329f9071f0b3341f9d4068cf576420d24bce700c9dadbb2fbf99207"
+    )
+    reversed_members = tuple(
+        SimpleNamespace(
+            episode_index=position, allocation_quartet_index=73, quartet_member_index=member
+        )
+        for position, member in ((13, 3), (14, 2), (15, 1), (16, 0))
+    )
+    assert (
+        source(reversed_members, ids, digests)
+        == "37b1904aed4f32a5e798520be5956fe90fcc6b2e333fe4dc81af50a7aeb424e4"
+    )
+    parents = (
+        (0, 0.1, "00000000-0000-4000-8000-000000000009"),
+        (3, 10.0, "00000000-0000-4000-8000-000000000008"),
+    )
+    assert (
+        clock(requests, ids, digests, parents, ("4" * 64, "5" * 64))
+        == "808bab4183c0124c976bdf3f212b0912b703dd28d88e0ebb46f4fe1ef3a0245e"
+    )
+
+
+@pytest.mark.parametrize(
+    "check,pairs,expected",
+    (
+        (
+            CounterfactualCheckId.TERMINAL_DELAY_SWAP,
+            (
+                (
+                    (
+                        "00000000-0000-4000-8000-000000000000",
+                        "00000000-0000-4000-8000-000000000001",
+                    ),
+                    "swap_terminal_delay",
+                ),
+            ),
+            "6649eef9c38f23c97af82c5e5cd696d8d7a37754ad3e7c4c3ebcc44e250dd97b",
+        ),
+        (
+            CounterfactualCheckId.PRESENTATION_PERMUTATION,
+            (
+                (("00000000-0000-4000-8000-000000000000",), "permute_presentation"),
+                (("00000000-0000-4000-8000-000000000003",), "permute_presentation"),
+            ),
+            "03b5b441c594613413621f7f80e74382e8ebcab65b63bf7a2f7276e58fc72cfc",
+        ),
+        (
+            CounterfactualCheckId.PAIRED_CLOCK_SCALE,
+            (
+                (("00000000-0000-4000-8000-000000000000",), "scale_0_1x"),
+                (("00000000-0000-4000-8000-000000000003",), "scale_10x"),
+            ),
+            "0cba4e994d6d8309a3693f7e857ae50d06e87a0c5ae1ef02c8ce1d9777496c3f",
+        ),
+    ),
+)
+def test_counterfactual_stream_literal_answers(check, pairs, expected):
+    function = _VERIFIER.get("_leakage_counterfactual_sha256")
+    assert callable(function), "independent counterfactual framing missing"
+    assert function(check, pairs) == expected
+
+
+@pytest.mark.parametrize("damage", ("missing", "overlap", "noncovering", "duplicate"))
+def test_main_membership_must_partition_all_100000_source_indices(damage):
+    function = _VERIFIER.get("_require_complete_membership")
+    assert callable(function), "independent membership partition check missing"
+    train, test = tuple(range(80_000)), tuple(range(80_000, 100_000))
+    function(train, test, 100_000)
+    if damage == "missing":
+        test = test[:-1]
+    elif damage == "overlap":
+        test = (0, *test[1:])
+    elif damage == "noncovering":
+        test = (*test[:-1], 100_000)
+    else:
+        train = (*train[:-1], 0)
+    with pytest.raises(ArtifactIntegrityError):
+        function(train, test, 100_000)
+
+
+def _change_pack(pack, damage):
+    raw = base64.b64decode(pack["payload_base64"])
+    if damage == "item":
+        raw = bytes([raw[0] ^ 1]) + raw[1:]
+    elif damage == "order":
+        raw = raw[32:64] + raw[:32] + raw[64:]
+    elif damage == "count":
+        pack["item_count"] -= 1
+        return
+    else:
+        pack["payload_sha256"] = "e" * 64
+        return
+    pack["payload_base64"] = base64.b64encode(raw).decode()
+    pack["payload_sha256"] = hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize("pack_name", ("source_episode_sha256s", "clock_child_episode_sha256s"))
+@pytest.mark.parametrize("damage", ("item", "order", "payload", "count"))
+def test_independent_source_and_clock_pack_mutations(consistent_artifact_bytes, pack_name, damage):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    _change_pack(payload["construction_statistics"][pack_name], damage)
+    with pytest.raises((ValidationError, ArtifactIntegrityError)):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "corpus_hash",
+        "source_manifest",
+        "clock_manifest",
+        "split_membership_hash",
+        "train_membership_hash",
+        "test_membership_hash",
+        "train_episode_count",
+        "test_episode_count",
+    ),
+)
+def test_independent_leakage_commitment_mutations(consistent_artifact_bytes, field):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    if field == "source_manifest":
+        payload["provenance"]["leakage_audit"]["source_manifest_sha256"] = "e" * 64
+        for key in ("first_pass_source_manifest_sha256", "second_pass_source_manifest_sha256"):
+            payload["construction_statistics"][key] = "e" * 64
+    elif field == "clock_manifest":
+        payload["provenance"]["leakage_audit"]["clock_pair_manifest_sha256"] = "e" * 64
+    elif field.endswith("episode_count"):
+        payload["membership_evidence"][field] -= 1
+    else:
+        payload[field] = "e" * 64
+        if field != "corpus_hash":
+            payload["membership_evidence"][field.replace("_hash", "_sha256")] = "e" * 64
+    with pytest.raises((ValidationError, ArtifactIntegrityError)):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize("control_index", range(9))
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "base_subset_membership_sha256",
+        "base_subset_corpus_sha256",
+        "split_membership_sha256",
+        "injected_corpus_sha256",
+        "item",
+        "order",
+        "payload",
+    ),
+)
+def test_each_control_commits_exact_subset_split_and_injected_pack(
+    consistent_artifact_bytes, control_index, damage
+):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    control = payload["positive_controls"][control_index]
+    if damage in ("item", "order", "payload"):
+        _change_pack(control["injected_episode_sha256s"], damage)
+    else:
+        control[damage] = "e" * 64
+    with pytest.raises((ValidationError, ArtifactIntegrityError)):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "base_subset_membership_sha256",
+        "base_subset_corpus_sha256",
+        "split_membership_sha256",
+    ),
+)
+def test_agreement_of_all_controls_does_not_authenticate_subset(consistent_artifact_bytes, field):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    for control in payload["positive_controls"]:
+        control[field] = "e" * 64
+    with pytest.raises(ArtifactIntegrityError):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize("check_index", range(3))
+def test_zero_counterfactual_counts_do_not_authorize_placeholder_hash(
+    consistent_artifact_bytes, check_index
+):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    payload["counterfactual_checks"][check_index]["result_payload_sha256"] = "e" * 64
+    with pytest.raises(ArtifactIntegrityError):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize(
+    "family,index,probe_index",
+    (
+        *(("probes", i, None) for i in range(27)),
+        *(("label_shuffled_probes", i, None) for i in range(27)),
+        *(("positive_controls", i, probe_index) for i in range(9) for probe_index in range(9)),
+    ),
+)
+def test_every_task_filtered_workload_requires_exact_membership(
+    consistent_artifact_bytes, family, index, probe_index
+):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    probe = (
+        payload[family][index]["probes"][probe_index]
+        if family == "positive_controls"
+        else payload[family][index]
+    )
+    probe["train_examples"] += 1
+    probe["train_class_counts"]["0"] += 1
+    with pytest.raises((ValidationError, ArtifactIntegrityError)):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize("field", LEAKAGE_CONSTRUCTION_CHECK_IDS)
+def test_all_six_construction_booleans_are_rederived(consistent_artifact_bytes, field):
+    payload = json.loads(consistent_artifact_bytes["leakage.json"])
+    payload["construction_checks"][field] = False
+    with pytest.raises((ValidationError, ArtifactIntegrityError)):
+        _require_leakage(LeakageReport.model_validate_json(canonical_json_bytes(payload)))
+
+
+def test_outer_v2_success_literal_has_no_compatibility_path():
+    payload = {
+        "schema_version": "phase1-gate-verification-v2",
+        "validation_episode_count": 10_000,
+        "independent_episode_count": 100_000,
+        "matched_accepted_draw_count": 2_500,
+        "independent_accepted_draw_count": 100_000,
+        "matched_public_id_seed": 2026083002,
+        "independent_public_id_seed": 2026083012,
+        "construction_token_count": 750_000,
+        "public_id_count": 117_000,
+        "validation_manifest_payload_sha256": "a" * 64,
+        "independent_corpus_sha256": "b" * 64,
+        "foundation_model_calls": 0,
+        "passed": True,
+    }
+    with pytest.raises(ValidationError):
+        Phase1GateVerificationResult.model_validate(payload)
 
 
 def test_v3_size_limit_precedes_model_loading_and_publication(tmp_path, consistent_artifact_bytes):
@@ -1070,7 +1393,7 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
     result = _verify(paths)
 
     assert result.model_dump(mode="json") == {
-        "schema_version": "phase1-gate-verification-v2",
+        "schema_version": "phase1-gate-verification-v3",
         "validation_episode_count": 10_000,
         "independent_episode_count": 100_000,
         "matched_accepted_draw_count": 2_500,
@@ -1082,7 +1405,7 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
         "validation_manifest_payload_sha256": json.loads(
             consistent_artifact_bytes["validation.json"]
         )["payload_sha256"],
-        "independent_corpus_sha256": "f" * 64,
+        "independent_corpus_sha256": _literal_gate_commitments()["corpus"],
         "foundation_model_calls": 0,
         "passed": True,
     }
@@ -1130,7 +1453,7 @@ def test_verifier_requires_member_authenticated_anchor_without_later_report_vers
             _verify(paths)
     else:
         result = _verify(paths)
-        assert result.schema_version == "phase1-gate-verification-v2"
+        assert result.schema_version == "phase1-gate-verification-v3"
         assert result.passed
 
 
@@ -1149,7 +1472,7 @@ def test_outer_gate_result_requires_strict_lowercase_sha256_digests(
 ) -> None:
     """The success envelope cannot emit malformed or coerced artifact digests."""
     payload = {
-        "schema_version": "phase1-gate-verification-v2",
+        "schema_version": "phase1-gate-verification-v3",
         "validation_episode_count": 10_000,
         "independent_episode_count": 100_000,
         "matched_accepted_draw_count": 2_500,
