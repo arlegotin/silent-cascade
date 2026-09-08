@@ -26,8 +26,8 @@ Ruff, and `uv`.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`
 
-**Plan status:** **Approved and in execution.** The final whole-phase audit
-invalidated the previous Task 18 artifacts and requires the four corrective
+**Plan status:** **Approved and in execution.** The final whole-phase audits
+invalidated the previous Task 18 artifacts and require the five corrective
 implementation passes in this plan before Task 18 is rerun. The canonical
 design and this Phase 1 plan are approved. The OFD task, distributions,
 scientific settings, denominators, controls, thresholds, frozen seeds, resource
@@ -77,9 +77,9 @@ best answer.
   not completed or released: the correction is a pre-completion replacement,
   every artifact made by the earlier construction is invalid, and there is no
   compatibility/migration promise. Evidence reports use the exact versioned
-  literals declared by their owning tasks: Phase 1 reproducibility, oracle
-  evaluation, leakage, and final gate verification are all v2 after the final
-  audit correction. Any post-completion change to generator construction,
+  literals declared by their owning tasks: Phase 1 reproducibility and oracle
+  evaluation remain v2; leakage is v3; and final gate verification is v3 after
+  Correction Pass 5. Any post-completion change to generator construction,
   rejection, private coordinates, or episode/manifest schema semantics requires
   a new version and a deviations entry.
 - Use `max_entities=64`, four hazard types, primary memory capacity `64`, an
@@ -4169,6 +4169,14 @@ class ShortcutFeatureSet:
     vectors: Mapping[ShortcutFeatureGroup, np.ndarray]
 
 
+class OrderedSha256Pack(StrictModel):
+    schema_version: Literal["ordered-sha256-pack-v1"]
+    encoding: Literal["base64-concatenated-sha256-v1"]
+    item_count: int = Field(gt=0, le=100_000)
+    payload_base64: str
+    payload_sha256: HexDigest
+
+
 class ShortcutProbeResult(StrictModel):
     task: ShortcutTask
     feature_group: ShortcutFeatureGroup
@@ -4177,6 +4185,9 @@ class ShortcutProbeResult(StrictModel):
     test_examples: int = Field(gt=0)
     train_class_counts: dict[str, int]
     test_class_counts: dict[str, int]
+    test_confusion_counts: dict[str, dict[str, int]]
+    permutation_exceedance_count: int = Field(ge=0)
+    permutation_replicate_count: int = Field(gt=0)
     raw_accuracy: float = Field(ge=0.0, le=1.0)
     balanced_accuracy: float = Field(ge=0.0, le=1.0)
     balanced_chance: float = Field(ge=0.0, le=1.0)
@@ -4193,7 +4204,9 @@ class PositiveControlResult(StrictModel):
     expected_detector_id: str
     observed_detector_ids: tuple[str, ...]
     base_subset_corpus_sha256: HexDigest
+    base_subset_membership_sha256: HexDigest
     injected_corpus_sha256: HexDigest
+    injected_episode_sha256s: OrderedSha256Pack
     split_membership_sha256: HexDigest
     balanced_accuracy: float | None = Field(ge=0.0, le=1.0)
     holm_adjusted_p: float | None = Field(ge=0.0, le=1.0)
@@ -4201,13 +4214,14 @@ class PositiveControlResult(StrictModel):
     passed: bool
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AuditExample:
     bundle: EpisodeBundle
     manifest_rank: int
     generation_mode: Literal["matched", "independent"]
     randomization_block_index: int
     episode_position: int
+    quartet_member_index: int
 
 
 class AuditSourceDescriptor(StrictModel):
@@ -4275,10 +4289,33 @@ class CounterfactualCheckResult(StrictModel):
     passed: bool
 
 
+class LeakageConstructionStatistics(StrictModel):
+    schema_version: Literal["leakage-construction-statistics-v1"]
+    source_episode_sha256s: OrderedSha256Pack
+    invariant_verified_count: int = Field(ge=0)
+    feature_row_count: int = Field(ge=0)
+    finite_feature_row_count: int = Field(ge=0)
+    second_pass_verified_count: int = Field(ge=0)
+    second_pass_match_count: int = Field(ge=0)
+    first_pass_source_manifest_sha256: HexDigest
+    second_pass_source_manifest_sha256: HexDigest
+
+
+class LeakageMembershipEvidence(StrictModel):
+    schema_version: Literal["leakage-membership-evidence-v1"]
+    split_membership_sha256: HexDigest
+    train_membership_sha256: HexDigest
+    test_membership_sha256: HexDigest
+    train_episode_count: int = Field(gt=0)
+    test_episode_count: int = Field(gt=0)
+
+
 class LeakageReport(StrictModel):
-    schema_version: Literal["leakage-report-v2"]
+    schema_version: Literal["leakage-report-v3"]
     provenance: EvidenceProvenance
     namespace_evidence: ConstructionNamespaceEvidence
+    construction_statistics: LeakageConstructionStatistics
+    membership_evidence: LeakageMembershipEvidence
     generation_mode: Literal["matched", "independent"]
     profile: LeakageAuditProfileName
     corpus_hash: HexDigest
@@ -4299,11 +4336,13 @@ class LeakageReport(StrictModel):
     passed: bool
 ```
 
-This is the exact v2 extension of the current leakage evidence schema: no v1
-evidence field may disappear during migration. In particular,
+This is the exact v3 extension of the v2 leakage evidence schema: no v2
+evidence field may disappear during migration. In particular, the three
+top-level membership hashes and all construction check fields remain as
+redundant cross-checks rather than being replaced by their typed evidence.
 `PositiveControlResult.probes`, `LeakageReport.construction_check_ids`, and
 `LeakageReport.label_shuffled_probes` remain mandatory typed tuples, while
-`namespace_evidence` is added. The displayed `Field` bounds are carried over
+`namespace_evidence` remains mandatory. The displayed `Field` bounds are carried over
 verbatim: every feature/workload count is positive, every probability or
 accuracy is in `[0,1]`, and optimizer iterations are in `[0,500]`; optional
 positive-control summary probabilities, when present, use the same `[0,1]`
@@ -4313,7 +4352,14 @@ dimension/count/metric/iteration bounds. Port the existing v1 exact-primitive,
 task-derived chance, non-empty/nonnegative class-count and count-sum,
 phase-profile workload, feature-dimension, permutation-grid, convergence,
 Holm, detector-identity, summary-metric, construction-check, label-shuffled
-pass, and outer-pass validators without weakening or replacing them. They must
+pass, and outer-pass validators without weakening or replacing them. Every
+probe must additionally validate an exact square test confusion matrix whose
+row sums equal `test_class_counts`, derive raw and mean-per-class balanced
+accuracy from its diagonal, and derive the add-one permutation p-value from
+`permutation_exceedance_count` and `permutation_replicate_count`. The Phase 1
+clean, label-shuffled, and positive-control probes require exactly 4,999
+replicates. The producer and standalone verifier implement these derivations
+independently. They must
 still rederive the complete ordered 27 clean probes, complete ordered 27
 label-shuffled probes, and every positive control's complete ordered
 nine-feature probe family. Validate that
@@ -4322,6 +4368,52 @@ check passes only with zero decision and temporal mismatches, and the overall
 report passes only when all three checks pass. A scientific-failure report
 retains nonzero counts and `passed=false`; corruption or a missing check raises
 instead of producing an incomplete report.
+
+`OrderedSha256Pack` is not a free-form compressed blob. Decode
+`payload_base64` with strict standard padded Base64, require canonical
+round-trip encoding, require exactly `32 * item_count` decoded bytes, split it
+into the declared ordered SHA-256 values, and require `payload_sha256` to equal
+the SHA-256 of those raw concatenated bytes. The source pack contains exactly
+100,000 episode digests in canonical source order for the Phase 1 profile.
+Every one of the nine positive controls contains exactly 8,000 injected
+episode digests in its canonical selected-subset order. Reject a duplicate,
+missing, reordered, truncated, overlong, noncanonical, or digest-inconsistent
+pack. The complete canonical `leakage-report-v3` JSON must be no more than
+`16 * 1024 * 1024` bytes in the producer, immutable publisher, loader, and
+standalone verifier.
+
+`LeakageConstructionStatistics` is produced by the two real streaming passes.
+Its source pack and the independently reconstructed public IDs/coordinates
+must reproduce the report corpus hash and the v2 source-manifest hash. Its
+invariant, feature, finite-feature, second-pass, and second-pass-match counts
+must all equal `episode_count`; both source-manifest hashes must be equal.
+Derive the six ordered construction checks exactly: `provenance` from the
+authenticated descriptor/anchor/source manifest, `public_ids` and
+`seed_tokens` from `ConstructionNamespaceEvidence`, `invariants` from the
+verified count, `finite_features` from the exact feature counts, and
+`two_pass_identity` from the second-pass count/hash equality. Do not accept a
+self-reported boolean that contradicts these primitives.
+
+`LeakageMembershipEvidence` duplicates the existing top-level split, train,
+and test hashes plus exact counts. Reconstruct it from the frozen audit seed,
+corpus hash, canonical suite/path/block groups, and complete ordered public-ID
+stream. Require train/test disjointness, exact union, 80/20 counts, and equality
+with every probe workload. For each positive control, independently select the
+balanced 8,000-item source subset, derive and compare its membership and corpus
+hash, derive its frozen groupwise split and split-membership hash, reconstruct
+the control-specific injected public IDs, and combine them with its packed
+injected digests to reproduce `injected_corpus_sha256`. The producer and
+verifier may share only versioned schemas and domain strings, not membership,
+metric, aggregation, or counterfactual builder functions.
+
+These bounded packs are raw per-episode digest evidence for arithmetic, not
+the full public episode payloads, optimizer predictions, or permutation
+vectors. The artifact and final report must preserve the explicit limitation:
+an attacker able to replace all artifacts, packs, historical source, and trust
+anchors coherently cannot be detected without regenerating the corpus and
+rerunning the fits. The local verifier proves every relationship derivable
+from the frozen inputs and serialized primitives; it does not claim universal
+tamper detection.
 
 Frame each pair key as SHA-256 of canonical JSON:
 
@@ -5291,14 +5383,16 @@ the engine.
 
 - [ ] **Step 5: Implement the local gate verifier and update documentation**
 
-`verify_phase1_gate_artifacts` accepts the five exact artifact paths, loads them
-through strict v2 report loaders, and checks frozen validation/gate counts,
+`verify_phase1_gate_artifacts` accepts the five exact artifact paths. After
+Correction Pass 5 it loads oracle and both reproducibility reports through
+their strict v2 loaders, leakage through its strict v3 loader, and checks
+frozen validation/gate counts,
 every derived inner `passed` state, all three leakage counterfactual IDs, common
 plan/source/config/generator provenance, zero foundation calls, and exact
 equality of the oracle/leakage/independent-reproducibility corpus SHA-256. Its
-result schema is exactly `phase1-gate-verification-v2`; stale v1 oracle,
-leakage, reproducibility, or gate-verification artifacts are rejected with no
-compatibility path.
+result schema is exactly `phase1-gate-verification-v3`; stale v1 oracle,
+stale v1/v2 leakage, stale v1 reproducibility, or stale v1/v2 outer
+gate-verification artifacts are rejected with no compatibility path.
 
 The verifier uses read-only Git object access to authenticate each exact full
 `source_commit`, require it to be an ancestor of current `HEAD`, derive the
@@ -5320,14 +5414,25 @@ exactly 750,000 tokens and 117,000 IDs, all collision-free. It recomputes every
 OracleEvaluationReport v2 relationship even for unchecked model copies and
 every derivable/cross-artifact relationship at the public five-file boundary.
 
+For leakage v3, the verifier additionally decodes and authenticates the
+100,000-item source digest pack and all nine 8,000-item injected digest packs;
+reconstructs source/corpus, source-manifest, main split/train/test, and each
+positive-control subset/split/injected hash; independently derives every
+confusion-based accuracy, permutation add-one p-value, Holm value, probe and
+detector pass, all six construction checks, and all three counterfactual result
+hashes; and rejects canonical leakage bytes above 16 MiB. These checks bind the
+published derivations to the producer's packed raw digests and frozen recipes;
+they do not claim recovery if every raw trust anchor and every redundant digest
+is replaced consistently.
+
 The verifier never checks out a revision, regenerates episode semantics,
 rewrites artifacts, or accesses the network. Its script adapter emits one
-canonical v2 JSON result on success and a stable typed error on stderr with exit
+canonical v3 JSON result on success and a stable typed error on stderr with exit
 1 on failure.
 
 ```python
 class Phase1GateVerificationResult(StrictModel):
-    schema_version: Literal["phase1-gate-verification-v2"]
+    schema_version: Literal["phase1-gate-verification-v3"]
     validation_episode_count: Literal[10_000]
     independent_episode_count: Literal[100_000]
     matched_accepted_draw_count: Literal[2_500]
@@ -5383,9 +5488,9 @@ git commit -m "feat: expose Phase 1 data and oracle commands"
 
 ## Required Final-Audit Correction Passes
 
-The first execution of Tasks 1–18 produced well-formed but insufficiently
-authenticated evidence. The whole-phase audit invalidated all five artifacts.
-Execute these four passes in order from the approved current-branch history,
+The executions of Tasks 1–18 produced well-formed but insufficiently
+authenticated evidence. The whole-phase audits invalidated all five artifacts.
+Execute these five passes in order from the approved current-branch history,
 using TDD and the exact commit subjects below. After each pass, obtain an
 independent specification review and an independent code-quality review. Both
 must pass before the next pass begins; correct a finding in a separate
@@ -5858,17 +5963,10 @@ attempt, and exact seed, and compare the complete ordered ID sequences/hashes.
 Require byte-for-byte equality of the independent namespace summaries in the
 oracle, leakage, and independent reproducibility reports; independently
 rederive the matched validation reproducibility summary. Reject every stale v1
-artifact without migration. Before running Step 4, delete exactly the five
-stale Task 18 artifacts so verification and both reviews exercise the same
-clean tree that will become the evidence collector HEAD:
-
-```bash
-git rm manifests/validation/v1/ofd-primary-10000.json \
-  manifests/validation/v1/phase1-oracle-gate.json \
-  manifests/validation/v1/phase1-leakage-gate.json \
-  manifests/validation/v1/phase1-validation-reproducibility.json \
-  manifests/validation/v1/phase1-independent-reproducibility-gate.json
-```
+artifact without migration. This historical pass deleted the then-current
+invalid artifacts before its review. Correction Pass 5's prelude separately
+deletes the later five artifacts rejected by the terminal audit; no executor
+may reuse either set.
 
 - [ ] **Step 4: Run complete local verification**
 
@@ -5909,17 +6007,439 @@ git add src/silent_cascade/provenance.py src/silent_cascade/env/generator.py \
 git commit -m "fix: harden Phase 1 evidence verification"
 ```
 
-The Pass 4 commit includes deletion of only the five invalid Task 18 artifacts;
-there is no unreviewed post-Pass-4 deletion commit. Both independent reviews
-therefore inspect a clean tree with those deletions. If review requires a fix,
-commit it and repeat both reviews; the final passing descendant is the
-"reviewed Pass 4 tip." Task 18's provenance collector must run at that exact
-tip/HEAD and record its full hash as `source_commit`. Regenerate all of Task 18
-Steps 1–9 from that exact collector HEAD, including the all-nine leakage gate.
-Then repeat
-terminal artifact, whole-science, and whole-code audits; the root agent
-independently reruns the v2 verifier and `make verify` before any completion
-claim.
+The Pass 4 commit included deletion of that pass's five invalid Task 18
+artifacts. Its reviewed descendant was the collector for the subsequently
+rejected run; it is historical input to Correction Pass 5, not Phase 1
+completion evidence.
+
+### Correction Pass 5: Close Leakage Evidence and Quartet Cardinality
+
+The terminal audits of collector
+`bee142bd08a8b7b5621ae65551280ebdeed6c1b6`, evidence commit
+`4aa6eca5d25e3c6dac879850b2a0557bbe84b54e`, and fixture-only descendant
+`2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e` found three remaining
+pre-completion failures: leakage discarded the explicit independent quartet
+member; probe statistics and leakage memberships were not independently
+derivable; and independent manifests accepted more than four rows per
+quartet. Execute the following prelude and three TDD subpasses in order. Each
+subpass must be independently green and reviewed before the next. The five
+Task 18 artifacts remain absent throughout.
+
+#### Pass 5 Prelude: Invalidate the incomplete evidence
+
+**Files:**
+
+- Modify: `docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md`
+- Modify: `docs/deviations.md`
+- Modify: `docs/PLAN.md`
+- Modify: `tests/integration/test_phase0_repository.py`
+- Delete: `manifests/validation/v1/ofd-primary-10000.json`
+- Delete: `manifests/validation/v1/phase1-oracle-gate.json`
+- Delete: `manifests/validation/v1/phase1-leakage-gate.json`
+- Delete: `manifests/validation/v1/phase1-validation-reproducibility.json`
+- Delete: `manifests/validation/v1/phase1-independent-reproducibility-gate.json`
+
+- [ ] **Step 1: Write and run the status RED**
+
+Change the repository regression first so it requires the exact in-progress
+Phase 1 state, no stale collector/evidence/fix hashes, the zero-foundation-call
+boundary, and the generator/oracle-engineering-not-benchmark boundary.
+
+```bash
+uv run pytest -q \
+  tests/integration/test_phase0_repository.py::test_phase0_plan_index_is_wired_to_frozen_inputs
+```
+
+Expected: FAIL because the delivery index still claims completion.
+
+- [ ] **Step 2: Record the ruling and delete only the five artifacts**
+
+Use `apply_patch` to mark only Phase 1 in progress, append the approved
+deviation, amend this plan, and delete the exact five files. Do not touch an
+analysis source, configuration, Makefile, workflow, or any other artifact.
+
+- [ ] **Step 3: Run local verification and commit**
+
+```bash
+uv run pytest -q tests/integration/test_phase0_repository.py
+make verify
+git diff --check
+git status --short
+git add docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md \
+  docs/deviations.md docs/PLAN.md tests/integration/test_phase0_repository.py \
+  manifests/validation/v1/ofd-primary-10000.json \
+  manifests/validation/v1/phase1-oracle-gate.json \
+  manifests/validation/v1/phase1-leakage-gate.json \
+  manifests/validation/v1/phase1-validation-reproducibility.json \
+  manifests/validation/v1/phase1-independent-reproducibility-gate.json
+git commit -m "test: invalidate incomplete Phase 1 evidence"
+```
+
+Expected: the focused test and complete local gate pass; the commit contains
+exactly the four modified text/test paths and five deletions. It changes no
+`PHASE1_ANALYSIS_SOURCE_PATHS` file.
+
+#### Pass 5A: Authenticate leakage quartet structure
+
+**Files:**
+
+- Modify: `src/silent_cascade/env/leakage.py`
+- Modify: `src/silent_cascade/env/services.py`
+- Modify: `src/silent_cascade/logging/manifest.py`
+- Modify: `src/silent_cascade/provenance.py`
+- Modify: `tests/unit/test_leakage.py`
+- Modify: `tests/unit/test_manifest.py`
+- Modify: `tests/unit/test_provenance.py`
+- Modify: `tests/property/test_generator_properties.py`
+- Modify: `tests/integration/test_phase1_services.py`
+
+**Interfaces:**
+
+- Adds mandatory exact `quartet_member_index: int` in `0..3` to keyword-only
+  `AuditExample` and `_StoredExample`. Matched examples store the matched
+  member index rather than `None`; independent examples store the independent
+  coordinate's explicit member. No default or inferred value is permitted.
+- Moves source/clock manifest hash domains to
+  `silent-cascade/ofd-v1/leakage-source-manifest/v2` and
+  `silent-cascade/ofd-v1/leakage-clock-pair-manifest/v2`, internal source
+  authentication to `leakage-source-auth-v2`, and the leakage provenance
+  anchor to `phase1-leakage-audit-anchor-v2`.
+- Tightens independent manifest validation without changing public manifest
+  schema 1 or the independent fact that each member may have a different
+  accepted attempt.
+
+- [ ] **Step 1: Write coordinate/cardinality RED tests**
+
+Use real generated bundles and allocation keys. Require a quartet at absolute
+episode indices `5,6,7,8`, with explicit members `0,1,2,3`, to pass both the
+audit and manifest boundaries. Independently require rejection of: member /
+coordinate disagreement; member / allocation-label disagreement; a duplicate
+member with another absolute index; five or eight rows whose member set is
+still `{0,1,2,3}`; nonconsecutive local indices; member order that does not
+match the locally sorted indices; and mixed requested path lengths. Keep a
+case whose four accepted attempts differ and require it to pass.
+
+Add source- and clock-manifest known answers proving that changing only the
+explicit member changes the digest. Exercise every service adapter: independent
+base source, independent clock parent, independent manifest clock parent,
+matched source, and matched clock parent. Add an AST regression scoped to
+`_validate_audit_coordinate` and `_validate_independent_quartets` that rejects
+`ast.Mod`, floor division used to recover a member, and calls to `divmod`.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/unit/test_manifest.py \
+  tests/property/test_generator_properties.py
+uv run pytest -q tests/integration/test_phase1_services.py
+uv run pytest -q tests/unit/test_leakage.py
+```
+
+Expected: the missing audit field, discarded service value, modulo inference,
+source-hash omission, and permissive manifest cardinality tests fail for their
+named reasons.
+
+- [ ] **Step 3: Implement lossless member/cardinality authentication**
+
+Populate the explicit field at every constructor. Include it in both
+authenticated manifest payloads. In `_validate_audit_coordinate`, compare the
+field with the private coordinate and independently derive the expected
+variant as:
+
+```python
+allocate_independent_variants(
+    AllocationLabelKey(
+        "ofd-v1",
+        descriptor.split_namespace,
+        row.suite,
+        descriptor.root_seed,
+        row.path_length,
+        row.block,
+    )
+)[row.quartet_member_index]
+```
+
+`_validate_independent_quartets(rows, descriptor)` groups by explicit block,
+requires exactly four rows and one member each, sorts by absolute episode
+index, and requires pairs `(base + 0, 0)` through `(base + 3, 3)`, common
+suite/path/group identity, and the exact member-to-variant allocation. It never
+requires `base % 4 == 0`.
+
+`EpisodeManifest._validate_coordinates` applies the same allocation-neutral
+four-row/member/consecutive/common-path rule to independent entries. Existing
+manifest-level suite/namespace validation remains. Do not require equal
+accepted attempts across independent members.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+```bash
+uv run pytest -q tests/unit/test_manifest.py tests/unit/test_provenance.py \
+  tests/property/test_generator_properties.py
+uv run pytest -q tests/integration/test_phase1_services.py
+uv run pytest -q tests/unit/test_leakage.py
+uv run ruff check src/silent_cascade/env/leakage.py \
+  src/silent_cascade/env/services.py src/silent_cascade/logging/manifest.py \
+  src/silent_cascade/provenance.py tests/unit/test_leakage.py \
+  tests/unit/test_manifest.py tests/unit/test_provenance.py \
+  tests/property/test_generator_properties.py \
+  tests/integration/test_phase1_services.py
+uv run ruff format --check src tests
+make verify
+git diff --check
+git add src/silent_cascade/env/leakage.py src/silent_cascade/env/services.py \
+  src/silent_cascade/logging/manifest.py src/silent_cascade/provenance.py \
+  tests/unit/test_leakage.py tests/unit/test_manifest.py \
+  tests/unit/test_provenance.py tests/property/test_generator_properties.py \
+  tests/integration/test_phase1_services.py
+git commit -m "fix: authenticate leakage quartet structure"
+```
+
+Expected: all focused and local gates pass with the evidence paths absent.
+Obtain independent specification and quality reviews; fix and repeat both
+before Pass 5B.
+
+#### Pass 5B: Publish strict leakage sufficient evidence
+
+**Files:**
+
+- Modify: `src/silent_cascade/env/leakage.py`
+- Modify: `src/silent_cascade/env/services.py`
+- Modify: `scripts/verify_phase1_gate_artifacts.py`
+- Modify: `tests/unit/test_leakage.py`
+- Modify: `tests/integration/test_phase1_services.py`
+- Modify: `tests/integration/test_phase1_gate_verifier.py`
+
+**Interfaces:**
+
+- Migrates only leakage to `leakage-report-v3`, preserving every v2 field and
+  adding `OrderedSha256Pack`, `LeakageConstructionStatistics`, and
+  `LeakageMembershipEvidence`.
+- Adds `test_confusion_counts`, `permutation_exceedance_count`, and
+  `permutation_replicate_count` to every `ShortcutProbeResult`.
+- Adds `base_subset_membership_sha256` and one 8,000-item
+  `injected_episode_sha256s` pack to every positive control.
+- Teaches the standalone verifier to parse and validate the complete v3
+  schema, but deliberately retains outer
+  `phase1-gate-verification-v2` until Pass 5C completes every independent
+  derivation.
+
+- [ ] **Step 1: Write sufficient-evidence RED tests**
+
+Use this unequal-class known answer so raw and balanced accuracy cannot be
+interchanged:
+
+```text
+test class counts       0=10, 1=20
+diagonal correct        0=8,  1=10
+raw accuracy            18/30 = 0.6
+balanced accuracy       (8/10 + 10/20)/2 = 0.65
+permutation exceedances 4 of 99
+add-one p-value         5/100 = 0.05
+```
+
+Reject a wrong/missing confusion row or prediction column, boolean/negative/
+noninteger count, row-sum mismatch, total mismatch, diagonal metric mismatch,
+exceedance above replicate count, raw-p mismatch, Holm mismatch, probe pass
+mismatch, detector-summary mismatch, and outer pass mismatch. Mutate the real
+prior clean-probe balanced accuracy from approximately `0.49245` to `0.1` and
+require schema rejection. Cover all 27 clean, 27 shuffled, and 81 control
+probes, including exact 4,999-replicate Phase 1 evidence.
+
+Add strict pack known answers and mutations for Base64 alphabet/padding,
+decoded length, item count, order, payload digest, truncation, duplicate/missing
+items, and the 100,000-item bound. Assert one exact source pack and nine exact
+8,000-item control packs. Reject a canonical leakage artifact larger than 16
+MiB at construction/publication/loading boundaries. Reject stale
+`leakage-report-v2`.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_gate_verifier.py
+uv run pytest -q tests/unit/test_leakage.py
+```
+
+Expected: missing sufficient-statistic/pack/schema fields and underived metric
+mutations fail for their named reasons.
+
+- [ ] **Step 3: Implement bounded v3 production evidence**
+
+Build each confusion matrix from held-out true/predicted labels. Derive raw
+accuracy from the diagonal total and balanced accuracy from the mean diagonal
+recall using one stable integer-statistics function; do not retain a separate
+NumPy-derived value. Store the exact exceedance and replicate counts and derive
+`(1 + exceedance) / (1 + replicates)`. Recompute Holm values, probe pass,
+observed detector IDs, positive-control summaries, and outer pass. Implement
+the same arithmetic separately in the standalone verifier.
+
+Encode each pack as canonical standard padded Base64 of concatenated 32-byte
+digests, with exact decoded length, ordered count, and payload SHA-256. The
+100,000 source digests are collected during the authenticated first pass; each
+positive-control pack contains its 8,000 injected digests in selected source
+order. Enforce the whole-report 16 MiB bound before atomic publication and on
+load.
+
+Populate construction statistics from actual pass counters and first/second
+source-manifest hashes. Populate membership evidence without removing the
+three v2 top-level fields. Keep the six existing check IDs and booleans, but
+derive them from namespace, provenance, invariant/feature/finite/second-pass
+counts, and equal authenticated hashes.
+
+- [ ] **Step 4: Run transitional GREEN and commit**
+
+```bash
+uv run pytest -q tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_gate_verifier.py
+uv run pytest -q tests/unit/test_leakage.py
+uv run ruff check src/silent_cascade/env/leakage.py \
+  src/silent_cascade/env/services.py scripts/verify_phase1_gate_artifacts.py \
+  tests/unit/test_leakage.py tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_gate_verifier.py
+uv run ruff format --check src scripts tests
+make verify
+git diff --check
+git add src/silent_cascade/env/leakage.py src/silent_cascade/env/services.py \
+  scripts/verify_phase1_gate_artifacts.py tests/unit/test_leakage.py \
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_gate_verifier.py
+git commit -m "fix: authenticate leakage sufficient statistics"
+```
+
+Expected: the independently green transitional verifier consumes only leakage
+v3 and still emits outer v2. Evidence paths remain absent. Obtain both reviews
+and resolve every finding before Pass 5C.
+
+#### Pass 5C: Independently rederive the leakage gate
+
+**Files:**
+
+- Modify: `scripts/verify_phase1_gate_artifacts.py`
+- Modify: `tests/integration/test_phase1_gate_verifier.py`
+
+**Interfaces:**
+
+- Retains the complete ordered independent requests, accepted attempts, base
+  public IDs, clock public IDs, and allocation-derived labels reconstructed by
+  the v2 verifier.
+- Independently rederives every v3 leakage hash/count/check without importing
+  a producer aggregation, split, positive-control, metric, pack, or
+  counterfactual builder.
+- This pass alone migrates `Phase1GateVerificationResult` to
+  `phase1-gate-verification-v3`.
+
+- [ ] **Step 1: Write verifier RED mutations and known answers**
+
+Use a literal nonaligned-quartet fixture and hand-computed ordered hashes.
+Require rejection when only one of these values changes while its strict SHA
+shape remains valid: source digest pack item/order/payload; corpus hash;
+source-manifest hash; split/train/test membership hash; membership count; one
+positive-control subset membership, base subset corpus, split membership,
+injected digest, injected corpus, or pack order; one of the six construction
+booleans/counters; or any counterfactual result payload hash. Require the
+100,000 reconstructed train/test IDs to be disjoint and complete. Require the
+old outer v2 result expectation to fail.
+
+- [ ] **Step 2: Run RED tests**
+
+```bash
+uv run pytest -q tests/integration/test_phase1_gate_verifier.py
+```
+
+Expected: membership, construction, positive-control, counterfactual, and
+outer-v3 tests fail while the transitional v3 loader remains green.
+
+- [ ] **Step 3: Implement independent full rederivation**
+
+From the allocation, roots, raw public-ID seed, canonical accepted-attempt
+runs, and explicit member coordinates, reconstruct the ordered 100,000 base
+IDs and 7,000 clock IDs. Decode the source digest pack and independently
+recompute the corpus hash and source-manifest v2 hash, including manifest rank,
+generation mode, block, absolute episode position, explicit quartet member,
+public ID, and episode digest.
+
+Reproduce the frozen main group ranking and 80/20 split to derive the exact
+split/train/test payload hashes and counts. Reproduce the balanced positive-
+control subset and groupwise split. For all nine named injectors, independently
+derive the injected public IDs from allocation-derived labels, combine them
+with the control's ordered packed digests, and derive its subset, split, and
+injected-corpus hashes. Recompute the six construction checks from primitives.
+
+Recreate the three exact counterfactual result streams without episode
+regeneration: presentation uses every base ID in source order; delay swap pairs
+allocation-derived positives within suite/path in their source order; clock
+uses the reconstructed parents in exact `0.1x` then `10x` order. Derive each
+pair key and result payload hash from the frozen recipe. Because the final gate
+accepts only exact zero mismatch counts, it reconstructs the canonical
+all-false primitive mismatch stream and rejects any nonzero report before hash
+comparison; a future schema that admits nonzero evidence would have to publish
+the per-pair mismatch flags. A zero mismatch count does not authorize a
+placeholder result hash.
+
+Require canonical leakage bytes at or below 16 MiB, all v3 internal
+relationships, common historical provenance, the existing 750,000-token and
+117,000-ID namespace gates, oracle/reproducibility v2, and exactly zero
+foundation-model calls. Emit only `phase1-gate-verification-v3`.
+
+- [ ] **Step 4: Run final GREEN and commit**
+
+```bash
+uv run pytest -q tests/integration/test_phase1_gate_verifier.py
+uv run ruff check scripts/verify_phase1_gate_artifacts.py \
+  tests/integration/test_phase1_gate_verifier.py
+uv run ruff format --check scripts tests
+make verify
+git diff --check
+git add scripts/verify_phase1_gate_artifacts.py \
+  tests/integration/test_phase1_gate_verifier.py
+git commit -m "fix: rederive leakage gate evidence"
+```
+
+Expected: every literal known answer and adversarial mutation passes, the full
+local gate is green, and the five evidence paths remain absent.
+
+#### Pass 5 final collector-source review
+
+Obtain fresh independent science/specification and code-quality reviews over
+the complete Pass 5 range. They must inspect the exact production code, not
+only test summaries, and must reproduce the `5,6,7,8` nonaligned quartet,
+wrong-member/wrong-label failures, eight-row manifest failure, metric mutation,
+membership mutation, control-pack mutation, and counterfactual-hash mutation.
+They must also confirm all 135 probe records are derivable, all ten digest
+packs are canonical/bounded, the raw-trust-anchor limitation is stated, and no
+scientific setting changed. If either review finds an issue, commit the
+smallest TDD fix and repeat both reviews.
+
+After both reviews pass, run:
+
+```bash
+make verify
+git diff --check
+git status --short
+collector_head="$(git rev-parse HEAD)"
+evidence_source_commit="$(git log -1 --format=%H "${collector_head}" -- \
+  scripts/check_phase1_reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py \
+  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
+  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
+  src/silent_cascade/env/services.py src/silent_cascade/io.py \
+  src/silent_cascade/logging/__init__.py \
+  src/silent_cascade/logging/manifest.py \
+  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
+  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
+  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
+  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
+  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
+  src/silent_cascade/validation.py)"
+git merge-base --is-ancestor "${evidence_source_commit}" "${collector_head}"
+```
+
+Record both hashes. The current clean HEAD may be a test-only descendant, but
+`evidence_source_commit` must be the final independently reviewed commit that
+touches the exact final-analysis scope. No Task 18 Step 2–7 command may change
+HEAD or any analysis-source byte. Every report must record that exact source
+commit, and no post-evidence source or fixture correction is allowed.
 
 ---
 
@@ -5937,10 +6457,10 @@ claim.
 **Interfaces:**
 
 - Consumes: the exact clean committed and independently reviewed Correction
-  Pass 4 tip `HEAD` (whose history already deletes the five invalid artifacts)
-  and every prior Phase 1 API. This exact hash is the Task 18 collector HEAD and
-  must be recorded as `source_commit` in every regenerated artifact; no later
-  source/deletion commit may intervene.
+  Pass 5 collector state (whose history already deletes the five invalid
+  artifacts) and every prior Phase 1 API. Its final-analysis source revision,
+  resolved by the reviewed collector step, must be recorded as `source_commit`
+  in every regenerated artifact; no later analysis-source commit may intervene.
 - Produces: immutable validation/gate artifacts tied to source/config/generator
   hashes and the evidence required to start a Phase 2 plan.
 
@@ -5949,16 +6469,34 @@ claim.
 ```bash
 git status --short
 git diff --check
-evidence_source_commit="$(git rev-parse HEAD)"
+collector_head="$(git rev-parse HEAD)"
+evidence_source_commit="$(git log -1 --format=%H "${collector_head}" -- \
+  scripts/check_phase1_reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py \
+  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
+  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
+  src/silent_cascade/env/services.py src/silent_cascade/io.py \
+  src/silent_cascade/logging/__init__.py \
+  src/silent_cascade/logging/manifest.py \
+  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
+  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
+  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
+  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
+  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
+  src/silent_cascade/validation.py)"
+git merge-base --is-ancestor "${evidence_source_commit}" "${collector_head}"
 uv sync --locked --group dev
 make verify
 ```
 
 Expected: status/diff checks print nothing; locked sync, lint, all tests, doctor,
 and both package builds pass locally. Record the full
-`evidence_source_commit`; require it to be the independently reviewed Pass 4
-tip whose tree omits the stale artifacts. Every Step 2–7 collector must
-run without changing `HEAD` and must emit that exact full hash.
+`collector_head` and `evidence_source_commit`; require the latter to be the
+independently reviewed final-analysis revision from Pass 5 and the former to be
+its clean reviewed descendant whose tree omits the stale artifacts. Every Step
+2–7 collector must run without changing `HEAD` or analysis bytes and must emit
+that exact full source hash.
 
 - [ ] **Step 2: Create the fixed validation manifest once**
 
@@ -6069,7 +6607,7 @@ uv run silent-cascade leakage audit \
   --json
 ```
 
-Expected: `generation_mode=independent`, `schema_version=leakage-report-v2`;
+Expected: `generation_mode=independent`, `schema_version=leakage-report-v3`;
 every exact construction check, held-out probe, actual 700,000-token and
 107,000-ID namespace check,
 terminal-delay-swap, presentation-permutation, and paired-clock counterfactual,
@@ -6078,8 +6616,14 @@ contains all three typed counterfactual result IDs exactly once, all mandatory
 v1-carried evidence (`construction_check_ids`, the complete 27-probe clean and
 label-shuffled families, and every positive control's nine-feature `probes`),
 and complete independent `ConstructionNamespaceEvidence` with raw seed
-`2026083012`. Any detector failure, missing stratum/check, underpowered test,
-or hash mismatch exits nonzero and blocks Phase 1.
+`2026083012`. All 135 probes contain strict confusion and permutation
+sufficient statistics; the source has one 100,000-digest ordered pack and the
+nine controls each have one 8,000-digest injected pack. The report contains
+derived `LeakageConstructionStatistics` and `LeakageMembershipEvidence`,
+reconstructable source/corpus/main-split/control hashes, exact v2 source/clock
+authentication domains, and canonical bytes no larger than 16 MiB. Any
+detector failure, missing stratum/check, underpowered test, pack/statistic/hash
+mismatch, or oversize artifact exits nonzero and blocks Phase 1.
 
 - [ ] **Step 6: Run and save deterministic generation-order checks**
 
@@ -6162,21 +6706,24 @@ git diff --check
 Expected: the cross-artifact gate verifier, locked sync, lint, formatting, all
 tests, doctor, source/wheel build, focused property/regression/integration
 tests, and diff check pass locally. The verifier emits
-`phase1-gate-verification-v2`, authenticates historical Git blobs and the
+`phase1-gate-verification-v3`, authenticates historical Git blobs and the
 historical plan base, requires final `phase1_analysis` scope, independently
 recomputes both sample memberships and both namespace summaries, and confirms
 the combined 750,000 tokens and 117,000 IDs have zero collisions. It requires
 raw public-ID seeds `2026083002` and `2026083012`, verifies their fingerprints,
 rederives every base/clock ID from the authenticated coordinate and accepted
-attempt, and requires every artifact's full `source_commit` to equal the Step 1
-`evidence_source_commit` collector HEAD.
+attempt, reconstructs every v3 leakage metric/hash/check and all three
+counterfactual result hashes, and requires every artifact's full
+`source_commit` to equal the Step 1 `evidence_source_commit`.
 
 - [ ] **Step 8: Record the completed Phase 1 gate and commit artifacts**
 
 Update the Phase 1 row in `docs/PLAN.md` from its planned gate to the exact
 artifact hashes and the Step 1 `evidence_source_commit` recorded by all five
 artifacts. This later evidence/docs commit is not itself the collector source
-revision. Do not add benchmark claims.
+revision. Do not add benchmark claims. Do not make any post-evidence source,
+fixture, schema, or verifier correction in this commit; an audit finding
+invalidates all five artifacts and starts a new correction/regeneration cycle.
 
 ```bash
 git add manifests/validation/v1/ofd-primary-10000.json \
@@ -6203,8 +6750,11 @@ Expected: the complete local gate passes, status is clean, and history contains
 the reviewed Phase 1 commits. The resolved value must match
 `plan_base_revision` in every evidence report; report the actual commit count
 rather than assuming one. The five evidence artifacts must still name the full
-Step 1 `evidence_source_commit` (the reviewed Pass 4 collector HEAD), not the
-later Task 18 evidence commit or whichever commit is current during replay.
+Step 1 `evidence_source_commit` (the reviewed Pass 5 final-analysis source
+revision), not the later Task 18 evidence commit or whichever commit is current
+during replay. Run fresh independent science/specification and code-quality
+audits over the committed five-artifact boundary. Any finding invalidates all
+five artifacts; no post-evidence patch may preserve or bless them.
 
 ## Phase 1 Completion Boundary
 
@@ -6239,11 +6789,13 @@ Phase 1 is complete only when all of the following are simultaneously true:
     namespace evidence coherent with the oracle/leakage reports;
 12. no final frozen-test manifest exists and Phase 6 needs no new episode
     generator implementation; and
-13. every v2 report and the final verifier derives its own pass state and
-    rejects every inconsistency derivable from raw artifacts, exact frozen
-    seeds/configuration/allocation, authenticated Git history, or redundant
-    cross-artifact evidence, without claiming detection after replacement of
-    all trust anchors;
+13. oracle and both reproducibility reports remain strict v2, leakage is strict
+    `leakage-report-v3`, and the final verifier is strict
+    `phase1-gate-verification-v3`; every report and verifier derives its own
+    pass state and rejects every inconsistency derivable from raw artifacts,
+    exact frozen seeds/configuration/allocation, authenticated Git history, or
+    redundant cross-artifact evidence, without claiming detection after
+    consistent replacement of all raw trust anchors;
 14. every evidence source commit, historical plan base, generator hash, and
     final-analysis hash is authenticated from regular Git blobs without a
     checkout, and every artifact uses `phase1_analysis`; and
@@ -6283,6 +6835,11 @@ specification.
 - [ ] Independent quartet member identity is explicit through request,
   coordinate, artifact, manifest, service, invariant, and reproducibility
   paths; no absolute-index/rank reconstruction remains.
+- [ ] Nonaligned independent quartet indices such as `5,6,7,8` validate from
+  explicit members `0,1,2,3`; no modulo/divmod inference exists.
+- [ ] Every independent manifest quartet contains exactly four consecutive
+  entries, each explicit member exactly once, with common suite/path/block
+  identity and independently permitted accepted attempts.
 - [ ] Phase 1 leakage splits/permutations keep whole matched cohorts or
   independent label-allocation quartets together as appropriate.
 - [ ] Shared LINK topology is sampled once per cohort and only relabeled.
@@ -6310,14 +6867,26 @@ specification.
   both sample memberships.
 - [ ] `PositiveControlResult.probes`, `LeakageReport.construction_check_ids`,
   `LeakageReport.label_shuffled_probes`, all nine positive controls, and both
-  complete ordered 27-probe families survive the v2 migration and strict
-  derived validators.
+  complete ordered 27-probe families survive the v3 migration; all 135 probes
+  publish strict confusion and permutation sufficient statistics from which
+  metrics, Holm values, detector summaries, and pass states are independently
+  rederived.
+- [ ] The canonical leakage report is at most 16 MiB and carries one ordered
+  100,000-source-digest pack plus nine ordered 8,000-injected-digest packs;
+  source/corpus/source-manifest, main split/train/test, every positive-control
+  subset/split/injected hash, all six construction checks, and all three
+  counterfactual result hashes are reconstructed independently.
 - [ ] Oracle/random arithmetic and pass flags are derived under strict exact
   schemas and independently recomputed at the five-artifact boundary.
 - [ ] Evidence revisions, historical plan base, and both source fingerprints
   are recomputed from regular Git blobs at the authenticated source commit.
-- [ ] The reviewed Pass 4 commit both removes the stale artifacts and is the
-  exact collector HEAD/source commit for every regenerated Task 18 artifact.
+- [ ] The invalid artifacts tied to collector `bee142b`, evidence `4aa6eca`,
+  and post-evidence fix `2203b68` remain deleted; the reviewed Pass 5
+  final-analysis revision is the exact `source_commit` for every regenerated
+  Task 18 artifact.
+- [ ] No post-evidence source, fixture, schema, or verifier commit exists; an
+  audit finding after regeneration restarted the correction cycle instead of
+  preserving the evidence.
 - [ ] Random positive and negative strata pass separately; no pooled binomial
   law is used.
 - [ ] No final frozen tests, neural/runtime code, hosted automation, or Qwen code

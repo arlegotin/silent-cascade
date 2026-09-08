@@ -69,7 +69,10 @@ def test_phase0_plan_index_is_wired_to_frozen_inputs() -> None:
     assert "superpowers/specs/2026-08-30-silent-cascade-design.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-0-bootstrap.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-1-generator-oracle.md" in plan_index
-    assert "Complete at collector source" in plan_index
-    assert "bee142bd08a8b7b5621ae65551280ebdeed6c1b6" in plan_index
+    assert "In progress: final Phase 1 evidence correction" in plan_index
+    assert "Complete at collector source" not in plan_index
+    assert "bee142bd08a8b7b5621ae65551280ebdeed6c1b6" not in plan_index
+    assert "4aa6eca5d25e3c6dac879850b2a0557bbe84b54e" not in plan_index
+    assert "2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e" not in plan_index
     assert "zero foundation-model calls" in plan_index
     assert "not learned-model or benchmark evidence" in plan_index

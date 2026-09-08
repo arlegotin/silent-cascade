@@ -4,6 +4,91 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-08 — Final Phase 1 leakage-evidence closure
+
+The terminal science and code audits rejected the five artifacts collected at
+source `bee142bd08a8b7b5621ae65551280ebdeed6c1b6`, committed by
+`4aa6eca5d25e3c6dac879850b2a0557bbe84b54e`, and followed by fixture-only
+commit `2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e`. Three independently
+reproduced pre-completion gaps remain:
+
+1. the leakage source discarded the explicit independent
+   `quartet_member_index`, authenticated only quartet/absolute episode
+   position, and inferred quartet shape from `position % 4`; it therefore
+   rejects the valid allocation-neutral quartet at absolute indices
+   `5,6,7,8` with explicit members `0,1,2,3` while failing to authenticate the
+   member-to-label relation;
+2. the leakage report stores raw accuracy, balanced accuracy, permutation
+   p-values, Holm values, and pass flags without the confusion counts or
+   permutation exceedance counts needed to derive them, and the final verifier
+   checks the three split/train/test membership fields only as SHA-256-shaped
+   strings; coordinated or even isolated metric and membership substitutions
+   can therefore pass; and
+3. the independent manifest validator groups quartet members into a set but
+   does not require exactly four rows, consecutive local episode indices, or a
+   common requested path. Eight distinct episode indices carrying members
+   `0,1,2,3,0,1,2,3` can validate as one quartet.
+
+The listed artifacts are numerically credible outputs of their named run, but
+they are not sufficient Phase 1 acceptance evidence. They are deleted before
+any new analysis-source edit, the delivery index returns to in progress, and
+all five artifacts must be regenerated from one later clean reviewed collector
+revision. No artifact or computation from the prior leakage run may be reused.
+
+Correction Pass 5 makes the independent member a mandatory exact field through
+`AuditExample`, stored leakage rows, service adapters, source manifests, clock
+parents, and validation. Member-to-variant identity is rederived from the
+allocation-label key. Quartet validation uses the explicit member and a local
+sorted four-row relation; it never uses modulo, division, absolute alignment,
+or variant rank. Independent manifests require exactly four rows, members
+`0..3` once each, consecutive local episode indices paired with those members,
+and one requested path per quartet. Per-member accepted attempts remain
+independent and may differ.
+
+The leakage source-manifest and clock-manifest hash domains, internal source
+authentication, and leakage audit anchor move to v2 because their digest
+payloads now include explicit member identity. The public leakage report moves
+to `leakage-report-v3` while preserving every v2 field. Every one of the 27
+clean probes, 27 label-shuffled probes, and 81 positive-control probes carries
+a strict test confusion matrix plus exact permutation exceedance and replicate
+counts. Raw and balanced accuracy, add-one permutation p-value, Holm value,
+detector identity, and probe/control/report pass state are derived from those
+primitives by both the producer and an independently implemented verifier.
+
+Version 3 additionally carries bounded canonical `OrderedSha256Pack` values:
+one ordered 100,000-item pack for source episode digests and one ordered
+8,000-item injected-digest pack for each of the nine positive controls. Each
+pack is a canonical padded-base64 encoding of concatenated 32-byte SHA-256
+values with an exact count and payload digest; the whole canonical leakage
+artifact is capped at 16 MiB. Typed `LeakageConstructionStatistics` and
+`LeakageMembershipEvidence` retain the raw counts and redundant hashes needed
+to rederive the six construction checks, independent corpus and source-manifest
+hashes, split/train/test membership hashes, and every positive-control subset,
+split, and injected-corpus hash. The final verifier reconstructs the complete
+ordered public-ID and coordinate stream from frozen allocation, seeds, and
+accepted-attempt runs, then performs those derivations without calling the
+producer helpers. It also independently reconstructs all three counterfactual
+result payload hashes from their canonical pair keys and primitive mismatch
+counts.
+
+The transitional report/schema pass remains independently green by teaching
+the verifier to consume leakage v3 while its own result is still
+`phase1-gate-verification-v2`. The final verifier pass adds the independent
+rederivations and alone moves the outer result to
+`phase1-gate-verification-v3`. Generator `ofd-v1`, episode/manifest schema 1,
+`oracle-evaluation-report-v2`, `phase1-reproducibility-v2`, and all frozen
+seeds, denominators, probes, controls, thresholds, optimizer settings,
+permutation counts, and resource ceilings remain unchanged.
+
+The packed digests are bounded raw per-episode evidence for report arithmetic,
+not the full episode payloads or predictions. As before, a party able to replace
+all artifacts, packed values, historical source, and trust anchors coherently
+can defeat an offline verifier that intentionally does not regenerate the
+100,000 episodes or rerun the statistical fits. The report and final text must
+state this trust-anchor limitation rather than claim universal tamper
+detection. Primary execution remains local and offline with exactly zero
+foundation-model calls.
+
 ## 2026-09-06 — Final Phase 1 evidence-authentication audit correction
 
 The final whole-phase scientific and adversarial code audits rejected the five
