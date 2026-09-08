@@ -233,7 +233,9 @@ def _probe_sufficient_statistics_are_consistent(probe: ShortcutProbeResult) -> b
         ):
             return False
         correct = 0
-        recall_sum = 0.0
+        # Match the chosen Python 3.12 compensated sum in canonical label order,
+        # while deriving the recalls independently from the supplied counts.
+        recalls: list[float] = []
         for label in sorted(counts):
             row = matrix[label]
             if (
@@ -247,7 +249,7 @@ def _probe_sufficient_statistics_are_consistent(probe: ShortcutProbeResult) -> b
             ):
                 return False
             correct += row[label]
-            recall_sum += row[label] / counts[label]
+            recalls.append(row[label] / counts[label])
         return (
             type(probe.permutation_exceedance_count) is int
             and type(probe.permutation_replicate_count) is int
@@ -255,7 +257,7 @@ def _probe_sufficient_statistics_are_consistent(probe: ShortcutProbeResult) -> b
             and probe.permutation_replicate_count > 0
             and sum(counts.values()) == probe.test_examples
             and probe.raw_accuracy == correct / sum(counts.values())
-            and probe.balanced_accuracy == recall_sum / len(counts)
+            and probe.balanced_accuracy == sum(recalls) / len(counts)
             and probe.raw_permutation_p
             == (probe.permutation_exceedance_count + 1) / (probe.permutation_replicate_count + 1)
         )

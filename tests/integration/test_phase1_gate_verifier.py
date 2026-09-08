@@ -799,6 +799,40 @@ def test_standalone_computes_statistics_without_producer_helper():
     assert not function(probe.model_copy(update={"balanced_accuracy": 0.1}))
 
 
+@pytest.mark.parametrize("balanced, expected", ((0.225, True), (0.22500000000000003, False)))
+def test_standalone_four_class_accuracy_uses_compensated_reduction(
+    balanced: float, expected: bool
+) -> None:
+    probe = ShortcutProbeResult(
+        task=ShortcutTask.POSITIVE_HAZARD_CLASS,
+        feature_group=ShortcutFeatureGroup.COUNTS,
+        feature_dimension=4,
+        train_examples=40_000,
+        test_examples=10_000,
+        train_class_counts={"0": 10_000, "1": 10_000, "2": 10_000, "3": 10_000},
+        test_class_counts={"0": 2_500, "1": 2_500, "2": 2_500, "3": 2_500},
+        test_confusion_counts={
+            "0": {"0": 250, "1": 2_250, "2": 0, "3": 0},
+            "1": {"0": 2_000, "1": 500, "2": 0, "3": 0},
+            "2": {"0": 1_750, "1": 0, "2": 750, "3": 0},
+            "3": {"0": 1_750, "1": 0, "2": 0, "3": 750},
+        },
+        raw_accuracy=0.225,
+        balanced_accuracy=0.225,
+        balanced_chance=0.25,
+        permutation_exceedance_count=4_999,
+        permutation_replicate_count=4_999,
+        raw_permutation_p=1.0,
+        holm_adjusted_p=1.0,
+        optimizer_iterations=1,
+        optimizer_converged=True,
+        passed=True,
+    )
+    mutated = probe.model_copy(update={"balanced_accuracy": balanced})
+    assert _VERIFIER["_probe_sufficient_statistics_are_consistent"](mutated) is expected
+    assert _VERIFIER["_probe_metadata_is_consistent"](mutated, episode_count=100_000) is expected
+
+
 def test_standalone_positive_subset_membership_known_answer():
     function = _VERIFIER.get("_base_subset_membership_sha256")
     assert function is not None, "standalone subset membership arithmetic is missing"
