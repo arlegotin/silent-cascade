@@ -6695,15 +6695,22 @@ collector_head="$(git rev-parse HEAD)"
 evidence_source_commit="$(git log -1 --format=%H "${collector_head}" -- \
   "${phase1_analysis_paths[@]}")"
 assert_phase1_analysis_immutable() {
-  test "$(git rev-parse HEAD)" = "${collector_head}" &&
-    test "$(git log -1 --format=%H "${collector_head}" -- \
-      "${phase1_analysis_paths[@]}")" = "${evidence_source_commit}" &&
-    git merge-base --is-ancestor \
-      "${evidence_source_commit}" "${collector_head}" &&
-    git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
-      "${phase1_analysis_paths[@]}" &&
-    git diff --quiet "${collector_head}" -- \
-      "${phase1_analysis_paths[@]}"
+  if ! {
+    test "$(git rev-parse HEAD)" = "${collector_head}" &&
+      test "$(git log -1 --format=%H "${collector_head}" -- \
+        "${phase1_analysis_paths[@]}")" = "${evidence_source_commit}" &&
+      git merge-base --is-ancestor \
+        "${evidence_source_commit}" "${collector_head}" &&
+      git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
+        "${phase1_analysis_paths[@]}" &&
+      git diff --cached --quiet "${collector_head}" -- \
+        "${phase1_analysis_paths[@]}" &&
+      git diff --quiet "${collector_head}" -- \
+        "${phase1_analysis_paths[@]}"
+  }; then
+    echo "Phase 1 analysis source changed; aborting evidence collection" >&2
+    exit 1
+  fi
 }
 assert_phase1_analysis_immutable
 uv sync --locked --group dev

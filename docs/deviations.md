@@ -107,11 +107,13 @@ v2 anchor. This closes the prior gap in which child public IDs were
 reconstructable but child episode digests were not.
 
 The same review made the Task 18 byte-immutability rule executable rather than
-prose-only. Steps 1–7 now retain one exact final-analysis path array and abort
-before and after each collector when either committed history changes or the
-index/worktree differs from the captured clean `collector_head` on any of those
-paths. Evidence commands still run from that captured head and reports still
-record the last reviewed analysis-source revision.
+prose-only. Steps 1–7 now retain one exact final-analysis path array and call a
+guard that prints a concise error and exits the collector shell on any failed
+condition. The guard runs before and after each collector and rejects changed
+committed history, staged bytes, and net worktree bytes relative to the captured
+clean `collector_head` on any final-analysis path. Evidence commands still run
+from that captured head and reports still record the last reviewed
+analysis-source revision.
 
 The same review made the Pass 5A anchor-fixture migration explicit, froze the
 delivery-index regression before collection to accept only a wholly absent
