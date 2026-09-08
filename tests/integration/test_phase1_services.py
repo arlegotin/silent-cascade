@@ -1928,7 +1928,7 @@ def test_leakage_anchor_authority_stays_pinned_when_source_authentication_is_for
         descriptor = bound.descriptor
         authentication = bound.authentication
         return LeakageAuditEvidenceAnchor(
-            schema_version="phase1-leakage-audit-anchor-v1",
+            schema_version="phase1-leakage-audit-anchor-v2",
             profile=profile.value,  # type: ignore[attr-defined]
             allocation_id=descriptor.allocation_id,
             allocation_or_manifest_sha256=descriptor.allocation_or_manifest_sha256,
@@ -2547,6 +2547,88 @@ def _audit_independent_allocation():
     )
 
 
+@pytest.mark.parametrize(
+    "adapter",
+    ("independent_base", "independent_clock", "manifest_clock", "matched_base", "matched_clock"),
+)
+def test_every_audit_service_adapter_preserves_explicit_member(adapter: str) -> None:
+    import silent_cascade.env.services as services
+    from silent_cascade.env.generator import ClockEpisodeBlock, EpisodeBlock, IndependentAllocation
+
+    resolved = resolve_config(
+        Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
+    )
+    allocation = IndependentAllocation(
+        allocation_id="test-members-v1",
+        split_namespace=SplitNamespace.DEBUG,
+        blocks=(
+            EpisodeBlock(
+                suite=SuiteName.IID_PRIMARY,
+                requested_path_length=3,
+                first_episode_index=5,
+                episode_count=4,
+            ),
+        ),
+        clock_blocks=(
+            ClockEpisodeBlock(
+                requested_path_length=3,
+                source_first_episode_index=5,
+                scale_0_1x_episode_count=4,
+                scale_10x_episode_count=4,
+            ),
+        ),
+    )
+    deps = services.Phase1ServiceDependencies.for_test(
+        independent_allocation=allocation,
+        validation_allocation=_audit_validation_allocation(),
+        collect_provenance=lambda *args, **kwargs: _provenance(),
+        build_manifest=services.build_cohort_manifest,
+    )
+    if adapter.startswith("independent"):
+        source = services._bind_independent_audit_source(
+            resolved,
+            services.Phase1GateCorpusSource(
+                allocation_id=allocation.allocation_id, root_seed=41, public_id_seed=91
+            ),
+            _provenance(allocation_id=allocation.allocation_id).model_copy(
+                update={"generation_mode": "independent"}
+            ),
+            deps,
+        )
+        examples = (
+            tuple(source.iter_examples())
+            if adapter == "independent_base"
+            else tuple(pair.parent for pair in source.iter_clock_pairs())
+        )
+        assert tuple(e.episode_position for e in examples[:4]) == (5, 6, 7, 8)
+    elif adapter == "manifest_clock":
+        manifest, _parents = _clock_manifest(first_episode_index=5)
+        examples = tuple(
+            pair.parent
+            for pair in services._make_manifest_clock_pairs(
+                resolved.config, manifest, services.regenerate_entry
+            )
+        )
+        assert tuple(example.episode_position for example in examples[:4]) == (5, 6, 7, 8)
+    else:
+        source = services._bind_manifest_audit_source(resolved, _matched_manifest(resolved), deps)
+        examples = (
+            tuple(source.iter_examples())
+            if adapter == "matched_base"
+            else tuple(pair.parent for pair in source.iter_clock_pairs())
+        )
+    assert examples
+    assert tuple(example.quartet_member_index for example in examples[:4]) == (0, 1, 2, 3)
+    for example in examples:
+        coordinate = example.bundle.truth.key.coordinate
+        expected = (
+            coordinate.member_index
+            if example.generation_mode == "matched"
+            else coordinate.quartet_member_index
+        )
+        assert example.quartet_member_index == expected
+
+
 def _manifest_current_collector(manifest: object):
     def collect(*args: object, **kwargs: object) -> EvidenceProvenance:
         resolved = args[0]
@@ -2705,6 +2787,8 @@ def _small_access_manifest(
 
 def _clock_manifest(
     target_suite: SuiteName = SuiteName.CLOCK_SCALE_0_1X,
+    *,
+    first_episode_index: int = 0,
 ):
     from silent_cascade.env.episode import episode_sha256, scale_episode_time
     from silent_cascade.env.generator import generate_independent_episode, iter_independent_requests
@@ -2716,6 +2800,16 @@ def _clock_manifest(
     from silent_cascade.rng import IndependentPublicIdKey, allocate_independent_public_id
 
     allocation = _independent_allocation(8)
+    allocation = allocation.model_copy(
+        update={
+            "blocks": tuple(
+                block.model_copy(
+                    update={"first_episode_index": first_episode_index + block.first_episode_index}
+                )
+                for block in allocation.blocks
+            )
+        }
+    )
     resolved = resolve_config(
         Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
     )

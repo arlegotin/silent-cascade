@@ -404,6 +404,129 @@ def test_independent_manifest_coordinate_round_trip_keeps_explicit_members() -> 
     )
 
 
+def _generated_nonaligned_manifest() -> EpisodeManifest:
+    from silent_cascade.config import resolve_config
+    from silent_cascade.env.config import Phase1Config
+    from silent_cascade.env.episode import episode_sha256
+    from silent_cascade.env.generator import IndependentEpisodeRequest, generate_independent_episode
+    from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
+
+    config = resolve_config(
+        Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
+    ).config
+    variants = allocate_independent_variants(
+        AllocationLabelKey("ofd-v1", SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 17, 3, 7)
+    )
+    entries = []
+    for member, variant in enumerate(variants):
+        bundle = generate_independent_episode(
+            config,
+            IndependentEpisodeRequest(
+                SplitNamespace.DEBUG,
+                SuiteName.IID_PRIMARY,
+                17,
+                5 + member,
+                3,
+                variant,
+                7,
+                member,
+            ),
+            91,
+        )
+        entries.append(
+            EpisodeManifestEntry(
+                episode_public_id=bundle.public.init.episode_public_id,
+                split_namespace=SplitNamespace.DEBUG,
+                suite=SuiteName.IID_PRIMARY,
+                coordinate=IndependentManifestCoordinate(
+                    episode_index=5 + member,
+                    allocation_quartet_index=7,
+                    quartet_member_index=member,
+                ),
+                requested_path_length=3,
+                accepted_attempt=bundle.truth.recipe.accepted_attempt,
+                episode_sha256=episode_sha256(bundle),
+            )
+        )
+    return EpisodeManifest(
+        schema_version=1,
+        experiment_version="v1",
+        access_class=ManifestAccessClass.DEBUG,
+        provenance=_provenance(
+            split=SplitNamespace.DEBUG,
+            generation_mode="independent",
+            allocation_id="test-quartet-v1",
+        ),
+        suite=SuiteName.IID_PRIMARY,
+        public_id_seed=91,
+        episode_count=4,
+        entries=tuple(entries),
+    )
+
+
+def test_generated_nonaligned_manifest_keeps_different_accepted_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import silent_cascade.env.generator as generator
+
+    validate = generator._validate_independent_episode_shape
+
+    def reject_first_member_attempt_zero(bundle, config):
+        validate(bundle, config)
+        if (
+            bundle.truth.key.coordinate.episode_index == 5
+            and bundle.truth.recipe.accepted_attempt == 0
+        ):
+            raise ValueError("test-controlled local retry")
+
+    monkeypatch.setattr(
+        generator, "_validate_independent_episode_shape", reject_first_member_attempt_zero
+    )
+    manifest = _generated_nonaligned_manifest()
+    rebuilt = EpisodeManifest.model_validate_json(manifest.model_dump_json())
+    assert tuple(entry.coordinate.episode_index for entry in rebuilt.entries) == (5, 6, 7, 8)
+    assert tuple(entry.accepted_attempt for entry in rebuilt.entries) == (1, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("duplicate_member", "five_rows", "eight_rows", "gap", "member_order", "path", "suite"),
+)
+def test_independent_manifest_rejects_lossy_quartet_structure(mutation: str) -> None:
+    payload = _generated_nonaligned_manifest().model_dump()
+    entries = list(payload["entries"])
+    if mutation == "duplicate_member":
+        entries[3]["coordinate"]["quartet_member_index"] = 0
+    elif mutation in {"five_rows", "eight_rows"}:
+        import copy
+
+        extra = copy.deepcopy(entries[: 1 if mutation == "five_rows" else 4])
+        for member, entry in enumerate(extra):
+            entry["coordinate"]["episode_index"] += 4
+            entry["episode_public_id"] = f"00000000-0000-4000-8000-{member:012d}"
+            entry["episode_sha256"] = f"{member + 1:064x}"
+        entries += extra
+    elif mutation == "gap":
+        entries[3]["coordinate"]["episode_index"] = 9
+    elif mutation == "member_order":
+        entries[0]["coordinate"]["quartet_member_index"] = 1
+        entries[1]["coordinate"]["quartet_member_index"] = 0
+    elif mutation == "path":
+        entries[3]["requested_path_length"] = 4
+    else:
+        entries[3]["suite"] = SuiteName.OOD_LONG_DELAY
+    payload.update(entries=tuple(entries), episode_count=len(entries))
+    with pytest.raises(ValueError, match=r"quartet|suite"):
+        EpisodeManifest.model_validate(payload)
+
+
+def test_independent_manifest_rejects_missing_member() -> None:
+    payload = _generated_nonaligned_manifest().model_dump()
+    del payload["entries"][0]["coordinate"]["quartet_member_index"]
+    with pytest.raises(ValueError, match="quartet_member_index"):
+        EpisodeManifest.model_validate(payload)
+
+
 @pytest.mark.parametrize("quartet_member_index", (False, -1, 4))
 def test_independent_manifest_coordinate_rejects_malformed_explicit_members(
     quartet_member_index: object,

@@ -1407,6 +1407,7 @@ def _make_clock_pairs(
                 generation_mode="independent",
                 randomization_block_index=request.allocation_quartet_index,
                 episode_position=request.episode_index,
+                quartet_member_index=request.quartet_member_index,
             ),
             child=scale_episode_time(parent, suite, child_id),
         )
@@ -1446,6 +1447,7 @@ def _make_manifest_clock_pairs(
                 generation_mode="independent",
                 randomization_block_index=coordinate.allocation_quartet_index,
                 episode_position=coordinate.episode_index,
+                quartet_member_index=coordinate.quartet_member_index,
             ),
             child=child,
         )
@@ -1671,6 +1673,7 @@ def _bind_independent_audit_source(
                 generation_mode="independent",
                 randomization_block_index=request.allocation_quartet_index,
                 episode_position=request.episode_index,
+                quartet_member_index=request.quartet_member_index,
             )
 
     def clock_pairs() -> Iterator[PairedClockAuditPair]:
@@ -1713,7 +1716,7 @@ def _bind_independent_audit_source(
         }
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=(
             LeakageAuditProfileName.PHASE1_GATE
             if deps.production_mode
@@ -1831,11 +1834,13 @@ def _bind_manifest_audit_source(
             coordinate = entry.coordinate
             if isinstance(coordinate, MatchedManifestCoordinate):
                 block, position = coordinate.cohort_index, coordinate.member_index
+                member = coordinate.member_index
                 mode: Literal["matched", "independent"] = "matched"
             else:
                 block, position = coordinate.allocation_quartet_index, coordinate.episode_index
+                member = coordinate.quartet_member_index
                 mode = "independent"
-            yield AuditExample(bundle, rank, mode, block, position)
+            yield AuditExample(bundle, rank, mode, block, position, quartet_member_index=member)
 
     def clock_pairs() -> Iterator[PairedClockAuditPair]:
         for suite in (SuiteName.CLOCK_SCALE_0_1X, SuiteName.CLOCK_SCALE_10X):
@@ -1862,6 +1867,7 @@ def _bind_manifest_audit_source(
                         "matched",
                         coordinate.cohort_index,
                         coordinate.member_index,
+                        quartet_member_index=coordinate.member_index,
                     ),
                     scale_episode_time(parent, suite, child_id),
                 )
@@ -1894,7 +1900,7 @@ def _bind_manifest_audit_source(
         f"{_audit_suite(entry.suite).value}:{entry.requested_path_length}" for entry in entries
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=LeakageAuditProfileName.TEST,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
         source_manifest_sha256=source_manifest.finalize(),
@@ -2201,7 +2207,7 @@ def _anchor_for_bound_source(
     if authentication.profile is not profile:
         raise ConfigurationError("audit anchor profile does not match authenticated source")
     return LeakageAuditEvidenceAnchor(
-        schema_version="phase1-leakage-audit-anchor-v1",
+        schema_version="phase1-leakage-audit-anchor-v2",
         profile=profile.value,
         allocation_id=descriptor.allocation_id,
         allocation_or_manifest_sha256=descriptor.allocation_or_manifest_sha256,

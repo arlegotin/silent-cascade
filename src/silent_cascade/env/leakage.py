@@ -14,7 +14,7 @@ import shutil
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import pairwise, permutations
 from pathlib import Path
@@ -62,6 +62,7 @@ from silent_cascade.provenance import (
     LeakageAuditEvidenceAnchor,
     require_namespace_evidence_provenance,
 )
+from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 from silent_cascade.schemas import (
     ActivationPayload,
     ExternalEvent,
@@ -214,6 +215,11 @@ class AuditExample:
     generation_mode: Literal["matched", "independent"]
     randomization_block_index: int
     episode_position: int
+    quartet_member_index: int = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if type(self.quartet_member_index) is not int or not 0 <= self.quartet_member_index <= 3:
+            raise ValueError("quartet_member_index must be an exact integer in 0..3")
 
 
 class AuditSourceDescriptor(StrictModel):
@@ -239,7 +245,7 @@ def audit_source_descriptor_sha256(descriptor: AuditSourceDescriptor) -> str:
 class AuditSourceAuthentication(StrictModel):
     """Source-agnostic evidence supplied by an independently authenticated source."""
 
-    schema_version: Literal["leakage-source-auth-v1"]
+    schema_version: Literal["leakage-source-auth-v2"]
     profile: LeakageAuditProfileName
     descriptor_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest_sha256: HexDigest = Field(pattern=r"^[0-9a-f]{64}$")
@@ -309,7 +315,7 @@ class _SourceManifestHashBuilder:
     def __init__(self) -> None:
         self._digest = hashlib.sha256()
         self._digest.update(
-            b'{"domain":"silent-cascade/ofd-v1/leakage-source-manifest/v1","episodes":['
+            b'{"domain":"silent-cascade/ofd-v1/leakage-source-manifest/v2","episodes":['
         )
         self._count = 0
         self._finalized = False
@@ -326,6 +332,7 @@ class _SourceManifestHashBuilder:
                     "generation_mode": example.generation_mode,
                     "randomization_block_index": example.randomization_block_index,
                     "episode_position": example.episode_position,
+                    "quartet_member_index": example.quartet_member_index,
                     "public_id": example.bundle.public.init.episode_public_id,
                     "episode_sha256": digest,
                 }
@@ -387,7 +394,7 @@ class _ClockPairManifestHashBuilder:
     def __init__(self) -> None:
         self._digest = hashlib.sha256()
         self._digest.update(
-            b'{"domain":"silent-cascade/ofd-v1/leakage-clock-pair-manifest/v1","pairs":['
+            b'{"domain":"silent-cascade/ofd-v1/leakage-clock-pair-manifest/v2","pairs":['
         )
         self._count = 0
         self._finalized = False
@@ -401,6 +408,7 @@ class _ClockPairManifestHashBuilder:
             canonical_json_bytes(
                 {
                     "parent_manifest_rank": pair.parent.manifest_rank,
+                    "parent_quartet_member_index": pair.parent.quartet_member_index,
                     "parent_public_id": pair.parent.bundle.public.init.episode_public_id,
                     "parent_episode_sha256": episode_sha256(pair.parent.bundle),
                     "scale": pair.child.truth.recipe.clock_scale,
@@ -1047,9 +1055,14 @@ class _StoredExample:
     hazard_class: int | None
     block: int
     position: int
+    quartet_member_index: int = field(kw_only=True)
     # This is extracted from public FACT records during the first stream.  It
     # is metadata for the permitted within-episode null, never a predictor.
     public_hazard_classes: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.quartet_member_index) is not int or not 0 <= self.quartet_member_index <= 3:
+            raise ValueError("quartet_member_index must be an exact integer in 0..3")
 
 
 def _fact_events(bundle: EpisodeBundle):
@@ -1546,42 +1559,72 @@ def _validate_audit_coordinate(
     ):
         raise ValueError("audit episode key is not descriptor-bound")
     if example.generation_mode == "matched":
-        if not isinstance(coordinate, MatchedEpisodeCoordinate) or (
-            coordinate.cohort_index,
-            coordinate.member_index,
-        ) != (example.randomization_block_index, example.episode_position):
+        if (
+            not isinstance(coordinate, MatchedEpisodeCoordinate)
+            or (
+                coordinate.cohort_index,
+                coordinate.member_index,
+            )
+            != (
+                example.randomization_block_index,
+                example.episode_position,
+            )
+            or coordinate.member_index != example.quartet_member_index
+        ):
             raise ValueError("matched audit coordinate is not authenticated")
     elif (
         not isinstance(coordinate, IndependentEpisodeCoordinate)
         or coordinate.allocation_quartet_index != example.randomization_block_index
         or coordinate.episode_index != example.episode_position
+        or coordinate.quartet_member_index != example.quartet_member_index
     ):
         raise ValueError("independent audit coordinate is not authenticated")
+    elif (
+        example.bundle.truth.recipe.variant
+        is not allocate_independent_variants(
+            AllocationLabelKey(
+                "ofd-v1",
+                descriptor.split_namespace,
+                key.suite,
+                descriptor.root_seed,
+                example.bundle.truth.recipe.requested_path_length,
+                example.randomization_block_index,
+            )
+        )[example.quartet_member_index]
+    ):
+        raise ValueError("independent audit variant does not match its explicit member")
 
 
-def _validate_independent_quartets(rows: Sequence[_StoredExample]) -> None:
+def _validate_independent_quartets(
+    rows: Sequence[_StoredExample], descriptor: AuditSourceDescriptor
+) -> None:
     by_block: dict[int, list[_StoredExample]] = defaultdict(list)
     for row in rows:
         by_block[row.block].append(row)
-    expected_variants = Counter(
-        (
-            EpisodeVariant.POSITIVE,
-            EpisodeVariant.POSITIVE,
-            EpisodeVariant.SAFE_NEGATIVE,
-            EpisodeVariant.DISCONNECTED_NEGATIVE,
-        )
-    )
     for block, quartet in by_block.items():
-        positions = sorted(row.position for row in quartet)
+        ordered = sorted(quartet, key=lambda row: row.position)
+        base = ordered[0].position
         if (
             len(quartet) != 4
-            or positions != list(range(positions[0], positions[0] + 4))
-            or positions[0] % 4
-            or Counter(row.variant for row in quartet) != expected_variants
+            or {row.quartet_member_index for row in quartet} != {0, 1, 2, 3}
+            or [(row.position, row.quartet_member_index) for row in ordered]
+            != [(base + member, member) for member in range(4)]
             or len({(row.suite, row.path_length) for row in quartet}) != 1
             or {row.group_id for row in quartet} != {f"independent:{block}"}
         ):
             raise ValueError("independent allocation quartet is incomplete or corrupted")
+        variants = allocate_independent_variants(
+            AllocationLabelKey(
+                "ofd-v1",
+                descriptor.split_namespace,
+                ordered[0].suite,
+                descriptor.root_seed,
+                ordered[0].path_length,
+                block,
+            )
+        )
+        if any(row.variant is not variants[row.quartet_member_index] for row in quartet):
+            raise ValueError("independent allocation quartet has unauthenticated labels")
 
 
 def _split_memberships(
@@ -3579,6 +3622,7 @@ def _execute_positive_control(
                             if isinstance(event.payload, HazardFact)
                         )
                     ),
+                    quartet_member_index=transformed.quartet_member_index,
                 )
             )
             seen += 1
@@ -3888,6 +3932,7 @@ def audit_leakage(
                             if isinstance(event.payload, HazardFact)
                         )
                     ),
+                    quartet_member_index=example.quartet_member_index,
                 )
             )
             denominators[f"{audit_suite.value}:{bundle.truth.recipe.requested_path_length}"] += 1
@@ -3906,7 +3951,7 @@ def audit_leakage(
         if source.descriptor.generation_mode == "matched":
             flush_matched_group()
         else:
-            _validate_independent_quartets(rows)
+            _validate_independent_quartets(rows, source.descriptor)
         for pair in source.iter_clock_pairs():
             namespace_builder.add_clock_public_id(pair.child.public.init.episode_public_id)
         namespace_evidence = namespace_builder.finalize()

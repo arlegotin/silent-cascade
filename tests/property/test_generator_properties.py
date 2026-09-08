@@ -203,7 +203,24 @@ def _allocation_quartet(
 
 def test_every_frozen_gate_request_forms_a_valid_audit_quartet() -> None:
     """All 100k real requests obey the suite-scoped Task 15 quartet contract."""
-    from silent_cascade.env.leakage import _StoredExample, _validate_independent_quartets
+    from silent_cascade.env.leakage import (
+        AuditSourceDescriptor,
+        _StoredExample,
+        _validate_independent_quartets,
+    )
+
+    descriptor = AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="independent",
+        allocation_id=PHASE1_GATE_ALLOCATION.allocation_id,
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=SplitNamespace.PHASE1_GATE,
+        root_seed=41,
+        public_id_seed_sha256="2" * 64,
+        config_sha256="3" * 64,
+        generator_source_sha256="4" * 64,
+        episode_count=100_000,
+    )
 
     quartet_count = 0
     episode_count = 0
@@ -223,10 +240,11 @@ def test_every_frozen_gate_request_forms_a_valid_audit_quartet() -> None:
                 hazard_class=0 if request.variant.value == "positive" else None,
                 block=quartet_index,
                 position=request.episode_index,
+                quartet_member_index=request.quartet_member_index,
             )
             for position, request in enumerate(requests)
         )
-        _validate_independent_quartets(rows)
+        _validate_independent_quartets(rows, descriptor)
         quartet_count += 1
         episode_count += len(rows)
 
@@ -430,7 +448,9 @@ def test_public_shortcut_features_are_repeatable_and_finite(
         CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, root_seed, cohort_index, 3),
         public_id_seed=91,
     )
-    example = AuditExample(cohort.episodes[0], cohort_index, "matched", cohort_index, 0)
+    example = AuditExample(
+        cohort.episodes[0], cohort_index, "matched", cohort_index, 0, quartet_member_index=0
+    )
     first = extract_shortcut_features(example, 32)
     second = extract_shortcut_features(example, 32)
 

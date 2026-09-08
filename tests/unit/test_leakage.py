@@ -1,6 +1,8 @@
 """Contracts for the fail-closed public-feature leakage auditor."""
 
+import ast
 import hashlib
+import inspect
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -23,6 +25,271 @@ from silent_cascade.provenance import (
 )
 
 
+def _quartet_descriptor(split: SplitNamespace = SplitNamespace.DEBUG):
+    from silent_cascade.env.leakage import AuditSourceDescriptor
+
+    return AuditSourceDescriptor(
+        schema_version="leakage-source-v1",
+        generation_mode="independent",
+        allocation_id="test-quartet-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        split_namespace=split,
+        root_seed=41,
+        public_id_seed_sha256=public_id_seed_sha256(91),
+        config_sha256="2" * 64,
+        generator_source_sha256="3" * 64,
+        episode_count=4,
+    )
+
+
+def _nonaligned_quartet_examples():
+    from silent_cascade.env.generator import IndependentEpisodeRequest, generate_independent_episode
+    from silent_cascade.env.leakage import AuditExample
+    from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
+
+    variants = allocate_independent_variants(
+        AllocationLabelKey("ofd-v1", SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 3, 7)
+    )
+    return tuple(
+        AuditExample(
+            generate_independent_episode(
+                _config(),
+                IndependentEpisodeRequest(
+                    SplitNamespace.DEBUG,
+                    SuiteName.IID_PRIMARY,
+                    41,
+                    5 + member,
+                    3,
+                    variant,
+                    7,
+                    member,
+                ),
+                91,
+            ),
+            member,
+            "independent",
+            7,
+            5 + member,
+            quartet_member_index=member,
+        )
+        for member, variant in enumerate(variants)
+    )
+
+
+def _quartet_rows(examples):
+    from silent_cascade.env.episode import episode_sha256
+    from silent_cascade.env.leakage import _StoredExample
+
+    return [
+        _StoredExample(
+            public_id=example.bundle.public.init.episode_public_id,
+            digest=episode_sha256(example.bundle),
+            group_id="independent:7",
+            suite=example.bundle.truth.key.suite,
+            path_length=example.bundle.truth.recipe.requested_path_length,
+            variant=example.bundle.truth.recipe.variant,
+            hazard_class=example.bundle.truth.relevant_hazard_type,
+            block=example.randomization_block_index,
+            position=example.episode_position,
+            quartet_member_index=example.quartet_member_index,
+        )
+        for example in examples
+    ]
+
+
+def test_audit_authenticates_nonaligned_explicit_quartet() -> None:
+    from silent_cascade.env.leakage import (
+        _validate_audit_coordinate,
+        _validate_independent_quartets,
+    )
+
+    examples = _nonaligned_quartet_examples()
+    assert tuple((e.episode_position, e.quartet_member_index) for e in examples) == (
+        (5, 0),
+        (6, 1),
+        (7, 2),
+        (8, 3),
+    )
+    for rank, example in enumerate(examples):
+        _validate_audit_coordinate(example, rank, _quartet_descriptor())
+    _validate_independent_quartets(list(reversed(_quartet_rows(examples))), _quartet_descriptor())
+
+
+@pytest.mark.parametrize("mutation", ("coordinate", "allocation_label"))
+def test_audit_member_is_bound_to_coordinate_and_allocation(mutation: str) -> None:
+    from silent_cascade.env.leakage import _validate_audit_coordinate
+
+    example = _nonaligned_quartet_examples()[0]
+    if mutation == "coordinate":
+        example = replace(example, quartet_member_index=1)
+    else:
+        # Keep a real artifact and variant; agree on a member allocated another label.
+        other = next(
+            e
+            for e in _nonaligned_quartet_examples()
+            if e.bundle.truth.recipe.variant != example.bundle.truth.recipe.variant
+        )
+        truth = example.bundle.truth
+        member = other.quartet_member_index
+        coordinate = replace(truth.key.coordinate, quartet_member_index=member)
+        example = replace(
+            example,
+            quartet_member_index=member,
+            bundle=replace(
+                example.bundle, truth=replace(truth, key=replace(truth.key, coordinate=coordinate))
+            ),
+        )
+    with pytest.raises(ValueError, match="independent audit"):
+        _validate_audit_coordinate(example, 0, _quartet_descriptor())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "duplicate_member",
+        "five_rows",
+        "eight_rows",
+        "gap",
+        "member_order",
+        "path",
+        "suite",
+        "group",
+        "allocation_label",
+    ),
+)
+def test_audit_quartet_rejects_structural_and_label_forgery(mutation: str) -> None:
+    from silent_cascade.env.leakage import _validate_independent_quartets
+
+    rows = _quartet_rows(_nonaligned_quartet_examples())
+    if mutation == "duplicate_member":
+        rows[3] = replace(rows[3], quartet_member_index=0)
+    elif mutation in {"five_rows", "eight_rows"}:
+        rows += [
+            replace(row, position=row.position + 4)
+            for row in rows[: 1 if mutation == "five_rows" else 4]
+        ]
+    elif mutation == "gap":
+        rows[3] = replace(rows[3], position=9)
+    elif mutation == "member_order":
+        rows[0], rows[1] = replace(rows[0], position=6), replace(rows[1], position=5)
+    elif mutation == "path":
+        rows[3] = replace(rows[3], path_length=4)
+    elif mutation == "suite":
+        rows[3] = replace(rows[3], suite=SuiteName.OOD_LONG_DELAY)
+    elif mutation == "group":
+        rows[3] = replace(rows[3], group_id="independent:8")
+    else:
+        different = next(index for index, row in enumerate(rows) if row.variant != rows[0].variant)
+        rows[0], rows[different] = (
+            replace(rows[0], variant=rows[different].variant),
+            replace(rows[different], variant=rows[0].variant),
+        )
+    with pytest.raises(ValueError, match="independent allocation quartet"):
+        _validate_independent_quartets(rows, _quartet_descriptor())
+
+
+@pytest.mark.parametrize("member", (False, True, -1, 4))
+def test_audit_and_stored_members_reject_non_exact_indices(member: object) -> None:
+    example = _nonaligned_quartet_examples()[0]
+    row = _quartet_rows((example,))[0]
+    for value in (example, row):
+        with pytest.raises((TypeError, ValueError), match="quartet_member_index"):
+            replace(value, quartet_member_index=member)
+
+
+def test_audit_and_stored_members_are_mandatory_keyword_only() -> None:
+    from dataclasses import MISSING, fields
+
+    from silent_cascade.env.leakage import AuditExample, _StoredExample
+
+    for cls in (AuditExample, _StoredExample):
+        members = {field.name: field for field in fields(cls)}
+        assert "quartet_member_index" in members
+        member = members["quartet_member_index"]
+        assert member.kw_only and member.default is MISSING and member.default_factory is MISSING
+
+    example = _nonaligned_quartet_examples()[0]
+    row = _quartet_rows((example,))[0]
+    for value in (example, row):
+        arguments = {
+            field.name: getattr(value, field.name)
+            for field in fields(value)
+            if field.name != "quartet_member_index"
+        }
+        with pytest.raises(TypeError, match="quartet_member_index"):
+            type(value)(**arguments)
+
+
+def test_matched_audit_member_agrees_with_private_coordinate() -> None:
+    from silent_cascade.env.leakage import AuditExample, _validate_audit_coordinate
+
+    bundle = generate_matched_cohort(
+        _config(), CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 7, 3), 91
+    ).episodes[0]
+    example = AuditExample(bundle, 0, "matched", 7, 0, quartet_member_index=1)
+    descriptor = _quartet_descriptor().model_copy(update={"generation_mode": "matched"})
+    with pytest.raises(ValueError, match="matched audit coordinate"):
+        _validate_audit_coordinate(example, 0, descriptor)
+
+
+def test_quartet_validation_never_recovers_members_from_absolute_indices() -> None:
+    from silent_cascade.env.leakage import (
+        _validate_audit_coordinate,
+        _validate_independent_quartets,
+    )
+
+    for validate in (_validate_audit_coordinate, _validate_independent_quartets):
+        tree = ast.parse(inspect.getsource(validate))
+        assert not any(isinstance(node, (ast.Mod, ast.FloorDiv)) for node in ast.walk(tree))
+        assert not any(
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "divmod")
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "divmod")
+            )
+            for node in ast.walk(tree)
+        )
+
+
+@pytest.mark.parametrize(
+    ("member", "source_digest", "clock_digest"),
+    (
+        (
+            0,
+            "471303a236c702d0c5e40ef449fc6eee0aca96d7de2c1e7a255084d7ef487cb5",
+            "3b255cd73bf2bc8140cdc949a8b8fd268fb4ad1218c5d03868eb640f406b1b4f",
+        ),
+        (
+            1,
+            "d648a3c39fe7c8ba6dea2a375b54f52754498ecf08fd72af1e6744a11dba8303",
+            "47cc5f757a306567ee763fca6d6b594b05e8a909a26d0fada71b9a29c0585780",
+        ),
+    ),
+)
+def test_explicit_member_has_independent_source_and_clock_hash_known_answers(
+    member: int, source_digest: str, clock_digest: str
+) -> None:
+    from silent_cascade.env.episode import scale_episode_time
+    from silent_cascade.env.leakage import (
+        PairedClockAuditPair,
+        _clock_pair_manifest_sha256,
+        _source_manifest_sha256,
+    )
+
+    # Literal answers derive from independently framed, sorted compact JSON.
+    example = replace(_nonaligned_quartet_examples()[0], quartet_member_index=member)
+    pair = PairedClockAuditPair(
+        example,
+        scale_episode_time(
+            example.bundle,
+            SuiteName.CLOCK_SCALE_0_1X,
+            "00000000-0000-4000-8000-000000000011",
+        ),
+    )
+    assert _source_manifest_sha256((example,)) == source_digest
+    assert _clock_pair_manifest_sha256((pair,)) == clock_digest
+
+
 def _config() -> Phase1Config:
     return resolve_config(
         Phase1Config, [Path("configs/base.yaml"), Path("configs/data/primary.yaml")]
@@ -37,7 +304,7 @@ def _provenance(config_sha256: str, source: object | None = None) -> EvidencePro
         descriptor = source.descriptor
         authentication = source.authentication
         leakage_audit = LeakageAuditEvidenceAnchor(
-            schema_version="phase1-leakage-audit-anchor-v1",
+            schema_version="phase1-leakage-audit-anchor-v2",
             profile=authentication.profile.value,
             allocation_id=descriptor.allocation_id,
             allocation_or_manifest_sha256=descriptor.allocation_or_manifest_sha256,
@@ -101,7 +368,9 @@ def _authenticated_test_source(
     )
 
     examples = tuple(
-        AuditExample(bundle, rank, "matched", cohort_index, member_index)
+        AuditExample(
+            bundle, rank, "matched", cohort_index, member_index, quartet_member_index=member_index
+        )
         for path_index, path in enumerate((2, 3, 4))
         for local_group in range(groups_per_path)
         for cohort_index in (path_index * groups_per_path + local_group,)
@@ -149,7 +418,7 @@ def _authenticated_test_source(
         episode_count=len(examples),
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=LeakageAuditProfileName.TEST,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
         source_manifest_sha256=_source_manifest_sha256(examples),
@@ -226,6 +495,7 @@ def _authenticated_independent_test_source(
                         "independent",
                         block,
                         episode_index,
+                        quartet_member_index=local_position,
                     )
                 )
     clock_pairs = (
@@ -259,7 +529,7 @@ def _authenticated_independent_test_source(
         episode_count=len(examples),
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=LeakageAuditProfileName.TEST,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
         source_manifest_sha256=_source_manifest_sha256(examples),
@@ -291,7 +561,17 @@ def test_shortcut_features_have_fixed_public_only_dimensions() -> None:
         CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 7, 3),
         91,
     ).episodes[0]
-    features = extract_shortcut_features(AuditExample(bundle, 3, "matched", 7, 0), corpus_size=8)
+    features = extract_shortcut_features(
+        AuditExample(
+            bundle,
+            3,
+            "matched",
+            7,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        ),
+        corpus_size=8,
+    )
 
     assert {group: vector.shape for group, vector in features.vectors.items()} == {
         ShortcutFeatureGroup.ID_POSITION: (17,),
@@ -363,7 +643,9 @@ def test_feature_extraction_ignores_private_targets_and_rejects_unknown_payloads
         CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 7, 3),
         91,
     ).episodes[0]
-    example = AuditExample(bundle, 0, "matched", 7, 0)
+    example = AuditExample(
+        bundle, 0, "matched", 7, 0, quartet_member_index=bundle.truth.key.coordinate.member_index
+    )
     baseline = extract_shortcut_features(example, corpus_size=8)
     private_mutation = replace(
         bundle,
@@ -409,7 +691,9 @@ def test_public_feature_mutations_change_only_the_declared_vocabulary_family(
         CohortRequest(SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 7, 3),
         91,
     ).episodes[0]
-    example = AuditExample(bundle, 3, "matched", 7, 0)
+    example = AuditExample(
+        bundle, 3, "matched", 7, 0, quartet_member_index=bundle.truth.key.coordinate.member_index
+    )
     if mutation == "public_id":
         mutated = replace(
             example,
@@ -769,7 +1053,8 @@ def test_named_positive_controls_write_the_exact_declared_public_codes() -> None
         91,
     ).episodes
     examples = tuple(
-        AuditExample(bundle, index, "matched", 17, index) for index, bundle in enumerate(bundles)
+        AuditExample(bundle, index, "matched", 17, index, quartet_member_index=index)
+        for index, bundle in enumerate(bundles)
     )
     by_id = {injector.control_id: injector for injector in NAMED_LEAK_INJECTORS}
 
@@ -893,7 +1178,9 @@ def test_count_control_preserves_existing_records_activation_and_initial_time() 
 
     bundle = next(item for item in bundles if item.truth.recipe.variant is EpisodeVariant.POSITIVE)
     assert bundle.truth.recipe.distractor_link_count == 0
-    example = AuditExample(bundle, 0, "matched", 0, 0)
+    example = AuditExample(
+        bundle, 0, "matched", 0, 0, quartet_member_index=bundle.truth.key.coordinate.member_index
+    )
     injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
 
     transformed = _rewrite_positive_control(injector, example, 0)
@@ -945,7 +1232,9 @@ def test_hazard_layout_adds_an_unreachable_sentinel_for_zero_distractors() -> No
 
     bundle = next(item for item in bundles if item.truth.recipe.variant is EpisodeVariant.POSITIVE)
     assert bundle.truth.recipe.distractor_link_count == 0
-    example = AuditExample(bundle, 0, "matched", 0, 0)
+    example = AuditExample(
+        bundle, 0, "matched", 0, 0, quartet_member_index=bundle.truth.key.coordinate.member_index
+    )
     injector = next(
         item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
     )
@@ -1008,7 +1297,16 @@ def test_count_control_minimum_duration_keeps_the_original_time_boundary() -> No
     injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
 
     transformed = _rewrite_positive_control(
-        injector, AuditExample(bundle, 0, "independent", 10, 41), 0
+        injector,
+        AuditExample(
+            bundle,
+            0,
+            "independent",
+            10,
+            41,
+            quartet_member_index=bundle.truth.key.coordinate.quartet_member_index,
+        ),
+        0,
     )
 
     assert transformed.bundle.truth.key.coordinate.quartet_member_index == 1
@@ -1048,7 +1346,18 @@ def test_count_control_short_observation_window_has_one_precise_admission() -> N
     assert bundle.public.events[-1].timestamp - original_facts[-1].timestamp < 0.11
     injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
 
-    transformed = _rewrite_positive_control(injector, AuditExample(bundle, 0, "matched", 0, 0), 0)
+    transformed = _rewrite_positive_control(
+        injector,
+        AuditExample(
+            bundle,
+            0,
+            "matched",
+            0,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        ),
+        0,
+    )
 
     assert _fact_events(transformed.bundle)[: len(original_facts)] == original_facts
     report = validate_episode_invariants(transformed.bundle, config, strict=False)
@@ -1100,7 +1409,14 @@ def test_count_control_admits_exact_phase1_gate_identity_episode() -> None:
     assert bundle.truth.recipe.distractor_link_count == 43
     assert sum(isinstance(event.payload, LinkFact) for event in facts) - 2 == 43
 
-    original = AuditExample(bundle, 76341, "independent", 19085, 341)
+    original = AuditExample(
+        bundle,
+        76341,
+        "independent",
+        19085,
+        341,
+        quartet_member_index=bundle.truth.key.coordinate.quartet_member_index,
+    )
     injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_COUNT_BY_LABEL")
     transformed = _rewrite_positive_control(injector, original, 6533)
     assert transformed == original
@@ -1117,6 +1433,7 @@ def test_count_control_admits_exact_phase1_gate_identity_episode() -> None:
         hazard_class=bundle.truth.relevant_hazard_type,
         block=19085,
         position=341,
+        quartet_member_index=1,
         public_hazard_classes=tuple(
             sorted(
                 event.payload.hazard_type
@@ -1177,7 +1494,14 @@ def test_activation_id_control_identifies_exact_phase1_gate_provenance_failure()
     bundle = generate_independent_episode(config, request, 2026083012)
     assert bundle.public.init.episode_public_id == "366e995a-3211-403b-9da6-b4a376c4829b"
 
-    original = AuditExample(bundle, 32, "independent", 8, 32)
+    original = AuditExample(
+        bundle,
+        32,
+        "independent",
+        8,
+        32,
+        quartet_member_index=bundle.truth.key.coordinate.quartet_member_index,
+    )
     injector = next(
         item for item in NAMED_LEAK_INJECTORS if item.control_id == "PC_ACTIVATION_ID_BY_LABEL"
     )
@@ -1205,6 +1529,7 @@ def test_activation_id_control_identifies_exact_phase1_gate_provenance_failure()
         hazard_class=bundle.truth.relevant_hazard_type,
         block=8,
         position=32,
+        quartet_member_index=0,
         public_hazard_classes=tuple(
             sorted(
                 event.payload.hazard_type
@@ -1255,7 +1580,14 @@ def test_exact_control_preflight_rejects_round_six_reviewer_attacks(attack: str)
         bundle = next(
             item for item in bundles if item.truth.recipe.variant is EpisodeVariant.SAFE_NEGATIVE
         )
-        original = AuditExample(bundle, 0, "matched", 17, 0)
+        original = AuditExample(
+            bundle,
+            0,
+            "matched",
+            17,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        )
         transformed = _rewrite_positive_control(injector, original, corpus_position)
         corrupted = replace(
             transformed,
@@ -1279,7 +1611,14 @@ def test_exact_control_preflight_rejects_round_six_reviewer_attacks(attack: str)
         bundle = next(
             item for item in bundles if item.truth.recipe.variant is EpisodeVariant.SAFE_NEGATIVE
         )
-        original = AuditExample(bundle, 0, "matched", 17, 0)
+        original = AuditExample(
+            bundle,
+            0,
+            "matched",
+            17,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        )
         transformed = _rewrite_positive_control(injector, original, corpus_position)
         events = list(transformed.bundle.public.events)
         events[1], events[2] = (
@@ -1305,7 +1644,14 @@ def test_exact_control_preflight_rejects_round_six_reviewer_attacks(attack: str)
         bundle = next(
             item for item in zero_distractor if item.truth.recipe.variant is EpisodeVariant.POSITIVE
         )
-        original = AuditExample(bundle, 0, "matched", 0, 0)
+        original = AuditExample(
+            bundle,
+            0,
+            "matched",
+            0,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        )
         hazard_target = 3
         transformed = _rewrite_positive_control(
             injector,
@@ -1467,7 +1813,14 @@ def test_control_value_mutation_table_refuses_before_fit(
             91,
         )
         assert len(_fact_events(bundle)) == 55
-        original = AuditExample(bundle, 0, "independent", 0, 1)
+        original = AuditExample(
+            bundle,
+            0,
+            "independent",
+            0,
+            1,
+            quartet_member_index=bundle.truth.key.coordinate.quartet_member_index,
+        )
     elif variant_name == "zero_positive":
         zero_distractor = generate_matched_cohort(
             config,
@@ -1478,11 +1831,25 @@ def test_control_value_mutation_table_refuses_before_fit(
             item for item in zero_distractor if item.truth.recipe.variant is EpisodeVariant.POSITIVE
         )
         assert bundle.truth.recipe.distractor_link_count == 0
-        original = AuditExample(bundle, 0, "matched", 0, 0)
+        original = AuditExample(
+            bundle,
+            0,
+            "matched",
+            0,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        )
     else:
         variant = variant_by_name[variant_name]
         bundle = next(item for item in bundles if item.truth.recipe.variant is variant)
-        original = AuditExample(bundle, 0, "matched", 17, 0)
+        original = AuditExample(
+            bundle,
+            0,
+            "matched",
+            17,
+            0,
+            quartet_member_index=bundle.truth.key.coordinate.member_index,
+        )
     injector = next(item for item in NAMED_LEAK_INJECTORS if item.control_id == control_id)
     corpus_position = 7
     encoded_rank = 100
@@ -1819,7 +2186,9 @@ def test_every_control_preflight_rejects_an_undeclared_public_field(
         if injector.control_id == "PC_HAZARD_LAYOUT_BY_CLASS"
         else bundles[0]
     )
-    original = AuditExample(bundle, 0, "matched", 17, 0)
+    original = AuditExample(
+        bundle, 0, "matched", 17, 0, quartet_member_index=bundle.truth.key.coordinate.member_index
+    )
     transformed = _rewrite_positive_control(
         injector,
         original,
@@ -2037,6 +2406,7 @@ def test_split_membership_has_an_exact_known_answer() -> None:
             hazard_class=0 if variant is EpisodeVariant.POSITIVE else None,
             block=block,
             position=position,
+            quartet_member_index=position,
         )
         for block in range(5)
         for position, variant in enumerate(variants)
@@ -2088,6 +2458,7 @@ def test_group_permutations_select_only_complete_declared_assignments() -> None:
             hazard_class=None,
             block=7,
             position=index,
+            quartet_member_index=index,
         )
         for index, variant in enumerate(
             (
@@ -2129,6 +2500,7 @@ def test_hazard_permutations_swap_only_distinct_public_positive_classes() -> Non
             hazard_class=index if index < 2 else None,
             block=7,
             position=index,
+            quartet_member_index=index,
             public_hazard_classes=(0, 1) if index == 0 else ((2, 2) if index == 1 else ()),
         )
         for index in range(4)
@@ -2178,7 +2550,18 @@ def test_independent_coordinate_rejects_forged_source_position() -> None:
         episode_count=4,
     )
     with pytest.raises(ValueError, match="independent audit coordinate"):
-        _validate_audit_coordinate(AuditExample(bundle, 0, "independent", 1, 99), 0, descriptor)
+        _validate_audit_coordinate(
+            AuditExample(
+                bundle,
+                0,
+                "independent",
+                1,
+                99,
+                quartet_member_index=bundle.truth.key.coordinate.quartet_member_index,
+            ),
+            0,
+            descriptor,
+        )
 
 
 @pytest.mark.parametrize("mutation", ("position", "variant", "stratum"))
@@ -2186,12 +2569,10 @@ def test_independent_quartet_aggregate_rejects_corruption(mutation: str) -> None
     """Individually valid coordinates cannot forge a complete allocation quartet."""
     from silent_cascade.env.episode import EpisodeVariant
     from silent_cascade.env.leakage import _StoredExample, _validate_independent_quartets
+    from silent_cascade.rng import AllocationLabelKey, allocate_independent_variants
 
-    variants = (
-        EpisodeVariant.POSITIVE,
-        EpisodeVariant.SAFE_NEGATIVE,
-        EpisodeVariant.POSITIVE,
-        EpisodeVariant.DISCONNECTED_NEGATIVE,
+    variants = allocate_independent_variants(
+        AllocationLabelKey("ofd-v1", SplitNamespace.DEBUG, SuiteName.IID_PRIMARY, 41, 3, 7)
     )
     rows = [
         _StoredExample(
@@ -2204,10 +2585,12 @@ def test_independent_quartet_aggregate_rejects_corruption(mutation: str) -> None
             hazard_class=0 if variant is EpisodeVariant.POSITIVE else None,
             block=7,
             position=28 + index,
+            quartet_member_index=index,
             public_hazard_classes=(0, 1),
         )
         for index, variant in enumerate(variants)
     ]
+    _validate_independent_quartets(rows, _quartet_descriptor())
     if mutation == "position":
         rows[3] = replace(rows[3], position=30)
     elif mutation == "variant":
@@ -2216,7 +2599,7 @@ def test_independent_quartet_aggregate_rejects_corruption(mutation: str) -> None
         rows[3] = replace(rows[3], path_length=4)
 
     with pytest.raises(ValueError, match="independent allocation quartet"):
-        _validate_independent_quartets(rows)
+        _validate_independent_quartets(rows, _quartet_descriptor())
 
 
 def test_all_frozen_gate_block_boundaries_are_valid_suite_scoped_quartets() -> None:
@@ -2244,10 +2627,11 @@ def test_all_frozen_gate_block_boundaries_are_valid_suite_scoped_quartets() -> N
                 hazard_class=0 if request.variant.value == "positive" else None,
                 block=request.allocation_quartet_index,
                 position=request.episode_index,
+                quartet_member_index=request.quartet_member_index,
             )
             for index, request in enumerate(quartet)
         )
-        _validate_independent_quartets(rows)
+        _validate_independent_quartets(rows, _quartet_descriptor(SplitNamespace.PHASE1_GATE))
         observed.append(
             (
                 quartet[0].suite,
@@ -2468,7 +2852,7 @@ print(sha256_bytes(canonical_json_bytes(report)))
 
     assert completed.stderr == ""
     assert completed.stdout.strip() == (
-        "31f0ff07dfd362cc79f03c62eeb009824b0ac43083bc7ed5c7e4fdda8d046dd8"
+        "3723b8c8baf310cc9134e2630b24cc3cc1a20fd50bd837f254fdb0f1c45a1e35"
     )
 
 
@@ -2626,7 +3010,7 @@ def test_audit_rejects_validation_config_digest_before_source_iteration(tmp_path
         episode_count=1_200,
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=LeakageAuditProfileName.TEST,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
         source_manifest_sha256="2" * 64,
@@ -2695,7 +3079,7 @@ def test_audit_rejects_forged_authenticated_profile_before_source_iteration(
         episode_count=1_200,
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=LeakageAuditProfileName.TEST,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
         source_manifest_sha256="2" * 64,
@@ -2897,7 +3281,9 @@ def test_counterfactual_engine_consumes_only_declared_paired_clock_children() ->
 
     config = _config()
     examples = tuple(
-        AuditExample(bundle, rank, "matched", path_index, member_index)
+        AuditExample(
+            bundle, rank, "matched", path_index, member_index, quartet_member_index=member_index
+        )
         for path_index, path in enumerate((2, 3, 4))
         for member_index, bundle in enumerate(
             generate_matched_cohort(
@@ -2945,7 +3331,7 @@ def test_counterfactual_engine_consumes_only_declared_paired_clock_children() ->
         episode_count=len(examples),
     )
     authentication = AuditSourceAuthentication(
-        schema_version="leakage-source-auth-v1",
+        schema_version="leakage-source-auth-v2",
         profile=LeakageAuditProfileName.TEST,
         descriptor_sha256=audit_source_descriptor_sha256(descriptor),
         source_manifest_sha256=_source_manifest_sha256(examples),
@@ -3276,6 +3662,7 @@ def test_bounded_control_executes_the_exact_4999_replicate_gate_semantics(
                         if isinstance(event.payload, leakage.HazardFact)
                     )
                 ),
+                quartet_member_index=example.quartet_member_index,
             )
         )
         digest.add(

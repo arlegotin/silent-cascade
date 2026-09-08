@@ -164,7 +164,7 @@ class SourceTreeFingerprint(StrictModel):
 class LeakageAuditEvidenceAnchor(StrictModel):
     """Independently supplied identity for one publishable leakage experiment."""
 
-    schema_version: Literal["phase1-leakage-audit-anchor-v1"]
+    schema_version: Literal["phase1-leakage-audit-anchor-v2"]
     profile: Literal["test", "phase1_gate"]
     allocation_id: str = Field(min_length=1)
     allocation_or_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

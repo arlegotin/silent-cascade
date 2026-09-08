@@ -31,6 +31,33 @@ from silent_cascade.provenance import (
     source_tree_sha256,
 )
 
+
+@pytest.mark.parametrize(
+    "version", ("phase1-leakage-audit-anchor-v1", "phase1-leakage-audit-anchor-v2")
+)
+def test_leakage_anchor_requires_member_authenticated_manifest_version(version: str) -> None:
+    from silent_cascade.provenance import LeakageAuditEvidenceAnchor
+
+    payload = dict(
+        schema_version=version,
+        profile="test",
+        allocation_id="test-quartet-v1",
+        allocation_or_manifest_sha256="1" * 64,
+        config_sha256="2" * 64,
+        descriptor_sha256="3" * 64,
+        source_manifest_sha256="4" * 64,
+        suite_path_denominators={"iid_primary:3": 4},
+        clock_pair_manifest_sha256="5" * 64,
+        clock_scale_pair_counts={"scale_0_1x": 4, "scale_10x": 4},
+        episode_count=4,
+    )
+    if version.endswith("v1"):
+        with pytest.raises(ValueError, match="schema_version"):
+            LeakageAuditEvidenceAnchor.model_validate(payload)
+    else:
+        assert LeakageAuditEvidenceAnchor.model_validate(payload).episode_count == 4
+
+
 EXPECTED_GENERATOR_SOURCE_PATHS = (
     "src/silent_cascade/__init__.py",
     "src/silent_cascade/config.py",

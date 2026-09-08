@@ -174,15 +174,32 @@ class EpisodeManifest(StrictModel):
             if any(indices != {0, 1, 2, 3} for indices in groups.values()):
                 raise ValueError("matched cohorts must contain member indices 0 through 3")
             return
-        groups = {}
+        independent_groups: dict[int, list[EpisodeManifestEntry]] = {}
         for entry in self.entries:
             coordinate = entry.coordinate
             assert isinstance(coordinate, IndependentManifestCoordinate)
-            groups.setdefault(coordinate.allocation_quartet_index, set()).add(
-                coordinate.quartet_member_index
+            independent_groups.setdefault(coordinate.allocation_quartet_index, []).append(entry)
+        for quartet in independent_groups.values():
+            ordered = sorted(quartet, key=_coordinate_key)
+            coordinates = [entry.coordinate for entry in ordered]
+            assert all(
+                isinstance(coordinate, IndependentManifestCoordinate) for coordinate in coordinates
             )
-        if any(indices != {0, 1, 2, 3} for indices in groups.values()):
-            raise ValueError("independent quartets must contain member indices 0 through 3")
+            base = coordinates[0].episode_index
+            if (
+                len(quartet) != 4
+                or {coordinate.quartet_member_index for coordinate in coordinates} != {0, 1, 2, 3}
+                or [
+                    (coordinate.episode_index, coordinate.quartet_member_index)
+                    for coordinate in coordinates
+                ]
+                != [(base + member, member) for member in range(4)]
+                or len({(entry.suite, entry.requested_path_length) for entry in quartet}) != 1
+            ):
+                raise ValueError(
+                    "independent quartets must contain exactly four consecutive ordered members "
+                    "0 through 3 with a common suite and path"
+                )
 
     def _validate_access_class(self) -> None:
         provenance = self.provenance

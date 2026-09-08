@@ -535,7 +535,7 @@ def consistent_artifact_bytes() -> dict[str, bytes]:
         passed=True,
     )
     anchor = LeakageAuditEvidenceAnchor(
-        schema_version="phase1-leakage-audit-anchor-v1",
+        schema_version="phase1-leakage-audit-anchor-v2",
         profile="phase1_gate",
         allocation_id="phase1-independent-gate-v1",
         allocation_or_manifest_sha256=GATE_ALLOCATION_SHA256,
@@ -848,6 +848,29 @@ def test_complete_consistent_fixture_set_returns_one_canonical_success_object(
     assert json.loads(completed.stdout) == result.model_dump(mode="json")
     assert completed.stdout.count("\n") == 1
     assert completed.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "anchor_version", ("phase1-leakage-audit-anchor-v1", "phase1-leakage-audit-anchor-v2")
+)
+def test_verifier_requires_member_authenticated_anchor_without_later_report_versions(
+    tmp_path: Path,
+    consistent_artifact_bytes: dict[str, bytes],
+    anchor_version: str,
+) -> None:
+    artifacts = dict(consistent_artifact_bytes)
+    leakage = json.loads(artifacts["leakage.json"])
+    assert leakage["schema_version"] == "leakage-report-v2"
+    leakage["provenance"]["leakage_audit"]["schema_version"] = anchor_version
+    artifacts["leakage.json"] = canonical_json_bytes(leakage)
+    paths = _write_artifacts(tmp_path, artifacts)
+    if anchor_version.endswith("v1"):
+        with pytest.raises(ArtifactIntegrityError):
+            _verify(paths)
+    else:
+        result = _verify(paths)
+        assert result.schema_version == "phase1-gate-verification-v2"
+        assert result.passed
 
 
 @pytest.mark.parametrize(
