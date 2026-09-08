@@ -3,12 +3,65 @@ from pathlib import Path
 
 import pytest
 
-from silent_cascade.errors import AtomicWriteError
+from silent_cascade.errors import ArtifactIntegrityError, AtomicWriteError
 from silent_cascade.io import (
     atomic_create_bytes,
     atomic_write_bytes,
     atomic_write_json,
 )
+
+
+@pytest.mark.parametrize("payload,limit", ((b"", 0), (b"abc", 3), (b"abc", 8)))
+def test_bounded_regular_read_accepts_exact_and_short_files(tmp_path, payload, limit):
+    from silent_cascade import io
+
+    path = tmp_path / "report.json"
+    path.write_bytes(payload)
+    read = getattr(io, "read_bounded_regular_bytes", None)
+    assert callable(read), "bounded regular-file read is missing"
+    assert read(path, max_bytes=limit) == payload
+
+
+@pytest.mark.parametrize("race", ("oversized", "growth", "replacement"))
+def test_bounded_regular_read_uses_one_opened_object_and_a_sentinel(tmp_path, monkeypatch, race):
+    from silent_cascade import io
+
+    path = tmp_path / "report.json"
+    path.write_bytes(b"x" * 32 if race == "oversized" else b"abc")
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"x" * 32)
+    read = getattr(io, "read_bounded_regular_bytes", None)
+    assert callable(read), "bounded regular-file read is missing"
+    real_fstat, real_read = os.fstat, os.read
+    consumed = 0
+    changed = False
+
+    def observe_then_change(descriptor):
+        nonlocal changed
+        observed = real_fstat(descriptor)
+        if not changed:
+            changed = True
+            if race == "growth":
+                path.write_bytes(b"x" * 32)
+            elif race == "replacement":
+                os.replace(replacement, path)
+        return observed
+
+    def counted_read(descriptor, amount):
+        nonlocal consumed
+        chunk = real_read(descriptor, amount)
+        consumed += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(os, "fstat", observe_then_change)
+    monkeypatch.setattr(os, "read", counted_read)
+    if race == "replacement":
+        assert read(path, max_bytes=8) == b"abc"
+        assert path.read_bytes() == b"x" * 32
+    else:
+        with pytest.raises(ArtifactIntegrityError):
+            read(path, max_bytes=8)
+    assert consumed <= 9
 
 
 def test_atomic_write_replaces_destination_with_complete_contents(

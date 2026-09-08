@@ -1,14 +1,58 @@
 """Durable atomic file publication."""
 
 import os
+import stat
 import tempfile
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from silent_cascade.errors import AtomicWriteError
+from silent_cascade.errors import ArtifactIntegrityError, AtomicWriteError
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.validation import JsonValue
+
+
+def read_bounded_regular_bytes(path: Path, *, max_bytes: int) -> bytes:
+    """Read one regular-file snapshot, consuming at most the limit plus one byte.
+
+    Nonblocking open makes a FIFO safe to inspect. Both the file-kind check
+    and all reads use that descriptor, so replacing the path cannot redirect
+    verification. The sentinel also bounds a file that grows after fstat.
+    """
+    if type(max_bytes) is not int or max_bytes < 0:
+        raise ValueError("max_bytes must be a nonnegative integer")
+    size_limit_exceeded = False
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode):
+                raise ValueError("artifact is not a regular file")
+            if observed.st_size > max_bytes:
+                size_limit_exceeded = True
+                raise ValueError("artifact exceeds byte limit")
+            remaining = max_bytes + 1
+            chunks = []
+            while remaining:
+                chunk = os.read(descriptor, min(65_536, remaining))
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            size_limit_exceeded = True
+            raise ValueError("artifact exceeds byte limit")
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError) as error:
+        raise ArtifactIntegrityError(
+            "bounded artifact read failed",
+            context={
+                "path": str(path),
+                "max_bytes": max_bytes,
+                "reason": str(error),
+                "size_limit_exceeded": size_limit_exceeded,
+            },
+        ) from error
 
 
 class _PreparationCleanupError(Exception):

@@ -59,6 +59,7 @@ from silent_cascade.errors import (
     SilentCascadeError,
 )
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.io import read_bounded_regular_bytes
 from silent_cascade.logging.manifest import (
     EpisodeManifest,
     ManifestAccessClass,
@@ -181,13 +182,9 @@ def _artifact_error(message: str, *, path: Path | None = None) -> ArtifactIntegr
 
 def _load_report[ReportT: StrictModel](path: Path, model: type[ReportT], *, name: str) -> ReportT:
     try:
-        if model is LeakageReport and path.stat().st_size > _MAX_LEAKAGE_REPORT_BYTES:
-            raise ValueError("canonical leakage report exceeds 16 MiB")
-        raw = path.read_bytes()
-        if model is LeakageReport and len(raw) > _MAX_LEAKAGE_REPORT_BYTES:
-            raise ValueError("canonical leakage report exceeds 16 MiB")
+        raw = read_bounded_regular_bytes(path, max_bytes=_MAX_LEAKAGE_REPORT_BYTES)
         report = model.model_validate_json(raw)
-    except (OSError, ValidationError, TypeError, ValueError) as error:
+    except (ArtifactIntegrityError, OSError, ValidationError, TypeError, ValueError) as error:
         raise _artifact_error(f"{name} artifact schema verification failed", path=path) from error
     if raw != canonical_json_bytes(report):
         raise _artifact_error(f"{name} artifact is not canonical", path=path)

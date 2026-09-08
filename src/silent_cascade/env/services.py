@@ -81,6 +81,7 @@ from silent_cascade.env.reward import (
 )
 from silent_cascade.errors import (
     ArtifactError,
+    ArtifactIntegrityError,
     AtomicWriteError,
     ConfigurationError,
     EpisodeError,
@@ -88,8 +89,8 @@ from silent_cascade.errors import (
     ManifestError,
     ProvenanceError,
 )
-from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
-from silent_cascade.io import atomic_create_bytes
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.io import atomic_create_bytes, read_bounded_regular_bytes
 from silent_cascade.logging.manifest import (
     EpisodeManifest,
     EpisodeManifestEntry,
@@ -488,12 +489,13 @@ def _resolve(selection: ConfigSelection) -> ResolvedConfig[Phase1Config]:
 
 def _publish_report(path: Path, report: StrictModel) -> ArtifactPublication:
     """Atomically publish report-only canonical bytes with manifest-equivalent reuse."""
-    payload = canonical_json_bytes(report)
-    if isinstance(report, LeakageReport):
-        from silent_cascade.env.leakage import MAX_LEAKAGE_REPORT_BYTES
+    from silent_cascade.env.leakage import MAX_LEAKAGE_REPORT_BYTES
 
-        if len(payload) > MAX_LEAKAGE_REPORT_BYTES:
-            raise ArtifactError("canonical leakage report exceeds 16 MiB")
+    payload = canonical_json_bytes(report)
+    if len(payload) > MAX_LEAKAGE_REPORT_BYTES:
+        name = "leakage report" if isinstance(report, LeakageReport) else "report"
+        raise ArtifactError(f"canonical {name} exceeds 16 MiB")
+    if isinstance(report, LeakageReport):
         try:
             LeakageReport.model_validate_json(payload)
         except ValueError as error:
@@ -505,19 +507,22 @@ def _publish_report(path: Path, report: StrictModel) -> ArtifactPublication:
     except AtomicWriteError as error:
         if error.message != "artifact already exists":
             raise ArtifactError("immutable report publication failed") from error
-        try:
-            existing = path.read_bytes()
-        except OSError as read_error:
-            raise ArtifactError("existing report cannot be verified") from read_error
-        if existing != payload:
-            raise ArtifactError("different immutable report already exists") from error
         created = False
     try:
-        if path.read_bytes() != payload:
-            raise ArtifactError("published report differs from candidate")
-        file_sha256 = sha256_file(path)
-    except OSError as error:
-        raise ArtifactError("published report cannot be verified") from error
+        verified = read_bounded_regular_bytes(path, max_bytes=len(payload))
+    except ArtifactIntegrityError as error:
+        if not created and error.context.get("size_limit_exceeded"):
+            raise ArtifactError("different immutable report already exists") from error
+        state = "published" if created else "existing"
+        raise ArtifactError(f"{state} report cannot be verified") from error
+    if verified != payload:
+        message = (
+            "published report differs from candidate"
+            if created
+            else "different immutable report already exists"
+        )
+        raise ArtifactError(message)
+    file_sha256 = sha256_bytes(verified)
     return ArtifactPublication(
         path=str(path), created=created, payload_sha256=payload_sha256, file_sha256=file_sha256
     )

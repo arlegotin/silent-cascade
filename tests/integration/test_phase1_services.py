@@ -1,5 +1,6 @@
 """Task 14 contracts for private validation-manifest construction."""
 
+import os
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -251,6 +252,112 @@ def test_report_publication_directory_is_a_typed_artifact_refusal(tmp_path: Path
 
     with pytest.raises(ArtifactError, match=r"publication|report|target"):
         _publish_report(tmp_path, ConfigSelection())
+
+
+def test_report_publication_and_reuse_return_hashes_of_verified_bytes(tmp_path):
+    from silent_cascade.env.services import ConfigSelection, _publish_report
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    report = ConfigSelection()
+    path = tmp_path / "report.json"
+    expected = canonical_json_bytes(report)
+    created = _publish_report(path, report)
+    first_stat = path.stat()
+    reused = _publish_report(path, report)
+    assert created.created and not reused.created
+    assert path.read_bytes() == expected
+    assert path.stat().st_mtime_ns == first_stat.st_mtime_ns
+    assert created.file_sha256 == reused.file_sha256 == sha256_bytes(expected)
+    assert created.payload_sha256 == reused.payload_sha256 == sha256_bytes(expected)
+
+
+def test_oversized_existing_report_is_refused_before_unbounded_read(tmp_path, monkeypatch):
+    from silent_cascade.env.services import ConfigSelection, _publish_report
+    from silent_cascade.hashing import canonical_json_bytes
+
+    report = ConfigSelection()
+    candidate_size = len(canonical_json_bytes(report))
+    path = tmp_path / "report.json"
+    with path.open("wb") as handle:
+        handle.truncate(16 * 1024 * 1024 + 1)
+    real_read_bytes, real_read = Path.read_bytes, os.read
+    consumed = 0
+
+    def counted_path_read(self):
+        nonlocal consumed
+        raw = real_read_bytes(self)
+        if self == path:
+            consumed += len(raw)
+        return raw
+
+    def counted_handle_read(descriptor, amount):
+        nonlocal consumed
+        raw = real_read(descriptor, amount)
+        consumed += len(raw)
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", counted_path_read)
+    monkeypatch.setattr(os, "read", counted_handle_read)
+    with pytest.raises(ArtifactError):
+        _publish_report(path, report)
+    assert consumed <= candidate_size + 1, "publication read beyond its known candidate size"
+    assert path.stat().st_size == 16 * 1024 * 1024 + 1
+
+
+def test_publication_read_uses_configured_ceiling_even_for_a_larger_candidate(
+    tmp_path, monkeypatch
+):
+    from silent_cascade.env import leakage
+    from silent_cascade.env.services import ConfigSelection, _publish_report
+    from silent_cascade.hashing import canonical_json_bytes
+
+    report = ConfigSelection()
+    path = tmp_path / "report.json"
+    path.write_bytes(canonical_json_bytes(report))
+    monkeypatch.setattr(leakage, "MAX_LEAKAGE_REPORT_BYTES", 8)
+    with pytest.raises(ArtifactError):
+        _publish_report(path, report)
+
+
+@pytest.mark.parametrize("created", (False, True))
+def test_report_publication_replacement_after_open_keeps_one_verified_snapshot(
+    tmp_path, monkeypatch, created
+):
+    from silent_cascade.env.services import ConfigSelection, _publish_report
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    report = ConfigSelection()
+    path = tmp_path / "report.json"
+    payload = canonical_json_bytes(report)
+    if not created:
+        path.write_bytes(payload)
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b"different report")
+    real_path_open, real_os_open = Path.open, os.open
+    replaced = False
+
+    def replace_once(target):
+        nonlocal replaced
+        if Path(target) == path and not replaced:
+            replaced = True
+            os.replace(replacement, path)
+
+    def path_open(self, *args, **kwargs):
+        handle = real_path_open(self, *args, **kwargs)
+        replace_once(self)
+        return handle
+
+    def descriptor_open(target, flags, *args, **kwargs):
+        descriptor = real_os_open(target, flags, *args, **kwargs)
+        replace_once(target)
+        return descriptor
+
+    monkeypatch.setattr(Path, "open", path_open)
+    monkeypatch.setattr(os, "open", descriptor_open)
+    publication = _publish_report(path, report)
+    assert publication.created is created
+    assert replaced and path.read_bytes() == b"different report"
+    assert publication.payload_sha256 == publication.file_sha256 == sha256_bytes(payload)
 
 
 @pytest.mark.parametrize(

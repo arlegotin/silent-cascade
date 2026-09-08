@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -1225,6 +1226,95 @@ def test_v3_size_limit_precedes_model_loading_and_publication(tmp_path, consiste
     with pytest.raises(ArtifactError):
         _publish_report(destination, forged)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("operation", ("loader", "publisher"))
+@pytest.mark.parametrize("kind", ("fifo", "directory"))
+def test_report_nonregular_input_is_refused_without_blocking(tmp_path, operation, kind):
+    path = tmp_path / "report.json"
+    if kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.mkdir()
+    script = """
+import sys
+from pathlib import Path
+from runpy import run_path
+from silent_cascade.env.services import ConfigSelection, _publish_report
+from silent_cascade.errors import ArtifactError
+try:
+    if sys.argv[1] == 'loader':
+        load = run_path('scripts/verify_phase1_gate_artifacts.py')['_load_report']
+        load(Path(sys.argv[2]), ConfigSelection, name='report')
+    else:
+        _publish_report(Path(sys.argv[2]), ConfigSelection())
+except ArtifactError as error:
+    print(error.code)
+else:
+    raise AssertionError('nonregular report accepted')
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script, operation, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"{operation} blocked on a nonregular report")
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() in {"artifact_error", "artifact_integrity_error"}
+    assert completed.stderr == ""
+
+
+def test_leakage_loader_growth_after_observation_cannot_exceed_read_limit(tmp_path, monkeypatch):
+    path = tmp_path / "report.json"
+    path.write_bytes(b"{}")
+    load = _VERIFIER["_load_report"]
+    monkeypatch.setitem(load.__globals__, "_MAX_LEAKAGE_REPORT_BYTES", 8)
+    real_stat, real_fstat = Path.stat, os.fstat
+    real_read_bytes, real_read = Path.read_bytes, os.read
+    consumed = 0
+    grew = False
+
+    def grow_once():
+        nonlocal grew
+        if not grew:
+            grew = True
+            path.write_bytes(b"x" * 32)
+
+    def path_observation(self, *args, **kwargs):
+        observed = real_stat(self, *args, **kwargs)
+        if self == path:
+            grow_once()
+        return observed
+
+    def handle_observation(descriptor):
+        observed = real_fstat(descriptor)
+        grow_once()
+        return observed
+
+    def counted_path_read(self):
+        nonlocal consumed
+        raw = real_read_bytes(self)
+        if self == path:
+            consumed += len(raw)
+        return raw
+
+    def counted_handle_read(descriptor, amount):
+        nonlocal consumed
+        raw = real_read(descriptor, amount)
+        consumed += len(raw)
+        return raw
+
+    monkeypatch.setattr(Path, "stat", path_observation)
+    monkeypatch.setattr(os, "fstat", handle_observation)
+    monkeypatch.setattr(Path, "read_bytes", counted_path_read)
+    monkeypatch.setattr(os, "read", counted_handle_read)
+    with pytest.raises(ArtifactIntegrityError):
+        load(path, LeakageReport, name="leakage")
+    assert grew
+    assert consumed <= 9, "loader read beyond the limit plus one overflow sentinel"
 
 
 def _write_artifacts(tmp_path: Path, artifacts: dict[str, bytes]) -> dict[str, Path]:
