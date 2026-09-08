@@ -1,8 +1,87 @@
+import hashlib
+import json
 import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
+
+_PHASE1_IN_PROGRESS_GATE = (
+    "In progress: final Phase 1 evidence correction. The prior artifacts are "
+    "invalid; the ordered Correction Pass 5, complete Task 18 regeneration, v3 "
+    "cross-artifact verification, final audits, and local `make verify` must pass "
+    "with zero foundation-model calls. Any eventual result is generator/oracle "
+    "engineering evidence, not learned-model or benchmark evidence."
+)
+_PHASE1_EVIDENCE_RELATIVE_PATHS = {
+    "validation": Path("manifests/validation/v1/ofd-primary-10000.json"),
+    "oracle": Path("manifests/validation/v1/phase1-oracle-gate.json"),
+    "leakage": Path("manifests/validation/v1/phase1-leakage-gate.json"),
+    "matched_reproducibility": Path(
+        "manifests/validation/v1/phase1-validation-reproducibility.json"
+    ),
+    "independent_reproducibility": Path(
+        "manifests/validation/v1/phase1-independent-reproducibility-gate.json"
+    ),
+}
+_PHASE1_COMPLETE_GATE = re.compile(
+    r"Complete at collector source `(?P<source>[0-9a-f]{40})`: "
+    r"validation `(?P<validation>[0-9a-f]{64})`; "
+    r"oracle `(?P<oracle>[0-9a-f]{64})`; "
+    r"leakage `(?P<leakage>[0-9a-f]{64})`; "
+    r"matched reproducibility `(?P<matched_reproducibility>[0-9a-f]{64})`; "
+    r"independent reproducibility "
+    r"`(?P<independent_reproducibility>[0-9a-f]{64})`\. "
+    r"The v3 cross-artifact verifier and local `make verify` passed with zero "
+    r"foundation-model calls; this is generator/oracle engineering evidence, "
+    r"not learned-model or benchmark evidence\."
+)
+_INVALIDATED_PHASE1_REVISIONS = {
+    "bee142bd08a8b7b5621ae65551280ebdeed6c1b6",
+    "4aa6eca5d25e3c6dac879850b2a0557bbe84b54e",
+    "2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e",
+}
+
+
+def _assert_phase1_delivery_state(root: Path, plan_index: str) -> None:
+    phase1_rows = [line for line in plan_index.splitlines() if line.startswith("| 1 —")]
+    assert len(phase1_rows) == 1
+    phase1_gate = phase1_rows[0].rsplit("|", maxsplit=2)[1].strip()
+    evidence_paths = {
+        label: root / relative_path
+        for label, relative_path in _PHASE1_EVIDENCE_RELATIVE_PATHS.items()
+    }
+    evidence_presence = {
+        label: path.exists() or path.is_symlink() for label, path in evidence_paths.items()
+    }
+
+    if not any(evidence_presence.values()):
+        assert phase1_gate == _PHASE1_IN_PROGRESS_GATE
+        assert not (_INVALIDATED_PHASE1_REVISIONS & set(re.findall(r"[0-9a-f]{40}", phase1_gate)))
+        return
+
+    assert all(evidence_presence.values()), "Phase 1 evidence must be wholly absent or present"
+    assert all(path.is_file() and not path.is_symlink() for path in evidence_paths.values()), (
+        "Phase 1 evidence paths must be regular files"
+    )
+    match = _PHASE1_COMPLETE_GATE.fullmatch(phase1_gate)
+    assert match is not None, "present Phase 1 evidence requires exact completion metadata"
+    expected_hashes = {
+        label: hashlib.sha256(path.read_bytes()).hexdigest()
+        for label, path in evidence_paths.items()
+    }
+    assert {key: value for key, value in match.groupdict().items() if key != "source"} == (
+        expected_hashes
+    )
+    source_commits = set()
+    for path in evidence_paths.values():
+        artifact = json.loads(path.read_bytes())
+        payload = artifact.get("payload", artifact)
+        source_commits.add(payload["provenance"]["source_commit"])
+    assert source_commits == {match.group("source")}
+    assert match.group("source") not in _INVALIDATED_PHASE1_REVISIONS
 
 
 def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
@@ -69,10 +148,53 @@ def test_phase0_plan_index_is_wired_to_frozen_inputs() -> None:
     assert "superpowers/specs/2026-08-30-silent-cascade-design.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-0-bootstrap.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-1-generator-oracle.md" in plan_index
-    assert "In progress: final Phase 1 evidence correction" in plan_index
-    assert "Complete at collector source" not in plan_index
-    assert "bee142bd08a8b7b5621ae65551280ebdeed6c1b6" not in plan_index
-    assert "4aa6eca5d25e3c6dac879850b2a0557bbe84b54e" not in plan_index
-    assert "2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e" not in plan_index
-    assert "zero foundation-model calls" in plan_index
-    assert "not learned-model or benchmark evidence" in plan_index
+    _assert_phase1_delivery_state(ROOT, plan_index)
+
+
+def test_phase1_delivery_state_contract(tmp_path: Path) -> None:
+    source_commit = "a" * 40
+    evidence_paths = {
+        label: tmp_path / relative_path
+        for label, relative_path in _PHASE1_EVIDENCE_RELATIVE_PATHS.items()
+    }
+    for label, path in evidence_paths.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"artifact": label, "provenance": {"source_commit": source_commit}}
+        path.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    evidence_hashes = {
+        label: hashlib.sha256(path.read_bytes()).hexdigest()
+        for label, path in evidence_paths.items()
+    }
+    complete_gate = (
+        f"Complete at collector source `{source_commit}`: "
+        f"validation `{evidence_hashes['validation']}`; "
+        f"oracle `{evidence_hashes['oracle']}`; "
+        f"leakage `{evidence_hashes['leakage']}`; "
+        "matched reproducibility "
+        f"`{evidence_hashes['matched_reproducibility']}`; "
+        "independent reproducibility "
+        f"`{evidence_hashes['independent_reproducibility']}`. "
+        "The v3 cross-artifact verifier and local `make verify` passed with zero "
+        "foundation-model calls; this is generator/oracle engineering evidence, "
+        "not learned-model or benchmark evidence."
+    )
+    complete_plan = f"| 1 — Generator and oracle | plan | {complete_gate} |"
+    _assert_phase1_delivery_state(tmp_path, complete_plan)
+
+    evidence_paths["oracle"].write_text("{}", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _assert_phase1_delivery_state(tmp_path, complete_plan)
+
+    evidence_paths["oracle"].unlink()
+    with pytest.raises(AssertionError, match="wholly absent or present"):
+        _assert_phase1_delivery_state(tmp_path, complete_plan)
+
+    for path in evidence_paths.values():
+        path.unlink(missing_ok=True)
+    in_progress_plan = "| 1 — Generator and oracle | plan | " + _PHASE1_IN_PROGRESS_GATE + " |"
+    _assert_phase1_delivery_state(tmp_path, in_progress_plan)
+    with pytest.raises(AssertionError):
+        _assert_phase1_delivery_state(tmp_path, complete_plan)

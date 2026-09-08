@@ -4292,6 +4292,7 @@ class CounterfactualCheckResult(StrictModel):
 class LeakageConstructionStatistics(StrictModel):
     schema_version: Literal["leakage-construction-statistics-v1"]
     source_episode_sha256s: OrderedSha256Pack
+    clock_child_episode_sha256s: OrderedSha256Pack
     invariant_verified_count: int = Field(ge=0)
     feature_row_count: int = Field(ge=0)
     finite_feature_row_count: int = Field(ge=0)
@@ -4374,17 +4375,29 @@ instead of producing an incomplete report.
 round-trip encoding, require exactly `32 * item_count` decoded bytes, split it
 into the declared ordered SHA-256 values, and require `payload_sha256` to equal
 the SHA-256 of those raw concatenated bytes. The source pack contains exactly
-100,000 episode digests in canonical source order for the Phase 1 profile.
-Every one of the nine positive controls contains exactly 8,000 injected
-episode digests in its canonical selected-subset order. Reject a duplicate,
-missing, reordered, truncated, overlong, noncanonical, or digest-inconsistent
-pack. The complete canonical `leakage-report-v3` JSON must be no more than
+100,000 episode digests in canonical source order for the Phase 1 profile. The
+clock-child pack contains exactly 7,000 child episode digests: first all 5,000
+`0.1x` children in increasing authenticated parent-manifest-rank order, then
+all 2,000 `10x` children in increasing authenticated parent-manifest-rank
+order. Every one of the nine positive controls contains exactly 8,000 injected
+episode digests in its canonical selected-source order. These are exactly
+eleven packs: one base source, one clock child, and nine positive-control
+injected packs. Reject a duplicate, missing, reordered, truncated, overlong,
+noncanonical, or digest-inconsistent pack. The complete canonical
+`leakage-report-v3` JSON, including all eleven packs, must be no more than
 `16 * 1024 * 1024` bytes in the producer, immutable publisher, loader, and
 standalone verifier.
 
 `LeakageConstructionStatistics` is produced by the two real streaming passes.
 Its source pack and the independently reconstructed public IDs/coordinates
 must reproduce the report corpus hash and the v2 source-manifest hash. Its
+clock-child pack combines with the source pack, reconstructed parent/child
+public IDs, exact scale values, and authenticated parent ranks to reconstruct
+the complete canonical
+`silent-cascade/ofd-v1/leakage-clock-pair-manifest/v2` payload and digest. That
+digest must equal both `AuditSourceAuthentication.clock_pair_manifest_sha256`
+and the v2 `LeakageAuditEvidenceAnchor.clock_pair_manifest_sha256`; no stored
+clock-manifest hash is accepted without this reconstruction. Its
 invariant, feature, finite-feature, second-pass, and second-pass-match counts
 must all equal `episode_count`; both source-manifest hashes must be equal.
 Derive the six ordered construction checks exactly: `provenance` from the
@@ -4397,14 +4410,55 @@ self-reported boolean that contradicts these primitives.
 `LeakageMembershipEvidence` duplicates the existing top-level split, train,
 and test hashes plus exact counts. Reconstruct it from the frozen audit seed,
 corpus hash, canonical suite/path/block groups, and complete ordered public-ID
-stream. Require train/test disjointness, exact union, 80/20 counts, and equality
-with every probe workload. For each positive control, independently select the
-balanced 8,000-item source subset, derive and compare its membership and corpus
-hash, derive its frozen groupwise split and split-membership hash, reconstruct
-the control-specific injected public IDs, and combine them with its packed
-injected digests to reproduce `injected_corpus_sha256`. The producer and
-verifier may share only versioned schemas and domain strings, not membership,
-metric, aggregation, or counterfactual builder functions.
+stream. Require the main train/test sets to be disjoint, their union to equal
+the full source, and their groupwise split to have the frozen 80/20 counts.
+For each clean and label-shuffled probe, derive its workload independently from
+the main membership and task filter: positive-binary and variant-three-way use
+the full split, while positive-hazard-class uses only positive members of each
+split. Compare that task-filtered train/test count with the probe's exact
+workload; never require the main 80,000/20,000 counts to equal a hazard probe.
+
+For each positive control, independently select the balanced 8,000-item source
+subset, derive and compare its membership and corpus hash, derive its frozen
+groupwise split and split-membership hash, reconstruct the control-specific
+injected public IDs, and combine them with its packed injected digests to
+reproduce `injected_corpus_sha256`. Each control probe's workload is derived
+from that named control's own 8,000-item subset and groupwise split, then
+filtered for its target task; the hazard-class control again uses positives
+only. Frozen denominators and thresholds do not change.
+
+`base_subset_membership_sha256` is SHA-256 of canonical UTF-8 JSON with exactly
+these keys and structure:
+
+```json
+{
+  "domain": "silent-cascade/ofd-v1/pc-base-subset-membership/v1",
+  "item_count": 2,
+  "members": [
+    {
+      "episode_public_id": "00000000-0000-4000-8000-000000000001",
+      "source_index": 1
+    },
+    {
+      "episode_public_id": "00000000-0000-4000-8000-000000000002",
+      "source_index": 3
+    }
+  ],
+  "source_episode_count": 4
+}
+```
+
+The real payload has `source_episode_count=100000`, `item_count=8000`, and one
+member per selected source row. `members` is ordered by strictly increasing,
+unique zero-based `source_index`, and each public ID must equal the source row
+at that index. `item_count` is the explicit length frame and must equal the
+array length; no sorting after construction is permitted. The literal
+two-member known-answer digest above is
+`d9abb33f9eeb7d56d585590565a586cb0c32f955948aee98dfafee0fb1e92bf1`.
+Producer and verifier tests compute that literal independently, reject a wrong
+domain/key/count/index/order/public ID, and do not call one another's helper.
+The producer and verifier may share only versioned schemas and domain strings,
+not membership, metric, aggregation, or counterfactual builder functions.
 
 These bounded packs are raw per-episode digest evidence for arithmetic, not
 the full public episode payloads, optimizer predictions, or permutation
@@ -5415,9 +5469,10 @@ OracleEvaluationReport v2 relationship even for unchecked model copies and
 every derivable/cross-artifact relationship at the public five-file boundary.
 
 For leakage v3, the verifier additionally decodes and authenticates the
-100,000-item source digest pack and all nine 8,000-item injected digest packs;
-reconstructs source/corpus, source-manifest, main split/train/test, and each
-positive-control subset/split/injected hash; independently derives every
+100,000-item source digest pack, the 7,000-item clock-child digest pack, and all
+nine 8,000-item injected digest packs; reconstructs source/corpus,
+source-manifest, the complete v2 clock-pair manifest, main split/train/test, and
+each positive-control subset/split/injected hash; independently derives every
 confusion-based accuracy, permutation add-one p-value, Holm value, probe and
 detector pass, all six construction checks, and all three counterfactual result
 hashes; and rejects canonical leakage bytes above 16 MiB. These checks bind the
@@ -6041,9 +6096,11 @@ Task 18 artifacts remain absent throughout.
 
 - [ ] **Step 1: Write and run the status RED**
 
-Change the repository regression first so it requires the exact in-progress
-Phase 1 state, no stale collector/evidence/fix hashes, the zero-foundation-call
-boundary, and the generator/oracle-engineering-not-benchmark boundary.
+Change the repository regression first so the artifact-absent branch requires
+the exact in-progress Phase 1 state, no stale collector/evidence/fix hashes, the
+zero-foundation-call boundary, and the
+generator/oracle-engineering-not-benchmark boundary. The immediately following
+plan-review amendment freezes its completed branch before collection.
 
 ```bash
 uv run pytest -q \
@@ -6079,6 +6136,74 @@ Expected: the focused test and complete local gate pass; the commit contains
 exactly the four modified text/test paths and five deletions. It changes no
 `PHASE1_ANALYSIS_SOURCE_PATHS` file.
 
+#### Pass 5 plan-review amendment: Freeze the delivery-index transition
+
+This documentation/test-only amendment executes after artifact invalidation
+and before Pass 5A. It changes no analysis source and creates no evidence.
+
+**Files:**
+
+- Modify: `docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md`
+- Modify: `docs/deviations.md`
+- Modify: `tests/integration/test_phase0_repository.py`
+
+- [ ] **Step 1: Write the two-state regression RED**
+
+Replace the temporary artifact-absent-only assertion with a small test-only
+validator and literal temporary fixtures for exactly two legal repository
+states:
+
+1. in progress: the Phase 1 gate cell equals the exact approved in-progress
+   sentence and all five Task 18 artifact paths are absent; or
+2. complete: all five paths are regular files, the Phase 1 gate cell exactly
+   matches the v3 completion format, each named SHA-256 equals the corresponding
+   file bytes, and all five cheaply parsed provenance `source_commit` values
+   equal the non-invalidated collector source printed in the cell.
+
+Reject mixed presence, missing/extra completion metadata, a mismatched file
+digest, different source commits, any invalidated source revision, and an
+in-progress sentence while artifacts exist. This regression hashes bytes and
+reads the already-public provenance field only; it must not import or duplicate
+the scientific verifier. The completed-state fixture uses temporary tiny JSON
+files and never restores an invalid real artifact.
+
+```bash
+uv run pytest -q \
+  tests/integration/test_phase0_repository.py::test_phase1_delivery_state_contract
+```
+
+Expected: FAIL against the old artifact-absent-only regression because its
+completed and mixed-state behavior is absent.
+
+- [ ] **Step 2: Implement the test-only validator and run GREEN**
+
+Apply the validator to both the temporary known-answer states and the real
+repository. The real repository must select the in-progress branch before
+collection; after Task 18 Step 8 it selects the complete branch without a
+fixture/source edit.
+
+```bash
+uv run pytest -q tests/integration/test_phase0_repository.py
+make verify
+git diff --check
+```
+
+Expected: both exact legal states pass, every hybrid/stale state fails in the
+temporary cases, the real repository remains in progress with all five paths
+absent, and the complete local gate passes.
+
+- [ ] **Step 3: Commit the plan-review amendment**
+
+```bash
+git add docs/superpowers/plans/2026-08-30-phase-1-generator-oracle.md \
+  docs/deviations.md tests/integration/test_phase0_repository.py
+git commit -m "test: harden Phase 1 evidence transition"
+```
+
+Expected: one docs/test-only commit before Pass 5A. Task 18 Step 8 may modify
+only `docs/PLAN.md` and the five evidence artifacts; Step 9 requires no
+post-evidence regression or fixture commit.
+
 #### Pass 5A: Authenticate leakage quartet structure
 
 **Files:**
@@ -6092,6 +6217,7 @@ exactly the four modified text/test paths and five deletions. It changes no
 - Modify: `tests/unit/test_provenance.py`
 - Modify: `tests/property/test_generator_properties.py`
 - Modify: `tests/integration/test_phase1_services.py`
+- Modify: `tests/integration/test_phase1_gate_verifier.py`
 
 **Interfaces:**
 
@@ -6104,6 +6230,11 @@ exactly the four modified text/test paths and five deletions. It changes no
   `silent-cascade/ofd-v1/leakage-clock-pair-manifest/v2`, internal source
   authentication to `leakage-source-auth-v2`, and the leakage provenance
   anchor to `phase1-leakage-audit-anchor-v2`.
+- Migrates the standalone-verifier fixture's
+  `LeakageAuditEvidenceAnchor` literal to
+  `phase1-leakage-audit-anchor-v2` in this pass. Leakage remains
+  `leakage-report-v2` and the outer verifier remains
+  `phase1-gate-verification-v2` until their owning Pass 5B/5C migrations.
 - Tightens independent manifest validation without changing public manifest
   schema 1 or the independent fact that each member may have a different
   accepted attempt.
@@ -6125,6 +6256,10 @@ base source, independent clock parent, independent manifest clock parent,
 matched source, and matched clock parent. Add an AST regression scoped to
 `_validate_audit_coordinate` and `_validate_independent_quartets` that rejects
 `ast.Mod`, floor division used to recover a member, and calls to `divmod`.
+In the gate-verifier fixture, require the v1 anchor literal to fail and the v2
+anchor to pass while asserting that leakage and outer report versions are still
+v2. This RED/GREEN changes only the fixture anchor required by the production
+anchor migration; it must not pre-implement either later schema bump.
 
 - [ ] **Step 2: Run RED tests**
 
@@ -6133,11 +6268,13 @@ uv run pytest -q tests/unit/test_manifest.py \
   tests/property/test_generator_properties.py
 uv run pytest -q tests/integration/test_phase1_services.py
 uv run pytest -q tests/unit/test_leakage.py
+uv run pytest -q tests/integration/test_phase1_gate_verifier.py
 ```
 
 Expected: the missing audit field, discarded service value, modulo inference,
 source-hash omission, and permissive manifest cardinality tests fail for their
-named reasons.
+named reasons; the verifier fixture fails only because it still carries the v1
+anchor.
 
 - [ ] **Step 3: Implement lossless member/cardinality authentication**
 
@@ -6177,12 +6314,14 @@ uv run pytest -q tests/unit/test_manifest.py tests/unit/test_provenance.py \
   tests/property/test_generator_properties.py
 uv run pytest -q tests/integration/test_phase1_services.py
 uv run pytest -q tests/unit/test_leakage.py
+uv run pytest -q tests/integration/test_phase1_gate_verifier.py
 uv run ruff check src/silent_cascade/env/leakage.py \
   src/silent_cascade/env/services.py src/silent_cascade/logging/manifest.py \
   src/silent_cascade/provenance.py tests/unit/test_leakage.py \
   tests/unit/test_manifest.py tests/unit/test_provenance.py \
   tests/property/test_generator_properties.py \
-  tests/integration/test_phase1_services.py
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_gate_verifier.py
 uv run ruff format --check src tests
 make verify
 git diff --check
@@ -6190,7 +6329,8 @@ git add src/silent_cascade/env/leakage.py src/silent_cascade/env/services.py \
   src/silent_cascade/logging/manifest.py src/silent_cascade/provenance.py \
   tests/unit/test_leakage.py tests/unit/test_manifest.py \
   tests/unit/test_provenance.py tests/property/test_generator_properties.py \
-  tests/integration/test_phase1_services.py
+  tests/integration/test_phase1_services.py \
+  tests/integration/test_phase1_gate_verifier.py
 git commit -m "fix: authenticate leakage quartet structure"
 ```
 
@@ -6218,6 +6358,9 @@ before Pass 5B.
   `permutation_replicate_count` to every `ShortcutProbeResult`.
 - Adds `base_subset_membership_sha256` and one 8,000-item
   `injected_episode_sha256s` pack to every positive control.
+- Adds one canonical 7,000-item `clock_child_episode_sha256s` pack to
+  `LeakageConstructionStatistics`; together with the source pack it makes the
+  v2 clock-pair manifest independently reconstructable.
 - Teaches the standalone verifier to parse and validate the complete v3
   schema, but deliberately retains outer
   `phase1-gate-verification-v2` until Pass 5C completes every independent
@@ -6247,10 +6390,22 @@ probes, including exact 4,999-replicate Phase 1 evidence.
 
 Add strict pack known answers and mutations for Base64 alphabet/padding,
 decoded length, item count, order, payload digest, truncation, duplicate/missing
-items, and the 100,000-item bound. Assert one exact source pack and nine exact
-8,000-item control packs. Reject a canonical leakage artifact larger than 16
-MiB at construction/publication/loading boundaries. Reject stale
-`leakage-report-v2`.
+items, and the 100,000-item bound. Assert exactly one 100,000-item source pack,
+one 7,000-item clock-child pack in exact `0.1x`-then-`10x` parent order, and nine
+exact 8,000-item control packs. Mutate the clock-child pack alone and the
+authenticated clock-pair-manifest hash alone and require rejection. Reject a
+canonical leakage artifact larger than 16 MiB at
+construction/publication/loading boundaries. Reject stale `leakage-report-v2`.
+
+Freeze the literal two-member
+`base_subset_membership_sha256=d9abb33f9eeb7d56d585590565a586cb0c32f955948aee98dfafee0fb1e92bf1`
+known answer defined in Task 15. Producer and verifier tests construct its
+canonical payload independently and reject wrong item/source counts, missing
+or extra keys, duplicate/nonmonotonic source indices, reordered items, and a
+public ID that does not match its indexed source row. Add exact workload tests
+showing that full-source clean/shuffled binary and three-way probes use the main
+80/20 membership, hazard probes use only its positive members, and each control
+uses its own 8,000-item groupwise split followed by its target-task filter.
 
 - [ ] **Step 2: Run RED tests**
 
@@ -6275,16 +6430,19 @@ the same arithmetic separately in the standalone verifier.
 
 Encode each pack as canonical standard padded Base64 of concatenated 32-byte
 digests, with exact decoded length, ordered count, and payload SHA-256. The
-100,000 source digests are collected during the authenticated first pass; each
-positive-control pack contains its 8,000 injected digests in selected source
-order. Enforce the whole-report 16 MiB bound before atomic publication and on
-load.
+100,000 source digests are collected during the authenticated first pass; the
+7,000 clock-child digests are collected in exact `0.1x` then `10x`
+authenticated parent order; each positive-control pack contains its 8,000
+injected digests in selected source order. Enforce the whole-report 16 MiB
+bound before atomic publication and on load.
 
-Populate construction statistics from actual pass counters and first/second
-source-manifest hashes. Populate membership evidence without removing the
-three v2 top-level fields. Keep the six existing check IDs and booleans, but
-derive them from namespace, provenance, invariant/feature/finite/second-pass
-counts, and equal authenticated hashes.
+Populate construction statistics from actual pass counters, first/second
+source-manifest hashes, and the clock-child pack. Populate membership evidence
+without removing the three v2 top-level fields. Keep the six existing check IDs
+and booleans, but derive them from namespace, provenance,
+invariant/feature/finite/second-pass counts, and equal authenticated hashes.
+Derive every probe workload from its task-filtered membership rather than
+copying the main split count.
 
 - [ ] **Step 4: Run transitional GREEN and commit**
 
@@ -6332,13 +6490,15 @@ and resolve every finding before Pass 5C.
 
 Use a literal nonaligned-quartet fixture and hand-computed ordered hashes.
 Require rejection when only one of these values changes while its strict SHA
-shape remains valid: source digest pack item/order/payload; corpus hash;
-source-manifest hash; split/train/test membership hash; membership count; one
-positive-control subset membership, base subset corpus, split membership,
-injected digest, injected corpus, or pack order; one of the six construction
-booleans/counters; or any counterfactual result payload hash. Require the
-100,000 reconstructed train/test IDs to be disjoint and complete. Require the
-old outer v2 result expectation to fail.
+shape remains valid: source digest pack item/order/payload; clock-child digest
+pack item/order/payload; corpus hash; source-manifest hash; authenticated or
+anchor clock-pair-manifest hash; split/train/test membership hash; membership
+count; one positive-control subset membership, base subset corpus, split
+membership, injected digest, injected corpus, or pack order; one of the six
+construction booleans/counters; or any counterfactual result payload hash.
+Require the 100,000 reconstructed train/test IDs to be disjoint and complete,
+and check every task-filtered clean/shuffled/control workload. Require the old
+outer v2 result expectation to fail.
 
 - [ ] **Step 2: Run RED tests**
 
@@ -6358,12 +6518,23 @@ recompute the corpus hash and source-manifest v2 hash, including manifest rank,
 generation mode, block, absolute episode position, explicit quartet member,
 public ID, and episode digest.
 
+Decode the 7,000-item clock-child pack in its exact `0.1x`-then-`10x`
+authenticated parent order. Combine it with source-pack parent digests,
+reconstructed parent/child public IDs, parent manifest ranks, and scale values
+to rebuild every canonical v2 clock-pair-manifest row and the complete framed
+payload. Independently hash that payload and require equality with both the
+source authentication and v2 provenance anchor. Neither stored clock hash is a
+substitute for the child pack or the reconstruction.
+
 Reproduce the frozen main group ranking and 80/20 split to derive the exact
-split/train/test payload hashes and counts. Reproduce the balanced positive-
-control subset and groupwise split. For all nine named injectors, independently
-derive the injected public IDs from allocation-derived labels, combine them
-with the control's ordered packed digests, and derive its subset, split, and
-injected-corpus hashes. Recompute the six construction checks from primitives.
+split/train/test payload hashes and counts. For each clean and shuffled task,
+apply its exact task filter before checking probe workloads; the hazard task
+uses only positive members. Reproduce the balanced positive-control subset,
+its canonical source-index/public-ID membership payload, and groupwise split.
+For all nine named injectors, independently derive the injected public IDs from
+allocation-derived labels, combine them with the control's ordered packed
+digests, and derive its subset, split, injected-corpus hash, and task-filtered
+probe workloads. Recompute the six construction checks from primitives.
 
 Recreate the three exact counterfactual result streams without episode
 regeneration: presentation uses every base ID in source order; delay swap pairs
@@ -6405,10 +6576,11 @@ the complete Pass 5 range. They must inspect the exact production code, not
 only test summaries, and must reproduce the `5,6,7,8` nonaligned quartet,
 wrong-member/wrong-label failures, eight-row manifest failure, metric mutation,
 membership mutation, control-pack mutation, and counterfactual-hash mutation.
-They must also confirm all 135 probe records are derivable, all ten digest
-packs are canonical/bounded, the raw-trust-anchor limitation is stated, and no
-scientific setting changed. If either review finds an issue, commit the
-smallest TDD fix and repeat both reviews.
+They must also confirm all 135 probe records are derivable, all eleven digest
+packs are canonical/bounded, the source plus clock-child packs reconstruct the
+authenticated v2 clock-pair manifest, the raw-trust-anchor limitation is
+stated, and no scientific setting changed. If either review finds an issue,
+commit the smallest TDD fix and repeat both reviews.
 
 After both reviews pass, run:
 
@@ -6486,6 +6658,21 @@ evidence_source_commit="$(git log -1 --format=%H "${collector_head}" -- \
   src/silent_cascade/rng.py src/silent_cascade/schemas.py \
   src/silent_cascade/validation.py)"
 git merge-base --is-ancestor "${evidence_source_commit}" "${collector_head}"
+git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
+  scripts/check_phase1_reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py \
+  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
+  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
+  src/silent_cascade/env/services.py src/silent_cascade/io.py \
+  src/silent_cascade/logging/__init__.py \
+  src/silent_cascade/logging/manifest.py \
+  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
+  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
+  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
+  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
+  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
+  src/silent_cascade/validation.py
 uv sync --locked --group dev
 make verify
 ```
@@ -6500,9 +6687,17 @@ that exact full source hash.
 
 - [ ] **Step 2: Create the fixed validation manifest once**
 
-Run from the exact clean, reviewed `evidence_source_commit` captured in Step 1:
+Run from the exact clean current `collector_head` captured in Step 1. Do not
+check out `evidence_source_commit` when it is an earlier reviewed
+analysis-source revision; a test-only reviewed descendant is a valid collector
+HEAD. Immediately before and after the command, require current HEAD to remain
+`collector_head` and recompute the exact final-analysis path fingerprint/last
+touch to prove all analysis bytes and `evidence_source_commit` are unchanged.
+The manifest and every later report must record `evidence_source_commit`, not
+the test-only collector descendant:
 
 ```bash
+test "$(git rev-parse HEAD)" = "${collector_head}"
 uv run silent-cascade data freeze \
   --config configs/base.yaml \
   --data-config configs/data/primary.yaml \
@@ -6510,6 +6705,22 @@ uv run silent-cascade data freeze \
   --root-seed 2026083001 \
   --public-id-seed 2026083002 \
   --json
+test "$(git rev-parse HEAD)" = "${collector_head}"
+git diff --quiet "${evidence_source_commit}" "${collector_head}" -- \
+  scripts/check_phase1_reproducibility.py \
+  scripts/verify_phase1_gate_artifacts.py \
+  src/silent_cascade/provenance.py src/silent_cascade/env/reward.py \
+  src/silent_cascade/env/leakage.py src/silent_cascade/env/reproducibility.py \
+  src/silent_cascade/env/services.py src/silent_cascade/io.py \
+  src/silent_cascade/logging/__init__.py \
+  src/silent_cascade/logging/manifest.py \
+  src/silent_cascade/__init__.py src/silent_cascade/env/__init__.py \
+  src/silent_cascade/env/config.py src/silent_cascade/env/episode.py \
+  src/silent_cascade/env/generator.py src/silent_cascade/env/invariants.py \
+  src/silent_cascade/env/oracle.py src/silent_cascade/env/timing.py \
+  src/silent_cascade/errors.py src/silent_cascade/hashing.py \
+  src/silent_cascade/rng.py src/silent_cascade/schemas.py \
+  src/silent_cascade/validation.py
 ```
 
 Expected: exit 0, 10,000 unique entries, 5,000 positive, 2,500 safe-negative,
@@ -6618,10 +6829,12 @@ label-shuffled families, and every positive control's nine-feature `probes`),
 and complete independent `ConstructionNamespaceEvidence` with raw seed
 `2026083012`. All 135 probes contain strict confusion and permutation
 sufficient statistics; the source has one 100,000-digest ordered pack and the
-nine controls each have one 8,000-digest injected pack. The report contains
+clock suite has one ordered 7,000-child-digest pack, while the nine controls
+each have one 8,000-digest injected pack: eleven packs total. The report contains
 derived `LeakageConstructionStatistics` and `LeakageMembershipEvidence`,
-reconstructable source/corpus/main-split/control hashes, exact v2 source/clock
-authentication domains, and canonical bytes no larger than 16 MiB. Any
+reconstructable source/corpus/main-split/control hashes and a reconstructable
+complete v2 clock-pair-manifest hash, exact v2 source/clock authentication
+domains and anchor, and canonical bytes no larger than 16 MiB. Any
 detector failure, missing stratum/check, underpowered test, pack/statistic/hash
 mismatch, or oversize artifact exits nonzero and blocks Phase 1.
 
@@ -6688,7 +6901,7 @@ matched cohort attempt is counted once, not per member. Both reports'
 sample-membership digests are independently recomputable through the frozen
 pure helper APIs.
 
-- [ ] **Step 7: Run final local verification**
+- [ ] **Step 7: Run pre-freeze evidence verification**
 
 ```bash
 uv run python scripts/verify_phase1_gate_artifacts.py \
@@ -6698,14 +6911,20 @@ uv run python scripts/verify_phase1_gate_artifacts.py \
   --validation-reproducibility manifests/validation/v1/phase1-validation-reproducibility.json \
   --independent-reproducibility manifests/validation/v1/phase1-independent-reproducibility-gate.json
 uv sync --locked --group dev
-make verify
+uv run ruff check .
+uv run ruff format --check .
 uv run pytest -q tests/property tests/regression tests/integration/test_cli_phase1.py tests/integration/test_phase1_services.py
+uv run silent-cascade doctor
+uv build
 git diff --check
 ```
 
-Expected: the cross-artifact gate verifier, locked sync, lint, formatting, all
-tests, doctor, source/wheel build, focused property/regression/integration
-tests, and diff check pass locally. The verifier emits
+Expected: the cross-artifact gate verifier, locked sync, lint, formatting,
+doctor, source/wheel build, focused property/regression/integration tests, and
+diff check pass locally. Do not run `make verify` in this transient state: all
+five evidence files now exist while the delivery index is intentionally still
+in progress, so its pre-frozen two-state regression must fail until Step 8
+atomically supplies exact completion metadata. The verifier emits
 `phase1-gate-verification-v3`, authenticates historical Git blobs and the
 historical plan base, requires final `phase1_analysis` scope, independently
 recomputes both sample memberships and both namespace summaries, and confirms
@@ -6725,7 +6944,16 @@ revision. Do not add benchmark claims. Do not make any post-evidence source,
 fixture, schema, or verifier correction in this commit; an audit finding
 invalidates all five artifacts and starts a new correction/regeneration cycle.
 
+Use exactly this completion-cell grammar so the already-committed two-state
+repository regression validates the byte hashes and common source commit:
+
+```text
+Complete at collector source `<evidence_source_commit>`: validation `<file sha256>`; oracle `<file sha256>`; leakage `<file sha256>`; matched reproducibility `<file sha256>`; independent reproducibility `<file sha256>`. The v3 cross-artifact verifier and local `make verify` passed with zero foundation-model calls; this is generator/oracle engineering evidence, not learned-model or benchmark evidence.
+```
+
 ```bash
+make verify
+git diff --check
 git add manifests/validation/v1/ofd-primary-10000.json \
   manifests/validation/v1/phase1-oracle-gate.json \
   manifests/validation/v1/phase1-leakage-gate.json \
@@ -6775,7 +7003,11 @@ Phase 1 is complete only when all of the following are simultaneously true:
 6. oracle timed success is exactly `100000/100000`;
 7. positive and negative random strata pass their separate frozen exact-binomial
    and absolute-error checks; pooled expectation `0.3125` is diagnostic only;
-8. all clean leakage probes pass and every injected leak is detected;
+8. all clean leakage probes pass and every injected leak is detected; all 135
+   probe workloads are checked against their task-filtered memberships, the
+   positive-hazard-class workload uses only positive members, all eleven digest
+   packs are exact/canonical/bounded, and the source plus clock-child packs
+   independently reconstruct the authenticated v2 clock-pair manifest;
 9. namespace evidence derives exactly 50,000 matched plus 700,000 independent
    construction tokens and 10,000 matched plus 107,000 independent public IDs,
    binds exact raw public-ID seeds `2026083002` and `2026083012` to their
@@ -6872,10 +7104,12 @@ specification.
   metrics, Holm values, detector summaries, and pass states are independently
   rederived.
 - [ ] The canonical leakage report is at most 16 MiB and carries one ordered
-  100,000-source-digest pack plus nine ordered 8,000-injected-digest packs;
-  source/corpus/source-manifest, main split/train/test, every positive-control
-  subset/split/injected hash, all six construction checks, and all three
-  counterfactual result hashes are reconstructed independently.
+  100,000-source-digest pack, one ordered 7,000-clock-child-digest pack, and
+  nine ordered 8,000-injected-digest packs; source/corpus/source-manifest,
+  complete v2 clock-pair manifest, main task-filtered split/train/test, every
+  positive-control subset/split/injected hash and task-filtered workload, all
+  six construction checks, and all three counterfactual result hashes are
+  reconstructed independently.
 - [ ] Oracle/random arithmetic and pass flags are derived under strict exact
   schemas and independently recomputed at the five-artifact boundary.
 - [ ] Evidence revisions, historical plan base, and both source fingerprints

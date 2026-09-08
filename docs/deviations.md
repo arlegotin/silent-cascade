@@ -56,15 +56,18 @@ detector identity, and probe/control/report pass state are derived from those
 primitives by both the producer and an independently implemented verifier.
 
 Version 3 additionally carries bounded canonical `OrderedSha256Pack` values:
-one ordered 100,000-item pack for source episode digests and one ordered
-8,000-item injected-digest pack for each of the nine positive controls. Each
-pack is a canonical padded-base64 encoding of concatenated 32-byte SHA-256
-values with an exact count and payload digest; the whole canonical leakage
-artifact is capped at 16 MiB. Typed `LeakageConstructionStatistics` and
+one ordered 100,000-item pack for source episode digests, one ordered 7,000-item
+clock-child pack, and one ordered 8,000-item injected-digest pack for each of
+the nine positive controls. Each pack is a canonical padded-base64 encoding of
+concatenated 32-byte SHA-256 values with an exact count and payload digest; the
+whole canonical leakage artifact is capped at 16 MiB. Typed
+`LeakageConstructionStatistics` and
 `LeakageMembershipEvidence` retain the raw counts and redundant hashes needed
 to rederive the six construction checks, independent corpus and source-manifest
 hashes, split/train/test membership hashes, and every positive-control subset,
-split, and injected-corpus hash. The final verifier reconstructs the complete
+split, and injected-corpus hash. The source and clock-child packs additionally
+reconstruct the complete v2 clock-pair manifest and bind its digest to source
+authentication and the v2 anchor. The final verifier reconstructs the complete
 ordered public-ID and coordinate stream from frozen allocation, seeds, and
 accepted-attempt runs, then performs those derivations without calling the
 producer helpers. It also independently reconstructs all three counterfactual
@@ -88,6 +91,27 @@ can defeat an offline verifier that intentionally does not regenerate the
 state this trust-anchor limitation rather than claim universal tamper
 detection. Primary execution remains local and offline with exactly zero
 foundation-model calls.
+
+A pre-implementation re-review tightened this correction without changing a
+scientific setting. Leakage v3 now carries an eleventh bounded digest pack for
+the 7,000 clock children in exact `0.1x`-then-`10x` authenticated parent order.
+The final verifier must combine it with the 100,000-item source pack to rebuild
+the complete v2 clock-pair-manifest payload and compare its hash with both
+source authentication and the v2 leakage anchor. This closes the prior gap in
+which child public IDs were reconstructable but child episode digests were not.
+
+The same review made the Pass 5A anchor-fixture migration explicit, froze the
+delivery-index regression before collection to accept only a wholly absent
+in-progress state or a wholly present byte-hash/source-bound completed state,
+and fully specified the positive-control base-subset membership digest. Task
+workload validation is task-filtered: hazard-class probes use only positives,
+including within each named 8,000-item control subset. Task 18 collectors run
+from the captured clean `collector_head`; their reports continue to record the
+last reviewed analysis-source revision, `evidence_source_commit`. These are
+evidence-authentication and workflow corrections only. Frozen denominators,
+thresholds, seeds, schemas outside the already declared leakage/anchor/gate
+migrations, local-only execution, and zero foundation-model calls remain
+unchanged.
 
 ## 2026-09-06 — Final Phase 1 evidence-authentication audit correction
 
