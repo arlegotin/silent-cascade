@@ -76,6 +76,14 @@ def test_cli_replay_emits_strict_public_success_payload(tmp_path, config) -> Non
     assert "PRIVATE" not in completed.output
 
 
+def test_standalone_replay_rejects_gate_sample_selector(tmp_path, config) -> None:
+    path, _, _ = _artifact(tmp_path, config)
+    completed = runner.invoke(app, ["replay", str(path), "--sample-index", "0", "--json"])
+    assert completed.exit_code == 1
+    assert json.loads(completed.stderr)["code"] == "replay_error"
+    assert "Traceback" not in completed.stderr
+
+
 def test_installed_console_script_replays_artifact(tmp_path, config) -> None:
     path, _, _ = _artifact(tmp_path, config)
     executable = shutil.which("silent-cascade")

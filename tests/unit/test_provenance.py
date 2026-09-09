@@ -32,6 +32,36 @@ from silent_cascade.provenance import (
 )
 
 
+def test_phase2_provenance_scope_closes_over_executed_local_imports() -> None:
+    from silent_cascade.eventflow.provenance import PHASE2_ENGINE_SOURCE_PATHS
+
+    root = Path(__file__).resolve().parents[2]
+    declared = set(PHASE2_ENGINE_SOURCE_PATHS)
+    assert tuple(sorted(declared)) == PHASE2_ENGINE_SOURCE_PATHS
+    for relative in PHASE2_ENGINE_SOURCE_PATHS:
+        path = root / relative
+        if path.suffix != ".py":
+            continue
+        for ancestor in path.parents:
+            if ancestor == root:
+                break
+            initializer = ancestor / "__init__.py"
+            if initializer.is_file():
+                assert initializer.relative_to(root).as_posix() in declared
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            names = (
+                [node.module]
+                if isinstance(node, ast.ImportFrom)
+                else ([alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
+            )
+            for name in names:
+                if name and name.startswith("silent_cascade"):
+                    candidate = root / "src" / (name.replace(".", "/") + ".py")
+                    if candidate.is_file():
+                        assert candidate.relative_to(root).as_posix() in declared
+
+
 @pytest.mark.parametrize(
     "version", ("phase1-leakage-audit-anchor-v1", "phase1-leakage-audit-anchor-v2")
 )

@@ -163,7 +163,9 @@ def _closed_schema(raw: bytes) -> str | int:
     if not isinstance(payload, dict) or "schema_version" not in payload:
         raise _replay_error("archive.schema_version")
     schema = payload["schema_version"]
-    if schema == "phase2-replay-v1" or (type(schema) is int and schema == 1):
+    if schema in ("phase2-replay-v1", "phase2-engine-gate-v1") or (
+        type(schema) is int and schema == 1
+    ):
         return schema
     raise _replay_error("archive.schema_version")
 
@@ -290,13 +292,27 @@ def _render_replay_error(error: SilentCascadeError) -> None:
 def replay_command(
     artifact: Annotated[Path, typer.Argument()],
     json_output: Annotated[bool, typer.Option("--json")] = False,
+    sample_index: Annotated[int | None, typer.Option("--sample-index")] = None,
 ) -> None:
     """Verify one closed validation replay or crash archive on CPU."""
     try:
         raw = _read_replay_input(artifact)
         schema = _closed_schema(raw)
-        if schema == "phase2-replay-v1":
-            loaded = parse_replay_artifact_bytes(raw)
+        if schema == "phase2-engine-gate-v1":
+            from silent_cascade.eventflow.evidence import parse_phase2_gate_bytes
+
+            if sample_index is None or not 0 <= sample_index <= 2:
+                raise _replay_error("archive.sample_index")
+            try:
+                gate = parse_phase2_gate_bytes(raw)
+            except SilentCascadeError as error:
+                raise _replay_error("archive.gate") from error
+            loaded = gate.selected_replay_samples[sample_index]
+        else:
+            if sample_index is not None:
+                raise _replay_error("archive.sample_index")
+            loaded = parse_replay_artifact_bytes(raw) if schema == "phase2-replay-v1" else None
+        if loaded is not None:
             comparison = verify_replay(loaded)
             report: EpisodeReplayReport | CrashReplayReport = EpisodeReplayReport(
                 artifact_sha256=sha256_bytes(raw),

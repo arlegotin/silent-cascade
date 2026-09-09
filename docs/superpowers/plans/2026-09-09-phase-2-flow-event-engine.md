@@ -31,12 +31,12 @@ dataclasses, `safetensors`, Typer, SHA-256, pytest, Hypothesis, Ruff, and `uv`.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`
 
-**Plan status:** **User-approved; execution in progress.**
+**Plan status:** **User-approved; completion tracked in docs/PLAN.md.**
 
 ## Execution Preconditions and Superpowers Workflow
 
 Before changing source, tests, configuration, manifests, documentation other
-than this proposed plan/index link, or build files:
+than this approved plan/index link, or build files:
 
 1. Confirm explicit approval of this exact Phase 2 plan in the task thread.
 2. Confirm Phase 1 remains complete in `docs/PLAN.md`, all five Phase 1
@@ -2020,7 +2020,7 @@ network access, or hosted automation appears.
 
 **Files:**
 
-- Modify: `src/silent_cascade/provenance.py`
+- Create: `src/silent_cascade/eventflow/provenance.py`
 - Create: `src/silent_cascade/eventflow/evidence.py`
 - Modify: `src/silent_cascade/cli.py`
 - Create: `scripts/check_phase2_engine.py`
@@ -2040,6 +2040,23 @@ network access, or hosted automation appears.
   verifier.
 - Reads the already committed Phase 1 validation manifest and regenerates each
   entry through its authenticated recipe. It never creates test/frozen data.
+
+**Task 13 integration rulings:** Preserve the frozen shared Phase 1 provenance
+module and its source tuples; the new sibling Phase 2 module owns its literal
+source closure. Retain one compact raw witness per manifest entry as well as
+the framed ordered trace chain. The standalone verifier independently derives
+totals, pass state, historical Git trust, and replay witness commitments; it
+shares only strict data schemas and reviewed low-level archive reads with the
+collector. Gate provenance binds the fixed full `Phase2Config`, whereas each
+nested replay binds only its `EventFlowConfig`. A Phase 2 archive codec restores
+the seven known integer-keyed allocation maps before strict full-config
+validation and requires exact canonical roundtrip bytes. The collector binds
+the importing checkout as well as the named repository to historical source
+blobs. Gate publication rolls back only its own newly published bytes after a
+late durability failure, using a pinned parent, bounded regular-file reads and
+inode checks; preexisting or replaced files remain untouched, and failed
+rollback reports possible residual output. Hostile concurrent file replacement
+remains outside the local single-writer publication boundary.
 
 - [ ] **Step 1: Freeze the exact evidence schema in failing tests**
 

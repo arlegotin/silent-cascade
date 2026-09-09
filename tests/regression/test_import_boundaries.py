@@ -144,6 +144,14 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
                     "silent_cascade.eventflow.engine",
                     "silent_cascade.eventflow.scheduling",
                 }
+            elif relative_path == "eventflow/evidence.py":
+                # Validation-private collector; never imported by an agent.
+                allowed = {
+                    "silent_cascade.env.episode",
+                    "silent_cascade.env.reward",
+                    "silent_cascade.env.services",
+                    "silent_cascade.eventflow.engine",
+                }
             modules = imported_modules(path)
             assert not any(
                 module == blocked or module.startswith(f"{blocked}.")

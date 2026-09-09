@@ -45,7 +45,14 @@ def test_distributions_include_phase2_replay_runtime_modules(tmp_path: Path) -> 
         sdist_members = set(archive.getnames())
     with zipfile.ZipFile(next(output_dir.glob("*.whl"))) as archive:
         wheel_members = set(archive.namelist())
-    for module in ("archive_io.py", "checkpoint.py", "replay.py", "engine.py"):
+    for module in (
+        "archive_io.py",
+        "checkpoint.py",
+        "replay.py",
+        "engine.py",
+        "evidence.py",
+        "provenance.py",
+    ):
         assert any(
             member.endswith(f"silent_cascade/eventflow/{module}") for member in sdist_members
         )

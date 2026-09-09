@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from runpy import run_path
 
 import pytest
 
@@ -43,6 +44,47 @@ _INVALIDATED_PHASE1_REVISIONS = {
     "4aa6eca5d25e3c6dac879850b2a0557bbe84b54e",
     "2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e",
 }
+
+_PHASE2_IN_PROGRESS_GATE = (
+    "In progress under the approved Phase 2 flow-and-event-engine plan. "
+    "No Phase 2 acceptance artifact may exist until Tasks 1\u201313 are committed, "
+    "reviewed, and locally verified."
+)
+_PHASE2_COMPLETE_GATE = re.compile(
+    r"Complete at engine source `(?P<source>[0-9a-f]{40})` with gate artifact "
+    r"`(?P<artifact>[0-9a-f]{64})`: the public-facts-only scripted EventFlow condition "
+    r"achieved 10,000/10,000 timed successes; numeric, long-silence, Zeno, "
+    r"checkpoint/resume, CPU replay, local `make verify`, and the independent artifact "
+    r"verifier passed with zero foundation-model calls\. This is non-neural runtime "
+    r"engineering evidence, not learned-model or benchmark evidence\."
+)
+
+
+def _assert_phase2_delivery_state(root: Path, plan_index: str) -> None:
+    rows = [line for line in plan_index.splitlines() if line.startswith("| 2 —")]
+    assert len(rows) == 1
+    cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+    path = root / "manifests/validation/v1/phase2-engine-gate.json"
+    if not path.exists() and not path.is_symlink():
+        assert cell == _PHASE2_IN_PROGRESS_GATE
+        return
+    assert path.is_file() and not path.is_symlink(), "Phase 2 evidence must be a regular file"
+    match = _PHASE2_COMPLETE_GATE.fullmatch(cell)
+    assert match is not None, "present Phase 2 evidence requires exact completion metadata"
+    from silent_cascade.errors import SilentCascadeError
+
+    verify = run_path(str(ROOT / "scripts/verify_phase2_gate_artifact.py"))[
+        "verify_phase2_gate_artifact"
+    ]
+    try:
+        result = verify(
+            artifact_path=path, repo_root=root, expected_source_commit=match.group("source")
+        )
+    except SilentCascadeError as error:
+        raise AssertionError("Phase 2 delivery artifact fails independent verification") from error
+    assert result.passed and result.profile == "production"
+    assert result.artifact_file_sha256 == match.group("artifact")
+    assert result.source_commit == match.group("source")
 
 
 def _assert_phase1_delivery_state(root: Path, plan_index: str) -> None:
@@ -153,6 +195,32 @@ def test_phase0_plan_index_is_wired_to_frozen_inputs() -> None:
     assert "superpowers/plans/2026-08-30-phase-0-bootstrap.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-1-generator-oracle.md" in plan_index
     _assert_phase1_delivery_state(ROOT, plan_index)
+    assert "_assert_phase2_delivery_state" in globals(), "Phase 2 two-state regression is missing"
+    _assert_phase2_delivery_state(ROOT, plan_index)
+
+
+def test_phase2_delivery_state_refuses_partial_or_unearned_completion(tmp_path: Path) -> None:
+    assert "_assert_phase2_delivery_state" in globals(), "Phase 2 two-state regression is missing"
+    in_progress = (
+        "In progress under the approved Phase 2 flow-and-event-engine plan. "
+        "No Phase 2 acceptance artifact may exist until Tasks 1\u201313 are committed, "
+        "reviewed, and locally verified."
+    )
+    plan = f"| 2 — Flow and event engine | plan | {in_progress} |"
+    _assert_phase2_delivery_state(tmp_path, plan)
+    with pytest.raises(AssertionError):
+        _assert_phase2_delivery_state(tmp_path, plan.replace(in_progress, "Complete"))
+    path = tmp_path / "manifests/validation/v1/phase2-engine-gate.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    with pytest.raises(AssertionError):
+        _assert_phase2_delivery_state(tmp_path, plan)
+    with pytest.raises(AssertionError):
+        _assert_phase2_delivery_state(tmp_path, plan.replace(in_progress, "Complete"))
+    path.unlink()
+    path.symlink_to(tmp_path / "missing.json")
+    with pytest.raises(AssertionError):
+        _assert_phase2_delivery_state(tmp_path, plan)
 
 
 def test_phase1_delivery_state_contract(tmp_path: Path) -> None:
