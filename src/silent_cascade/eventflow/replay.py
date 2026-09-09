@@ -189,6 +189,11 @@ def _parse_artifact(raw: bytes) -> ReplayArtifact:
         raise _mismatch("archive.json") from error
 
 
+def parse_replay_artifact_bytes(raw: bytes) -> ReplayArtifact:
+    """Parse one caller-owned bounded replay snapshot without reopening its path."""
+    return _parse_artifact(raw)
+
+
 def _validated_inputs(artifact: ReplayArtifact) -> tuple[EpisodeBundle, EventFlowConfig]:
     encoded = artifact.config_canonical_json.encode("utf-8")
     if sha256_bytes(encoded) != artifact.config_sha256:
@@ -229,7 +234,7 @@ def load_replay_artifact(path: Path) -> ReplayArtifact:
     try:
         with _parent_descriptor(path) as (parent, name):
             raw = _read_at(parent, name)
-        return _parse_artifact(raw)
+        return parse_replay_artifact_bytes(raw)
     except OSError as error:
         raise _mismatch("archive.path_or_file") from error
 
@@ -258,7 +263,7 @@ def write_replay_artifact(
     payload = artifact.model_dump(mode="json")
     payload["payload_sha256"] = _payload_hash(payload)
     raw = canonical_json_bytes(payload)
-    artifact = _parse_artifact(raw)
+    artifact = parse_replay_artifact_bytes(raw)
     try:
         with _parent_descriptor(path) as (parent, name):
             # macOS cannot traverse a directory via /dev/fd. Validate parents
@@ -299,7 +304,7 @@ def _compare(expected: object, actual: object, path: str) -> None:
 def verify_replay(artifact: ReplayArtifact) -> ReplayComparison:
     """Rerun on CPU, stopping immediately at the first differing causal boundary."""
     # Revalidate even a model_copy/model_construct object; those APIs bypass validators.
-    artifact = _parse_artifact(canonical_json_bytes(artifact))
+    artifact = parse_replay_artifact_bytes(canonical_json_bytes(artifact))
     bundle, config = _validated_inputs(artifact)
     factory = {"scripted-event-flow-v1": ScriptedEventFlowAgent}[artifact.agent_implementation]
     engine = EventEngine(config)

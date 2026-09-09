@@ -10,7 +10,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from silent_cascade.config import resolve_config
 from silent_cascade.doctor import DoctorReport, run_doctor
 from silent_cascade.env.leakage import LeakageAuditProfileName
 from silent_cascade.env.services import (
@@ -32,9 +31,13 @@ from silent_cascade.eventflow.checkpoint import (
     load_runtime_checkpoint,
     restore_runtime_session,
 )
-from silent_cascade.eventflow.config import Phase2Config
+from silent_cascade.eventflow.config import EventFlowConfig
 from silent_cascade.eventflow.engine import EventEngine
-from silent_cascade.eventflow.replay import MAX_REPLAY_BYTES, load_replay_artifact, verify_replay
+from silent_cascade.eventflow.replay import (
+    MAX_REPLAY_BYTES,
+    parse_replay_artifact_bytes,
+    verify_replay,
+)
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.logging.crash_bundle import CrashBundleManifest
 from silent_cascade.logging.runtime_diagnostics import (
@@ -165,15 +168,34 @@ def _closed_schema(raw: bytes) -> str | int:
     raise _replay_error("archive.schema_version")
 
 
-def _runtime_config():
-    return resolve_config(
-        Phase2Config,
-        [
-            Path("configs/base.yaml"),
-            Path("configs/data/primary.yaml"),
-            Path("configs/model/event_flow.yaml"),
-        ],
-    ).config.event_flow
+def _runtime_config() -> EventFlowConfig:
+    """Return the closed Phase 2 runtime protocol without caller-CWD inputs."""
+    return EventFlowConfig.model_validate(
+        {
+            "dimensions": {
+                "z_fast": 256,
+                "z_slow": 64,
+                "drives": 8,
+                "guard_accumulators": 3,
+                "focus_key": 64,
+                "hypothesis_latent": 64,
+            },
+            "flow": {"rate_min": 1.0e-5, "rate_max": 20.0, "state_min": -1.0, "state_max": 1.0},
+            "guards": {
+                "threshold": 1.0,
+                "rate_min": 1.0e-5,
+                "rate_max": 500.0,
+                "active_margin": 1.10,
+                "inactive_margin": 0.90,
+                "minimum_internal_gap": 1.0e-4,
+                "same_kind_refractory": 1.0e-3,
+                "near_tie_tolerance": 1.0e-9,
+                "maximum_consecutive_gap_clamps": 4,
+            },
+            "scripted": {"action_target_fraction": 0.825},
+            "max_internal_events": 64,
+        }
+    )
 
 
 def _crash_checkpoint_name(value: object) -> str:
@@ -188,7 +210,14 @@ def _recognized_failure(payload: object) -> RuntimeDiagnosticIdentity:
     context = payload.get("context")
     if not isinstance(context, dict):
         raise _replay_error("crash.error")
-    identity = RuntimeDiagnosticIdentity(payload.get("code"), context.get("invariant"))
+    code, invariant, certifiable = (
+        payload.get("code"),
+        context.get("invariant"),
+        context.get("replay_certifiable"),
+    )
+    if type(code) is not str or type(invariant) is not str or certifiable is not True:
+        raise _replay_error("crash.error")
+    identity = RuntimeDiagnosticIdentity(code, invariant)
     if not identity.replay_certifiable or payload != identity.to_payload():
         raise _replay_error("crash.error")
     return identity
@@ -267,7 +296,7 @@ def replay_command(
         raw = _read_replay_input(artifact)
         schema = _closed_schema(raw)
         if schema == "phase2-replay-v1":
-            loaded = load_replay_artifact(artifact)
+            loaded = parse_replay_artifact_bytes(raw)
             comparison = verify_replay(loaded)
             report: EpisodeReplayReport | CrashReplayReport = EpisodeReplayReport(
                 artifact_sha256=sha256_bytes(raw),

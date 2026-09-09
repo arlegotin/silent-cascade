@@ -1,4 +1,6 @@
+import os
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -49,3 +51,57 @@ def test_distributions_include_phase2_replay_runtime_modules(tmp_path: Path) -> 
         )
         assert f"silent_cascade/eventflow/{module}" in wheel_members
     assert any(member.endswith("/README.md") for member in sdist_members)
+
+
+def test_extracted_wheel_imports_replay_without_optional_modules_or_editable_source(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "dist"
+    output_dir.mkdir()
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(output_dir), "--offline"],
+        cwd=ROOT,
+        check=True,
+    )
+    stage = tmp_path / "wheel-stage"
+    with zipfile.ZipFile(next(output_dir.glob("*.whl"))) as archive:
+        archive.extractall(stage)
+    program = r"""
+import importlib.abc
+import os
+import pathlib
+import sys
+
+blocked = {"mlx", "mlx_vlm", "huggingface_hub"}
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".", 1)[0] in blocked:
+            raise AssertionError(f"optional import attempted: {fullname}")
+        return None
+
+sys.meta_path.insert(0, Blocker())
+import silent_cascade
+import silent_cascade.cli
+import silent_cascade.eventflow.archive_io
+import silent_cascade.eventflow.replay
+
+assert not blocked.intersection(sys.modules)
+stage = pathlib.Path(os.environ["SILENT_CASCADE_WHEEL_STAGE"]).resolve()
+assert pathlib.Path(silent_cascade.__file__).resolve().is_relative_to(stage)
+assert pathlib.Path(silent_cascade.cli.__file__).resolve().is_relative_to(stage)
+"""
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(stage),
+        "SILENT_CASCADE_WHEEL_STAGE": str(stage),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
