@@ -306,7 +306,7 @@ def parse_phase2_gate_bytes(raw: bytes, *, allow_debug: bool = False):
         if raw != canonical_json_bytes(report):
             raise ValueError("gate must be canonical JSON without duplicate keys")
         return report
-    except (ValueError, TypeError, SilentCascadeError) as error:
+    except (ValueError, TypeError, RecursionError, SilentCascadeError) as error:
         raise ArtifactIntegrityError("invalid Phase 2 gate artifact") from error
 
 

@@ -109,6 +109,14 @@ def decision(role: ComposeRole = ComposeRole.LINK, **changes: object) -> Compose
     return ComposeDecision(**values)
 
 
+@pytest.mark.parametrize("offset", [1, 100])
+def test_shared_jump_rejects_noncanonical_internal_ordinal(offset):
+    state = runtime(Mode.SEARCHING)
+    event = replace(internal(InternalEventKind.RECALL), event_id=INTERNAL_EVENT_ID_BASE + offset)
+    with pytest.raises(DynamicsError, match="ordinal"):
+        apply_recall(state, event, record_id=1)
+
+
 def test_recall_carries_explicit_nonfirst_rank_and_compose_clears_it() -> None:
     state = runtime(Mode.SEARCHING)
     core = apply_recall(state, internal(InternalEventKind.RECALL), record_id=1, selected_rank=3)
@@ -320,8 +328,12 @@ def test_internal_causality_and_runtime_limits_fail_closed(fault: str) -> None:
             "refractory": {"same_kind_refractory_until": (2.0, 0.0, 0.0)},
         }[fault]
         state = replace(state, core=replace(state.core, **changes))
-    with pytest.raises((DynamicsError, TimeOrderError)):
+        if fault == "limit":
+            event = replace(event, event_id=INTERNAL_EVENT_ID_BASE + 64)
+    with pytest.raises((DynamicsError, TimeOrderError)) as caught:
         apply_recall(state, event, record_id=1)
+    if fault == "limit":
+        assert "internal event limit" in str(caught.value)
 
 
 def test_compose_requires_an_active_valid_unconsumed_record() -> None:
@@ -423,7 +435,8 @@ def test_install_requires_an_authoritative_jump_time() -> None:
 def test_exactly_the_64th_internal_event_is_allowed() -> None:
     state = runtime(Mode.SEARCHING)
     state = replace(state, core=replace(state.core, executed_internal_events=63))
-    post = apply_recall(state, internal(InternalEventKind.RECALL), record_id=2)
+    event = replace(internal(InternalEventKind.RECALL), event_id=INTERNAL_EVENT_ID_BASE + 63)
+    post = apply_recall(state, event, record_id=2)
     assert post.executed_internal_events == 64
 
 

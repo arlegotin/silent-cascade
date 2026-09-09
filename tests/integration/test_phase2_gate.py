@@ -15,7 +15,7 @@ from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.generator import CohortAllocation, CohortBlock
 from silent_cascade.env.services import build_cohort_manifest
-from silent_cascade.errors import SilentCascadeError
+from silent_cascade.errors import ArtifactIntegrityError, SilentCascadeError
 from silent_cascade.eventflow.config import Phase2Config
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.logging.manifest import ManifestAccessClass, publish_manifest
@@ -28,6 +28,45 @@ from silent_cascade.provenance import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("entrypoint", ["public", "verifier"])
+def test_gate_parsers_deep_json_is_typed_before_execution(tmp_path, monkeypatch, entrypoint):
+    from silent_cascade.eventflow.engine import EventEngine
+
+    raw = b"[" * 1500 + b"0" + b"]" * 1500
+    path = tmp_path / "deep.json"
+    path.write_bytes(raw)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed gate reached episode execution")
+
+    monkeypatch.setattr(EventEngine, "start_episode", forbidden)
+    verifier = run_path(str(ROOT / "scripts/verify_phase2_gate_artifact.py"))
+    with pytest.raises(ArtifactIntegrityError):
+        if entrypoint == "public":
+            gate_api().parse_phase2_gate_bytes(raw)
+        else:
+            verifier["verify_phase2_gate_artifact"](artifact_path=path, repo_root=ROOT)
+
+
+def test_standalone_verifier_deep_json_has_no_traceback(tmp_path):
+    path = tmp_path / "deep.json"
+    path.write_bytes(b"[" * 1500 + b"0" + b"]" * 1500)
+    completed = subprocess.run(
+        [
+            str(ROOT / ".venv/bin/python"),
+            str(ROOT / "scripts/verify_phase2_gate_artifact.py"),
+            "--artifact",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == "Phase 2 artifact verification failed\n"
+    assert completed.stderr == ""
 
 
 def gate_api():

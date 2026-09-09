@@ -243,8 +243,7 @@ def validate_session_boundary(
         )
         _require(state.core.activation_time is not None, "prediction_after_activation")
         _require(
-            next_event.event_id >= INTERNAL_EVENT_ID_BASE
-            and next_event.event_id != state.core.last_event_id,
+            next_event.event_id == INTERNAL_EVENT_ID_BASE + state.core.executed_internal_events,
             "internal_event_id",
         )
         _require(

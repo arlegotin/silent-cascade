@@ -158,7 +158,7 @@ def _read_replay_input(path: Path) -> bytes:
 def _closed_schema(raw: bytes) -> str | int:
     try:
         payload = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise _replay_error("archive.json") from error
     if not isinstance(payload, dict) or "schema_version" not in payload:
         raise _replay_error("archive.schema_version")

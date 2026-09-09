@@ -136,6 +136,20 @@ def test_engine_copies_explicit_nonfirst_rank_without_assuming_agent_order() -> 
     assert [row.selected_rank for row in selected] == [3, 3]
 
 
+@pytest.mark.parametrize("offset", [1, 100])
+def test_engine_rejects_noncanonical_internal_ordinal_before_callback(offset):
+    class SkippedIds(SpyAgent):
+        def next_internal_event(self, state):
+            event = super().next_internal_event(state)
+            return None if event is None else replace(event, event_id=event.event_id + offset)
+
+    agent = SkippedIds()
+    with pytest.raises(DynamicsError) as caught:
+        engine().run_episode(bundle(), agent)
+    assert caught.value.context["invariant"] == "internal_event_id"
+    assert not any(name == "on_internal" for name, _ in agent.calls)
+
+
 class SpyAgent:
     """A three-event test trajectory, using real shared jumps and installations."""
 

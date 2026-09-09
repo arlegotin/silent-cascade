@@ -65,6 +65,20 @@ def test_queue_pops_only_selected_event_and_preserves_public_episode() -> None:
         iter(pending)
 
 
+@pytest.mark.parametrize("offset", [1, 100])
+def test_prediction_cache_rejects_noncanonical_internal_ordinal(offset):
+    seed = runtime(Mode.SEARCHING)
+    state = begin_post_jump_segment(
+        replace(seed.core, last_event_time=seed.time), seed.segment.parameters, time=seed.time
+    )
+    cache = PredictionCache()
+    event = internal(InternalEventKind.RECALL, 2.0, offset)
+    with pytest.raises(DynamicsError) as caught:
+        cache.get_or_predict(state, lambda _: event)
+    assert caught.value.context["invariant"] == "internal_event_id"
+    assert not cache.is_computed
+
+
 def test_queue_rejects_duplicate_terminal_id_and_public_terminal_substitute() -> None:
     public = PublicEpisode(
         AgentInit("public", 64, 4, 0.0),
@@ -165,7 +179,16 @@ def test_cache_binds_parent_and_snapshot_and_survives_pause(dormant: bool) -> No
     changed = begin_post_jump_segment(
         replace(state.core, last_event_id=1), state.segment.parameters, time=state.time
     )
-    cache.get_or_predict(changed, lambda current: calls.append(1))
+    replacement = None if expected is None else replace(expected, parent_event_id=1)
+
+    def after_preemption(current):
+        calls.append(1)
+        return replacement
+
+    assert cache.get_or_predict(changed, after_preemption) == replacement
+    assert changed.core.executed_internal_events == 0
+    if replacement is not None:
+        assert replacement.event_id == expected.event_id == INTERNAL_EVENT_ID_BASE
     assert calls == [3, 1]
     changed = begin_post_jump_segment(
         changed.core,

@@ -20,6 +20,51 @@ from silent_cascade.rng import snapshot_global_rng
 REVISION = "a" * 40
 
 
+@pytest.mark.parametrize(
+    "header",
+    [
+        b"[]",
+        b'{"__metadata__":[]}',
+        b'{"__metadata__":{"runtime":1}}',
+        b'{"__metadata__":{"runtime":null}}',
+        b'{"__metadata__":{"runtime":[]}}',
+        b"[" * 1500 + b"0" + b"]" * 1500,
+        json.dumps({"__metadata__": {"runtime": "[" * 1500 + "0" + "]" * 1500}}).encode(),
+    ],
+    ids=[
+        "list-header",
+        "list-envelope",
+        "integer-runtime",
+        "null-runtime",
+        "list-runtime",
+        "deep-header",
+        "deep-runtime",
+    ],
+)
+def test_malformed_checkpoint_shapes_are_typed_without_mutation(
+    tmp_path, config, monkeypatch, header
+):
+    from silent_cascade.eventflow.checkpoint import load_runtime_checkpoint
+
+    path = tmp_path / "malformed.safetensors"
+    path.write_bytes(struct.pack("<Q", len(header)) + header)
+    caller = ScriptedEventFlowAgent()
+    before, counters = rng_signature(), caller.compute_counters()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed archive reached execution or a mutation boundary")
+
+    monkeypatch.setattr(EventEngine, "start_episode", forbidden)
+    monkeypatch.setattr(random, "setstate", forbidden)
+    monkeypatch.setattr(np.random, "set_state", forbidden)
+    monkeypatch.setattr(torch, "set_rng_state", forbidden)
+    monkeypatch.setattr(ScriptedEventFlowAgent, "restore_compute_counters", forbidden)
+    with pytest.raises(ReplayError):
+        load_runtime_checkpoint(path, config=config, source_revision=REVISION)
+    assert rng_signature() == before
+    assert caller.compute_counters() == counters
+
+
 def archive(tmp_path, config):
     from silent_cascade.eventflow.checkpoint import publish_runtime_checkpoint, snapshot_runtime
 

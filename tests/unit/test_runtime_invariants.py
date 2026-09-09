@@ -51,6 +51,25 @@ def test_valid_post_jump_and_materialized_boundary():
     validate_session_boundary(advance_to(after, after.time + 0.01))
 
 
+@pytest.mark.parametrize("offset", [-1, 1, 100])
+def test_live_boundary_rejects_noncanonical_internal_ordinal(offset):
+    before, event, _ = trajectory()
+    with pytest.raises(DynamicsError) as caught:
+        validate_session_boundary(
+            before, next_event=replace(event, event_id=event.event_id + offset)
+        )
+    assert caught.value.context["invariant"] == "internal_event_id"
+
+
+def test_live_boundary_rejects_reordered_older_internal_ordinal():
+    _, _, state = trajectory()
+    event = ScriptedEventFlowAgent().next_internal_event(state)
+    assert state.core.executed_internal_events == 2
+    with pytest.raises(DynamicsError) as caught:
+        validate_session_boundary(state, next_event=replace(event, event_id=event.event_id - 2))
+    assert caught.value.context["invariant"] == "internal_event_id"
+
+
 def corrupt(state, mutation):
     core = state.core
     if mutation == "nan_time":

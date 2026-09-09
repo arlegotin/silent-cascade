@@ -806,9 +806,14 @@ def load_runtime_checkpoint(
         if size > MAX_METADATA_BYTES or size > len(raw) - 8:
             raise ReplayError("checkpoint header exceeds byte limit")
         header = json.loads(raw[8 : 8 + size], object_pairs_hook=_unique_object)
-        if set(header.get("__metadata__", {})) != {"runtime"}:
+        if not isinstance(header, dict):
+            raise ReplayError("checkpoint header must be an object")
+        envelope = header.get("__metadata__")
+        if not isinstance(envelope, dict) or set(envelope) != {"runtime"}:
             raise ReplayError("checkpoint metadata envelope differs")
-        encoded = header["__metadata__"]["runtime"].encode()
+        if not isinstance(envelope["runtime"], str):
+            raise ReplayError("checkpoint runtime metadata must be a string")
+        encoded = envelope["runtime"].encode()
         payload = json.loads(encoded, object_pairs_hook=_unique_object)
         metadata = RuntimeCheckpointMetadata.model_validate_json(encoded)
         if encoded != canonical_json_bytes(metadata) or metadata.metadata_sha256 != _metadata_hash(

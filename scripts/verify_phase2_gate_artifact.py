@@ -488,7 +488,7 @@ def verify_phase2_gate_artifact(
         )
     except SilentCascadeError:
         raise
-    except (ValueError, TypeError, KeyError, AttributeError) as error:
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as error:
         raise ArtifactIntegrityError("invalid Phase 2 evidence schema or witness") from error
 
 

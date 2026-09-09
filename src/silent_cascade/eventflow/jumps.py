@@ -125,8 +125,8 @@ def _require_event(
         return
     if state.core.activation_time is None or state.core.activation_time > state.time:
         raise DynamicsError("endogenous events require prior activation")
-    if event.event_id < INTERNAL_EVENT_ID_BASE or event.event_id == state.core.last_event_id:
-        raise DynamicsError("internal event requires a fresh reserved event ID")
+    if event.event_id != INTERNAL_EVENT_ID_BASE + state.core.executed_internal_events:
+        raise DynamicsError("internal event ID must match the executed-event ordinal")
     if (
         event.parent_event_id != state.segment.parent_event_id
         or event.parent_event_id != state.core.last_event_id

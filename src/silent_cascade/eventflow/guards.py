@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import struct
 from dataclasses import dataclass
 
@@ -86,16 +87,10 @@ class GuardCrossing:
             raise DynamicsError("guard crossing delta must be a finite host float")
         if self.predicted_delta < 0.0:
             raise DynamicsError("guard crossing delta must be nonnegative")
-        if (
-            not isinstance(self.prediction_snapshot_sha256, str)
-            or len(self.prediction_snapshot_sha256) != 64
+        if not isinstance(self.prediction_snapshot_sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", self.prediction_snapshot_sha256
         ):
             raise DynamicsError("guard crossing requires a canonical segment snapshot")
-
-    @property
-    def predicted_at(self) -> float:
-        """Explicit alias for callers that distinguish prediction time from event time."""
-        return self.timestamp
 
 
 def _validate_host_float(value: object, name: str) -> float:

@@ -25,6 +25,22 @@ from silent_cascade.logging.crash_bundle import CrashBundleManifest, CrashContex
 runner = CliRunner()
 
 
+def test_cli_deep_json_is_typed_before_execution(tmp_path, monkeypatch):
+    path = tmp_path / "deep.json"
+    path.write_bytes(b"[" * 1500 + b"0" + b"]" * 1500)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("malformed JSON reached episode execution")
+
+    monkeypatch.setattr(EventEngine, "start_episode", forbidden)
+    completed = runner.invoke(app, ["replay", str(path), "--json"])
+    assert completed.exit_code == 1
+    assert completed.stdout == ""
+    assert json.loads(completed.stderr)["code"] == "replay_error"
+    assert json.loads(completed.stderr)["context"] == {"field": "archive.json"}
+    assert "Traceback" not in completed.stderr
+
+
 def _artifact(tmp_path, config):
     result = EventEngine(config).run_episode(bundle_for(CASES[0]), ScriptedEventFlowAgent())
     path = tmp_path / "replay.json"

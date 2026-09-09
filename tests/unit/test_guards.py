@@ -14,6 +14,7 @@ from silent_cascade.errors import DynamicsError, TimeOrderError
 from silent_cascade.eventflow.flow import advance_to, start_segment
 from silent_cascade.eventflow.guards import (
     GUARD_KIND_BY_INDEX,
+    GuardCrossing,
     allowed_mode_mask,
     crossing_offset_host,
     crossing_offsets_tensor,
@@ -29,6 +30,21 @@ from silent_cascade.eventflow.state import (
     make_initial_continuous_state,
 )
 from silent_cascade.schemas import InternalEventKind, Mode
+
+
+@pytest.mark.parametrize("digest", ["g" * 64, "A" * 64, "0" * 63, b"a" * 64, 1, None])
+def test_guard_crossing_rejects_noncanonical_snapshot_digest(digest):
+    with pytest.raises(DynamicsError, match="canonical"):
+        GuardCrossing(INTERNAL_EVENT_ID_BASE, 1, 2.0, InternalEventKind.RECALL, 0, 1.0, digest)
+
+
+def test_guard_crossing_accepts_canonical_snapshot_digest():
+    digest = "0123456789abcdef" * 4
+    crossing = GuardCrossing(
+        INTERNAL_EVENT_ID_BASE, 1, 2.0, InternalEventKind.RECALL, 0, 1.0, digest
+    )
+    assert crossing.prediction_snapshot_sha256 == digest
+    assert crossing.timestamp == 2.0
 
 
 def parameters(

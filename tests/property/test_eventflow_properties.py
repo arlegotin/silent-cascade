@@ -37,34 +37,117 @@ from silent_cascade.schemas import ExternalEvent, ExternalEventKind, SafeFact
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_eventflow_runtime_source_has_no_float64_tensors_or_temporal_polling_grid() -> None:
-    """Float64 stays host-only; EventFlow advances only on causal events."""
+def forbidden_runtime_patterns(source: str, *, temporal: bool = True) -> set[str]:
+    """Bounded syntax regression; behavioral and native tests remain essential."""
+    tree = ast.parse(source)
+    aliases = {
+        alias.asname or alias.name: alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+
+    def symbol(node):
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return aliases.get(node.id, node.id) if isinstance(node, ast.Name) else ""
+
+    found = set()
+    temporal_settings = {
+        "poll_interval",
+        "tick_interval",
+        "time_step",
+        "fixed_dt",
+        "cognitive_interval",
+    }
+    for node in ast.walk(tree):
+        if symbol(node) in {"float64", "double", "DoubleTensor"}:
+            found.add("float64")
+        if not temporal:
+            continue
+        if symbol(node) in temporal_settings or (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in temporal_settings
+        ):
+            found.add("temporal")
+        if (
+            isinstance(node, ast.For)
+            and symbol(node.target) in {"t", "time", "tick", "timestep"}
+            and isinstance(node.iter, ast.Call)
+            and symbol(node.iter.func) == "range"
+        ):
+            found.add("temporal")
+        if isinstance(node, ast.While) and any(
+            isinstance(child, ast.AugAssign)
+            and isinstance(child.op, ast.Add)
+            and symbol(child.target) in {"t", "time", "timestamp", "cursor", "now"}
+            for child in ast.walk(node)
+        ):
+            found.add("temporal")
+        if temporal and isinstance(node, ast.Call):
+            name = symbol(node.func)
+            if name in {"sleep", "poll"}:
+                found.add("temporal")
+            if name == "arange" and not (
+                len(node.args) == 1
+                and isinstance(node.args[0], ast.Call)
+                and isinstance(node.args[0].func, ast.Attribute)
+                and node.args[0].func.attr == "numel"
+                and not any(keyword.arg == "step" for keyword in node.keywords)
+            ):
+                found.add("temporal")
+    return found
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "state.double()",
+        "from torch import float64 as wide\nx = torch.zeros(3, dtype=wide)",
+        "from torch import DoubleTensor as wide\nx = wide([0])",
+        "from numpy import float64 as wide\nx = values.astype(wide)",
+        "state.to(torch.float64)",
+    ],
+)
+def test_static_patterns_reject_float64_conversions(source):
+    assert "float64" in forbidden_runtime_patterns(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from time import sleep as wait\nwait(0.01)",
+        "from numpy import arange as grid\nfor t in grid(0, end, dt):\n    advance(t)",
+        "for tick in range(steps):\n    advance(tick * interval)",
+        "while time < end:\n    time += dt\n    advance(time)",
+        "poll_interval = 0.01",
+        "config = {'tick_interval': 0.01}",
+    ],
+)
+def test_static_patterns_reject_representative_temporal_grids(source):
+    assert "temporal" in forbidden_runtime_patterns(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "indices = torch.arange(state.numel(), device=state.device, dtype=torch.float32)",
+        "from torch import arange as indices\nx = indices(state.numel())",
+        "for index in range(state.numel()):\n    state[index] = 0",
+        "dt = time - origin\nstate = advance(state, dt)",
+    ],
+)
+def test_static_patterns_permit_feature_indices_and_analytic_intervals(source):
+    assert not forbidden_runtime_patterns(source)
+
+
+def test_eventflow_runtime_source_has_no_known_float64_or_temporal_grid_patterns() -> None:
     package = ROOT / "src/silent_cascade/eventflow"
     for path in package.glob("*.py"):
-        tree = ast.parse(path.read_text())
-        attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-        assert "float64" not in attributes, path.name
-    for name in ("engine.py", "guards.py", "scripted.py"):
-        tree = ast.parse((package / name).read_text())
-        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        called = {
-            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
-            for node in calls
-            if isinstance(node.func, (ast.Attribute, ast.Name))
-        }
-        assert not {"sleep", "poll"}.intersection(called), name
-        aranges = [
-            node
-            for node in calls
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "arange"
-        ]
-        if name == "scripted.py":
-            assert len(aranges) == 1
-            assert isinstance(aranges[0].args[0], ast.Call)
-            assert isinstance(aranges[0].args[0].func, ast.Attribute)
-            assert aranges[0].args[0].func.attr == "numel"
-        else:
-            assert not aranges, name
+        assert not forbidden_runtime_patterns(
+            path.read_text(), temporal=path.name in {"engine.py", "guards.py", "scripted.py"}
+        ), path.name
 
 
 @given(st.floats(min_value=0.0, max_value=0.00007, allow_nan=False, allow_infinity=False))
