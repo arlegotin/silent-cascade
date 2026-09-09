@@ -207,6 +207,14 @@ def _validated_inputs(artifact: ReplayArtifact) -> tuple[EpisodeBundle, EventFlo
         raise _mismatch("episode") from error
     if artifact.expected_result.public_id != bundle.public.init.episode_public_id:
         raise _mismatch("expected_result.public_id")
+    expected_trace_payload = {
+        "schema_version": artifact.trace.schema_version,
+        "events": [
+            row.model_dump(mode="json", exclude={"source"}) for row in artifact.trace.events
+        ],
+    }
+    if sha256_bytes(canonical_json_bytes(expected_trace_payload)) != artifact.trace.sha256:
+        raise _mismatch("trace.sha256")
     return bundle, config
 
 
@@ -337,11 +345,17 @@ def verify_replay(artifact: ReplayArtifact) -> ReplayComparison:
                 raise _mismatch("trace.events.length")
             terminal = engine.step(session, agent)
             actual = CausalEventArtifact.from_summary(session.trace.snapshot().events[-1])
+            expected_row = artifact.trace.events[index].model_dump(mode="json")
+            actual_row = actual.model_dump(mode="json")
             _compare(
-                artifact.trace.events[index].model_dump(mode="json"),
-                actual.model_dump(mode="json"),
+                expected_row,
+                actual_row,
                 f"trace.events.{index}",
             )
+            # Diagnostic timing tolerance does not permit continuing past an
+            # exact CPU row mismatch, even in a coherently rehashed archive.
+            if canonical_json_bytes(expected_row) != canonical_json_bytes(actual_row):
+                raise _mismatch(f"trace.events.{index}")
             index += 1
             if terminal:
                 break
@@ -358,17 +372,8 @@ def verify_replay(artifact: ReplayArtifact) -> ReplayComparison:
             result.model_dump(mode="json"),
             "expected_result",
         )
-        expected_trace_payload = {
-            "schema_version": 1,
-            "events": [
-                row.model_dump(mode="json", exclude={"source"}) for row in artifact.trace.events
-            ],
-        }
         actual_hash = session.trace.snapshot().sha256
-        if (
-            artifact.trace.sha256 != actual_hash
-            or sha256_bytes(canonical_json_bytes(expected_trace_payload)) != actual_hash
-        ):
+        if artifact.trace.sha256 != actual_hash:
             raise _mismatch("trace.sha256")
     except SilentCascadeError as error:
         if isinstance(error, ReplayError):

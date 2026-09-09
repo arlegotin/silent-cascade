@@ -106,6 +106,18 @@ def write_case(tmp_path, config, case=CASES[0]):
     return path, artifact, result
 
 
+def rehash_archived_trace(payload):
+    """Keep semantic-tamper fixtures internally consistent to reach row comparison."""
+    online = {
+        "schema_version": payload["trace"]["schema_version"],
+        "events": [
+            {key: value for key, value in row.items() if key != "source"}
+            for row in payload["trace"]["events"]
+        ],
+    }
+    payload["trace"]["sha256"] = sha256_bytes(canonical_json_bytes(online))
+
+
 @pytest.mark.parametrize(
     "case,expected", zip(CASES, REPLAY_CASES, strict=True), ids=lambda c: c["name"]
 )
@@ -217,6 +229,7 @@ def test_replay_reports_first_causal_field_mismatch(tmp_path, config, field, val
     payload = artifact.model_dump(mode="json")
     index = 5 if field in {"selected_record_id", "selected_rank", "kind"} else 0
     payload["trace"]["events"][index][field] = value if field != "kind" else "compose"
+    rehash_archived_trace(payload)
     payload["payload_sha256"] = sha256_bytes(
         canonical_json_bytes({k: v for k, v in payload.items() if k != "payload_sha256"})
     )
@@ -269,6 +282,8 @@ def test_replay_rejects_independent_envelope_tampering(tmp_path, config, target)
         payload["episode"]["truth"]["key"]["root_seed"] = 2
     else:
         payload["agent_implementation"] = "arbitrary.import.Class"
+    if target in {"action", "caused_by", "hypothesis"}:
+        rehash_archived_trace(payload)
     if target != "episode":
         payload["payload_sha256"] = sha256_bytes(
             canonical_json_bytes({k: v for k, v in payload.items() if k != "payload_sha256"})
@@ -348,18 +363,34 @@ def test_trajectory_long_dormant_interval_has_no_sampling_work(config):
     assert result.trace.sha256 == digest
 
 
-def test_timing_tolerance_never_allows_a_different_canonical_trace(tmp_path, config):
+@pytest.mark.parametrize("coherent", [False, True])
+def test_timing_tolerance_stops_at_preflight_or_first_exact_row_mismatch(
+    tmp_path, config, monkeypatch, coherent
+):
     from silent_cascade.eventflow.replay import ReplayArtifact, verify_replay
 
     _, artifact, _ = write_case(tmp_path, config)
     payload = artifact.model_dump(mode="json")
     payload["trace"]["events"][0]["timestamp"] += 0.5e-9
+    if coherent:
+        rehash_archived_trace(payload)
     payload["payload_sha256"] = sha256_bytes(
         canonical_json_bytes({k: v for k, v in payload.items() if k != "payload_sha256"})
     )
     tampered = ReplayArtifact.model_validate_json(json.dumps(payload))
-    with pytest.raises(ReplayError, match=r"trace\.sha256"):
+    executed = []
+    original_step = EventEngine.step
+
+    def tracked_step(self, session, agent):
+        terminal = original_step(self, session, agent)
+        executed.append(session.state.core.last_event_id)
+        return terminal
+
+    monkeypatch.setattr(EventEngine, "step", tracked_step)
+    with pytest.raises(ReplayError) as failure:
         verify_replay(tampered)
+    assert executed == ([5] if coherent else [])
+    assert failure.value.context["field"] == ("trace.events.0" if coherent else "trace.sha256")
 
 
 def test_replay_stops_at_first_mismatch_and_config_fails_before_execution(
@@ -370,6 +401,7 @@ def test_replay_stops_at_first_mismatch_and_config_fails_before_execution(
     _, artifact, _ = write_case(tmp_path, config)
     payload = artifact.model_dump(mode="json")
     payload["trace"]["events"][0]["timestamp"] += 0.001
+    rehash_archived_trace(payload)
     payload["payload_sha256"] = sha256_bytes(
         canonical_json_bytes({k: v for k, v in payload.items() if k != "payload_sha256"})
     )
