@@ -17,6 +17,12 @@ from silent_cascade.env.episode import (
     MatchedEpisodeCoordinate,
     PublicEpisode,
 )
+from silent_cascade.eventflow.checkpoint import (
+    load_runtime_checkpoint,
+    publish_runtime_checkpoint,
+    restore_runtime_session,
+    snapshot_runtime,
+)
 from silent_cascade.eventflow.config import Phase2Config
 from silent_cascade.eventflow.engine import EpisodeResult, EventEngine
 from silent_cascade.eventflow.replay import verify_replay, write_replay_artifact
@@ -126,3 +132,17 @@ def test_hand_authored_scripted_trace(case: dict, tmp_path: Path) -> None:
         tmp_path / "replay.json", bundle=EpisodeBundle(public, truth), config=config, result=result
     )
     assert verify_replay(artifact).trace_sha256 == result.trace.sha256
+    resumed_agent = ScriptedEventFlowAgent()
+    paused = engine.start_episode(EpisodeBundle(public, truth), resumed_agent)
+    engine.run_until(paused, resumed_agent, 0.75)
+    checkpoint = snapshot_runtime(paused, resumed_agent, config=config, source_revision="a" * 40)
+    checkpoint_path = tmp_path / "runtime.safetensors"
+    publish_runtime_checkpoint(checkpoint_path, checkpoint)
+    loaded = load_runtime_checkpoint(checkpoint_path, config=config, source_revision="a" * 40)
+    resumed, resumed_agent = restore_runtime_session(
+        loaded, config=config, source_revision="a" * 40
+    )
+    while not engine.step(resumed, resumed_agent):
+        pass
+    assert resumed.trace.snapshot().sha256 == result.trace.sha256
+    assert resumed.terminal_score == result.score

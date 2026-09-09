@@ -11,6 +11,7 @@ import re
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from functools import wraps
 from pathlib import Path
+from uuid import uuid4
 
 import torch
 
@@ -111,9 +112,22 @@ def _runtime_signature(state: RuntimeState) -> tuple:
 def _failure_boundary(function):
     @wraps(function)
     def guarded(self, context, *args, **kwargs):
+        outer = self._failure_depth == 0
+        self._failure_depth += 1
         try:
             if isinstance(context, RuntimeSession) and context.failure is not None:
                 raise context.failure
+            if outer:
+                self._checkpoint_stage = None
+                self._checkpoint_required = False
+                if self.crash_root is not None and isinstance(context, RuntimeSession):
+                    from silent_cascade.eventflow.checkpoint import stage_runtime
+                    from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
+
+                    agent = args[0] if args else kwargs.get("agent")
+                    if type(agent) is ScriptedEventFlowAgent:
+                        self._checkpoint_stage = stage_runtime(context, agent)
+                        self._checkpoint_required = True
             return function(self, context, *args, **kwargs)
         except (DynamicsError, ProvenanceError, TypeError, ValueError, AttributeError) as caught:
             error = (
@@ -131,6 +145,10 @@ def _failure_boundary(function):
             if error is caught:
                 raise
             raise error from caught
+        finally:
+            self._failure_depth -= 1
+            if outer:
+                self._checkpoint_stage = None
 
     return guarded
 
@@ -165,6 +183,9 @@ class EventEngine:
             )
         self.crash_root = crash_root
         self.source_revision = source_revision
+        self._failure_depth = 0
+        self._checkpoint_stage = None
+        self._checkpoint_required = False
 
     def _publish_failure(
         self, context: RuntimeSession | EpisodeBundle, error: DynamicsError
@@ -188,14 +209,42 @@ class EventEngine:
             else ()
         )
         try:
+            bundle_id = uuid4().hex
+            checkpoint_ref = None
+            if self._checkpoint_required:
+                from silent_cascade.eventflow.checkpoint import (
+                    publish_runtime_checkpoint,
+                    snapshot_staged_runtime,
+                )
+
+                if self._checkpoint_stage is None or self.source_revision is None:
+                    raise CrashBundleError(
+                        "valid registered crash requires a staged checkpoint and source revision"
+                    )
+                try:
+                    artifact = snapshot_staged_runtime(
+                        self._checkpoint_stage,
+                        config=self.config,
+                        source_revision=self.source_revision,
+                        checkpoint_id=bundle_id,
+                    )
+                    self.crash_root.mkdir(parents=True, exist_ok=True)
+                    checkpoint_ref = f"{bundle_id}.safetensors"
+                    publish_runtime_checkpoint(self.crash_root / checkpoint_ref, artifact)
+                except Exception as publication_error:
+                    raise CrashBundleError(
+                        "runtime crash checkpoint publication failed"
+                    ) from publication_error
             write_crash_bundle(
                 self.crash_root,
                 error=error,
+                bundle_id=bundle_id,
                 sanitize_diagnostics=True,
                 context=CrashContext(
                     episode_public_id=public_id,
                     config_sha256=sha256_bytes(canonical_json_bytes(self.config)),
                     source_revision=self.source_revision,
+                    checkpoint_ref=checkpoint_ref,
                     last_events=last_events,
                 ),
             )
@@ -475,6 +524,12 @@ class EventEngine:
         session.prediction_cache.invalidate()
         session.segment_anchor = SegmentSummary.from_segment(session.state.segment)
         session.public_state_anchor = _public_state_anchor(session.state)
+        if self._checkpoint_required:
+            from silent_cascade.eventflow.checkpoint import stage_runtime
+
+            # run_until can execute many jumps inside one failure boundary.
+            # Keep its immediate verified pre-next-event state, not loop entry.
+            self._checkpoint_stage = stage_runtime(session, agent)
         return session.state.core.mode is Mode.TERMINAL
 
     @_failure_boundary

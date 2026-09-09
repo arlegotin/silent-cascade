@@ -70,6 +70,29 @@ class ExternalEventQueue:
         """Private, immutable chronological checkpoint snapshot."""
         return tuple(item[3] for item in sorted(self._heap))
 
+    @classmethod
+    def from_snapshot(cls, events: tuple[ExternalEvent, ...]) -> ExternalEventQueue:
+        """Restore a private chronological queue without inventing public inputs."""
+        if not isinstance(events, tuple) or any(
+            not isinstance(event, ExternalEvent) for event in events
+        ):
+            raise DynamicsError("invalid external queue snapshot")
+        if len({event.event_id for event in events}) != len(events):
+            raise DynamicsError("duplicate external queue ID")
+        for event in events:
+            require_time(event.timestamp, "external timestamp")
+            if event.event_id >= INTERNAL_EVENT_ID_BASE:
+                raise DynamicsError("external ID occupies internal namespace")
+        result = object.__new__(cls)
+        result._heap = [
+            (event.timestamp, causal_priority(event_priority_kind(event)), event.event_id, event)
+            for event in events
+        ]
+        heapq.heapify(result._heap)
+        if result.snapshot() != events:
+            raise DynamicsError("external snapshot must be chronological")
+        return result
+
     def consume(self, event: ExternalEvent) -> None:
         """Remove exactly the selected external at execution, never during lookahead."""
         for index, item in enumerate(self._heap):
@@ -110,6 +133,16 @@ class PredictionCache:
     def invalidate(self) -> None:
         """Engine calls after an executed event, never for a noncausal pause."""
         self._value = _UNCOMPUTED
+
+    @classmethod
+    def from_snapshot(cls, snapshot: PredictionSnapshot | None) -> PredictionCache:
+        """Preserve the distinction between uncomputed, dormant and predicted."""
+        if snapshot is not None and not isinstance(snapshot, PredictionSnapshot):
+            raise DynamicsError("invalid prediction snapshot")
+        result = cls()
+        if snapshot is not None:
+            result._value = snapshot
+        return result
 
     def get_or_predict(
         self, state: RuntimeState, predictor: Callable[[RuntimeState], InternalEvent | None]

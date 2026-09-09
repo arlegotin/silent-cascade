@@ -257,6 +257,19 @@ class Trajectory:
     def boundary_count(self) -> int:
         return len(self._snapshots)
 
+    def checkpoint_snapshots(self) -> tuple[RuntimeState, ...]:
+        """Return independent causal anchor clones for the private safe codec."""
+        return tuple(replace(snapshot) for snapshot in self._snapshots)
+
+    @classmethod
+    def from_snapshots(cls, snapshots: tuple[RuntimeState, ...]) -> "Trajectory":
+        if not snapshots:
+            raise DynamicsError("trajectory requires an initial snapshot")
+        result = cls(snapshots[0])
+        for snapshot in snapshots[1:]:
+            result = result.append(snapshot)
+        return result
+
     def append(self, state: RuntimeState) -> "Trajectory":
         previous = self._snapshots[-1]
         if previous.core.mode is Mode.TERMINAL or state.time < previous.time:

@@ -272,3 +272,9 @@ class ScriptedEventFlowAgent:
 
     def compute_counters(self) -> ComputeCounters:
         return self._counters
+
+    def restore_compute_counters(self, counters: ComputeCounters) -> None:
+        """Install a validated public diagnostic snapshot without controller work."""
+        if type(counters) is not ComputeCounters or counters.foundation_model_calls != 0:
+            raise DynamicsError("invalid scripted counter snapshot")
+        self._counters = replace(counters)

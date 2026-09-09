@@ -1674,6 +1674,47 @@ git commit -m "feat: add deterministic causal replay"
 
 ### Task 11: Safe Runtime Checkpoints and Exact Paused-World Resume
 
+**Approved Task 11 integration clarification (2026-09-09):** The safe RNG
+codec belongs in new `eventflow/checkpoint_rng.py`; shared `rng.py` remains in
+the frozen Phase 1 source closure and is unchanged. Runtime configuration
+identity covers canonical `EventFlowConfig`, matching engine crash manifests
+and Task 10 replay. Task 13 separately binds the complete resolved Phase2Config.
+Published checkpoints require an explicit canonical full source revision.
+
+The controller approved clone-return trajectory checkpoint snapshots and a
+validated trajectory constructor, explicit private queue/cache restoration,
+and a public validated scripted counter setter. Restoration uses only the exact
+registered `ScriptedEventFlowAgent` class, never subclasses or imported factory
+names. Unsupported callback identities, initialization failures, and boundaries
+already invalid before staging can produce only null-reference diagnostic
+manifests; they do not certify replay. A valid registered pre-state requires
+successful checkpoint publication; a missing source revision or publication
+failure raises CrashBundleError directly chained from the original dynamics
+failure. The sibling archive and JSON share one random ID.
+
+Staging clones the valid state/RNG in memory before callbacks and refreshes
+after each verified causal commit, including each iteration inside run_until.
+Successful execution does not encode or write a safetensors archive. Thus the
+real 33-link debug chain archives the immediate 64-event state and one restored
+step reproduces its attempted 65th-event failure.
+
+Safe archive inspection is portable and preserves every tensor, including MPS
+RNG bytes. Exact runtime restoration requires the original device; MPS-to-CPU
+continuation is refused before caller mutation. A native mid-flow MPS probe
+demonstrated CPU `continuous_matches_segment` failure from float32 rounding.
+No state projection, tensor rewriting, or invariant tolerance is introduced.
+CPU-origin archives carrying MPS RNG bytes remain fully usable on CPU. MPS
+archive inspection validates bounded schema, storage, source/config and hashes;
+native analytic/causal validation completes before same-device restoration.
+Explicit MPS RNG restoration additionally validates an isolated MPS generator.
+
+The cached losing-ACT checkpoint regression uses an explicitly non-OFD private
+debug schedule constructed around a real scripted guard prediction. Canonical
+scripted positive timing cannot produce the existing SpyAgent's terminal tie.
+This fixture preserves runtime invariants and the closed agent registry; it is
+not a generated scientific episode or validation evidence. Ordinary positive,
+safe and disconnected fixtures provide the CPU continuation evidence.
+
 **Files:**
 
 - Create: `src/silent_cascade/eventflow/checkpoint.py`

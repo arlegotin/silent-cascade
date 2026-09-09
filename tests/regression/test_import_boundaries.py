@@ -80,6 +80,7 @@ import silent_cascade.cli
 import silent_cascade.eventflow.engine
 import silent_cascade.eventflow.scripted
 import silent_cascade.eventflow.replay
+import silent_cascade.eventflow.checkpoint
 assert not blocked.intersection(sys.modules)
 assert not any("qwen" in name.lower() for name in sys.modules)
 """
@@ -136,7 +137,7 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
                 }
             elif relative_path == "eventflow/scheduling.py":
                 allowed = {"silent_cascade.env.episode"}
-            elif relative_path == "eventflow/replay.py":
+            elif relative_path in {"eventflow/replay.py", "eventflow/checkpoint.py"}:
                 allowed = {
                     "silent_cascade.env.episode",
                     "silent_cascade.env.reward",
