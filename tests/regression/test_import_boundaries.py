@@ -102,13 +102,27 @@ def test_oracle_does_not_import_generator_or_invariants() -> None:
     assert "silent_cascade.env.invariants" not in modules
 
 
-def test_future_agent_facing_modules_cannot_import_private_oracle() -> None:
+def test_agent_facing_modules_cannot_import_private_environment_or_foundations() -> None:
     """Any later agent-facing module is picked up without importing it at runtime."""
     package = SOURCE_ROOT / "silent_cascade"
+    forbidden = {
+        "silent_cascade.env.generator",
+        "silent_cascade.env.invariants",
+        "silent_cascade.env.oracle",
+        "silent_cascade.env.services",
+        "mlx",
+        "mlx_vlm",
+        "huggingface_hub",
+    }
     for relative in ("eventflow", "memory", "models", "eval/conditions"):
         directory = package / relative
         for path in directory.rglob("*.py") if directory.exists() else ():
-            assert "silent_cascade.env.oracle" not in imported_modules(path), path
+            modules = imported_modules(path)
+            assert not any(
+                module == blocked or module.startswith(f"{blocked}.")
+                for blocked in forbidden
+                for module in modules
+            ), path
 
 
 def test_public_projection_spy_observes_no_private_truth_read(
