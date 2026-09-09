@@ -292,3 +292,17 @@ def test_record_rejects_a_post_event_state_materialized_beyond_the_event() -> No
     after = begin_post_jump_segment(post, before.segment.parameters, time=2.0)
     with pytest.raises(TimeOrderError):
         TraceRecorder().record(event, before, advance_to(after, 3.0))
+
+
+@pytest.mark.parametrize("restore", [False, True])
+def test_same_time_same_priority_descending_ids_rejected_on_append_and_restore(restore) -> None:
+    recorder = TraceRecorder()
+    first, _ = recorded_fact(recorder, runtime())
+    second = replace(
+        first, event_id=3, parent_event_id=4, delta=0.0, counter_delta=ComputeCounters()
+    )
+    with pytest.raises(DynamicsError):
+        if restore:
+            CausalTrace((first, second))
+        else:
+            recorder.append(second)

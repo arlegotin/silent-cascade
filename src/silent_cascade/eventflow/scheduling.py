@@ -159,6 +159,13 @@ class TieResolution:
             not isinstance(candidate, TieCandidate) for candidate in self.candidates
         ):
             raise DynamicsError("tie candidates must be an immutable candidate tuple")
+        candidate_ids = {candidate.event_id for candidate in self.candidates}
+        if len(self.candidates) < 2 or len(candidate_ids) != len(self.candidates):
+            raise DynamicsError("tie requires at least two candidates with unique IDs")
+        if type(self.winner_event_id) is not int or self.winner_event_id not in candidate_ids:
+            raise DynamicsError("tie winner must be an exact integer ID in the candidate set")
+        if type(self.tolerance) is not float or self.tolerance != NEAR_TIE_TOLERANCE:
+            raise DynamicsError("tie tolerance must be the declared host float 1e-9")
 
     @property
     def tie_id(self) -> str:
@@ -181,7 +188,7 @@ def choose_next_event(
 ) -> ScheduledChoice | None:
     """Choose without mutation from the earliest timestamp's tolerance cluster.
 
-    Compare host floats, retain all original timestamps, then priority and ID.
+    Compare host floats, retain original timestamps, then priority, time and ID.
     Scan the heap's cluster too: a near-tied terminal cannot hide behind its root.
     Clusters are anchored to the earliest time (tolerance is not transitive).
     NOOP is rejected for EventFlow before considering who wins.
@@ -210,7 +217,11 @@ def choose_next_event(
     first = min(event.timestamp for event in candidates)
     tied = sorted(
         (event for event in candidates if event.timestamp - first <= NEAR_TIE_TOLERANCE),
-        key=lambda event: (causal_priority(event_priority_kind(event)), event.event_id),
+        key=lambda event: (
+            causal_priority(event_priority_kind(event)),
+            event.timestamp,
+            event.event_id,
+        ),
     )
     winner = tied[0]
     tie = None

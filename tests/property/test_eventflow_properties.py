@@ -52,6 +52,29 @@ def test_internal_tie_selection_is_independent_of_candidate_order(order) -> None
     assert choice.tie.winner_event_id == (1 << 62) + 2
 
 
+@given(st.permutations((0, 1, 2)))
+def test_same_kind_near_ties_preserve_original_time_before_event_id(order) -> None:
+    from silent_cascade.env.episode import PublicEpisode
+    from silent_cascade.eventflow.scheduling import ExternalEventQueue, choose_next_event
+    from silent_cascade.schemas import (
+        ActivationPayload,
+        AgentInit,
+        InternalEvent,
+        InternalEventKind,
+    )
+
+    public = PublicEpisode(
+        AgentInit("public", 64, 4, 0.0),
+        (ExternalEvent(1, 2.0, ExternalEventKind.ACTIVATE, ActivationPayload(0)),),
+    )
+    queue = ExternalEventQueue(public, ExternalEvent(2, 10.0, ExternalEventKind.END, None))
+    events = tuple(
+        InternalEvent((1 << 62) + 3 - i, 3, 1.0 + i * 0.25e-9, InternalEventKind.RECALL, 0, 1.0)
+        for i in order
+    )
+    assert choose_next_event(queue, events).event.event_id == (1 << 62) + 3
+
+
 @settings(max_examples=25, deadline=None)
 @given(predicted_focus=st.integers(min_value=0, max_value=63), append=st.booleans())
 def test_jump_sequence_preserves_predictions_supports_and_reset_origins(

@@ -191,10 +191,11 @@ def _validate_append(events: tuple[CausalEventSummary, ...], event: CausalEventS
             raise DynamicsError("causal trace parent must be the preceding event")
         if event.delta != event.timestamp - previous.timestamp:
             raise DynamicsError("causal delta must use the preceding event time")
-        if event.timestamp == previous.timestamp and causal_priority(event.kind) < causal_priority(
-            previous.kind
-        ):
-            raise DynamicsError("same-time causal events must follow the tie priority")
+        if event.timestamp == previous.timestamp and (
+            causal_priority(event.kind),
+            event.event_id,
+        ) < (causal_priority(previous.kind), previous.event_id):
+            raise DynamicsError("same-time causal events must follow priority and event ID")
     if event.kind == "terminal" and (event.payload is not None or event.segment is not None):
         raise DynamicsError("online terminal may contain no payload or next segment")
 

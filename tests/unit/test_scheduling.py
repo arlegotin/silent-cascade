@@ -12,6 +12,8 @@ from silent_cascade.eventflow.flow import advance_to
 from silent_cascade.eventflow.scheduling import (
     ExternalEventQueue,
     PredictionCache,
+    TieCandidate,
+    TieResolution,
     choose_next_event,
 )
 from silent_cascade.eventflow.state import INTERNAL_EVENT_ID_BASE
@@ -23,6 +25,7 @@ from silent_cascade.schemas import (
     ExternalEventKind,
     InternalEvent,
     InternalEventKind,
+    LinkFact,
 )
 
 
@@ -168,3 +171,58 @@ def test_cache_rejects_prediction_for_another_parent_without_caching_failure() -
             lambda state: replace(internal(InternalEventKind.ACT, 2.0), parent_event_id=99),
         )
     assert not cache.is_computed
+
+
+def test_near_tied_same_priority_events_keep_time_order_after_consumption() -> None:
+    public = PublicEpisode(
+        AgentInit("public", 64, 4, 0.0),
+        (
+            ExternalEvent(2, 2.0, ExternalEventKind.FACT, LinkFact(0, 1)),
+            ExternalEvent(1, 2.0 + 0.5e-9, ExternalEventKind.FACT, LinkFact(1, 2)),
+            ExternalEvent(3, 3.0, ExternalEventKind.ACTIVATE, ActivationPayload(0)),
+        ),
+    )
+    pending = ExternalEventQueue(public, ExternalEvent(4, 10.0, ExternalEventKind.END, None))
+    first = choose_next_event(pending)
+    assert first.event.event_id == 2
+    pending.consume(first.event)
+    second = choose_next_event(pending, current_time=first.timestamp)
+    assert second.event.event_id == 1
+    assert second.timestamp > first.timestamp
+    pending.consume(second.event)
+    assert choose_next_event(pending, current_time=second.timestamp).event.event_id == 3
+
+
+def test_exact_time_same_priority_events_use_event_id() -> None:
+    candidates = (
+        internal(InternalEventKind.RECALL, 1.0, 2),
+        internal(InternalEventKind.RECALL, 1.0, 1),
+    )
+    assert choose_next_event(queue(), candidates).event.event_id == INTERNAL_EVENT_ID_BASE + 1
+
+
+@pytest.mark.parametrize("winner", [99, True, 1.0, -1, None])
+def test_tie_requires_exact_integer_winner_in_candidate_set(winner) -> None:
+    candidates = (TieCandidate(1, 2.0, "external"), TieCandidate(2, 2.0, "recall"))
+    with pytest.raises(DynamicsError):
+        TieResolution(candidates, winner)
+
+
+@pytest.mark.parametrize(
+    "candidates",
+    [
+        (),
+        (TieCandidate(1, 2.0, "external"),),
+        (TieCandidate(1, 2.0, "external"), TieCandidate(1, 2.0, "recall")),
+    ],
+)
+def test_tie_requires_at_least_two_unique_candidates(candidates) -> None:
+    with pytest.raises(DynamicsError):
+        TieResolution(candidates, 1)
+
+
+@pytest.mark.parametrize("tolerance", [0.0, 1.1e-9, -1e-9, 1, True, float("nan"), float("inf")])
+def test_tie_requires_exact_declared_host_float_tolerance(tolerance) -> None:
+    candidates = (TieCandidate(1, 2.0, "external"), TieCandidate(2, 2.0, "recall"))
+    with pytest.raises(DynamicsError):
+        TieResolution(candidates, 1, tolerance)
