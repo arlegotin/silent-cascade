@@ -29,6 +29,92 @@ from silent_cascade.memory import (
 from silent_cascade.schemas import ExternalEvent, ExternalEventKind, SafeFact
 
 
+@settings(max_examples=12, deadline=None)
+@given(
+    st.lists(
+        st.floats(min_value=0.0, max_value=11.999, allow_nan=False, allow_infinity=False),
+        max_size=12,
+    )
+)
+def test_arbitrary_pause_partition_preserves_engine_causal_trace(pauses) -> None:
+    from pathlib import Path
+
+    from silent_cascade.config import resolve_config
+    from silent_cascade.env.config import SplitNamespace, SuiteName
+    from silent_cascade.env.episode import (
+        EpisodeBundle,
+        EpisodeKey,
+        EpisodeRecipe,
+        EpisodeTruth,
+        EpisodeVariant,
+        MatchedEpisodeCoordinate,
+        PublicEpisode,
+    )
+    from silent_cascade.eventflow.config import Phase2Config
+    from silent_cascade.eventflow.engine import EventEngine
+    from silent_cascade.eventflow.jumps import apply_activate, begin_post_jump_segment
+    from silent_cascade.schemas import ActivationPayload, AgentInit, Condition
+
+    class Dormant:
+        name = Condition.EVENT_FLOW
+
+        def initialize(self, init):
+            return runtime()
+
+        def next_internal_event(self, state):
+            return None
+
+        def on_external(self, state, event):
+            return begin_post_jump_segment(
+                apply_activate(state, event), state.segment.parameters, time=event.timestamp
+            )
+
+    episode = EpisodeBundle(
+        PublicEpisode(
+            AgentInit("public", 64, 4, 0.0),
+            (ExternalEvent(1, 2.0, ExternalEventKind.ACTIVATE, ActivationPayload(0)),),
+        ),
+        EpisodeTruth(
+            EpisodeKey(
+                "ofd-v1",
+                SplitNamespace.DEBUG,
+                SuiteName.IID_PRIMARY,
+                17,
+                MatchedEpisodeCoordinate("matched", 0, 0),
+            ),
+            EpisodeRecipe(1, EpisodeVariant.DISCONNECTED_NEGATIVE, 0, SuiteName.IID_PRIMARY, 0),
+            (0, 1),
+            (),
+            None,
+            None,
+            ExternalEvent(2, 12.0, ExternalEventKind.END, None),
+            2.0,
+            10.0,
+            None,
+            None,
+            None,
+            0,
+            (),
+        ),
+    )
+    config = resolve_config(
+        Phase2Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/model/event_flow.yaml"),
+        ],
+    ).config.event_flow
+    runtime_engine, agent = EventEngine(config), Dormant()
+    expected = runtime_engine.run_episode(episode, Dormant())
+    session = runtime_engine.start_episode(episode, agent)
+    for pause in sorted(set(pauses)):
+        runtime_engine.run_until(session, agent, pause)
+    runtime_engine.run_until(session, agent, 12.0)
+    assert session.trace.snapshot().sha256 == expected.trace.sha256
+    assert session.state.core.actions == expected.actions
+
+
 @given(st.permutations((0, 1, 2)))
 def test_internal_tie_selection_is_independent_of_candidate_order(order) -> None:
     from silent_cascade.env.episode import PublicEpisode

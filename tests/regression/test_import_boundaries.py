@@ -76,6 +76,7 @@ import silent_cascade.rng
 import silent_cascade.io
 import silent_cascade.doctor
 import silent_cascade.cli
+import silent_cascade.eventflow.engine
 assert not blocked.intersection(sys.modules)
 assert not any("qwen" in name.lower() for name in sys.modules)
 """
@@ -110,6 +111,10 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
         "silent_cascade.env.invariants",
         "silent_cascade.env.oracle",
         "silent_cascade.env.services",
+        "silent_cascade.env.episode",
+        "silent_cascade.env.reward",
+        "silent_cascade.eventflow.engine",
+        "silent_cascade.eventflow.scheduling",
         "mlx",
         "mlx_vlm",
         "huggingface_hub",
@@ -117,12 +122,33 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
     for relative in ("eventflow", "memory", "models", "eval/conditions"):
         directory = package / relative
         for path in directory.rglob("*.py") if directory.exists() else ():
+            # Private infrastructure has narrowly scoped environment access.
+            relative_path = path.relative_to(package).as_posix()
+            allowed = set()
+            if relative_path == "eventflow/engine.py":
+                allowed = {
+                    "silent_cascade.env.episode",
+                    "silent_cascade.env.reward",
+                    "silent_cascade.eventflow.scheduling",
+                }
+            elif relative_path == "eventflow/scheduling.py":
+                allowed = {"silent_cascade.env.episode"}
             modules = imported_modules(path)
             assert not any(
                 module == blocked or module.startswith(f"{blocked}.")
-                for blocked in forbidden
+                for blocked in forbidden - allowed
                 for module in modules
             ), path
+
+
+def test_engine_private_environment_imports_are_limited_to_episode_and_reward() -> None:
+    path = SOURCE_ROOT / "silent_cascade/eventflow/engine.py"
+    allowed = {"silent_cascade.env.episode", "silent_cascade.env.reward"}
+    private = {name for name in imported_modules(path) if name.startswith("silent_cascade.env")}
+    assert private
+    assert all(
+        any(name == base or name.startswith(f"{base}.") for base in allowed) for name in private
+    )
 
 
 def test_public_projection_spy_observes_no_private_truth_read(
