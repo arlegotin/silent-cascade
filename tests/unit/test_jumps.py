@@ -109,6 +109,30 @@ def decision(role: ComposeRole = ComposeRole.LINK, **changes: object) -> Compose
     return ComposeDecision(**values)
 
 
+def test_recall_carries_explicit_nonfirst_rank_and_compose_clears_it() -> None:
+    state = runtime(Mode.SEARCHING)
+    core = apply_recall(state, internal(InternalEventKind.RECALL), record_id=1, selected_rank=3)
+    assert core.active_record_rank == 3
+    recalled = begin_post_jump_segment(core, parameters(), time=1.0)
+    event = InternalEvent(
+        INTERNAL_EVENT_ID_BASE + 1, INTERNAL_EVENT_ID_BASE, 1.1, InternalEventKind.COMPOSE, 1, 0.1
+    )
+    composed = apply_compose(advance_to(recalled, 1.1), event, decision())
+    assert composed.active_record_id is composed.active_record_rank is None
+
+
+@pytest.mark.parametrize("rank", [0, -1, True, 1.0])
+def test_recall_rejects_invalid_explicit_rank(rank) -> None:
+    state = runtime(Mode.SEARCHING)
+    with pytest.raises(DynamicsError, match="rank"):
+        apply_recall(state, internal(InternalEventKind.RECALL), record_id=1, selected_rank=rank)
+
+
+def test_runtime_rejects_rank_without_active_record() -> None:
+    with pytest.raises(DynamicsError, match="rank"):
+        replace(runtime().core, active_record_rank=2)
+
+
 @pytest.mark.parametrize("mode", list(Mode))
 @pytest.mark.parametrize(
     "kind,required,destination",

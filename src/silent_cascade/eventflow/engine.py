@@ -190,13 +190,21 @@ class EventEngine:
             self._require_callback_result(before, after)
             self._require_emitted_matches_state(before, after, emitted)
         selected_record_id = None
+        selected_rank = None
         if isinstance(event, InternalEvent):
             if event.kind is InternalEventKind.RECALL:
                 selected_record_id = after.core.active_record_id
+                selected_rank = after.core.active_record_rank
             elif event.kind is InternalEventKind.COMPOSE:
                 selected_record_id = before.core.active_record_id
+                selected_rank = before.core.active_record_rank
         session.trace.record(
-            event, before, after, selected_record_id=selected_record_id, tie=choice.tie
+            event,
+            before,
+            after,
+            selected_record_id=selected_record_id,
+            selected_rank=selected_rank,
+            tie=choice.tie,
         )
         if isinstance(event, ExternalEvent):
             session.external_queue.consume(event)

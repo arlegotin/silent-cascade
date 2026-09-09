@@ -123,6 +123,19 @@ def walk(value):
             yield from walk(item)
 
 
+def test_engine_copies_explicit_nonfirst_rank_without_assuming_agent_order() -> None:
+    class RankedSpy(SpyAgent):
+        def on_internal(self, state, event):
+            if event.kind is InternalEventKind.RECALL:
+                core = apply_recall(state, event, record_id=1, selected_rank=3)
+                return self.install(core, state), []
+            return super().on_internal(state, event)
+
+    result = engine().run_episode(bundle(), RankedSpy())
+    selected = [row for row in result.trace.events if row.selected_record_id is not None]
+    assert [row.selected_rank for row in selected] == [3, 3]
+
+
 class SpyAgent:
     """A three-event test trajectory, using real shared jumps and installations."""
 

@@ -1,4 +1,5 @@
 import ast
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -77,6 +78,7 @@ import silent_cascade.io
 import silent_cascade.doctor
 import silent_cascade.cli
 import silent_cascade.eventflow.engine
+import silent_cascade.eventflow.scripted
 assert not blocked.intersection(sys.modules)
 assert not any("qwen" in name.lower() for name in sys.modules)
 """
@@ -149,6 +151,31 @@ def test_engine_private_environment_imports_are_limited_to_episode_and_reward() 
     assert all(
         any(name == base or name.startswith(f"{base}.") for base in allowed) for name in private
     )
+
+
+def test_scripted_agent_has_no_environment_imports_or_private_symbols() -> None:
+    path = SOURCE_ROOT / "silent_cascade/eventflow/scripted.py"
+    assert not any("env" in name.split(".") for name in imported_modules(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    forbidden = {"oracle", "EpisodeTruth", "EpisodeBundle"}
+    symbols = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            symbols.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            symbols.add(node.attr)
+        elif isinstance(node, ast.alias):
+            symbols.update(node.name.split("."))
+            if node.asname:
+                symbols.add(node.asname)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            symbols.add(node.name)
+        elif isinstance(node, ast.arg):
+            symbols.add(node.arg)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # Include string annotations and dynamic-import module names.
+            symbols.update(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", node.value))
+    assert not forbidden.intersection(symbols)
 
 
 def test_public_projection_spy_observes_no_private_truth_read(

@@ -174,6 +174,7 @@ class RuntimeCore:
     memory: BoundedMemory = field(default_factory=lambda: BoundedMemory(64))
     focus_node_id: int | None = None
     active_record_id: int | None = None
+    active_record_rank: int | None = None
     support_ids: tuple[int, ...] = ()
     hypothesis: Hypothesis | None = None
     activation_time: float | None = None
@@ -190,6 +191,11 @@ class RuntimeCore:
             raise DynamicsError("continuous must be a ContinuousState")
         if self.last_event_time is not None:
             require_time(self.last_event_time, "last_event_time")
+        if self.active_record_rank is not None:
+            if type(self.active_record_rank) is not int or self.active_record_rank < 1:
+                raise DynamicsError("active record rank must be a positive exact integer")
+            if self.active_record_id is None:
+                raise DynamicsError("active record rank requires an active record ID")
         object.__setattr__(self, "continuous", replace(self.continuous))
 
 

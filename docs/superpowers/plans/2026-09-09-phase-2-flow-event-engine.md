@@ -926,6 +926,7 @@ class RuntimeCore:
     memory: BoundedMemory
     focus_node_id: int | None
     active_record_id: int | None
+    active_record_rank: int | None
     support_ids: tuple[int, ...]
     hypothesis: Hypothesis | None
     activation_time: float | None
@@ -947,6 +948,14 @@ nonnegative host float, with no invented causal history in low-level flow
 fixtures. Every public jump stamps it; the installer requires it and rejects a
 supplied time that differs. This preserves the materialized jump origin's time
 without introducing private future timing or changing the scientific protocol.
+
+Approved Task 8 integration ruling: `active_record_rank` defaults to `None` and
+is optional public retrieval metadata. If supplied, it must be a positive exact
+integer and accompany an active record ID. The agent passes `selected_rank`
+explicitly to `apply_recall`; COMPOSE clears both active fields. The engine
+copies the supplied rank into RECALL/COMPOSE trace summaries without assuming a
+ranking policy. Task 11 checkpoint metadata must roundtrip this field, including
+`None` for agents that do not report ranks.
 
 - [ ] **Step 5: Implement decision-driven jumps**
 

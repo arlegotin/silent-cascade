@@ -212,7 +212,13 @@ def apply_activate(state: RuntimeState, event: ExternalEvent) -> RuntimeCore:
     )
 
 
-def apply_recall(state: RuntimeState, event: InternalEvent, *, record_id: int) -> RuntimeCore:
+def apply_recall(
+    state: RuntimeState,
+    event: InternalEvent,
+    *,
+    record_id: int,
+    selected_rank: int | None = None,
+) -> RuntimeCore:
     """Activate an explicitly selected legal record, without imposing relevance."""
     _require_event(state, event, InternalEventKind.RECALL, Mode.SEARCHING)
     slot = state.core.memory.lookup(record_id)
@@ -225,6 +231,7 @@ def apply_recall(state: RuntimeState, event: InternalEvent, *, record_id: int) -
             mode=Mode.HAVE_MEMORY,
             memory=memory,
             active_record_id=record_id,
+            active_record_rank=selected_rank,
             continuous=_inject(state.core.continuous, record_id, 4),
         ),
         event,
@@ -291,6 +298,7 @@ def apply_compose(
             continuous=continuous,
             memory=mark_consumed(state.core.memory, record_id),
             active_record_id=None,
+            active_record_rank=None,
             focus_node_id=focus,
             support_ids=supports,
             hypothesis=hypothesis,

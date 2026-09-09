@@ -1,0 +1,72 @@
+{
+  "evidence_label": "non-neural runtime engineering evidence",
+  "derivation": "Hand-authored: 0 -> 1 -> 2 through records 8 and 3. Record 5 is the reachable terminal except in the disconnected case. Activation is 1; hazard delay is 2; target is 1 + 0.825 * 2 = 2.65. Cognitive gaps are hand-calculated from the documented public integer formula.",
+  "cases": [
+    {
+      "name": "positive",
+      "facts": [
+        [5, 0.1, "hazard", {"node": 2, "hazard_type": 2, "delay": 2.0}],
+        [3, 0.2, "link", {"source_node": 1, "target_node": 2}],
+        [1, 0.3, "hazard", {"node": 20, "hazard_type": 0, "delay": 2.0}],
+        [8, 0.4, "link", {"source_node": 0, "target_node": 1}]
+      ],
+      "activation": [9, 1.0, 0],
+      "expected": {
+        "grammar": ["recall", "compose", "recall", "compose", "recall", "compose", "act"],
+        "selected_ids": [8, 8, 3, 3, 5, 5, null],
+        "selected_ranks": [1, 1, 1, 1, 1, 1, null],
+        "times": [1.068, 1.120, 1.170, 1.223, 1.285, 1.350, 2.650],
+        "support_after": [[], [8], [8], [8, 3], [8, 3], [8, 3, 5], [8, 3, 5]],
+        "hypothesis": {"hazard_type": 2, "deadline": 3.0, "confidence": 1.0, "provenance": "inferred", "support_ids": [8, 3, 5], "is_safe": false},
+        "action": {"hazard_type": 2, "timestamp": 2.65},
+        "terminal_time": 3.0,
+        "timed_success": true,
+        "score_reason": "success"
+      }
+    },
+    {
+      "name": "safe_negative",
+      "facts": [
+        [5, 0.1, "safe", {"node": 2}],
+        [3, 0.2, "link", {"source_node": 1, "target_node": 2}],
+        [1, 0.3, "hazard", {"node": 20, "hazard_type": 0, "delay": 2.0}],
+        [8, 0.4, "link", {"source_node": 0, "target_node": 1}]
+      ],
+      "activation": [9, 1.0, 0],
+      "expected": {
+        "grammar": ["recall", "compose", "recall", "compose", "recall", "compose"],
+        "selected_ids": [8, 8, 3, 3, 5, 5],
+        "selected_ranks": [1, 1, 1, 1, 1, 1],
+        "times": [1.068, 1.120, 1.170, 1.223, 1.285, 1.350],
+        "support_after": [[], [8], [8], [8, 3], [8, 3], [8, 3, 5]],
+        "hypothesis": {"hazard_type": null, "deadline": null, "confidence": 1.0, "provenance": "inferred", "support_ids": [8, 3, 5], "is_safe": true},
+        "action": null,
+        "terminal_time": 3.0,
+        "timed_success": true,
+        "score_reason": "negative_abstention"
+      }
+    },
+    {
+      "name": "disconnected_negative",
+      "facts": [
+        [5, 0.1, "hazard", {"node": 30, "hazard_type": 2, "delay": 2.0}],
+        [3, 0.2, "link", {"source_node": 1, "target_node": 2}],
+        [1, 0.3, "hazard", {"node": 20, "hazard_type": 0, "delay": 2.0}],
+        [8, 0.4, "link", {"source_node": 0, "target_node": 1}]
+      ],
+      "activation": [9, 1.0, 0],
+      "expected": {
+        "grammar": ["recall", "compose", "recall", "compose"],
+        "selected_ids": [8, 8, 3, 3],
+        "selected_ranks": [1, 1, 1, 1],
+        "times": [1.068, 1.120, 1.170, 1.223],
+        "support_after": [[], [8], [8], [8, 3]],
+        "hypothesis": null,
+        "action": null,
+        "terminal_time": 3.0,
+        "timed_success": true,
+        "score_reason": "negative_abstention"
+      }
+    }
+  ]
+}
