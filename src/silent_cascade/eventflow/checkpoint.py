@@ -9,9 +9,7 @@ or a caller agent are changed. The archive is integrity checked, not authenticat
 import copy
 import json
 import math
-import os
 import re
-import stat
 import struct
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
@@ -24,8 +22,9 @@ from safetensors import SafetensorError
 from safetensors.torch import load, save
 
 from silent_cascade.env.episode import EpisodeTruth, PublicEpisode
-from silent_cascade.env.reward import EpisodeScore
+from silent_cascade.env.reward import EpisodeScore, score_actions
 from silent_cascade.errors import AtomicWriteError, ReplayError, SilentCascadeError
+from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
 from silent_cascade.eventflow.checkpoint_rng import (
     RngMetadata,
     decode_rng,
@@ -41,8 +40,12 @@ from silent_cascade.eventflow.engine import (
     _public_state_anchor,
 )
 from silent_cascade.eventflow.flow import state_at
-from silent_cascade.eventflow.guards import allowed_mode_mask
-from silent_cascade.eventflow.invariants import validate_runtime_state, validate_session_boundary
+from silent_cascade.eventflow.guards import next_crossings
+from silent_cascade.eventflow.invariants import (
+    validate_post_jump,
+    validate_runtime_state,
+    validate_session_boundary,
+)
 from silent_cascade.eventflow.replay import CausalTraceArtifact
 from silent_cascade.eventflow.scheduling import (
     ExternalEventQueue,
@@ -50,6 +53,7 @@ from silent_cascade.eventflow.scheduling import (
     PredictionSnapshot,
     choose_next_event,
     normalize_internal_gap,
+    selected_gap_clamp_streak,
 )
 from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
 from silent_cascade.eventflow.state import (
@@ -365,7 +369,12 @@ def _trace_from_metadata(metadata: CausalTraceArtifact) -> CausalTrace:
 
 
 def _validate_history(
-    state: RuntimeState, anchors: tuple[RuntimeState, ...], trace: CausalTrace
+    state: RuntimeState,
+    anchors: tuple[RuntimeState, ...],
+    trace: CausalTrace,
+    *,
+    pending: tuple[ExternalEvent, ...],
+    terminal: ExternalEvent,
 ) -> None:
     if len(anchors) != len(trace.events) + 1:
         raise ReplayError("checkpoint trajectory and trace lengths differ")
@@ -379,13 +388,21 @@ def _validate_history(
     ):
         raise ReplayError("invalid initial causal anchor")
     recorder = TraceRecorder()
+    external = tuple(
+        ExternalEvent(row.event_id, row.timestamp, ExternalEventKind(row.kind), row.payload)
+        for row in trace.events
+        if row.kind in {"fact", "activate"}
+    )
+    queue = ExternalEventQueue.from_snapshot(
+        (*external, *pending, *((terminal,) if state.core.mode is Mode.TERMINAL else ()))
+    )
     for previous, after, row in zip(anchors, anchors[1:], trace.events, strict=False):
         if row.kind in {"fact", "activate", "terminal"}:
             event = ExternalEvent(
                 row.event_id,
                 row.timestamp,
-                ExternalEventKind.END if row.kind == "terminal" else ExternalEventKind(row.kind),
-                row.payload,
+                terminal.kind if row.kind == "terminal" else ExternalEventKind(row.kind),
+                terminal.payload if row.kind == "terminal" else row.payload,
             )
         else:
             kind = InternalEventKind(row.kind)
@@ -397,11 +414,59 @@ def _validate_history(
                 ("recall", "compose", "act").index(row.kind),
                 row.raw_predicted_delta if row.was_gap_clamped else row.delta,
             )
+        prediction = _analytic_prediction_for_validation(previous)
+        normalized, clamped = (
+            (None, False)
+            if prediction is None
+            else normalize_internal_gap(prediction, origin_time=previous.segment.started_at)
+        )
+        choice = choose_next_event(queue, normalized, current_time=previous.segment.started_at)
+        if choice is None or choice.event != event or choice.tie != row.tie:
+            raise ReplayError("checkpoint historical event differs from the analytic scheduler")
+        internal = isinstance(event, InternalEvent)
+        if internal:
+            choice = replace(
+                choice,
+                was_gap_clamped=clamped,
+                raw_predicted_delta=prediction.predicted_delta if clamped else None,
+            )
+        if (
+            choice.was_gap_clamped != row.was_gap_clamped
+            or choice.raw_predicted_delta != row.raw_predicted_delta
+        ):
+            raise ReplayError("checkpoint historical clamp differs from scheduler")
+        streak = selected_gap_clamp_streak(previous.core.consecutive_gap_clamps, choice)
+        counters = replace(
+            previous.core.counters,
+            guard_predictions=previous.core.counters.guard_predictions + 1,
+            flow_evaluations=previous.core.counters.flow_evaluations
+            + int(row.timestamp > previous.segment.started_at),
+            checkpoint_flow_evaluations=after.core.counters.checkpoint_flow_evaluations,
+        )
+        if (
+            after.core.counters.checkpoint_flow_evaluations
+            < previous.core.counters.checkpoint_flow_evaluations
+        ):
+            raise ReplayError("checkpoint diagnostic flow counter reversed")
         before = replace(
             previous,
             time=row.timestamp,
-            core=replace(previous.core, continuous=state_at(previous, row.timestamp)),
+            core=replace(
+                previous.core,
+                continuous=state_at(previous, row.timestamp),
+                counters=counters,
+                consecutive_gap_clamps=streak,
+            ),
         )
+        post = after.core if row.kind == "terminal" else after
+        validate_post_jump(before, event, post)
+        if row.kind == "terminal":
+            if event != terminal or after.core.counters != replace(
+                counters, jump_applications=counters.jump_applications + 1
+            ):
+                raise ReplayError("checkpoint terminal identity or counters differ")
+        else:
+            EventEngine._require_callback_result(before, after)
         actual = recorder.record(
             event,
             before,
@@ -414,6 +479,8 @@ def _validate_history(
         )
         if canonical_json_bytes(actual.to_payload()) != canonical_json_bytes(row.to_payload()):
             raise ReplayError("checkpoint causal anchor differs from trace")
+        if isinstance(event, ExternalEvent):
+            queue.consume(event)
     last = anchors[-1]
     if _public_state_anchor(last) != _public_state_anchor(state) or SegmentSummary.from_segment(
         last.segment
@@ -429,6 +496,27 @@ def _validate_history(
             valid = a == b
         if not valid:
             raise ReplayError("checkpoint counters differ from causal anchor")
+
+
+def _analytic_prediction_for_validation(anchor: RuntimeState) -> InternalEvent | None:
+    """Pure diagnostic root/kind/refractory check; never install a proposal.
+
+    The existing host-float equations are evaluated at the immutable causal
+    anchor, including when a paused cursor has passed a losing near-tie ACT.
+    This neither calls an agent nor touches cache, counters or generator state.
+    """
+    crossings = next_crossings(anchor)
+    if not crossings:
+        return None
+    crossing = crossings[0]
+    return InternalEvent(
+        crossing.event_id,
+        crossing.parent_event_id,
+        crossing.timestamp,
+        crossing.kind,
+        crossing.guard_index,
+        crossing.predicted_delta,
+    )
 
 
 def _validate_artifact(
@@ -494,7 +582,13 @@ def _validate_artifact(
         rng = decode_rng(metadata.rng, remaining)
         trace = _trace_from_metadata(metadata.trace)
         trajectory = Trajectory.from_snapshots(anchors)
-        _validate_history(state, anchors, trace)
+        _validate_history(
+            state,
+            anchors,
+            trace,
+            pending=metadata.external_queue,
+            terminal=metadata.truth.private_terminal,
+        )
         if metadata.pause_cursor != state.time:
             raise ReplayError("checkpoint pause cursor differs")
         queue = ExternalEventQueue.from_snapshot(metadata.external_queue)
@@ -518,6 +612,10 @@ def _validate_artifact(
             raise ReplayError("checkpoint queue overlaps causal history")
         if (metadata.terminal_score is not None) != is_terminal:
             raise ReplayError("checkpoint terminal score differs")
+        if is_terminal and metadata.terminal_score != score_actions(
+            metadata.truth, state.core.actions
+        ):
+            raise ReplayError("checkpoint terminal score differs from deterministic scoring")
         cache = PredictionCache.from_snapshot(metadata.prediction_cache)
         session = RuntimeSession(
             metadata.public_id,
@@ -535,12 +633,8 @@ def _validate_artifact(
         EventEngine._check_session(session)
         if cache.is_computed:
             cached = cache.snapshot()
-            active = any(
-                allowed and float(state.segment.parameters.guard_targets[index]) > 1.0
-                for index, allowed in enumerate(allowed_mode_mask(state.core.mode))
-            )
-            if (cached.event is not None) != active:
-                raise ReplayError("checkpoint cached dormancy differs from guard activity")
+            if cached.event != _analytic_prediction_for_validation(anchors[-1]):
+                raise ReplayError("checkpoint cached proposal differs from analytic guard root")
             if cached.event is not None:
                 # A losing near-tie event may precede a pause cursor. Validate at
                 # its causal anchor and race there before checking the winner.
@@ -673,49 +767,20 @@ def publish_runtime_checkpoint(
     return replace(artifact, path=path, sha256=sha256_bytes(raw))
 
 
-def _open_parent(path: Path) -> tuple[int, str]:
-    absolute = path.absolute()
-    if ".." in absolute.parts or not absolute.name:
-        raise ReplayError("invalid checkpoint path")
-    descriptor = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for part in absolute.parts[1:-1]:
-            next_descriptor = os.open(
-                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
-            )
-            os.close(descriptor)
-            descriptor = next_descriptor
-        return descriptor, absolute.name
-    except BaseException:
-        os.close(descriptor)
-        raise
+def _archive_error(field: str) -> ReplayError:
+    return ReplayError(f"invalid checkpoint: {field}", context={"field": field})
 
 
 def _check_parent(path: Path) -> None:
-    descriptor, _ = _open_parent(path)
-    os.close(descriptor)
+    with archive_parent(path, error_factory=_archive_error):
+        pass
 
 
 def _read_checkpoint(path: Path) -> bytes:
-    parent, name = _open_parent(path)
-    try:
-        descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
-    finally:
-        os.close(parent)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CHECKPOINT_BYTES:
-            raise ReplayError("checkpoint must be a bounded regular file")
-        chunks, remaining = [], MAX_CHECKPOINT_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, min(65536, remaining))
-            if not chunk:
-                return b"".join(chunks)
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        raise ReplayError("checkpoint exceeds byte limit")
-    finally:
-        os.close(descriptor)
+    with archive_parent(path, error_factory=_archive_error) as (parent, name):
+        return read_archive_at(
+            parent, name, max_bytes=MAX_CHECKPOINT_BYTES, error_factory=_archive_error
+        )
 
 
 def _unique_object(pairs):

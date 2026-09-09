@@ -407,3 +407,124 @@ def test_successful_crash_enabled_execution_does_not_encode_archives(tmp_path, c
     )
     assert result.score.timed_success
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "fact_memory",
+        "cached_root",
+        "historical_root",
+        "historical_flow_counter",
+        "terminal_success",
+        "terminal_count",
+        "terminal_identity",
+        "terminal_time",
+    ],
+)
+def test_rehashed_history_root_and_score_corruption_refused_before_any_setter(
+    tmp_path, config, monkeypatch, damage
+):
+    from silent_cascade.eventflow.checkpoint import (
+        RuntimeCheckpointArtifact,
+        RuntimeCheckpointMetadata,
+        restore_runtime_session,
+        snapshot_runtime,
+    )
+
+    engine, agent = EventEngine(config), ScriptedEventFlowAgent()
+    session = engine.start_episode(bundle_for(CASES[0]), agent)
+    if damage.startswith("terminal"):
+        while not engine.step(session, agent):
+            pass
+    else:
+        engine.run_until(session, agent, 1.1)
+    artifact = snapshot_runtime(session, agent, config=config, source_revision=REVISION)
+    payload = artifact.metadata.model_dump(mode="json")
+    if damage == "historical_root":
+        from dataclasses import replace
+
+        from silent_cascade.eventflow.guards import allowed_mode_mask, prediction_snapshot_sha256
+        from silent_cascade.logging.trace import tensor_sha256
+
+        # Change the historical ACTIVATE segment's RECALL rate while leaving
+        # its recorded RECALL time fixed; coherently bind all affected hashes.
+        name = "trajectory.5.guard_rates"
+        artifact.tensors[name][0] *= 0.8
+        anchor = session.trajectory.checkpoint_snapshots()[5]
+        parameters = replace(anchor.segment.parameters, guard_rates=artifact.tensors[name])
+        digest = prediction_snapshot_sha256(
+            anchor.segment.origin,
+            parameters,
+            started_at=anchor.segment.started_at,
+            allowed_mode_mask=allowed_mode_mask(anchor.core.mode),
+            parent_event_id=anchor.segment.parent_event_id,
+        )
+        payload["trajectory"][5]["prediction_snapshot_sha256"] = digest
+        segment = payload["trace"]["events"][4]["segment"]
+        segment["prediction_snapshot_sha256"] = digest
+        for entry in segment["parameter_hashes"]:
+            if entry[0] == "guard_rates":
+                entry[1] = tensor_sha256(artifact.tensors[name])
+        payload["trace"]["events"][5]["prediction_snapshot_sha256"] = digest
+        payload["tensors"][name]["sha256"] = sha256_bytes(
+            canonical_json_bytes(
+                {"name": name, "tensor_sha256": tensor_sha256(artifact.tensors[name])}
+            )
+        )
+    elif damage == "historical_flow_counter":
+        # This remains internally monotone and trace-delta consistent, but
+        # invents a causal flow evaluation in the first executed FACT.
+        for item in payload["trajectory"][1:]:
+            item["core"]["counters"]["flow_evaluations"] += 1
+        payload["state"]["core"]["counters"]["flow_evaluations"] += 1
+        for row in payload["trace"]["events"]:
+            row["counters_after"]["flow_evaluations"] += 1
+        payload["trace"]["events"][0]["counter_delta"]["flow_evaluations"] += 1
+    elif damage == "fact_memory":
+        payload["trace"]["events"][0]["payload"]["node"] = 63
+    elif damage == "cached_root":
+        payload["prediction_cache"]["event"]["timestamp"] += 0.1
+        payload["prediction_cache"]["event"]["predicted_delta"] += 0.1
+    elif damage == "terminal_success":
+        payload["terminal_score"]["timed_success"] = False
+    elif damage == "terminal_count":
+        payload["terminal_score"]["action_count"] = 999
+    elif damage == "terminal_identity":
+        payload["truth"]["private_terminal"]["event_id"] += 100
+    elif damage == "terminal_time":
+        payload["truth"]["episode_delay"] = 3.0
+        payload["truth"]["private_terminal"]["timestamp"] = 4.0
+        payload["truth"]["action_window_start"] = 3.25
+        payload["truth"]["action_window_end"] = 3.7
+        payload["truth"]["action_target"] = 3.475
+    online = {
+        "schema_version": 1,
+        "events": [
+            {key: value for key, value in row.items() if key != "source"}
+            for row in payload["trace"]["events"]
+        ],
+    }
+    payload["trace"]["sha256"] = sha256_bytes(canonical_json_bytes(online))
+    payload["metadata_sha256"] = sha256_bytes(
+        canonical_json_bytes(
+            {key: value for key, value in payload.items() if key != "metadata_sha256"}
+        )
+    )
+    corrupt = RuntimeCheckpointArtifact(
+        RuntimeCheckpointMetadata.model_validate_json(canonical_json_bytes(payload)),
+        artifact.tensors,
+    )
+    caller = ScriptedEventFlowAgent()
+    before, counters = rng_signature(), caller.compute_counters()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("corrupt checkpoint reached a global RNG or caller counter setter")
+
+    monkeypatch.setattr(random, "setstate", forbidden)
+    monkeypatch.setattr(np.random, "set_state", forbidden)
+    monkeypatch.setattr(torch, "set_rng_state", forbidden)
+    monkeypatch.setattr(ScriptedEventFlowAgent, "restore_compute_counters", forbidden)
+    with pytest.raises(ReplayError):
+        restore_runtime_session(corrupt, caller, config=config, source_revision=REVISION)
+    assert rng_signature() == before and caller.compute_counters() == counters

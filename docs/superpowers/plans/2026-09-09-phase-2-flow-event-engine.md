@@ -1715,6 +1715,24 @@ This fixture preserves runtime invariants and the closed agent registry; it is
 not a generated scientific episode or validation evidence. Ordinary positive,
 safe and disconnected fixtures provide the CPU continuation evidence.
 
+**Approved Task 11 review corrections (2026-09-09):** Runnable restoration
+must validate each archived causal transition with the existing post-jump
+validator, using the actual analytic pre-event state, selected clamp streak,
+causal flow/prediction charges and preserved checkpoint-only diagnostics.
+Historical and cached endogenous proposals share pure host analytic guard-root,
+kind and refractory validation at the causal anchor. Re-evaluating these equations
+for forensic validation is permitted; no agent/controller call, cache replacement,
+new event, counter increment or runtime rescheduling occurs. Recorded external
+preemption and near-tie choices must still match the private scheduler.
+
+Completed checkpoints must bind terminal identity/time to the private terminal
+and compare the entire archived score with deterministic score_actions. These
+checks complete before RNG or caller-counter installation. Bounded descriptor
+traversal and reads are consolidated in the new Phase 2-private archive_io.py,
+shared by replay and checkpoint codecs with domain-specific error adaptation;
+frozen Phase 1 io.py and its source closure remain untouched. The portable MPS
+inspection and strict same-device runnable-restore ruling above is unchanged.
+
 **Files:**
 
 - Create: `src/silent_cascade/eventflow/checkpoint.py`

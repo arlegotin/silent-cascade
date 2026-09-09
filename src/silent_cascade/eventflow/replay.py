@@ -7,9 +7,6 @@ canonical hashes; a timing diagnostic tolerance does not relax hash equality.
 
 import json
 import math
-import os
-import stat
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, Self
@@ -19,6 +16,7 @@ from pydantic import Field, ValidationError, ValidationInfo, field_validator
 from silent_cascade.env.episode import EpisodeArtifact, EpisodeBundle
 from silent_cascade.env.reward import EpisodeScore
 from silent_cascade.errors import AtomicWriteError, ReplayError, SilentCascadeError
+from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
 from silent_cascade.eventflow.config import EventFlowConfig
 from silent_cascade.eventflow.engine import EpisodeResult, EventEngine
 from silent_cascade.eventflow.scheduling import TieResolution
@@ -218,43 +216,12 @@ def _validated_inputs(artifact: ReplayArtifact) -> tuple[EpisodeBundle, EventFlo
     return bundle, config
 
 
-@contextmanager
 def _parent_descriptor(path: Path):
-    """Pin each directory without following symlinks, including intermediate ones."""
-    absolute = path.absolute()
-    if ".." in absolute.parts or not absolute.name:
-        raise _mismatch("archive.path")
-    descriptor = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for component in absolute.parts[1:-1]:
-            next_descriptor = os.open(
-                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
-            )
-            os.close(descriptor)
-            descriptor = next_descriptor
-        yield descriptor, absolute.name
-    finally:
-        os.close(descriptor)
+    return archive_parent(path, error_factory=_mismatch)
 
 
 def _read_at(parent: int, name: str) -> bytes:
-    descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise _mismatch("archive.regular_file")
-        if info.st_size > MAX_REPLAY_BYTES:
-            raise _mismatch("archive.byte_limit")
-        chunks, remaining = [], MAX_REPLAY_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, min(65536, remaining))
-            if not chunk:
-                return b"".join(chunks)
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        raise _mismatch("archive.byte_limit")
-    finally:
-        os.close(descriptor)
+    return read_archive_at(parent, name, max_bytes=MAX_REPLAY_BYTES, error_factory=_mismatch)
 
 
 def load_replay_artifact(path: Path) -> ReplayArtifact:
