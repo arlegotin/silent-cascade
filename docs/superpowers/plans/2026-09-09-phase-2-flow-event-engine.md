@@ -934,11 +934,19 @@ class RuntimeCore:
     executed_internal_events: int
     consecutive_gap_clamps: int
     last_event_id: int | None
+    last_event_time: float | None
     counters: ComputeCounters
 ```
 
 No field may contain an episode variant, truth object, terminal timestamp,
 window, external queue, seed, coordinate, or oracle trace.
+
+Approved Task 5 review ruling: `last_event_time` records the timestamp of the
+already-executed causal event, alongside its ID. It is an optional finite,
+nonnegative host float, with no invented causal history in low-level flow
+fixtures. Every public jump stamps it; the installer requires it and rejects a
+supplied time that differs. This preserves the materialized jump origin's time
+without introducing private future timing or changing the scientific protocol.
 
 - [ ] **Step 5: Implement decision-driven jumps**
 
@@ -959,7 +967,8 @@ runnable `RuntimeState`. It must:
 
 1. set all accumulators to exact zero;
 2. validate bounded targets and positive rates;
-3. set `started_at == state.time`;
+3. require `time == core.last_event_time` and set `started_at` to that
+   already-executed event timestamp; reject missing, invalid, or mismatched times;
 4. clone the post-jump continuous origin;
 5. bind `parent_event_id` to the executed event; and
 6. derive the prediction snapshot hash from the newly installed parameters.

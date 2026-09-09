@@ -57,6 +57,21 @@ def test_initial_state_has_declared_shapes_zero_values_and_device() -> None:
         state.drives = torch.zeros(8)
 
 
+def test_runtime_core_preserves_optional_host_jump_time_without_inventing_history() -> None:
+    initial = RuntimeCore(make_initial_continuous_state())
+    assert initial.last_event_time is None
+    assert replace(initial, last_event_id=7).last_event_time is None
+    stamped = replace(initial, last_event_id=7, last_event_time=1.0000000001)
+    assert stamped.last_event_time == 1.0000000001
+    assert initial.last_event_time is None
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.0, 1, True])
+def test_runtime_core_rejects_invalid_jump_timestamps(value: object) -> None:
+    with pytest.raises(TimeOrderError):
+        replace(RuntimeCore(make_initial_continuous_state()), last_event_time=value)
+
+
 @pytest.mark.parametrize("name", [f.name for f in fields(ContinuousState)])
 @pytest.mark.parametrize("fault", ["shape", "dtype", "nan", "infinity", "lower", "upper"])
 def test_state_rejects_invalid_tensor_channels(name: str, fault: str) -> None:

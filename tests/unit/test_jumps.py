@@ -235,9 +235,15 @@ def test_act_uses_predicted_class_emits_one_caused_action_and_disables_repetitio
         post.actions[0].caused_by_event_id,
     ) == (1, 1.0, event.event_id)
     assert post.mode is Mode.QUIESCENT
-    again = replace(state, core=replace(post, mode=Mode.HOLDING_HAZARD))
-    with pytest.raises(DynamicsError):
-        apply_act(again, event, hazard_type=1)
+    again = begin_post_jump_segment(
+        replace(post, mode=Mode.HOLDING_HAZARD), parameters(), time=event.timestamp
+    )
+    again = advance_to(again, 1.01)
+    second_event = replace(
+        event, event_id=event.event_id + 1, parent_event_id=event.event_id, timestamp=again.time
+    )
+    with pytest.raises(DynamicsError, match="no previous action"):
+        apply_act(again, second_event, hazard_type=1)
     missing = replace(state, core=replace(state.core, hypothesis=None))
     with pytest.raises(DynamicsError):
         apply_act(missing, event, hazard_type=1)
@@ -370,6 +376,26 @@ def test_install_revalidates_parameters_and_rejects_terminal_or_missing_parent()
             begin_post_jump_segment(replace(post, **changes), parameters(), time=1.0)
 
 
+def test_install_rejects_relabeling_a_jump_origin_at_a_different_time() -> None:
+    state = runtime(Mode.SEARCHING)
+    event = internal(InternalEventKind.RECALL)
+    post = apply_recall(state, event, record_id=2)
+    before = post.continuous.z_fast.clone()
+    with pytest.raises(TimeOrderError):
+        begin_post_jump_segment(post, parameters(), time=2.0)
+    assert torch.equal(post.continuous.z_fast, before)
+    assert post.last_event_time == event.timestamp == 1.0
+    installed = begin_post_jump_segment(post, parameters(), time=1.0)
+    assert installed.segment.started_at == installed.core.last_event_time == 1.0
+
+
+def test_install_requires_an_authoritative_jump_time() -> None:
+    # Low-level flow fixtures may have an ID without materializing a causal jump.
+    core = runtime(Mode.SEARCHING).core
+    with pytest.raises(DynamicsError):
+        begin_post_jump_segment(core, parameters(), time=1.0)
+
+
 def test_exactly_the_64th_internal_event_is_allowed() -> None:
     state = runtime(Mode.SEARCHING)
     state = replace(state, core=replace(state.core, executed_internal_events=63))
@@ -436,6 +462,7 @@ def test_each_jump_resets_guards_and_installs_its_own_origin(kind: str) -> None:
         event = internal(InternalEventKind.ACT)
         post = apply_act(state, event, hazard_type=1)
     assert torch.count_nonzero(post.continuous.guard_accumulators) == 0
+    assert post.last_event_time == event.timestamp
     installed = begin_post_jump_segment(post, parameters(), time=state.time)
     assert installed.segment.parent_event_id == event.event_id
     assert torch.count_nonzero(installed.segment.origin.guard_accumulators) == 0

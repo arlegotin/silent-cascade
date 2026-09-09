@@ -182,11 +182,14 @@ class RuntimeCore:
     executed_internal_events: int = 0
     consecutive_gap_clamps: int = 0
     last_event_id: int | None = None
+    last_event_time: float | None = None
     counters: ComputeCounters = field(default_factory=ComputeCounters)
 
     def __post_init__(self) -> None:
         if not isinstance(self.continuous, ContinuousState):
             raise DynamicsError("continuous must be a ContinuousState")
+        if self.last_event_time is not None:
+            require_time(self.last_event_time, "last_event_time")
         object.__setattr__(self, "continuous", replace(self.continuous))
 
 

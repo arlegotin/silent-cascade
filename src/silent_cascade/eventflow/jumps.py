@@ -26,6 +26,7 @@ from silent_cascade.eventflow.state import (
     RuntimeCore,
     RuntimeState,
     SegmentParameters,
+    require_time,
 )
 from silent_cascade.memory import (
     append_perceived_fact,
@@ -174,6 +175,7 @@ def _finish(core: RuntimeCore, event: ExternalEvent | InternalEvent) -> RuntimeC
             core.continuous, guard_accumulators=torch.zeros_like(core.continuous.guard_accumulators)
         ),
         last_event_id=event.event_id,
+        last_event_time=event.timestamp,
         executed_internal_events=internal_count,
         same_kind_refractory_until=refractory,
         counters=replace(core.counters, jump_applications=core.counters.jump_applications + 1),
@@ -327,13 +329,20 @@ def begin_post_jump_segment(
 ) -> RuntimeState:
     """Reset guards, revalidate supplied parameters, hash and install one segment.
 
-    ``time`` is the just-executed event's timestamp. Controller evaluation and
-    its counter belong to the caller; installation does not evaluate a controller.
+    ``time`` must equal the authoritative ``core.last_event_time`` stamped by
+    the jump. Controller evaluation and its counter belong to the caller;
+    installation does not evaluate a controller.
     """
     if not isinstance(core, RuntimeCore) or core.mode is Mode.TERMINAL:
         raise DynamicsError("post-jump installation requires a nonterminal runtime core")
     if type(core.last_event_id) is not int or core.last_event_id < 0:
         raise DynamicsError("post-jump installation requires the executed event ID")
+    if core.last_event_time is None:
+        raise DynamicsError("post-jump installation requires the executed event time")
+    require_time(core.last_event_time, "last_event_time")
+    require_time(time, "time")
+    if time != core.last_event_time:
+        raise TimeOrderError("segment time must equal the executed event time")
     if not isinstance(parameters, SegmentParameters):
         raise DynamicsError("post-jump installation requires segment parameters")
     parameters = replace(parameters)
