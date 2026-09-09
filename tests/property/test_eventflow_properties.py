@@ -1,5 +1,6 @@
 """State-machine properties for the Phase 2 event-flow runtime."""
 
+import math
 from dataclasses import replace
 
 import pytest
@@ -9,6 +10,7 @@ from hypothesis import strategies as st
 
 from silent_cascade.errors import DynamicsError, ProvenanceError
 from silent_cascade.eventflow.flow import advance_to, start_segment, state_at
+from silent_cascade.eventflow.guards import crossing_offset_host
 from silent_cascade.eventflow.state import (
     AnalyticSegment,
     ContinuousChannels,
@@ -226,3 +228,21 @@ def test_huge_time_flow_stays_finite_and_converges(dt: float) -> None:
     torch.testing.assert_close(
         advanced.core.continuous.guard_accumulators, initial.segment.parameters.guard_targets
     )
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    accumulator=st.floats(min_value=0.0, max_value=0.999999, allow_nan=False, allow_infinity=False),
+    asymptote=st.floats(
+        min_value=1.000001, max_value=1.999999, allow_nan=False, allow_infinity=False
+    ),
+    rate=st.floats(min_value=1.0e-5, max_value=500.0, allow_nan=False, allow_infinity=False),
+)
+def test_active_guard_host_crossing_is_finite_and_positive(
+    accumulator: float, asymptote: float, rate: float
+) -> None:
+    """Changing the active formula or accepting dormant values violates this scalar invariant."""
+    crossing = crossing_offset_host(accumulator, asymptote, rate)
+    assert crossing is not None
+    assert math.isfinite(crossing)
+    assert crossing > 0.0
