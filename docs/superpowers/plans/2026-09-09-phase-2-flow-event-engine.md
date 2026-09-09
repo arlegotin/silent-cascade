@@ -1530,6 +1530,34 @@ git commit -m "feat: enforce fail-loud event dynamics"
 
 ### Task 10: Non-Mutating Trajectory Queries and Deterministic Trace Replay Core
 
+Implementation clarification (parent-approved, 2026-09-09): the narrow capture
+seam also modifies `eventflow/engine.py`. Each session retains clone-owned actual
+initial and verified post-event runtime anchors in `Trajectory`; its public
+result exposes only this public-derived trajectory, never truth or the session.
+Append clones only the new snapshot, and commits with the causal state/trace.
+Pauses create no trajectory boundary. Queries return cloned continuous tensors;
+terminal is represented only by its actual reset state at its exact time.
+Replay rows add a strict derived source (`external` for FACT/ACTIVATE,
+`internal` for RECALL/COMPOSE/ACT, `terminal` for sanitized terminal). The existing
+online trace hash remains unchanged; the private envelope separately hashes the
+source-augmented payload. All hashes compare exactly on CPU.
+The canonical configuration in this envelope is runtime-only `EventFlowConfig`.
+The private EpisodeArtifact binds the actual inputs, so replay regenerates no
+data and consumes no training settings. This runtime hash is not the full
+resolved `Phase2Config` experiment hash; later gate provenance binds that
+separately.
+`EpisodeResultArtifact` projects only `checkpoint_flow_evaluations` to zero,
+as causal trace counters already do, and rejects nonzero archived values.
+Original runtime/result diagnostics remain intact; checkpoints retain them in
+Task 11. Replay archives are bounded to 32 MiB, read with descriptor-pinned
+no-symlink checks, and published through the shared atomic no-clobber writer.
+macOS does not permit directory traversal through `/dev/fd`; publication uses
+the validated original parent path. Hostile concurrent ancestor replacement is
+outside the local single-user publication boundary; strict reads remain pinned.
+The import-boundary regression narrowly classifies `eventflow/replay.py` as
+private infrastructure (episode/reward, engine and scheduling only), and its
+runtime import smoke includes replay while blocking optional model packages.
+
 **Files:**
 
 - Modify: `src/silent_cascade/logging/trace.py`

@@ -46,6 +46,7 @@ from silent_cascade.logging.trace import (
     CausalTrace,
     SegmentSummary,
     TraceRecorder,
+    Trajectory,
     sanitized_crash_events,
     tensor_sha256,
 )
@@ -63,6 +64,7 @@ class RuntimeSession:
     prediction_cache: PredictionCache
     trace: TraceRecorder
     pause_cursor: float
+    trajectory: Trajectory
     terminal_score: EpisodeScore | None = None
     segment_anchor: SegmentSummary | None = None
     public_state_anchor: bytes | None = None
@@ -142,6 +144,7 @@ class EpisodeResult:
     actions: tuple[Action, ...]
     counters: ComputeCounters
     trace: CausalTrace
+    trajectory: Trajectory
 
 
 class EventEngine:
@@ -255,6 +258,7 @@ class EventEngine:
             PredictionCache(),
             TraceRecorder(),
             state.time,
+            Trajectory(state),
             segment_anchor=SegmentSummary.from_segment(state.segment),
             public_state_anchor=_public_state_anchor(state),
         )
@@ -450,6 +454,8 @@ class EventEngine:
             elif event.kind is InternalEventKind.COMPOSE:
                 selected_record_id = before.core.active_record_id
                 selected_rank = before.core.active_record_rank
+        next_state = replace(before, core=after) if isinstance(after, RuntimeCore) else after
+        trajectory = session.trajectory.append(next_state)
         session.trace.record(
             event,
             before,
@@ -462,7 +468,8 @@ class EventEngine:
         )
         if isinstance(event, ExternalEvent):
             session.external_queue.consume(event)
-        session.state = replace(before, core=after) if isinstance(after, RuntimeCore) else after
+        session.state = next_state
+        session.trajectory = trajectory
         session.terminal_score = score
         session.pause_cursor = session.state.time
         session.prediction_cache.invalidate()
@@ -529,4 +536,5 @@ class EventEngine:
             session.state.core.actions,
             session.state.core.counters,
             session.trace.snapshot(),
+            session.trajectory,
         )

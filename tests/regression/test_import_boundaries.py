@@ -79,6 +79,7 @@ import silent_cascade.doctor
 import silent_cascade.cli
 import silent_cascade.eventflow.engine
 import silent_cascade.eventflow.scripted
+import silent_cascade.eventflow.replay
 assert not blocked.intersection(sys.modules)
 assert not any("qwen" in name.lower() for name in sys.modules)
 """
@@ -135,6 +136,13 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
                 }
             elif relative_path == "eventflow/scheduling.py":
                 allowed = {"silent_cascade.env.episode"}
+            elif relative_path == "eventflow/replay.py":
+                allowed = {
+                    "silent_cascade.env.episode",
+                    "silent_cascade.env.reward",
+                    "silent_cascade.eventflow.engine",
+                    "silent_cascade.eventflow.scheduling",
+                }
             modules = imported_modules(path)
             assert not any(
                 module == blocked or module.startswith(f"{blocked}.")

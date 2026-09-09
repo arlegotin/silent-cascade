@@ -7,11 +7,13 @@ frozen Phase 1 analysis import closure. Private replay envelopes belong elsewher
 import hashlib
 import math
 import struct
-from dataclasses import asdict, dataclass, fields
+from bisect import bisect_right
+from dataclasses import asdict, dataclass, field, fields, replace
 
 import torch
 
 from silent_cascade.errors import DynamicsError, TimeOrderError
+from silent_cascade.eventflow.flow import state_at as segment_state_at
 from silent_cascade.eventflow.scheduling import (
     Event,
     TieResolution,
@@ -230,6 +232,55 @@ class CausalTrace:
     @property
     def sha256(self) -> str:
         return sha256_bytes(canonical_json_bytes(self.to_payload()))
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class Trajectory:
+    """Clone-owned causal anchors, with no public tensor storage aliases.
+
+    An append returns a new prefix and clones only the new actual runtime
+    snapshot. Queries are restricted to the represented time interval; pauses
+    do not extend it. Terminal uses its reset continuous state, never its old
+    segment. The private anchors contain public-derived runtime data only.
+    """
+
+    _snapshots: tuple[RuntimeState, ...] = field(repr=False)
+    _times: tuple[float, ...] = field(repr=False)
+
+    def __init__(self, initial: RuntimeState) -> None:
+        if initial.core.mode is Mode.TERMINAL or initial.time != initial.segment.started_at:
+            raise TimeOrderError("trajectory initial snapshot must be a nonterminal anchor")
+        object.__setattr__(self, "_snapshots", (replace(initial),))
+        object.__setattr__(self, "_times", (initial.time,))
+
+    @property
+    def boundary_count(self) -> int:
+        return len(self._snapshots)
+
+    def append(self, state: RuntimeState) -> "Trajectory":
+        previous = self._snapshots[-1]
+        if previous.core.mode is Mode.TERMINAL or state.time < previous.time:
+            raise TimeOrderError("trajectory cannot reverse time or continue after terminal")
+        if state.core.counters.jump_applications != previous.core.counters.jump_applications + 1:
+            raise TimeOrderError("trajectory gap: every causal jump requires an anchor")
+        if state.core.last_event_time != state.time:
+            raise TimeOrderError("trajectory snapshots must be captured at a causal event")
+        if state.core.mode is not Mode.TERMINAL and state.segment.started_at != state.time:
+            raise TimeOrderError("trajectory snapshots must be post-jump segment anchors")
+        result = object.__new__(type(self))
+        object.__setattr__(result, "_snapshots", (*self._snapshots, replace(state)))
+        object.__setattr__(result, "_times", (*self._times, state.time))
+        return result
+
+    def state_at(self, time: float) -> ContinuousState:
+        """Evaluate the last post-jump anchor at a tie, without runtime work."""
+        require_time(time, "trajectory query time")
+        if time < self._times[0] or time > self._times[-1]:
+            raise TimeOrderError("trajectory query is outside the represented interval")
+        snapshot = self._snapshots[bisect_right(self._times, time) - 1]
+        if snapshot.core.mode is Mode.TERMINAL:
+            return replace(snapshot.core.continuous)
+        return segment_state_at(snapshot, time)
 
 
 class TraceRecorder:

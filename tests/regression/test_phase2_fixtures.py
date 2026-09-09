@@ -18,7 +18,8 @@ from silent_cascade.env.episode import (
     PublicEpisode,
 )
 from silent_cascade.eventflow.config import Phase2Config
-from silent_cascade.eventflow.engine import EventEngine
+from silent_cascade.eventflow.engine import EpisodeResult, EventEngine
+from silent_cascade.eventflow.replay import verify_replay, write_replay_artifact
 from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
 from silent_cascade.schemas import (
     ActivationPayload,
@@ -35,7 +36,7 @@ FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/phase2/scripted_cases.
 
 
 @pytest.mark.parametrize("case", json.loads(FIXTURE.read_text())["cases"], ids=lambda c: c["name"])
-def test_hand_authored_scripted_trace(case: dict) -> None:
+def test_hand_authored_scripted_trace(case: dict, tmp_path: Path) -> None:
     """Wrong retrieval, composition, support, cadence or final scoring breaks this trace."""
     payloads = {"link": LinkFact, "hazard": HazardFact, "safe": SafeFact}
     facts = tuple(
@@ -113,3 +114,15 @@ def test_hand_authored_scripted_trace(case: dict) -> None:
     assert session.terminal_score.reason == expected["score_reason"]
     assert agent.compute_counters().foundation_model_calls == 0
     assert session.state.core.counters.foundation_model_calls == 0
+    result = EpisodeResult(
+        session.public_id,
+        session.terminal_score,
+        session.state.core.actions,
+        session.state.core.counters,
+        session.trace.snapshot(),
+        session.trajectory,
+    )
+    artifact = write_replay_artifact(
+        tmp_path / "replay.json", bundle=EpisodeBundle(public, truth), config=config, result=result
+    )
+    assert verify_replay(artifact).trace_sha256 == result.trace.sha256

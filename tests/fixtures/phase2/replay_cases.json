@@ -1,0 +1,9 @@
+{
+  "evidence_label": "non-neural runtime engineering evidence",
+  "source": "scripted_cases.json",
+  "cases": [
+    {"name": "positive", "event_count": 13, "action_count": 1, "reason": "success"},
+    {"name": "safe_negative", "event_count": 12, "action_count": 0, "reason": "negative_abstention"},
+    {"name": "disconnected_negative", "event_count": 10, "action_count": 0, "reason": "negative_abstention"}
+  ]
+}

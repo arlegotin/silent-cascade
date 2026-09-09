@@ -306,3 +306,76 @@ def test_same_time_same_priority_descending_ids_rejected_on_append_and_restore(r
             CausalTrace((first, second))
         else:
             recorder.append(second)
+
+
+def test_trajectory_owns_anchors_returns_clones_and_uses_last_same_time_jump() -> None:
+    from silent_cascade.logging.trace import Trajectory
+
+    initial = runtime()
+    initial = replace(
+        initial,
+        core=replace(
+            initial.core,
+            continuous=replace(
+                initial.core.continuous, z_fast=torch.full_like(initial.core.continuous.z_fast, 0.5)
+            ),
+        ),
+        segment=replace(
+            initial.segment,
+            origin=replace(
+                initial.segment.origin, z_fast=torch.full_like(initial.segment.origin.z_fast, 0.5)
+            ),
+        ),
+    )
+    recorder = TraceRecorder()
+    _, first = recorded_fact(recorder, initial, 4, 2.0)
+    _, second = recorded_fact(recorder, first, 5, 2.0)
+    # Distinct post-jump latent values expose choosing the first tie anchor.
+    second = replace(
+        second,
+        core=replace(
+            second.core,
+            continuous=replace(
+                second.core.continuous, z_fast=torch.full_like(second.core.continuous.z_fast, 0.25)
+            ),
+        ),
+        segment=replace(
+            second.segment,
+            origin=replace(
+                second.segment.origin, z_fast=torch.full_like(second.segment.origin.z_fast, 0.25)
+            ),
+        ),
+    )
+    trajectory = Trajectory(initial).append(first).append(second)
+    digest = recorder.snapshot().sha256
+    counters = second.core.counters
+    expected = trajectory.state_at(1.5).z_fast.clone()
+    assert float(expected[0]) == pytest.approx(0.3032653298563167, abs=1e-7)
+    initial.segment.origin.z_fast.zero_()
+    first.segment.origin.z_fast.zero_()
+    queried = trajectory.state_at(1.5)
+    torch.testing.assert_close(queried.z_fast, expected, rtol=0, atol=0)
+    queried.z_fast.zero_()
+    torch.testing.assert_close(trajectory.state_at(1.5).z_fast, expected, rtol=0, atol=0)
+    assert trajectory.boundary_count == 3
+    assert float(trajectory.state_at(2.0).z_fast[0]) == 0.25
+    assert trajectory.state_at(2.0).guard_accumulators.tolist() == [0.0, 0.0, 0.0]
+    assert second.core.counters == counters
+    assert recorder.snapshot().sha256 == digest
+    with pytest.raises(TimeOrderError):
+        trajectory.state_at(0.5)
+    with pytest.raises(TimeOrderError):
+        trajectory.state_at(2.5)
+
+
+def test_trajectory_rejects_missing_jump_and_pause_anchors() -> None:
+    from silent_cascade.logging.trace import Trajectory
+
+    initial = runtime()
+    recorder = TraceRecorder()
+    _, first = recorded_fact(recorder, initial, 4, 2.0)
+    _, second = recorded_fact(recorder, first, 5, 3.0)
+    with pytest.raises(TimeOrderError, match="gap"):
+        Trajectory(initial).append(second)
+    with pytest.raises(TimeOrderError):
+        Trajectory(initial).append(advance_to(first, 2.5))
