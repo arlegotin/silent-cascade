@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import torch
 
-from silent_cascade.errors import DynamicsError
+from silent_cascade.errors import DynamicsError, TimeOrderError
 from silent_cascade.eventflow.state import (
     INTERNAL_EVENT_ID_BASE,
     ContinuousState,
@@ -29,7 +29,7 @@ _GUARD_RATE_MIN = float(torch.tensor(1.0e-5, dtype=torch.float32).item())
 _GUARD_RATE_MAX = 500.0
 _GUARD_THRESHOLD = 1.0
 
-# Index order is also the deterministic within-internal priority order.
+# Guard index order is RECALL, COMPOSE, ACT; tie priority is defined separately.
 GUARD_KIND_BY_INDEX = (
     InternalEventKind.RECALL,
     InternalEventKind.COMPOSE,
@@ -49,6 +49,13 @@ _PRIORITY_BY_KIND = {
     InternalEventKind.COMPOSE: 1,
     InternalEventKind.RECALL: 2,
 }
+
+
+def allowed_mode_mask(mode: Mode) -> tuple[bool, bool, bool]:
+    """Return the one authoritative endogenous-guard legality mask for a mode."""
+    if not isinstance(mode, Mode):
+        raise DynamicsError("runtime mode is invalid")
+    return _ALLOWED_MASK_BY_MODE[mode]
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,10 +247,7 @@ def next_crossings(runtime: RuntimeState) -> list[GuardCrossing]:
     """
     if not isinstance(runtime, RuntimeState):
         raise DynamicsError("guard prediction requires RuntimeState")
-    try:
-        allowed_mask = _ALLOWED_MASK_BY_MODE[runtime.core.mode]
-    except KeyError as error:
-        raise DynamicsError("runtime mode is invalid") from error
+    allowed_mask = allowed_mode_mask(runtime.core.mode)
     if not any(allowed_mask):
         return []
 
@@ -266,7 +270,14 @@ def next_crossings(runtime: RuntimeState) -> list[GuardCrossing]:
             raise DynamicsError("same-kind refractory times must be finite host floats")
         timestamp = max(mathematical_time, refractory_until)
         if timestamp < runtime.time:
-            continue
+            raise TimeOrderError(
+                "active guard crossing predates the runtime cursor",
+                context={
+                    "guard_index": guard_index,
+                    "crossing_timestamp": timestamp,
+                    "runtime_time": runtime.time,
+                },
+            )
         kind = GUARD_KIND_BY_INDEX[guard_index]
         candidates.append(
             GuardCrossing(

@@ -10,10 +10,11 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from silent_cascade.errors import DynamicsError
+from silent_cascade.errors import DynamicsError, TimeOrderError
 from silent_cascade.eventflow.flow import advance_to, start_segment
 from silent_cascade.eventflow.guards import (
     GUARD_KIND_BY_INDEX,
+    allowed_mode_mask,
     crossing_offset_host,
     crossing_offsets_tensor,
     next_crossings,
@@ -85,11 +86,7 @@ def runtime(
         core.continuous,
         params,
         started_at=started_at,
-        allowed_mode_mask=(
-            mode is Mode.SEARCHING,
-            mode is Mode.HAVE_MEMORY,
-            mode is Mode.HOLDING_HAZARD,
-        ),
+        allowed_mode_mask=allowed_mode_mask(mode),
         parent_event_id=parent_id,
     )
     return start_segment(
@@ -153,6 +150,30 @@ def test_host_crossing_accepts_only_the_float32_representable_lower_rate_bound()
         crossing_offset_host(0.0, 1.5, math.nextafter(legal, -math.inf))
 
 
+@pytest.mark.parametrize(
+    ("accumulator", "asymptote", "rate"),
+    [
+        (-0.1, 1.5, 1.0),
+        (2.1, 1.5, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, -0.1, 1.0),
+        (0.0, 2.0, 1.0),
+        (0.0, 2.1, 1.0),
+        (
+            0.0,
+            1.5,
+            math.nextafter(float(torch.tensor(1.0e-5, dtype=torch.float32).item()), -math.inf),
+        ),
+        (0.0, 1.5, 500.000001),
+    ],
+)
+def test_host_crossing_rejects_finite_values_outside_the_guard_domain(
+    accumulator: float, asymptote: float, rate: float
+) -> None:
+    with pytest.raises(DynamicsError):
+        crossing_offset_host(accumulator, asymptote, rate)
+
+
 def test_tensor_crossing_masks_dormant_values_without_invalid_math_and_preserves_gradients() -> (
     None
 ):
@@ -169,6 +190,102 @@ def test_tensor_crossing_masks_dormant_values_without_invalid_math_and_preserves
     assert torch.isfinite(rates.grad[0])
     assert targets.grad[1] == 0 and targets.grad[2] == 0
     assert rates.grad[1] == 0 and rates.grad[2] == 0
+
+
+@pytest.mark.parametrize(
+    ("accumulators", "asymptotes", "rates"),
+    [
+        (
+            torch.zeros(3, dtype=torch.float64),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float64),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.ones(3, dtype=torch.float64),
+        ),
+        (
+            torch.zeros(2, dtype=torch.float32),
+            torch.full((2,), 1.5, dtype=torch.float32),
+            torch.ones(2, dtype=torch.float32),
+        ),
+        (
+            torch.tensor([0.0, float("nan"), 0.0], dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.tensor([1.5, float("nan"), 1.5], dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.tensor([1.0, float("inf"), 1.0], dtype=torch.float32),
+        ),
+        (
+            torch.tensor([-0.1, 0.0, 0.0], dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.tensor([2.1, 0.0, 0.0], dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.tensor([0.0, 1.5, 1.5], dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.tensor([1.5, 2.0, 1.5], dtype=torch.float32),
+            torch.ones(3, dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.tensor([1.0, 500.1, 1.0], dtype=torch.float32),
+        ),
+        (
+            torch.zeros(3, dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32),
+            torch.stack(
+                (
+                    torch.nextafter(
+                        torch.tensor(1.0e-5, dtype=torch.float32),
+                        torch.tensor(-math.inf, dtype=torch.float32),
+                    ),
+                    torch.tensor(1.0, dtype=torch.float32),
+                    torch.tensor(1.0, dtype=torch.float32),
+                )
+            ),
+        ),
+    ],
+)
+def test_tensor_crossing_rejects_invalid_dtype_shape_finiteness_and_bounds(
+    accumulators: torch.Tensor, asymptotes: torch.Tensor, rates: torch.Tensor
+) -> None:
+    with pytest.raises(DynamicsError):
+        crossing_offsets_tensor(accumulators, asymptotes, rates)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS unavailable")
+def test_tensor_crossing_rejects_mixed_cpu_mps_devices() -> None:
+    with pytest.raises(DynamicsError, match="share one device"):
+        crossing_offsets_tensor(
+            torch.zeros(3, dtype=torch.float32),
+            torch.full((3,), 1.5, dtype=torch.float32, device="mps"),
+            torch.ones(3, dtype=torch.float32, device="mps"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -192,6 +309,28 @@ def test_next_crossings_is_dormant_in_non_eventflow_modes(mode: Mode) -> None:
     assert next_crossings(runtime(mode=mode)) == []
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (Mode.OBSERVING, (False, False, False)),
+        (Mode.SEARCHING, (True, False, False)),
+        (Mode.HAVE_MEMORY, (False, True, False)),
+        (Mode.HOLDING_HAZARD, (False, False, True)),
+        (Mode.QUIESCENT, (False, False, False)),
+        (Mode.TERMINAL, (False, False, False)),
+    ],
+)
+def test_allowed_mode_mask_is_the_exact_shared_guard_mapping(
+    mode: Mode, expected: tuple[bool, bool, bool]
+) -> None:
+    assert allowed_mode_mask(mode) == expected
+
+
+def test_allowed_mode_mask_rejects_a_non_mode_value() -> None:
+    with pytest.raises(DynamicsError):
+        allowed_mode_mask("searching")  # type: ignore[arg-type]
+
+
 def test_next_crossing_uses_segment_origin_not_materialized_accumulator() -> None:
     initial = runtime(mode=Mode.SEARCHING, started_at=10.0, rates=(2.0, 2.0, 2.0))
     materialized = advance_to(initial, 10.1)
@@ -211,8 +350,16 @@ def test_refractory_releases_an_already_mathematically_crossed_guard() -> None:
     assert crossing.predicted_delta == 1.0
 
 
-def test_already_crossed_guard_without_future_refractory_does_not_refire() -> None:
-    assert next_crossings(advance_to(runtime(), 11.0)) == []
+def test_missed_active_guard_crossing_raises_instead_of_silently_disappearing() -> None:
+    with pytest.raises(TimeOrderError, match="predates"):
+        next_crossings(advance_to(runtime(), 11.0))
+
+
+def test_refractory_release_exactly_at_runtime_time_remains_eligible() -> None:
+    initial = runtime(mode=Mode.SEARCHING, refractory=(11.0, 0.0, 0.0))
+    crossing = next_crossings(advance_to(initial, 11.0))[0]
+    assert crossing.timestamp == 11.0
+    assert crossing.predicted_delta == 0.0
 
 
 def test_crossing_uses_segment_parent_snapshot_and_unconsumed_internal_id() -> None:
