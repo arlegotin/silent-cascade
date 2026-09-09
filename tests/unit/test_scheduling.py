@@ -9,6 +9,7 @@ from test_jumps import runtime
 from silent_cascade.env.episode import PublicEpisode
 from silent_cascade.errors import DynamicsError, TimeOrderError
 from silent_cascade.eventflow.flow import advance_to
+from silent_cascade.eventflow.jumps import begin_post_jump_segment
 from silent_cascade.eventflow.scheduling import (
     ExternalEventQueue,
     PredictionCache,
@@ -26,6 +27,7 @@ from silent_cascade.schemas import (
     InternalEvent,
     InternalEventKind,
     LinkFact,
+    Mode,
 )
 
 
@@ -138,13 +140,20 @@ def test_selection_never_reverses_time_and_does_not_mutate_on_error() -> None:
 
 @pytest.mark.parametrize("dormant", [False, True])
 def test_cache_binds_parent_and_snapshot_and_survives_pause(dormant: bool) -> None:
-    state = runtime()
+    seed = runtime(Mode.SEARCHING)
+    state = begin_post_jump_segment(
+        replace(seed.core, last_event_time=seed.time), seed.segment.parameters, time=seed.time
+    )
     cache = PredictionCache()
     calls = []
 
     def predict(current):
         calls.append(current.segment.parent_event_id)
-        return None if dormant else internal(InternalEventKind.RECALL, 5.0)
+        return (
+            None
+            if dormant
+            else replace(internal(InternalEventKind.RECALL, 5.0), predicted_delta=4.0)
+        )
 
     expected = cache.get_or_predict(state, predict)
     paused = advance_to(state, 1.5)
@@ -153,11 +162,15 @@ def test_cache_binds_parent_and_snapshot_and_survives_pause(dormant: bool) -> No
     pending = queue()
     assert choose_next_event(pending, expected).event.event_id == 1
     cache.invalidate()
-    changed = replace(state, segment=replace(state.segment, parent_event_id=1))
+    changed = begin_post_jump_segment(
+        replace(state.core, last_event_id=1), state.segment.parameters, time=state.time
+    )
     cache.get_or_predict(changed, lambda current: calls.append(1))
     assert calls == [3, 1]
-    changed = replace(
-        changed, segment=replace(changed.segment, prediction_snapshot_sha256="b" * 64)
+    changed = begin_post_jump_segment(
+        changed.core,
+        replace(changed.segment.parameters, guard_rates=changed.segment.parameters.guard_rates * 2),
+        time=changed.time,
     )
     cache.get_or_predict(changed, lambda current: calls.append(1))
     assert calls == [3, 1, 1]

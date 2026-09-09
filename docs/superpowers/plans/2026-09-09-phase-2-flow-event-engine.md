@@ -1440,6 +1440,29 @@ raises. An earlier external event resets the streak. The 65th attempted event
 raises before its jump, so no result can contain more than 64 executed internal
 events.
 
+Task 9 execution ruling (2026-09-09): decompose the clamp scenarios without
+bypassing other protocol protections. With legal alternating RECALL/COMPOSE,
+the `1e-3` same-kind refractory blocks a third consecutive sub-`1e-4` event
+before the fifth-clamp limit can be reached. Ordinary FACT/ACTIVATE events are
+also confined to pre-activation OBSERVING, so four real cognitive clamps cannot
+be followed by an ordinary external in a valid OFD episode. Test the four/fifth
+and external-reset policy with its pure selected-event helper and independently
+seeded valid boundaries; additionally run an actual geometrically shrinking
+agent and assert the stronger refractory protection. Preserve all exact
+minimum-gap, refractory, streak, transition and event-cap constants. A supported
+33-link debug path exercises 64 real internal callbacks and rejection of the
+65th before callback invocation.
+
+Gap normalization remains pure and precedes the external race. Its selected
+trace always includes `was_gap_clamped` (default false) and
+`raw_predicted_delta` (default null), retaining the raw offset for a clamp.
+Engine-private segment and public-state anchors detect mutated tensor storage
+and rewritten public history between boundaries. Checkpoint restoration in
+Task 11 must reconstruct these anchors from verified checkpoint state and trace,
+and must never restore a failed session as runnable. Task 9 crash JSON uses an
+opt-in sanitized error/traceback and a canonical runtime-config hash; a real
+checkpoint sibling and reference remain Task 11, with no fabricated reference.
+
 - [ ] **Step 3: Write failing crash-bundle tests**
 
 Configure a temporary crash root, trigger a dynamics failure, and assert one

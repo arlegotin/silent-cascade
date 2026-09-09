@@ -10,7 +10,11 @@ from hypothesis import strategies as st
 
 from silent_cascade.errors import DynamicsError, ProvenanceError
 from silent_cascade.eventflow.flow import advance_to, start_segment, state_at
-from silent_cascade.eventflow.guards import crossing_offset_host
+from silent_cascade.eventflow.guards import (
+    allowed_mode_mask,
+    crossing_offset_host,
+    prediction_snapshot_sha256,
+)
 from silent_cascade.eventflow.state import (
     AnalyticSegment,
     ContinuousChannels,
@@ -27,6 +31,37 @@ from silent_cascade.memory import (
     require_support_ledger,
 )
 from silent_cascade.schemas import ExternalEvent, ExternalEventKind, SafeFact
+
+
+@given(st.floats(min_value=0.0, max_value=0.00007, allow_nan=False, allow_infinity=False))
+def test_gap_normalization_precedes_external_race_without_mutating_raw_prediction(delta):
+    from silent_cascade.env.episode import PublicEpisode
+    from silent_cascade.eventflow.scheduling import (
+        ExternalEventQueue,
+        choose_next_event,
+        normalize_internal_gap,
+        selected_gap_clamp_streak,
+    )
+    from silent_cascade.schemas import (
+        ActivationPayload,
+        AgentInit,
+        InternalEvent,
+        InternalEventKind,
+    )
+
+    raw = InternalEvent(1 << 62, 0, 1.0 + delta, InternalEventKind.RECALL, 0, delta)
+    normalized, clamped = normalize_internal_gap(raw, origin_time=1.0)
+    public = PublicEpisode(
+        AgentInit("public", 64, 4, 0.0),
+        (ExternalEvent(1, 1.000075, ExternalEventKind.ACTIVATE, ActivationPayload(0)),),
+    )
+    queue = ExternalEventQueue(public, ExternalEvent(2, 2.0, ExternalEventKind.END, None))
+    choice = choose_next_event(queue, normalized, current_time=1.0)
+    assert raw.timestamp == 1.0 + delta
+    assert normalized.timestamp == 1.0001 and clamped
+    assert choice.event.event_id == 1
+    assert selected_gap_clamp_streak(4, choice) == 0
+    assert len(queue.snapshot()) == 2
 
 
 @settings(max_examples=12, deadline=None)
@@ -238,12 +273,19 @@ def runtime() -> RuntimeState:
         guard_targets=torch.tensor([0.5, 1.25, 1.75]),
         guard_rates=torch.tensor([0.1, 2.0, 500.0]),
     )
+    core = RuntimeCore(make_initial_continuous_state())
     return start_segment(
-        RuntimeCore(make_initial_continuous_state()),
+        core,
         parameters,
         time=0.0,
         parent_event_id=0,
-        prediction_snapshot_sha256="a" * 64,
+        prediction_snapshot_sha256=prediction_snapshot_sha256(
+            core.continuous,
+            parameters,
+            started_at=0.0,
+            allowed_mode_mask=allowed_mode_mask(core.mode),
+            parent_event_id=0,
+        ),
     )
 
 

@@ -7,11 +7,13 @@ checkpoint material; selection never consumes an event or reserves an ID.
 from __future__ import annotations
 
 import heapq
+import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
 
 from silent_cascade.errors import DynamicsError, TimeOrderError
+from silent_cascade.eventflow.invariants import validate_session_boundary
 from silent_cascade.eventflow.state import INTERNAL_EVENT_ID_BASE, RuntimeState, require_time
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.schemas import (
@@ -128,6 +130,14 @@ class PredictionCache:
                 raise DynamicsError("prediction parent does not match the segment")
             if prediction.timestamp < state.time:
                 raise TimeOrderError("prediction precedes the runtime cursor")
+            validate_session_boundary(state, next_event=prediction)
+            if not math.isclose(
+                prediction.predicted_delta,
+                prediction.timestamp - state.time,
+                rel_tol=0.0,
+                abs_tol=2 * math.ulp(prediction.timestamp),
+            ):
+                raise DynamicsError("prediction delta does not match its creation cursor")
         self._value = PredictionSnapshot(
             segment.parent_event_id, segment.prediction_snapshot_sha256, prediction
         )
@@ -177,6 +187,43 @@ class ScheduledChoice:
     event: Event
     timestamp: float
     tie: TieResolution | None = None
+    was_gap_clamped: bool = False
+    raw_predicted_delta: float | None = None
+
+
+def selected_gap_clamp_streak(previous: int, choice: ScheduledChoice) -> int:
+    """Pure selected-event accounting; external selection breaks a clamp streak."""
+    if type(previous) is not int or not 0 <= previous <= 4:
+        raise DynamicsError("invalid selected gap-clamp streak")
+    if not isinstance(choice.event, InternalEvent) or not choice.was_gap_clamped:
+        return 0
+    if previous == 4:
+        raise DynamicsError(
+            "consecutive minimum-gap clamp limit exceeded", context={"invariant": "gap_clamp_limit"}
+        )
+    return previous + 1
+
+
+def normalize_internal_gap(
+    event: InternalEvent, *, origin_time: float, minimum_gap: float = 1e-4
+) -> tuple[InternalEvent, bool]:
+    """Return a comparison candidate without mutating the raw cached prediction."""
+    require_time(origin_time, "gap origin")
+    require_time(event.timestamp, "predicted timestamp")
+    if (
+        type(event.predicted_delta) is not float
+        or not math.isfinite(event.predicted_delta)
+        or event.predicted_delta < 0.0
+    ):
+        raise DynamicsError("predicted delta must be finite and nonnegative")
+    if event.timestamp < origin_time:
+        raise TimeOrderError("prediction precedes causal origin")
+    # Subtracting two absolute host times can round an exact minimum down;
+    # compare absolute times against the very timestamp installed by the clamp.
+    minimum_time = origin_time + minimum_gap
+    if event.timestamp < minimum_time:
+        return replace(event, timestamp=minimum_time), True
+    return event, False
 
 
 def choose_next_event(

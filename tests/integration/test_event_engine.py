@@ -342,7 +342,7 @@ def test_internal_events_run_before_terminal_with_once_per_boundary_predictions(
     ]
 
 
-def test_external_preemption_discards_cached_prediction_and_reschedules():
+def test_losing_preactivation_prediction_is_rejected_before_external_preemption():
     class Preempted(SpyAgent):
         def next_internal_event(self, state):
             if state.core.mode is Mode.OBSERVING:
@@ -361,16 +361,12 @@ def test_external_preemption_discards_cached_prediction_and_reschedules():
 
     runtime_engine, agent = engine(), Preempted()
     session = runtime_engine.start_episode(bundle(), agent)
-    abandoned = runtime_engine.next_internal_event(session, agent)
-    assert abandoned.timestamp == 20.0
-    assert not runtime_engine.step(session, agent)
+    with pytest.raises(DynamicsError, match="runtime invariant"):
+        runtime_engine.next_internal_event(session, agent)
     assert not session.prediction_cache.is_computed
-    replacement = runtime_engine.next_internal_event(session, agent)
-    assert replacement is not abandoned and replacement.parent_event_id == 1
-    runtime_engine.run_until(session, agent, 3.0)
-    assert session.state.core.executed_internal_events == 1
-    assert session.state.time == 3.0
-    assert not any(args[1] is abandoned for name, args in agent.calls if name == "on_internal")
+    assert session.state.core.executed_internal_events == 0
+    assert session.state.time == 0.0
+    assert not any(name == "on_internal" for name, args in agent.calls)
 
 
 @pytest.mark.parametrize(

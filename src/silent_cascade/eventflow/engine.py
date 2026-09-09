@@ -6,15 +6,24 @@ on the incoming core. Shared jumps own transition/internal-event counts. The
 protocol's compute_counters() snapshot is deliberately never synchronized back.
 """
 
-from dataclasses import dataclass, replace
+import json
+import re
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from functools import wraps
+from pathlib import Path
 
 import torch
 
 from silent_cascade.env.episode import EpisodeBundle, EpisodeTruth
 from silent_cascade.env.reward import EpisodeScore, score_actions
-from silent_cascade.errors import DynamicsError, TimeOrderError
+from silent_cascade.errors import CrashBundleError, DynamicsError, ProvenanceError, TimeOrderError
 from silent_cascade.eventflow.config import EventFlowConfig
 from silent_cascade.eventflow.flow import state_at
+from silent_cascade.eventflow.invariants import (
+    validate_post_jump,
+    validate_runtime_state,
+    validate_session_boundary,
+)
 from silent_cascade.eventflow.protocols import AgentCondition
 from silent_cascade.eventflow.scheduling import (
     ExternalEventQueue,
@@ -22,6 +31,8 @@ from silent_cascade.eventflow.scheduling import (
     ScheduledChoice,
     choose_next_event,
     event_priority_kind,
+    normalize_internal_gap,
+    selected_gap_clamp_streak,
 )
 from silent_cascade.eventflow.state import (
     ComputeCounters,
@@ -29,7 +40,15 @@ from silent_cascade.eventflow.state import (
     RuntimeState,
     require_time,
 )
-from silent_cascade.logging.trace import CausalTrace, TraceRecorder
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.logging.crash_bundle import CrashContext, write_crash_bundle
+from silent_cascade.logging.trace import (
+    CausalTrace,
+    SegmentSummary,
+    TraceRecorder,
+    sanitized_crash_events,
+    tensor_sha256,
+)
 from silent_cascade.schemas import Action, ExternalEvent, InternalEvent, InternalEventKind, Mode
 
 
@@ -45,6 +64,73 @@ class RuntimeSession:
     trace: TraceRecorder
     pause_cursor: float
     terminal_score: EpisodeScore | None = None
+    segment_anchor: SegmentSummary | None = None
+    public_state_anchor: bytes | None = None
+    failure: DynamicsError | None = None
+
+
+def _core_metadata(state: RuntimeState) -> dict:
+    return {
+        item.name: (
+            asdict(value)
+            if is_dataclass(value)
+            else tuple(asdict(entry) if is_dataclass(entry) else entry for entry in value)
+            if isinstance(value, tuple)
+            else value
+        )
+        for item in fields(state.core)
+        if item.name != "continuous"
+        for value in (getattr(state.core, item.name),)
+    }
+
+
+def _public_state_anchor(state: RuntimeState) -> bytes:
+    metadata = _core_metadata(state)
+    # Operational counters can change on lookahead/pause, while this captures
+    # the immutable public semantic history at the most recent causal jump.
+    del metadata["counters"]
+    del metadata["consecutive_gap_clamps"]
+    return canonical_json_bytes(metadata)
+
+
+def _runtime_signature(state: RuntimeState) -> tuple:
+    """Capture input storage before a callback can mutate shared tensor/record data."""
+    return (
+        state.time,
+        SegmentSummary.from_segment(state.segment),
+        canonical_json_bytes(_core_metadata(state)),
+        tuple(
+            tensor_sha256(getattr(state.core.continuous, item.name))
+            for item in fields(state.core.continuous)
+        ),
+    )
+
+
+def _failure_boundary(function):
+    @wraps(function)
+    def guarded(self, context, *args, **kwargs):
+        try:
+            if isinstance(context, RuntimeSession) and context.failure is not None:
+                raise context.failure
+            return function(self, context, *args, **kwargs)
+        except (DynamicsError, ProvenanceError, TypeError, ValueError, AttributeError) as caught:
+            error = (
+                caught
+                if isinstance(caught, DynamicsError)
+                else DynamicsError("runtime callback or boundary is invalid").with_traceback(
+                    caught.__traceback__
+                )
+            )
+            if isinstance(context, RuntimeSession):
+                if context.failure is not None:
+                    raise
+                context.failure = error
+            self._publish_failure(context, error)
+            if error is caught:
+                raise
+            raise error from caught
+
+    return guarded
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,9 +145,72 @@ class EpisodeResult:
 
 
 class EventEngine:
-    def __init__(self, config: EventFlowConfig):
+    def __init__(
+        self,
+        config: EventFlowConfig,
+        *,
+        crash_root: Path | None = None,
+        source_revision: str | None = None,
+    ):
         self.config = config
+        if source_revision is not None and not re.fullmatch(
+            r"[0-9a-f]{40}|[0-9a-f]{64}", source_revision
+        ):
+            raise DynamicsError("source revision must be a canonical full commit digest")
+        self.crash_root = crash_root
+        self.source_revision = source_revision
 
+    def _publish_failure(
+        self, context: RuntimeSession | EpisodeBundle, error: DynamicsError
+    ) -> None:
+        if self.crash_root is None:
+            return
+        public_id = (
+            context.public_id
+            if isinstance(context, RuntimeSession)
+            else context.public.init.episode_public_id
+        )
+        last_events = (
+            tuple(
+                json.loads(
+                    canonical_json_bytes(
+                        {"events": sanitized_crash_events(context.trace.snapshot())}
+                    )
+                )["events"]
+            )
+            if isinstance(context, RuntimeSession)
+            else ()
+        )
+        try:
+            write_crash_bundle(
+                self.crash_root,
+                error=error,
+                sanitize_diagnostics=True,
+                context=CrashContext(
+                    episode_public_id=public_id,
+                    config_sha256=sha256_bytes(canonical_json_bytes(self.config)),
+                    source_revision=self.source_revision,
+                    last_events=last_events,
+                ),
+            )
+        except CrashBundleError as publication_error:
+            raise publication_error from error
+
+    @staticmethod
+    def _check_session(session: RuntimeSession) -> None:
+        cached = session.prediction_cache.snapshot()
+        validate_session_boundary(
+            session.state,
+            prediction_snapshot_sha256=cached.prediction_snapshot_sha256 if cached else None,
+        )
+        if cached is not None and cached.parent_event_id != session.state.segment.parent_event_id:
+            raise DynamicsError("cached prediction parent differs from the causal segment")
+        if session.segment_anchor != SegmentSummary.from_segment(session.state.segment):
+            raise DynamicsError("causal segment storage changed between engine boundaries")
+        if session.public_state_anchor != _public_state_anchor(session.state):
+            raise DynamicsError("public causal history changed between engine boundaries")
+
+    @_failure_boundary
     def start_episode(self, bundle: EpisodeBundle, agent: AgentCondition) -> RuntimeSession:
         queue = ExternalEventQueue(bundle.public, bundle.truth.private_terminal)
         state = agent.initialize(bundle.public.init)
@@ -69,6 +218,14 @@ class EventEngine:
             raise DynamicsError("initialization must return an observing RuntimeState")
         if state.time != bundle.public.init.initial_time or state.segment.started_at != state.time:
             raise TimeOrderError("initial state and segment must start at the public initial time")
+        validate_runtime_state(state)
+        if (
+            state.core.last_event_id is not None
+            or state.core.executed_internal_events
+            or state.core.actions
+            or state.core.memory.records
+        ):
+            raise DynamicsError("initialization must not invent events, actions or perceived facts")
         return RuntimeSession(
             bundle.public.init.episode_public_id,
             bundle.truth,
@@ -77,12 +234,16 @@ class EventEngine:
             PredictionCache(),
             TraceRecorder(),
             state.time,
+            segment_anchor=SegmentSummary.from_segment(state.segment),
+            public_state_anchor=_public_state_anchor(state),
         )
 
+    @_failure_boundary
     def next_internal_event(
         self, session: RuntimeSession, agent: AgentCondition
     ) -> InternalEvent | None:
         """Cache dormancy as well as events; pass only public runtime state."""
+        self._check_session(session)
         if session.state.core.mode is Mode.TERMINAL:
             return None
 
@@ -91,17 +252,31 @@ class EventEngine:
                 state.core.counters, guard_predictions=state.core.counters.guard_predictions + 1
             )
             session.state = replace(state, core=replace(state.core, counters=counters))
-            return agent.next_internal_event(session.state)
+            signature = _runtime_signature(session.state)
+            result = agent.next_internal_event(session.state)
+            if _runtime_signature(session.state) != signature:
+                raise DynamicsError("prediction callback mutated its runtime input")
+            validate_runtime_state(session.state)
+            return result
 
         return session.prediction_cache.get_or_predict(session.state, predict)
 
     def _next_choice(self, session: RuntimeSession, agent: AgentCondition) -> ScheduledChoice:
         internal = self.next_internal_event(session, agent)
+        normalized, clamped = (
+            (None, False)
+            if internal is None
+            else normalize_internal_gap(
+                internal,
+                origin_time=session.state.segment.started_at,
+                minimum_gap=self.config.guards.minimum_internal_gap,
+            )
+        )
         # A pause may pass a cached losing near-tie proposal before its later
         # winner. Resolve from the causal origin, then forbid an actual rewind.
         choice = choose_next_event(
             session.external_queue,
-            internal,
+            normalized,
             condition=agent.name,
             current_time=session.state.segment.started_at,
         )
@@ -109,6 +284,12 @@ class EventEngine:
             raise DynamicsError("nonterminal session has no next causal event")
         if choice.timestamp < session.state.time:
             raise TimeOrderError("selected event precedes the runtime cursor")
+        if isinstance(choice.event, InternalEvent):
+            choice = replace(
+                choice,
+                was_gap_clamped=clamped,
+                raw_predicted_delta=internal.predicted_delta if clamped else None,
+            )
         return choice
 
     def advance_to(self, state: RuntimeState, target_time: float) -> RuntimeState:
@@ -119,6 +300,7 @@ class EventEngine:
         interval costs one flow evaluation. Equal-time causal jumps cost zero.
         """
         require_time(target_time, "target_time")
+        validate_runtime_state(state)
         if state.core.mode is Mode.TERMINAL:
             raise DynamicsError("cannot advance a terminal state")
         if target_time < state.time:
@@ -175,8 +357,25 @@ class EventEngine:
         self, session: RuntimeSession, agent: AgentCondition, choice: ScheduledChoice
     ) -> bool:
         """Dispatch exactly one selected causal event, committing after validation."""
+        self._check_session(session)
         event = choice.event
-        before = self.advance_to(session.state, choice.timestamp)
+        validate_session_boundary(session.state, next_event=event)
+        if isinstance(event, InternalEvent):
+            if session.state.core.executed_internal_events >= self.config.max_internal_events:
+                raise DynamicsError(
+                    "internal event limit exceeded", context={"invariant": "internal_event_cap"}
+                )
+            if event.timestamp < session.state.core.same_kind_refractory_until[event.guard_index]:
+                raise DynamicsError(
+                    "internal event kind is refractory",
+                    context={"invariant": "same_kind_refractory"},
+                )
+        streak = selected_gap_clamp_streak(session.state.core.consecutive_gap_clamps, choice)
+        prepared = replace(
+            session.state, core=replace(session.state.core, consecutive_gap_clamps=streak)
+        )
+        before = self.advance_to(prepared, choice.timestamp)
+        signature = _runtime_signature(before)
         score = None
         if event_priority_kind(event) == "terminal":
             score = score_actions(session.truth, before.core.actions)
@@ -189,6 +388,9 @@ class EventEngine:
             after, emitted = agent.on_internal(before, event)
             self._require_callback_result(before, after)
             self._require_emitted_matches_state(before, after, emitted)
+        if _runtime_signature(before) != signature:
+            raise DynamicsError("jump callback mutated its runtime input")
+        validate_post_jump(before, event, after)
         selected_record_id = None
         selected_rank = None
         if isinstance(event, InternalEvent):
@@ -205,6 +407,8 @@ class EventEngine:
             selected_record_id=selected_record_id,
             selected_rank=selected_rank,
             tie=choice.tie,
+            was_gap_clamped=choice.was_gap_clamped,
+            raw_predicted_delta=choice.raw_predicted_delta,
         )
         if isinstance(event, ExternalEvent):
             session.external_queue.consume(event)
@@ -212,14 +416,19 @@ class EventEngine:
         session.terminal_score = score
         session.pause_cursor = session.state.time
         session.prediction_cache.invalidate()
+        session.segment_anchor = SegmentSummary.from_segment(session.state.segment)
+        session.public_state_anchor = _public_state_anchor(session.state)
         return session.state.core.mode is Mode.TERMINAL
 
+    @_failure_boundary
     def step(self, session: RuntimeSession, agent: AgentCondition) -> bool:
         """Execute at most one causal event; already-terminal sessions are inert."""
         if session.state.core.mode is Mode.TERMINAL:
+            self._check_session(session)
             return True
         return self._execute_choice(session, agent, self._next_choice(session, agent))
 
+    @_failure_boundary
     def run_until(self, session: RuntimeSession, agent: AgentCondition, pause_time: float) -> None:
         """Run causal events through a host time, then materialize without an event."""
         require_time(pause_time, "pause_time")

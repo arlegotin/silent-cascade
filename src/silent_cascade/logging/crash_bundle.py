@@ -56,6 +56,7 @@ def write_crash_bundle(
     context: CrashContext,
     bundle_id: str | None = None,
     now: datetime | None = None,
+    sanitize_diagnostics: bool = False,
 ) -> CrashBundleArtifact:
     resolved_id = bundle_id or uuid4().hex
     if not _BUNDLE_ID.fullmatch(resolved_id):
@@ -65,11 +66,25 @@ def write_crash_bundle(
         raise CrashBundleError("crash bundle timestamp must be timezone-aware")
 
     bounded_context = context.model_copy(update={"last_events": context.last_events[-20:]})
+    # Opt-in runtime mode never serializes exception messages, arbitrary context,
+    # source lines, filenames or chained exceptions, which can contain private
+    # environment data. Existing Phase 1 callers retain their original format.
+    error_payload = error.to_payload()
+    traceback_text = (
+        "".join(traceback.format_exception(error))
+        if not sanitize_diagnostics
+        else "\n".join(
+            f"frame {index}: line {frame.lineno}"
+            for index, frame in enumerate(traceback.extract_tb(error.__traceback__)[-20:])
+        )
+    )
+    if sanitize_diagnostics:
+        error_payload = {"code": error.code, "message": "runtime execution failed", "context": {}}
     manifest = CrashBundleManifest(
         bundle_id=resolved_id,
         created_at_utc=created_at.astimezone(UTC),
-        error=error.to_payload(),
-        traceback_text="".join(traceback.format_exception(error)),
+        error=error_payload,
+        traceback_text=traceback_text,
         context=bounded_context,
     )
     payload = canonical_json_bytes(manifest) + b"\n"

@@ -125,8 +125,22 @@ class CausalEventSummary:
     prediction_snapshot_sha256: str
     segment: SegmentSummary | None
     tie: TieResolution | None = None
+    was_gap_clamped: bool = False
+    raw_predicted_delta: float | None = None
 
     def __post_init__(self) -> None:
+        if type(self.was_gap_clamped) is not bool:
+            raise DynamicsError("gap clamp marker must be a boolean")
+        if self.raw_predicted_delta is not None and (
+            type(self.raw_predicted_delta) is not float
+            or not math.isfinite(self.raw_predicted_delta)
+            or self.raw_predicted_delta < 0.0
+        ):
+            raise DynamicsError("raw predicted delta must be finite and nonnegative")
+        if self.was_gap_clamped and (
+            self.kind not in {"recall", "compose", "act"} or self.raw_predicted_delta is None
+        ):
+            raise DynamicsError("a clamped trace requires an internal raw prediction")
         if self.kind not in {"terminal", "fact", "activate", "act", "compose", "recall", "noop"}:
             raise DynamicsError("trace kind must be a sanitized causal event kind")
         payload_types = {
@@ -261,6 +275,8 @@ class TraceRecorder:
         selected_record_id: int | None = None,
         selected_rank: int | None = None,
         tie: TieResolution | None = None,
+        was_gap_clamped: bool = False,
+        raw_predicted_delta: float | None = None,
     ) -> CausalEventSummary:
         """Accept explicit agent selection metadata, never an oracle or private label."""
         post = after.core if isinstance(after, RuntimeState) else after
@@ -325,6 +341,8 @@ class TraceRecorder:
             before.segment.prediction_snapshot_sha256,
             SegmentSummary.from_segment(after.segment) if isinstance(after, RuntimeState) else None,
             tie,
+            was_gap_clamped,
+            raw_predicted_delta,
         )
         self.append(summary)
         return summary
