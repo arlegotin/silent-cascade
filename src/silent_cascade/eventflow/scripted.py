@@ -116,9 +116,9 @@ class ScriptedEventFlowAgent:
         guard_index = None
         if core.mode is Mode.SEARCHING:
             core, selected, _ = self._select(core, time)
-            if selected is None:
-                core = replace(core, mode=Mode.QUIESCENT)
-            else:
+            # Empty activation remains SEARCHING with no enabled guard.
+            # Discrete mode changes belong to explicit public jump decisions.
+            if selected is not None:
                 delta = self._cognitive_gap(core, selected.record.record_id)
                 guard_index = 0
         elif core.mode is Mode.HAVE_MEMORY:
@@ -235,10 +235,19 @@ class ScriptedEventFlowAgent:
                 raise DynamicsError("composition requires an active public record")
             record = state.core.memory.lookup(record_id).record
             if record.kind is RecordKind.LINK:
+                # The active record is consumed by this COMPOSE, so exclude it
+                # when deciding whether its predicted next focus can continue.
+                continue_search = any(
+                    slot.record.record_id != record_id
+                    for slot in state.core.memory.legal_records(
+                        subject_id=record.object_id, at_time=state.time
+                    )
+                )
                 decision = ComposeDecision(
                     ComposeRole.LINK,
                     next_focus_node_id=record.object_id,
                     confidence=record.confidence,
+                    continue_search=continue_search,
                 )
             elif record.kind is RecordKind.HAZARD:
                 if state.core.activation_time is None:

@@ -30,6 +30,7 @@ from silent_cascade.schemas import (
     InternalEventKind,
     LinkFact,
     Mode,
+    fact_event_to_memory_record,
 )
 
 
@@ -54,6 +55,46 @@ def generated(config, length, variant, suite=SuiteName.IID_PRIMARY):
         SplitNamespace.DEBUG, suite, 41, member, length, variant, 0, member
     )
     return generate_independent_episode(config, request, public_id_seed=91)
+
+
+def test_empty_activation_stays_searching_and_dormant_through_engine(config):
+    bundle = generated(config, 2, EpisodeVariant.DISCONNECTED_NEGATIVE)
+    facts = bundle.public.events[:-1]
+    subjects = {fact_event_to_memory_record(event).subject_id for event in facts}
+    empty_focus = next(node for node in range(64) if node not in subjects)
+    activation = replace(bundle.public.events[-1], payload=ActivationPayload(empty_focus))
+    # Public counterfactual: an absent starting subject is still a negative.
+    bundle = replace(bundle, public=replace(bundle.public, events=(*facts, activation)))
+    agent = ScriptedEventFlowAgent()
+    engine = EventEngine(config.event_flow)
+    session = engine.start_episode(bundle, agent)
+    engine.run_until(session, agent, activation.timestamp)
+
+    state = session.state
+    assert state.core.mode is Mode.SEARCHING
+    assert state.core.focus_node_id == empty_focus
+    assert state.core.activation_time == activation.timestamp
+    assert state.core.last_event_id == activation.event_id
+    assert state.core.last_event_time == activation.timestamp
+    assert state.core.executed_internal_events == 0
+    assert state.core.support_ids == state.core.actions == ()
+    assert state.core.hypothesis is None
+    assert bool((state.segment.parameters.guard_targets <= 0.90).all())
+    assert engine.next_internal_event(session, agent) is None
+    activation_row = session.trace.snapshot().events[-1]
+    assert activation_row.kind == "activate"
+    assert activation_row.pre_mode is Mode.OBSERVING
+    assert activation_row.post_mode is Mode.SEARCHING
+    assert activation_row.counter_delta.controller_calls == 1
+    assert activation_row.counter_delta.jump_applications == 1
+
+    assert engine.step(session, agent)
+    trace = session.trace.snapshot().events
+    assert [row.kind for row in trace] == ["fact"] * len(facts) + ["activate", "terminal"]
+    assert trace[-1].pre_mode is Mode.SEARCHING
+    assert session.state.core.actions == ()
+    assert session.terminal_score.timed_success
+    assert session.state.core.counters.controller_calls == state.core.counters.controller_calls
 
 
 @pytest.mark.parametrize("length", [2, 3, 4])

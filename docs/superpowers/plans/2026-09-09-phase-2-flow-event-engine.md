@@ -1320,11 +1320,18 @@ candidates = memory.legal_records(
 selected = min(candidates, key=lambda slot: (-slot.record.confidence, slot.record.record_id))
 ```
 
-If there is no candidate, return a quiescent rescheduled state with all guards
-dormant. At RECALL crossing, recompute this choice from current public-derived
-state, record its deterministic rank, and pass its ID explicitly to
-`apply_recall`. At COMPOSE, explicitly create a `ComposeDecision` from the
-active public record. Do not cache a hidden path.
+If there is no candidate after ACTIVATE, preserve its declared SEARCHING
+destination and install a behaviorally dormant segment with all guards dormant;
+there is no internal event or action. After a LINK COMPOSE whose predicted next
+focus has no legal remaining candidate, explicitly set
+`ComposeDecision.continue_search=False` so the shared COMPOSE jump returns
+QUIESCENT with dormant guards. Exclude the active record, which this COMPOSE
+consumes, from that continuation check. The controller must not rewrite modes
+or create an extra jump. These rules preserve the canonical transition table.
+At RECALL crossing, recompute this choice from current public-derived state,
+record its deterministic rank, and pass its ID explicitly to `apply_recall`.
+At COMPOSE, explicitly create a `ComposeDecision` from the active public record.
+Do not cache a hidden path.
 
 - [ ] **Step 5: Implement scripted segment parameters**
 
@@ -1337,6 +1344,15 @@ guard_rate = math.log(3.0) / delta
 
 Use a stable documented integer formula over record ID/focus/event ordinal so
 RECALL/COMPOSE gaps fall in `[0.05, 0.068]` and are not a constant cadence.
+Approved compressed-clock adjustment: multiply these cognitive gaps by
+`min(1.0, minimum valid publicly observed hazard delay in seconds)`, using 1.0
+when no hazard has been observed. Ordinary unscaled episodes retain the stated
+gap range. Derive this urgency only from public records, never private clock
+scale, path, reachability or timing truth. Validate the resulting guard rates
+within `[1e-5, 500]` and fail if the public schedule cannot fit; never clip an
+impossible rate or action target. Test paired clock outcomes and explicit
+sub-second public-delay gaps. This engineering adjustment supports only
+non-neural runtime engineering evidence, not learned temporal robustness.
 For HOLDING_HAZARD, derive `delay = hypothesis.deadline - activation_time` and
 schedule the ACT guard for `activation_time + 0.825 * delay`. If that time is
 not strictly after current time, fail loudly; do not act immediately as a
