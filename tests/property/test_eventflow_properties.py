@@ -29,6 +29,65 @@ from silent_cascade.memory import (
 from silent_cascade.schemas import ExternalEvent, ExternalEventKind, SafeFact
 
 
+@settings(max_examples=25, deadline=None)
+@given(predicted_focus=st.integers(min_value=0, max_value=63), append=st.booleans())
+def test_jump_sequence_preserves_predictions_supports_and_reset_origins(
+    predicted_focus: int,
+    append: bool,
+) -> None:
+    """Correcting a focus prediction or omitting a causal reset breaks this sequence."""
+    from silent_cascade.eventflow.jumps import (
+        ComposeDecision,
+        ComposeRole,
+        apply_activate,
+        apply_compose,
+        apply_fact,
+        apply_recall,
+        begin_post_jump_segment,
+    )
+    from silent_cascade.eventflow.state import INTERNAL_EVENT_ID_BASE
+    from silent_cascade.schemas import (
+        ActivationPayload,
+        InternalEvent,
+        InternalEventKind,
+        LinkFact,
+        Mode,
+    )
+
+    state = runtime()
+    params = state.segment.parameters
+    fact = ExternalEvent(1, 0.0, ExternalEventKind.FACT, LinkFact(0, 1))
+    post = apply_fact(state, fact)
+    state = begin_post_jump_segment(post, params, time=0.0)
+    activation = ExternalEvent(2, 0.0, ExternalEventKind.ACTIVATE, ActivationPayload(0))
+    post = apply_activate(state, activation)
+    state = begin_post_jump_segment(post, params, time=0.0)
+    for index, kind in enumerate((InternalEventKind.RECALL, InternalEventKind.COMPOSE)):
+        state = advance_to(state, float(index + 1))
+        event = InternalEvent(
+            INTERNAL_EVENT_ID_BASE + index, state.core.last_event_id, state.time, kind, index, 1.0
+        )
+        if kind is InternalEventKind.RECALL:
+            post = apply_recall(state, event, record_id=1)
+        else:
+            post = apply_compose(
+                state,
+                event,
+                ComposeDecision(
+                    ComposeRole.LINK, next_focus_node_id=predicted_focus, append_support=append
+                ),
+            )
+        state = begin_post_jump_segment(post, params, time=state.time)
+        assert torch.count_nonzero(state.segment.origin.guard_accumulators) == 0
+        assert state.segment.parent_event_id == event.event_id
+        assert state.core.executed_internal_events == index + 1
+    assert state.core.mode is Mode.SEARCHING
+    assert state.core.focus_node_id == predicted_focus
+    assert state.core.support_ids == ((1,) if append else ())
+    assert state.core.memory.lookup(1).record.object_id == 1
+    assert state.core.counters.jump_applications == 4
+
+
 def runtime() -> RuntimeState:
     dimensions = {
         "z_fast": 256,
