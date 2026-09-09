@@ -13,6 +13,7 @@ import stat
 from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Literal, Self
+from uuid import uuid4
 
 from pydantic import Field, field_validator, model_validator
 
@@ -29,6 +30,7 @@ from silent_cascade.eventflow.provenance import (
     VALIDATION_FILE_SHA256,
     VALIDATION_MANIFEST_PATH,
     Phase2EvidenceProvenance,
+    Phase2EvidenceProvenanceData,
     collect_phase2_evidence_provenance,
     parse_gate_config,
 )
@@ -41,7 +43,6 @@ from silent_cascade.eventflow.replay import (
 )
 from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.io import atomic_create_bytes
 from silent_cascade.logging.crash_bundle import CrashContext, write_crash_bundle
 from silent_cascade.logging.manifest import (
     ManifestAccessClass,
@@ -57,7 +58,9 @@ type SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 VARIANTS = ("positive", "safe_negative", "disconnected_negative")
 
 
-class EpisodeGateWitness(StrictModel):
+class EpisodeGateWitnessData(StrictModel):
+    """Strict serialized observations; no producer score arithmetic."""
+
     entry_index: int = Field(ge=0, lt=10_000)
     episode_public_id: str = Field(min_length=36, max_length=36)
     episode_sha256: SHA256
@@ -78,6 +81,8 @@ class EpisodeGateWitness(StrictModel):
     time_reversal_count: int = Field(ge=0)
     foundation_model_calls: int = Field(ge=0)
 
+
+class EpisodeGateWitness(EpisodeGateWitnessData):
     @model_validator(mode="after")
     def consistent_result(self) -> Self:
         if self.completed != (self.score is not None):
@@ -161,7 +166,7 @@ def _passes(totals: dict, requested: int, provenance: Phase2EvidenceProvenance) 
 
 
 class _GateFields(StrictModel):
-    provenance: Phase2EvidenceProvenance
+    provenance: Phase2EvidenceProvenanceData
     validation_manifest_payload_sha256: SHA256
     validation_manifest_file_sha256: SHA256
     config_sha256: SHA256
@@ -185,7 +190,7 @@ class _GateFields(StrictModel):
     time_reversal_count: int = Field(ge=0)
     provenance_failure_count: int = Field(ge=0)
     trace_chain_sha256: SHA256
-    episode_witnesses: tuple[EpisodeGateWitness, ...] = Field(min_length=4, max_length=10_000)
+    episode_witnesses: tuple[EpisodeGateWitnessData, ...] = Field(min_length=4, max_length=10_000)
     selected_replay_samples: tuple[ReplayArtifact, ...] = Field(min_length=3, max_length=3)
     selected_replay_trace_hashes: tuple[SHA256, ...] = Field(min_length=3, max_length=3)
     foundation_model_calls: Literal[0]
@@ -197,6 +202,11 @@ class _GateFields(StrictModel):
         if type(value) is not int:
             raise ValueError("gate counts must be exact integers")
         return value
+
+
+class _ValidatedGateFields(_GateFields):
+    provenance: Phase2EvidenceProvenance
+    episode_witnesses: tuple[EpisodeGateWitness, ...] = Field(min_length=4, max_length=10_000)
 
     @model_validator(mode="after")
     def derive_evidence(self) -> Self:
@@ -249,14 +259,31 @@ class _GateFields(StrictModel):
         return self
 
 
-class Phase2EngineGateReport(_GateFields):
+class Phase2EngineGateData(_GateFields):
+    """Production serialized schema for independent consumers, not a gate verdict."""
+
     schema_version: Literal["phase2-engine-gate-v1"]
     access_class: Literal["validation_private"]
     profile: Literal["production"]
     requested_episode_count: Literal[10_000]
 
 
-class Phase2EngineGateDebugReport(_GateFields):
+class Phase2EngineGateDebugData(_GateFields):
+    """Explicit debug serialized schema, without producer-derived validation."""
+
+    schema_version: Literal["phase2-engine-gate-debug-v1"]
+    access_class: Literal["debug"]
+    profile: Literal["debug"]
+
+
+class Phase2EngineGateReport(_ValidatedGateFields):
+    schema_version: Literal["phase2-engine-gate-v1"]
+    access_class: Literal["validation_private"]
+    profile: Literal["production"]
+    requested_episode_count: Literal[10_000]
+
+
+class Phase2EngineGateDebugReport(_ValidatedGateFields):
     schema_version: Literal["phase2-engine-gate-debug-v1"]
     access_class: Literal["debug"]
     profile: Literal["debug"]
@@ -293,40 +320,90 @@ def _read(path: Path, cap: int) -> bytes:
         raise ArtifactIntegrityError("gate input must be a bounded regular file") from error
 
 
-def _publish_gate(path: Path, raw: bytes) -> None:
-    """No-clobber publication with narrow rollback of our own new bytes.
+def _remove_owned_gate_at(
+    parent: int, name: str, owned: os.stat_result, raw: bytes | None = None
+) -> None:
+    before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    identity = (owned.st_dev, owned.st_ino)
+    if not stat.S_ISREG(before.st_mode) or (before.st_dev, before.st_ino) != identity:
+        raise ValueError("replacement is not our publication inode")
+    if raw is not None:
+        observed = read_archive_at(
+            parent, name, max_bytes=MAX_GATE_BYTES, error_factory=ArtifactIntegrityError
+        )
+        if observed != raw:
+            raise ValueError("publication contents changed")
+    after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if (after.st_dev, after.st_ino) != identity:
+        raise ValueError("publication identity changed during cleanup")
+    os.unlink(name, dir_fd=parent)
 
-    As with replay archives, hostile concurrent ancestor/leaf replacement is
-    outside this local single-writer boundary. Ordinary replacement is detected
-    by pinned-parent reads plus inode checks and is never deleted.
+
+def _publish_gate(path: Path, raw: bytes) -> None:
+    """Publish a retained owned inode, then roll back only that inode on failure.
+
+    Parent descriptors pin every operation. Keeping the staged descriptor open
+    prevents inode reuse; identical-byte replacements are foreign too. Hostile
+    replacement between the final identity check and unlink remains outside the
+    documented local single-writer boundary. Shared Phase 1 I/O is unchanged.
     """
     with archive_parent(path, error_factory=ArtifactIntegrityError) as (parent, name):
+        temporary = f".{name}.{uuid4().hex}.tmp"
+        descriptor = None
+        owned = None
+        temporary_exists = False
+        published = False
         try:
-            atomic_create_bytes(path, raw, mode=0o600)
-        except AtomicWriteError as error:
-            if error.context.get("published") is not True:
-                raise
-            try:
-                before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                if not stat.S_ISREG(before.st_mode):
-                    raise ValueError("replacement is not a regular file")
-                observed = read_archive_at(
-                    parent, name, max_bytes=MAX_GATE_BYTES, error_factory=ArtifactIntegrityError
-                )
-                after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                if observed != raw or (before.st_dev, before.st_ino) != (
-                    after.st_dev,
-                    after.st_ino,
-                ):
-                    raise ValueError("replacement identity or contents differ")
-                os.unlink(name, dir_fd=parent)
-                os.fsync(parent)
-            except (OSError, ValueError, SilentCascadeError) as cleanup_error:
+            descriptor = os.open(
+                temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+            )
+            temporary_exists = True
+            owned = os.fstat(descriptor)
+            with os.fdopen(os.dup(descriptor), "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            published = True
+            _remove_owned_gate_at(parent, temporary, owned)
+            temporary_exists = False
+            os.fsync(parent)
+        except (OSError, ValueError, SilentCascadeError) as error:
+            cleanup_errors = []
+            for leaf, should_remove, expected_bytes in (
+                (name, published, raw),
+                (temporary, temporary_exists, None),
+            ):
+                if should_remove:
+                    try:
+                        if owned is None:
+                            # Before-link identity capture failed. The retained
+                            # descriptor still identifies our original temp file.
+                            owned = os.fstat(descriptor)
+                        _remove_owned_gate_at(parent, leaf, owned, expected_bytes)
+                    except (OSError, ValueError, SilentCascadeError) as cleanup_error:
+                        cleanup_errors.append(str(cleanup_error))
+            if published or temporary_exists:
+                try:
+                    os.fsync(parent)
+                except OSError as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
+            if cleanup_errors:
                 raise ArtifactIntegrityError(
                     "gate publication failed; rollback unconfirmed and residual output may remain",
-                    context={"published": True, "rollback_failed": True},
-                ) from cleanup_error
-            raise
+                    context={
+                        "published": published,
+                        "rollback_failed": True,
+                        "cleanup_errors": cleanup_errors,
+                    },
+                ) from error
+            raise AtomicWriteError(
+                "gate publication failed",
+                context={"published": published, "rollback_failed": False},
+            ) from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 def collect_phase2_gate(
@@ -343,8 +420,8 @@ def collect_phase2_gate(
     """Execute authenticated manifest recipes once, and each retained sample twice."""
     crash_root = output_path.with_name(output_path.name + ".crashes")
     try:
-        # Refuse existing targets before any expensive execution. atomic_create_bytes
-        # remains the authoritative no-clobber check against a concurrent writer.
+        # Refuse existing targets before execution; the owned-inode link remains
+        # the authoritative no-clobber check against a concurrent writer.
         if output_path.exists() or output_path.is_symlink():
             raise ArtifactIntegrityError("gate output already exists")
         if profile not in {"production", "debug"} or type(requested_episode_count) is not int:

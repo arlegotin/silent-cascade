@@ -21,7 +21,7 @@ import yaml
 from silent_cascade.errors import ArtifactIntegrityError, SilentCascadeError
 from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
 from silent_cascade.eventflow.config import Phase2Config
-from silent_cascade.eventflow.evidence import Phase2EngineGateDebugReport, Phase2EngineGateReport
+from silent_cascade.eventflow.evidence import Phase2EngineGateData, Phase2EngineGateDebugData
 from silent_cascade.eventflow.provenance import PHASE2_ENGINE_SOURCE_PATHS
 from silent_cascade.logging.manifest import ManifestEnvelope
 from silent_cascade.validation import StrictModel
@@ -245,7 +245,8 @@ def _independent_witnesses(payload: dict, manifest: dict) -> bool:
     _require(
         payload["profile"] != "production" or requested == 10_000, "wrong production denominator"
     )
-    counts = Counter()
+    counts = Counter({variant + "_count": 0 for variant in _VARIANTS})
+    counts.update(timed_success_count=0, false_action_count=0)
     gaps = []
     maximum = 0
     seen = {name: set() for name in ("episode_public_id", "episode_sha256", "trace_sha256")}
@@ -272,6 +273,11 @@ def _independent_witnesses(payload: dict, manifest: dict) -> bool:
         variant = row["variant"]
         counts[variant + "_count"] += 1
         score = row["score"]
+        _require(row["completed"] == (score is not None), "completed/score relationship mismatch")
+        _require(
+            (row["internal_event_count"] == 0) == (row["minimum_internal_gap"] is None),
+            "internal event/gap relationship mismatch",
+        )
         counts["completed_episode_count"] += row["completed"]
         if score is not None:
             positive = variant == "positive"
@@ -286,7 +292,8 @@ def _independent_witnesses(payload: dict, manifest: dict) -> bool:
             )
             false_action = not positive and score["action_count"] > 0
             _require(
-                score["is_positive"] == positive
+                score["action_count"] >= 0
+                and score["is_positive"] == positive
                 and score["timed_success"] == success
                 and score["false_action"] == false_action,
                 "primitive score arithmetic mismatch",
@@ -330,6 +337,11 @@ def _independent_witnesses(payload: dict, manifest: dict) -> bool:
     ):
         row = by_id.get(sample["expected_result"]["public_id"])
         _require(row is not None and row["variant"] == variant, "missing variant replay witness")
+        _require(
+            sample["episode"]["public"]["init"]["episode_public_id"]
+            == sample["expected_result"]["public_id"],
+            "sample public/result identity mismatch",
+        )
         _require(
             _hash(_canonical(sample["episode"])) == row["episode_sha256"],
             "sample episode hash mismatch",
@@ -421,9 +433,9 @@ def verify_phase2_gate_artifact(
         _require(isinstance(payload, dict), "gate must be an object")
         schema = payload.get("schema_version")
         if schema == "phase2-engine-gate-v1":
-            model = Phase2EngineGateReport
+            model = Phase2EngineGateData
         elif allow_debug and schema == "phase2-engine-gate-debug-v1":
-            model = Phase2EngineGateDebugReport
+            model = Phase2EngineGateDebugData
         else:
             raise ArtifactIntegrityError("closed production gate schema required")
         parsed = model.model_validate_json(raw)

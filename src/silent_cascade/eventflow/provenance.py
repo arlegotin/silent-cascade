@@ -122,7 +122,9 @@ def parse_gate_config(raw: str) -> Phase2Config:
     return config
 
 
-class Phase2EvidenceProvenance(StrictModel):
+class Phase2EvidenceProvenanceData(StrictModel):
+    """Strict serialized fields, without producer trust/configuration derivation."""
+
     schema_version: Literal["phase2-evidence-provenance-v1"]
     phase2_plan_base_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -148,6 +150,8 @@ class Phase2EvidenceProvenance(StrictModel):
             raise ValueError("foundation_model_calls must be an exact integer zero")
         return value
 
+
+class Phase2EvidenceProvenance(Phase2EvidenceProvenanceData):
     @model_validator(mode="after")
     def bind_closed_sources_and_config(self) -> Self:
         if self.source_paths != PHASE2_ENGINE_SOURCE_PATHS:

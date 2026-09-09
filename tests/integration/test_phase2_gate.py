@@ -584,20 +584,20 @@ def test_cli_uses_one_bounded_gate_snapshot_for_selection_and_identity(
 
 
 def test_failed_publication_durability_removes_only_new_gate(debug_gate, tmp_path, monkeypatch):
-    from silent_cascade import io
-
-    original = io._fsync_directory
+    evidence = gate_api()
+    original = evidence.os.fsync
     output = tmp_path / "durability.json"
     failed_once = False
 
-    def fail_gate_directory_once(path):
+    def fail_gate_directory_once(descriptor):
         nonlocal failed_once
-        if path == tmp_path and not failed_once:
+        observed = evidence.os.fstat(descriptor)
+        if observed.st_ino == tmp_path.stat().st_ino and not failed_once:
             failed_once = True
             raise OSError("injected gate directory fsync failure")
-        original(path)
+        original(descriptor)
 
-    monkeypatch.setattr(io, "_fsync_directory", fail_gate_directory_once)
+    monkeypatch.setattr(evidence.os, "fsync", fail_gate_directory_once)
     with pytest.raises(SilentCascadeError):
         gate_api().collect_phase2_gate(output_path=output, **debug_gate["options"])
     assert not output.exists(), "a nonzero collection exit must leave no passing gate"
@@ -605,30 +605,33 @@ def test_failed_publication_durability_removes_only_new_gate(debug_gate, tmp_pat
     assert not list(tmp_path.glob(".durability.json.*.tmp"))
 
 
-@pytest.mark.parametrize("kind", ["different", "symlink", "unlink_failure"])
+@pytest.mark.parametrize("kind", ["different", "identical", "symlink", "unlink_failure"])
 def test_gate_rollback_preserves_replacements_and_reports_cleanup_failure(
     tmp_path, monkeypatch, kind
 ):
-    from silent_cascade.errors import AtomicWriteError
-
     evidence = gate_api()
     output = tmp_path / "publication.json"
     candidate = b"candidate"
     replacement = tmp_path / "replacement.json"
-    replacement.write_bytes(b"other data")
-    original_publish = evidence.atomic_create_bytes
+    replacement.write_bytes(candidate if kind == "identical" else b"other data")
+    original_fsync = evidence.os.fsync
+    failed_once = False
 
-    def interrupted_publish(path, raw, **kwargs):
-        original_publish(path, raw, **kwargs)
+    def interrupted_durability(descriptor):
+        nonlocal failed_once
+        if evidence.os.fstat(descriptor).st_ino != tmp_path.stat().st_ino or failed_once:
+            return original_fsync(descriptor)
+        failed_once = True
         if kind != "unlink_failure":
-            path.unlink()
             if kind == "symlink":
-                path.symlink_to(replacement)
+                output.unlink()
+                output.symlink_to(replacement)
             else:
-                path.write_bytes(b"other data")
-        raise AtomicWriteError("published but durability unconfirmed", context={"published": True})
+                assert output.stat().st_ino != replacement.stat().st_ino
+                replacement.replace(output)
+        raise OSError("published but durability unconfirmed")
 
-    monkeypatch.setattr(evidence, "atomic_create_bytes", interrupted_publish)
+    monkeypatch.setattr(evidence.os, "fsync", interrupted_durability)
     if kind == "unlink_failure":
         original_unlink = evidence.os.unlink
 
@@ -641,8 +644,11 @@ def test_gate_rollback_preserves_replacements_and_reports_cleanup_failure(
     with pytest.raises(SilentCascadeError, match="residual output") as caught:
         evidence._publish_gate(output, candidate)
     assert caught.value.context["rollback_failed"] is True
-    assert output.read_bytes() == (candidate if kind == "unlink_failure" else b"other data")
-    assert replacement.read_bytes() == b"other data"
+    assert output.read_bytes() == (
+        candidate if kind in {"identical", "unlink_failure"} else b"other data"
+    )
+    if replacement.exists():
+        assert replacement.read_bytes() == b"other data"
 
 
 @pytest.mark.parametrize("kind", ["file", "symlink"])
@@ -659,6 +665,86 @@ def test_no_clobber_preexisting_output_never_enters_rollback(tmp_path, kind):
         evidence._publish_gate(output, b"new")
     assert output.read_bytes() == b"old"
     assert output.is_symlink() == (kind == "symlink")
+
+
+@pytest.mark.parametrize(
+    "failure", ["identity", "identity_unavailable", "file_fsync", "link", "temp_unlink"]
+)
+def test_owned_publication_preparation_and_temp_cleanup_failures(tmp_path, monkeypatch, failure):
+    import stat
+
+    evidence = gate_api()
+    output = tmp_path / "owned.json"
+    failed_once = False
+    operation = {
+        "identity": "fstat",
+        "identity_unavailable": "fstat",
+        "file_fsync": "fsync",
+        "link": "link",
+        "temp_unlink": "unlink",
+    }[failure]
+    original = getattr(evidence.os, operation)
+    original_fstat = evidence.os.fstat
+
+    def fail_once(*args, **kwargs):
+        nonlocal failed_once
+        relevant = (
+            stat.S_ISREG(original_fstat(args[0]).st_mode)
+            if failure in {"identity", "identity_unavailable", "file_fsync"}
+            else str(args[0]).endswith(".tmp")
+        )
+        if relevant and (not failed_once or failure == "identity_unavailable"):
+            failed_once = True
+            raise OSError("injected owned publication failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(evidence.os, operation, fail_once)
+    with pytest.raises(SilentCascadeError) as caught:
+        evidence._publish_gate(output, b"owned")
+    assert failed_once
+    assert not output.exists()
+    # An unavailable original identity cannot justify deleting even a temp leaf.
+    temporary = list(tmp_path.glob(".owned.json.*.tmp"))
+    assert len(temporary) == (1 if failure == "identity_unavailable" else 0)
+    if failure == "identity_unavailable":
+        assert caught.value.context["rollback_failed"] is True
+        assert "residual output" in str(caught.value)
+
+
+@pytest.mark.parametrize("relationship", ["completed", "gap", "sample_identity"])
+def test_data_schema_does_not_replace_independent_relationship_checks(
+    debug_gate, tmp_path, relationship
+):
+    payload = json.loads(debug_gate["output"].read_bytes())
+    row = payload["episode_witnesses"][0]
+    if relationship == "completed":
+        row["completed"] = False
+        message = "completed/score relationship"
+    elif relationship == "gap":
+        row["internal_event_count"] = 0
+        message = "internal event/gap relationship"
+    else:
+        sample = payload["selected_replay_samples"][0]
+        sample["expected_result"]["public_id"] = next(
+            witness["episode_public_id"]
+            for witness in payload["episode_witnesses"]
+            if witness["variant"] == "positive"
+            and witness["episode_public_id"] != sample["expected_result"]["public_id"]
+        )
+        sample["payload_sha256"] = hashlib.sha256(
+            canonical_json_bytes(
+                {key: value for key, value in sample.items() if key != "payload_sha256"}
+            )
+        ).hexdigest()
+        message = "sample public/result identity"
+    raw = canonical_json_bytes(payload)
+    gate_api().Phase2EngineGateDebugData.model_validate_json(raw)
+    with pytest.raises((ValueError, SilentCascadeError)):
+        gate_api().Phase2EngineGateDebugReport.model_validate_json(raw)
+    output = tmp_path / "relationship.json"
+    output.write_bytes(raw)
+    with pytest.raises(SilentCascadeError, match=message):
+        verify_debug(debug_gate, output)
 
 
 def test_cli_rejects_inconsistent_nested_and_listed_gate_hashes(synthetic_cli_gate, tmp_path):
@@ -690,10 +776,12 @@ def test_model_and_verifier_reject_noncanonical_config_shapes(debug_gate, tmp_pa
             verify_debug(debug_gate, output)
 
 
-def test_verifier_derives_rows_independently_of_producer_arithmetic(debug_gate, monkeypatch):
-    module = run_path(str(ROOT / "scripts/verify_phase2_gate_artifact.py"))
+def test_verifier_derives_rows_independently_of_producer_arithmetic(
+    debug_gate, monkeypatch, tmp_path
+):
+    from silent_cascade.eventflow import provenance, replay
+
     payload = json.loads(debug_gate["output"].read_bytes())
-    manifest = debug_gate["manifest"].model_dump(mode="json")
 
     def forbidden(*args, **kwargs):
         pytest.fail("independent arithmetic called a producer summary helper")
@@ -701,11 +789,17 @@ def test_verifier_derives_rows_independently_of_producer_arithmetic(debug_gate, 
     monkeypatch.setattr(gate_api(), "_totals", forbidden)
     monkeypatch.setattr(gate_api(), "_passes", forbidden)
     monkeypatch.setattr(gate_api(), "_chain", forbidden)
-    assert module["_independent_witnesses"](payload, manifest)
+    monkeypatch.setattr(gate_api(), "parse_replay_artifact_bytes", forbidden)
+    monkeypatch.setattr(gate_api(), "parse_gate_config", forbidden)
+    monkeypatch.setattr(provenance, "parse_gate_config", forbidden)
+    monkeypatch.setattr(replay, "parse_replay_artifact_bytes", forbidden)
+    assert verify_debug(debug_gate).passed
     payload["positive_count"] = 8
     payload["safe_negative_count"] = payload["disconnected_negative_count"] = 2
+    output = tmp_path / "coordinated-counts.json"
+    output.write_bytes(canonical_json_bytes(payload))
     with pytest.raises(SilentCascadeError):
-        module["_independent_witnesses"](payload, manifest)
+        verify_debug(debug_gate, output)
 
 
 def test_cli_rejects_malformed_full_config_with_typed_error(synthetic_cli_gate, tmp_path):
