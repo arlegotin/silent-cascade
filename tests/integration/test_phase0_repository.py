@@ -44,6 +44,22 @@ _INVALIDATED_PHASE1_REVISIONS = {
     "4aa6eca5d25e3c6dac879850b2a0557bbe84b54e",
     "2203b68a4c6b67f26b9aae1bdc7d1ab00f8a6e6e",
 }
+# Copied from docs/PLAN.md at immutable evidence commit
+# 84b1b87bb9194aeca68637967c4af3d3c5164168. The legacy helper independently
+# hashes all five files and checks their common source against this exact cell.
+_PHASE1_FROZEN_COMPLETE_GATE = (
+    "Complete at collector source `7b5f33c20b6842fdbf19928f5032fa0d22ddbf14`: "
+    "validation `84926a3217b27b04d7ed3e41038447533636aea06bcdc85b787f148f3d737e07`; "
+    "oracle `2f5ffa58bde0e6690bc0d673b2f42a5beaa7aa650a077512a8e3d0578d56c66c`; "
+    "leakage `2446db0d57b0641ec4988dd8dd1cd66e16f5b65ee4b13fbdb1769ee50834e72b`; "
+    "matched reproducibility "
+    "`4909d2981691605101c324c553c087623ec81193eda8e926e11b009bcae4460a`; "
+    "independent reproducibility "
+    "`3b50e4ad71646ec882288c039a3569ea60b5e6e1bd1ac0bd854a2c5eb9f8c37a`. "
+    "The v3 cross-artifact verifier and local `make verify` passed with zero "
+    "foundation-model calls; this is generator/oracle engineering evidence, "
+    "not learned-model or benchmark evidence."
+)
 
 _PHASE2_IN_PROGRESS_GATE = (
     "In progress under the approved Phase 2 flow-and-event-engine plan. "
@@ -126,6 +142,13 @@ def _assert_phase1_delivery_state(root: Path, plan_index: str) -> None:
     assert match.group("source") not in _INVALIDATED_PHASE1_REVISIONS
 
 
+def _assert_phase1_frozen_baseline(root: Path, plan_index: str) -> None:
+    _assert_phase1_delivery_state(root, plan_index)
+    row = next(line for line in plan_index.splitlines() if line.startswith("| 1 —"))
+    cell = row.rsplit("|", maxsplit=2)[1].strip()
+    assert cell == _PHASE1_FROZEN_COMPLETE_GATE, "completed Phase 1 baseline must remain frozen"
+
+
 def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     targets = set(re.findall(r"^([A-Za-z0-9][A-Za-z0-9_-]*):(?:\s|$)", makefile, re.MULTILINE))
@@ -194,7 +217,7 @@ def test_phase0_plan_index_is_wired_to_frozen_inputs() -> None:
     assert "superpowers/specs/2026-08-30-silent-cascade-design.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-0-bootstrap.md" in plan_index
     assert "superpowers/plans/2026-08-30-phase-1-generator-oracle.md" in plan_index
-    _assert_phase1_delivery_state(ROOT, plan_index)
+    _assert_phase1_frozen_baseline(ROOT, plan_index)
     assert "_assert_phase2_delivery_state" in globals(), "Phase 2 two-state regression is missing"
     _assert_phase2_delivery_state(ROOT, plan_index)
 
@@ -270,3 +293,65 @@ def test_phase1_delivery_state_contract(tmp_path: Path) -> None:
     _assert_phase1_delivery_state(tmp_path, in_progress_plan)
     with pytest.raises(AssertionError):
         _assert_phase1_delivery_state(tmp_path, complete_plan)
+
+
+def _trusted_phase1_plan_index() -> str:
+    return subprocess.run(
+        ["git", "show", "84b1b87bb9194aeca68637967c4af3d3c5164168:docs/PLAN.md"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def test_phase2_frozen_phase1_baseline_accepts_the_completed_historical_evidence() -> None:
+    trusted = _trusted_phase1_plan_index()
+    _assert_phase1_frozen_baseline(ROOT, trusted)
+    current = (ROOT / "docs/PLAN.md").read_text(encoding="utf-8")
+    assert next(line for line in current.splitlines() if line.startswith("| 1 —")) == next(
+        line for line in trusted.splitlines() if line.startswith("| 1 —")
+    )
+
+
+def test_phase2_frozen_phase1_baseline_rejects_deletion_and_historical_in_progress(
+    tmp_path: Path,
+) -> None:
+    index = "| 1 — Generator and oracle | plan | " + _PHASE1_IN_PROGRESS_GATE + " |"
+    _assert_phase1_delivery_state(tmp_path, index)  # Still valid for the historical helper.
+    with pytest.raises(AssertionError):
+        _assert_phase1_frozen_baseline(tmp_path, index)
+
+
+@pytest.mark.parametrize("alter_source", [False, True])
+def test_phase2_frozen_phase1_baseline_rejects_coherently_rehashed_replacements(
+    tmp_path: Path,
+    alter_source: bool,
+) -> None:
+    index = _trusted_phase1_plan_index()
+    cell = (
+        next(line for line in index.splitlines() if line.startswith("| 1 —"))
+        .rsplit("|", maxsplit=2)[1]
+        .strip()
+    )
+    metadata = _PHASE1_COMPLETE_GATE.fullmatch(cell).groupdict()
+    source = "a" * 40 if alter_source else metadata["source"]
+    rewritten_cell = cell.replace(metadata["source"], source)
+    for label, relative in _PHASE1_EVIDENCE_RELATIVE_PATHS.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"replacement": label, "provenance": {"source_commit": source}},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        rewritten_cell = rewritten_cell.replace(
+            metadata[label], hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+    rewritten_index = index.replace(cell, rewritten_cell)
+    _assert_phase1_delivery_state(tmp_path, rewritten_index)
+    with pytest.raises(AssertionError):
+        _assert_phase1_frozen_baseline(tmp_path, rewritten_index)
