@@ -3,10 +3,20 @@
 from dataclasses import replace
 
 import pytest
-from hypothesis import given
+import torch
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from silent_cascade.errors import DynamicsError, ProvenanceError
+from silent_cascade.eventflow.flow import advance_to, start_segment, state_at
+from silent_cascade.eventflow.state import (
+    AnalyticSegment,
+    ContinuousChannels,
+    RuntimeCore,
+    RuntimeState,
+    SegmentParameters,
+    make_initial_continuous_state,
+)
 from silent_cascade.memory import (
     BoundedMemory,
     append_perceived_fact,
@@ -15,6 +25,33 @@ from silent_cascade.memory import (
     require_support_ledger,
 )
 from silent_cascade.schemas import ExternalEvent, ExternalEventKind, SafeFact
+
+
+def runtime() -> RuntimeState:
+    dimensions = {
+        "z_fast": 256,
+        "z_slow": 64,
+        "drives": 8,
+        "focus_key": 64,
+        "hypothesis_latent": 64,
+    }
+    parameters = SegmentParameters(
+        flow_targets=ContinuousChannels(
+            **{name: torch.full((size,), 0.75) for name, size in dimensions.items()}
+        ),
+        flow_rates=ContinuousChannels(
+            **{name: torch.full((size,), 0.7) for name, size in dimensions.items()}
+        ),
+        guard_targets=torch.tensor([0.5, 1.25, 1.75]),
+        guard_rates=torch.tensor([0.1, 2.0, 500.0]),
+    )
+    return start_segment(
+        RuntimeCore(make_initial_continuous_state()),
+        parameters,
+        time=0.0,
+        parent_event_id=0,
+        prediction_snapshot_sha256="a" * 64,
+    )
 
 
 @given(st.lists(st.sampled_from(("append", "recall", "consume")), min_size=1, max_size=96))
@@ -126,3 +163,66 @@ def test_runtime_memory_support_ledgers_only_name_unique_existing_valid_records(
         require_support_ledger(memory, (999,))
     with pytest.raises(ProvenanceError, match="unique"):
         require_support_ledger(memory, (support_ids[0], support_ids[0]))
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    first=st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
+    second=st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
+    origin=st.floats(min_value=-1.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+    target=st.floats(min_value=-1.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+    rate=st.floats(min_value=1e-5, max_value=20.0, allow_nan=False, allow_infinity=False),
+)
+def test_continuous_semigroup_bounds_and_nonmutation(
+    first: float,
+    second: float,
+    origin: float,
+    target: float,
+    rate: float,
+) -> None:
+    """Reanchoring, aliasing, bad signs, or unbounded flow break these invariants."""
+    initial = runtime()
+    state = replace(initial.core.continuous, z_fast=torch.full((256,), origin))
+    param = replace(
+        initial.segment.parameters,
+        flow_targets=replace(
+            initial.segment.parameters.flow_targets, z_fast=torch.full((256,), target)
+        ),
+        flow_rates=replace(initial.segment.parameters.flow_rates, z_fast=torch.full((256,), rate)),
+    )
+    initial = RuntimeState(
+        replace(initial.core, continuous=state),
+        AnalyticSegment(0.0, state, param, 0, "a" * 64),
+        0.0,
+    )
+    before = initial.core.continuous.z_fast.clone()
+    direct = advance_to(initial, first + second)
+    middle = advance_to(initial, first)
+    anchored = advance_to(middle, first + second)
+    split_origin = RuntimeState(
+        middle.core, AnalyticSegment(first, middle.core.continuous, param, 0, "a" * 64), first
+    )
+    split = advance_to(split_origin, first + second)
+    result = direct.core.continuous.z_fast
+    assert torch.equal(result, anchored.core.continuous.z_fast)
+    torch.testing.assert_close(result, split.core.continuous.z_fast, rtol=5e-7, atol=2e-7)
+    assert torch.isfinite(result).all()
+    assert (result >= -1.0).all() and (result <= 1.0).all()
+    assert initial.time <= middle.time <= anchored.time
+    assert torch.equal(initial.core.continuous.z_fast, before)
+    snapshot = state_at(middle, first + second)
+    assert snapshot.z_fast.data_ptr() != middle.core.continuous.z_fast.data_ptr()
+
+
+@settings(max_examples=20, deadline=None)
+@given(dt=st.floats(min_value=1e6, max_value=1e12, allow_nan=False, allow_infinity=False))
+def test_huge_time_flow_stays_finite_and_converges(dt: float) -> None:
+    initial = runtime()
+    advanced = advance_to(initial, dt)
+    assert torch.isfinite(advanced.core.continuous.z_fast).all()
+    torch.testing.assert_close(
+        advanced.core.continuous.z_fast, initial.segment.parameters.flow_targets.z_fast
+    )
+    torch.testing.assert_close(
+        advanced.core.continuous.guard_accumulators, initial.segment.parameters.guard_targets
+    )
