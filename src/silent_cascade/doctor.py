@@ -15,6 +15,13 @@ import torch
 from pydantic import field_validator
 
 from silent_cascade.config import ProjectConfig, resolve_config
+from silent_cascade.eventflow import flow, guards
+from silent_cascade.eventflow.state import (
+    ContinuousChannels,
+    RuntimeCore,
+    SegmentParameters,
+    make_initial_continuous_state,
+)
 from silent_cascade.rng import (
     RngRoundTripReport,
     mps_rng_state_supported,
@@ -81,21 +88,42 @@ class DoctorReport(StrictModel):
 
 
 def _numeric_smoke(device: Literal["cpu", "mps"]) -> NumericSmokeReport:
-    state = torch.tensor([0.0], dtype=torch.float32, device=device)
-    target = torch.tensor([0.5], dtype=torch.float32, device=device)
-    rate = torch.tensor([2.0], dtype=torch.float32, device=device)
-    dt = torch.tensor(0.25, dtype=torch.float32, device=device)
-    weight = -torch.expm1(-rate * dt)
-    flowed = state + weight * (target - state)
+    initial = make_initial_continuous_state(device=device)
+    targets = ContinuousChannels(
+        **{
+            name: torch.full_like(getattr(initial, name), 0.5)
+            for name in ("z_fast", "z_slow", "drives", "focus_key", "hypothesis_latent")
+        }
+    )
+    rates = ContinuousChannels(
+        **{
+            name: torch.full_like(getattr(initial, name), 2.0)
+            for name in ("z_fast", "z_slow", "drives", "focus_key", "hypothesis_latent")
+        }
+    )
+    parameters = SegmentParameters(
+        flow_targets=targets,
+        flow_rates=rates,
+        guard_targets=torch.tensor([1.5, 0.5, 0.5], dtype=torch.float32, device=device),
+        guard_rates=torch.full((3,), 2.0, dtype=torch.float32, device=device),
+    )
+    runtime = flow.start_segment(
+        RuntimeCore(initial),
+        parameters,
+        time=0.0,
+        parent_event_id=0,
+        prediction_snapshot_sha256="0" * 64,
+    )
+    flowed = flow.state_at(runtime, 0.25).z_fast[0]
     expected = 0.5 * (1.0 - math.exp(-0.5))
-    flow_ok = math.isclose(float(flowed.cpu().item()), expected, rel_tol=1e-6)
+    flow_ok = abs(float(flowed.cpu().item()) - expected) <= 1.0e-6
 
-    accumulator = torch.tensor([0.0], dtype=torch.float32, device=device)
-    asymptote = torch.tensor([1.5], dtype=torch.float32, device=device)
-    guard_rate = torch.tensor([2.0], dtype=torch.float32, device=device)
-    delta = torch.log1p((1.0 - accumulator) / (asymptote - 1.0)) / guard_rate
-    crossed = asymptote + (accumulator - asymptote) * torch.exp(-guard_rate * delta)
-    guard_ok = math.isclose(float(crossed.cpu().item()), 1.0, rel_tol=0.0, abs_tol=1e-6)
+    offsets = guards.crossing_offsets_tensor(
+        initial.guard_accumulators,
+        parameters.guard_targets,
+        parameters.guard_rates,
+    )
+    guard_ok = abs(float(offsets[0].cpu().item()) - math.log(3.0) / 2.0) <= 1.0e-6
     return NumericSmokeReport(device=device, flow_ok=flow_ok, guard_ok=guard_ok)
 
 

@@ -39,9 +39,9 @@ def _subcommands(group: object) -> set[str | None]:
     return {command.name for command in group.registered_commands}  # type: ignore[attr-defined]
 
 
-def test_cli_exposes_only_implemented_phase1_commands() -> None:
-    """Registering a placeholder command would advertise unimplemented behavior."""
-    assert {command.name for command in cli.app.registered_commands} == {"doctor"}
+def test_cli_keeps_implemented_phase1_groups_with_approved_phase2_commands() -> None:
+    """The Phase 2 replay adapter must not advertise any future placeholders."""
+    assert {command.name for command in cli.app.registered_commands} == {"doctor", "replay"}
     assert {group.name for group in cli.app.registered_groups} == {
         "data",
         "episode",

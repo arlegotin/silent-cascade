@@ -111,6 +111,7 @@ def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     assert dry_run.stdout.index(service_tests) < dry_run.stdout.index(leakage_tests)
     assert "uv run silent-cascade doctor" in dry_run.stdout
     assert "uv build" in dry_run.stdout
+    assert "check_phase2_engine.py" not in dry_run.stdout
 
     smoke = subprocess.run(
         ["make", "-n", "smoke"],
@@ -124,6 +125,7 @@ def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     assert "tests/integration/test_phase1_gate_verifier.py" in smoke.stdout
     assert "tests/regression/test_phase1_fixtures.py" in smoke.stdout
     assert "tests/regression/test_import_boundaries.py" in smoke.stdout
+    assert "tests/integration/test_cli_replay.py" in smoke.stdout
 
     workflows = ROOT / ".github" / "workflows"
     assert not workflows.exists() or not any(workflows.iterdir())
@@ -131,6 +133,8 @@ def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "reports no learned benchmark results" in readme
     assert "silent-cascade doctor" in readme
+    assert "silent-cascade replay" in readme
+    assert "non-neural runtime engineering evidence" in readme
     assert "silent-cascade data freeze" in readme
     assert "silent-cascade episode inspect" in readme
     assert "silent-cascade oracle evaluate" in readme

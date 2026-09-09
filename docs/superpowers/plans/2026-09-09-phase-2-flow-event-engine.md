@@ -1927,6 +1927,10 @@ EventFlow modules and rejecting fixed-grid constructs (`arange`, interval-loop
 configuration, sleep/poll calls) in `eventflow.engine`, `guards`, and
 `scripted`.
 
+The fixed-grid check applies to temporal opportunity construction only. The
+reviewed `torch.arange(channel.numel())` in `scripted.py` is vector feature
+indexing, not a temporal grid, and remains permitted.
+
 - [ ] **Step 3: Write failing repository/workflow tests**
 
 Assert:

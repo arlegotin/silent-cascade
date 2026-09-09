@@ -3,13 +3,14 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from silent_cascade.config import resolve_config
 from silent_cascade.doctor import DoctorReport, run_doctor
 from silent_cascade.env.leakage import LeakageAuditProfileName
 from silent_cascade.env.services import (
@@ -25,7 +26,21 @@ from silent_cascade.env.services import (
     inspect_episode,
     run_leakage_audit,
 )
-from silent_cascade.errors import SilentCascadeError
+from silent_cascade.errors import ReplayError, SilentCascadeError
+from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
+from silent_cascade.eventflow.checkpoint import (
+    load_runtime_checkpoint,
+    restore_runtime_session,
+)
+from silent_cascade.eventflow.config import Phase2Config
+from silent_cascade.eventflow.engine import EventEngine
+from silent_cascade.eventflow.replay import MAX_REPLAY_BYTES, load_replay_artifact, verify_replay
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.logging.crash_bundle import CrashBundleManifest
+from silent_cascade.logging.runtime_diagnostics import (
+    RuntimeDiagnosticIdentity,
+    runtime_diagnostic_identity,
+)
 from silent_cascade.validation import StrictModel
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -40,6 +55,32 @@ app.add_typer(leakage_app, name="leakage")
 
 _PHASE1_ALLOCATION_SELECTOR = "phase1-gate"
 _PHASE1_ALLOCATION_ID = "phase1-independent-gate-v1"
+
+
+class EpisodeReplayReport(StrictModel):
+    schema_version: Literal["phase2-replay-cli-v1"] = "phase2-replay-cli-v1"
+    replay_kind: Literal["episode"] = "episode"
+    matched: Literal[True] = True
+    artifact_sha256: str
+    trace_sha256: str
+    event_count: int
+    timed_success: bool
+    device: Literal["cpu"] = "cpu"
+    foundation_model_calls: Literal[0] = 0
+
+
+class CrashReplayReport(StrictModel):
+    schema_version: Literal["phase2-replay-cli-v1"] = "phase2-replay-cli-v1"
+    replay_kind: Literal["crash"] = "crash"
+    matched: Literal[True] = True
+    artifact_sha256: str
+    checkpoint_sha256: str
+    trace_sha256: str
+    event_count: int
+    timed_success: None = None
+    failure: dict[str, object]
+    device: Literal["cpu"] = "cpu"
+    foundation_model_calls: Literal[0] = 0
 
 
 @app.callback()
@@ -95,6 +136,163 @@ def doctor_command(
         _render_doctor(report)
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+def _replay_error(field: str) -> ReplayError:
+    return ReplayError(f"replay mismatch: {field}", context={"field": field})
+
+
+def _read_replay_input(path: Path) -> bytes:
+    try:
+        with archive_parent(path, error_factory=_replay_error) as (parent, name):
+            return read_archive_at(
+                parent, name, max_bytes=MAX_REPLAY_BYTES, error_factory=_replay_error
+            )
+    except OSError as error:
+        raise _replay_error("archive.path_or_file") from error
+
+
+def _closed_schema(raw: bytes) -> str | int:
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _replay_error("archive.json") from error
+    if not isinstance(payload, dict) or "schema_version" not in payload:
+        raise _replay_error("archive.schema_version")
+    schema = payload["schema_version"]
+    if schema == "phase2-replay-v1" or (type(schema) is int and schema == 1):
+        return schema
+    raise _replay_error("archive.schema_version")
+
+
+def _runtime_config():
+    return resolve_config(
+        Phase2Config,
+        [
+            Path("configs/base.yaml"),
+            Path("configs/data/primary.yaml"),
+            Path("configs/model/event_flow.yaml"),
+        ],
+    ).config.event_flow
+
+
+def _crash_checkpoint_name(value: object) -> str:
+    if type(value) is not str or Path(value).name != value or value in {"", ".", ".."}:
+        raise _replay_error("checkpoint_ref")
+    return value
+
+
+def _recognized_failure(payload: object) -> RuntimeDiagnosticIdentity:
+    if not isinstance(payload, dict):
+        raise _replay_error("crash.error")
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        raise _replay_error("crash.error")
+    identity = RuntimeDiagnosticIdentity(payload.get("code"), context.get("invariant"))
+    if not identity.replay_certifiable or payload != identity.to_payload():
+        raise _replay_error("crash.error")
+    return identity
+
+
+def _replay_crash(path: Path, raw: bytes) -> CrashReplayReport:
+    try:
+        manifest = CrashBundleManifest.model_validate_json(raw)
+    except ValueError as error:
+        raise _replay_error("crash.schema") from error
+    if raw != canonical_json_bytes(manifest) + b"\n":
+        raise _replay_error("crash.canonical_json")
+    original = _recognized_failure(manifest.error)
+    checkpoint_name = _crash_checkpoint_name(manifest.context.checkpoint_ref)
+    if manifest.context.source_revision is None or manifest.context.config_sha256 is None:
+        raise _replay_error("crash.context")
+    config = _runtime_config()
+    if sha256_bytes(canonical_json_bytes(config)) != manifest.context.config_sha256:
+        raise _replay_error("crash.config_sha256")
+    checkpoint_path = path.parent / checkpoint_name
+    try:
+        artifact = load_runtime_checkpoint(
+            checkpoint_path,
+            config=config,
+            source_revision=manifest.context.source_revision,
+        )
+        session, agent = restore_runtime_session(
+            artifact,
+            config=config,
+            source_revision=manifest.context.source_revision,
+            device="cpu",
+        )
+        try:
+            EventEngine(config).step(session, agent)
+        except SilentCascadeError as error:
+            reproduced = runtime_diagnostic_identity(error)
+        else:
+            raise _replay_error("crash.failure_not_reproduced")
+    except ReplayError:
+        raise
+    except SilentCascadeError as error:
+        raise _replay_error("checkpoint") from error
+    if not reproduced.replay_certifiable or reproduced.to_payload() != original.to_payload():
+        raise _replay_error("crash.failure_identity")
+    if artifact.sha256 is None:
+        raise _replay_error("checkpoint.sha256")
+    return CrashReplayReport(
+        artifact_sha256=sha256_bytes(raw),
+        checkpoint_sha256=artifact.sha256,
+        trace_sha256=artifact.metadata.trace.sha256,
+        event_count=len(artifact.metadata.trace.events),
+        failure=reproduced.to_payload(),
+    )
+
+
+def _render_replay_error(error: SilentCascadeError) -> None:
+    typer.echo(
+        json.dumps(
+            error.to_payload(),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        err=True,
+    )
+
+
+@app.command("replay")
+def replay_command(
+    artifact: Annotated[Path, typer.Argument()],
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Verify one closed validation replay or crash archive on CPU."""
+    try:
+        raw = _read_replay_input(artifact)
+        schema = _closed_schema(raw)
+        if schema == "phase2-replay-v1":
+            loaded = load_replay_artifact(artifact)
+            comparison = verify_replay(loaded)
+            report: EpisodeReplayReport | CrashReplayReport = EpisodeReplayReport(
+                artifact_sha256=sha256_bytes(raw),
+                trace_sha256=comparison.trace_sha256,
+                event_count=comparison.event_count,
+                timed_success=loaded.expected_result.score.timed_success,
+            )
+        else:
+            report = _replay_crash(artifact, raw)
+    except SilentCascadeError as error:
+        _render_replay_error(error)
+        raise typer.Exit(code=1) from None
+    if json_output:
+        typer.echo(
+            json.dumps(
+                report.model_dump(mode="json"),
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    elif isinstance(report, CrashReplayReport):
+        typer.echo("Replay matched: failure reproduced")
+    else:
+        typer.echo("Replay matched: episode result verified")
 
 
 def _config_selection(

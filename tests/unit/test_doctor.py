@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from silent_cascade import doctor
 from silent_cascade.doctor import DoctorReport, run_doctor
 
 
@@ -107,3 +108,60 @@ def test_doctor_report_rejects_boolean_foundation_call_count() -> None:
                 "qwen_extra_installed": None,
             }
         )
+
+
+def test_numeric_smoke_uses_production_flow_and_guard_operations(monkeypatch) -> None:
+    calls: list[str] = []
+    real_state_at = doctor.flow.state_at
+    real_crossing_offsets = doctor.guards.crossing_offsets_tensor
+
+    def state_at(*args, **kwargs):
+        calls.append("flow")
+        return real_state_at(*args, **kwargs)
+
+    def crossing_offsets(*args, **kwargs):
+        calls.append("guards")
+        return real_crossing_offsets(*args, **kwargs)
+
+    monkeypatch.setattr(doctor.flow, "state_at", state_at)
+    monkeypatch.setattr(doctor.guards, "crossing_offsets_tensor", crossing_offsets)
+
+    report = doctor._numeric_smoke("cpu")
+
+    assert report.flow_ok and report.guard_ok
+    assert calls == ["flow", "guards"]
+
+
+def test_mps_numeric_smoke_uses_float32_production_tensors_when_available(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if not torch.backends.mps.is_available():
+        pytest.skip("native MPS is unavailable")
+    observed_devices: list[str] = []
+    synchronized: list[bool] = []
+    real_flow = doctor.flow.state_at
+    real_guards = doctor.guards.crossing_offsets_tensor
+
+    def state_at(runtime, target_time):
+        observed_devices.append(runtime.core.continuous.device.type)
+        return real_flow(runtime, target_time)
+
+    def crossing_offsets(accumulators, asymptotes, rates):
+        observed_devices.extend(
+            (accumulators.device.type, asymptotes.device.type, rates.device.type)
+        )
+        return real_guards(accumulators, asymptotes, rates)
+
+    monkeypatch.delenv("PYTORCH_ENABLE_MPS_FALLBACK", raising=False)
+    monkeypatch.setattr(doctor.flow, "state_at", state_at)
+    monkeypatch.setattr(doctor.guards, "crossing_offsets_tensor", crossing_offsets)
+    monkeypatch.setattr(torch.mps, "synchronize", lambda: synchronized.append(True))
+
+    cpu = doctor._numeric_smoke("cpu")
+    report = run_doctor(config_path=Path("configs/base.yaml"), writable_paths=[tmp_path])
+
+    assert cpu.flow_ok and cpu.guard_ok
+    assert report.mps.flow_ok and report.mps.guard_ok
+    assert observed_devices.count("mps") == 4
+    assert synchronized
+    assert not report.mps_fallback_enabled

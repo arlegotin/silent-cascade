@@ -1,7 +1,9 @@
 """State-machine properties for the Phase 2 event-flow runtime."""
 
+import ast
 import math
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
@@ -31,6 +33,38 @@ from silent_cascade.memory import (
     require_support_ledger,
 )
 from silent_cascade.schemas import ExternalEvent, ExternalEventKind, SafeFact
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_eventflow_runtime_source_has_no_float64_tensors_or_temporal_polling_grid() -> None:
+    """Float64 stays host-only; EventFlow advances only on causal events."""
+    package = ROOT / "src/silent_cascade/eventflow"
+    for path in package.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        assert "float64" not in attributes, path.name
+    for name in ("engine.py", "guards.py", "scripted.py"):
+        tree = ast.parse((package / name).read_text())
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        called = {
+            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+            for node in calls
+            if isinstance(node.func, (ast.Attribute, ast.Name))
+        }
+        assert not {"sleep", "poll"}.intersection(called), name
+        aranges = [
+            node
+            for node in calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "arange"
+        ]
+        if name == "scripted.py":
+            assert len(aranges) == 1
+            assert isinstance(aranges[0].args[0], ast.Call)
+            assert isinstance(aranges[0].args[0].func, ast.Attribute)
+            assert aranges[0].args[0].func.attr == "numel"
+        else:
+            assert not aranges, name
 
 
 @given(st.floats(min_value=0.0, max_value=0.00007, allow_nan=False, allow_infinity=False))
