@@ -1,0 +1,26 @@
+event_flow:
+  dimensions:
+    z_fast: 256
+    z_slow: 64
+    drives: 8
+    guard_accumulators: 3
+    focus_key: 64
+    hypothesis_latent: 64
+  flow:
+    rate_min: 1.0e-5
+    rate_max: 20.0
+    state_min: -1.0
+    state_max: 1.0
+  guards:
+    threshold: 1.0
+    rate_min: 1.0e-5
+    rate_max: 500.0
+    active_margin: 1.10
+    inactive_margin: 0.90
+    minimum_internal_gap: 1.0e-4
+    same_kind_refractory: 1.0e-3
+    near_tie_tolerance: 1.0e-9
+    maximum_consecutive_gap_clamps: 4
+  scripted:
+    action_target_fraction: 0.825
+  max_internal_events: 64

@@ -31,9 +31,7 @@ dataclasses, `safetensors`, Typer, SHA-256, pytest, Hypothesis, Ruff, and `uv`.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`
 
-**Plan status:** **Proposed; explicit user approval is required before any
-Phase 2 implementation task begins.** Approval of the canonical design or a
-prior phase does not approve this plan.
+**Plan status:** **User-approved; execution in progress.**
 
 ## Execution Preconditions and Superpowers Workflow
 
