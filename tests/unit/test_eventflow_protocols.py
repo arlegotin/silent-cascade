@@ -48,9 +48,20 @@ def test_closed_form_flow_exposes_only_analytic_state_operations() -> None:
     assert tuple(inspect.signature(ClosedFormFlow.advance).parameters) == (
         "self",
         "state",
-        "target_time",
+        "dt",
     )
     assert tuple(inspect.signature(ClosedFormFlow.next_crossings).parameters) == (
         "self",
         "state",
     )
+
+
+def test_closed_form_flow_uses_the_canonical_continuous_state_contract() -> None:
+    advance = inspect.signature(ClosedFormFlow.advance)
+    crossings = inspect.signature(ClosedFormFlow.next_crossings)
+
+    assert advance.parameters["state"].annotation == "ContinuousState"
+    assert advance.parameters["dt"].annotation == "float"
+    assert advance.return_annotation == "ContinuousState"
+    assert crossings.parameters["state"].annotation == "ContinuousState"
+    assert crossings.return_annotation == "list[GuardCrossing]"

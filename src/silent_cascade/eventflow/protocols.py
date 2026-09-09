@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from silent_cascade.eventflow.guards import GuardCrossing
-    from silent_cascade.eventflow.state import ComputeCounters, RuntimeState
+    from silent_cascade.eventflow.state import ComputeCounters, ContinuousState, RuntimeState
     from silent_cascade.schemas import Action, AgentInit, Condition, ExternalEvent, InternalEvent
 
 
@@ -27,6 +27,6 @@ class AgentCondition(Protocol):
 
 
 class ClosedFormFlow(Protocol):
-    def advance(self, state: RuntimeState, target_time: float) -> RuntimeState: ...
+    def advance(self, state: ContinuousState, dt: float) -> ContinuousState: ...
 
-    def next_crossings(self, state: RuntimeState) -> tuple[GuardCrossing, ...]: ...
+    def next_crossings(self, state: ContinuousState) -> list[GuardCrossing]: ...
