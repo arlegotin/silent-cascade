@@ -156,7 +156,10 @@ class EventEngine:
         if source_revision is not None and not re.fullmatch(
             r"[0-9a-f]{40}|[0-9a-f]{64}", source_revision
         ):
-            raise DynamicsError("source revision must be a canonical full commit digest")
+            raise DynamicsError(
+                "source revision must be a canonical full commit digest",
+                context={"invariant": "source_revision_format"},
+            )
         self.crash_root = crash_root
         self.source_revision = source_revision
 
@@ -204,20 +207,35 @@ class EventEngine:
             prediction_snapshot_sha256=cached.prediction_snapshot_sha256 if cached else None,
         )
         if cached is not None and cached.parent_event_id != session.state.segment.parent_event_id:
-            raise DynamicsError("cached prediction parent differs from the causal segment")
+            raise DynamicsError(
+                "cached prediction parent differs from the causal segment",
+                context={"invariant": "cached_prediction_parent"},
+            )
         if session.segment_anchor != SegmentSummary.from_segment(session.state.segment):
-            raise DynamicsError("causal segment storage changed between engine boundaries")
+            raise DynamicsError(
+                "causal segment storage changed between engine boundaries",
+                context={"invariant": "segment_storage_changed"},
+            )
         if session.public_state_anchor != _public_state_anchor(session.state):
-            raise DynamicsError("public causal history changed between engine boundaries")
+            raise DynamicsError(
+                "public causal history changed between engine boundaries",
+                context={"invariant": "public_history_changed"},
+            )
 
     @_failure_boundary
     def start_episode(self, bundle: EpisodeBundle, agent: AgentCondition) -> RuntimeSession:
         queue = ExternalEventQueue(bundle.public, bundle.truth.private_terminal)
         state = agent.initialize(bundle.public.init)
         if not isinstance(state, RuntimeState) or state.core.mode is not Mode.OBSERVING:
-            raise DynamicsError("initialization must return an observing RuntimeState")
+            raise DynamicsError(
+                "initialization must return an observing RuntimeState",
+                context={"invariant": "initial_runtime_mode"},
+            )
         if state.time != bundle.public.init.initial_time or state.segment.started_at != state.time:
-            raise TimeOrderError("initial state and segment must start at the public initial time")
+            raise TimeOrderError(
+                "initial state and segment must start at the public initial time",
+                context={"invariant": "initial_runtime_time"},
+            )
         validate_runtime_state(state)
         if (
             state.core.last_event_id is not None
@@ -225,7 +243,10 @@ class EventEngine:
             or state.core.actions
             or state.core.memory.records
         ):
-            raise DynamicsError("initialization must not invent events, actions or perceived facts")
+            raise DynamicsError(
+                "initialization must not invent events, actions or perceived facts",
+                context={"invariant": "initial_public_history"},
+            )
         return RuntimeSession(
             bundle.public.init.episode_public_id,
             bundle.truth,
@@ -255,7 +276,10 @@ class EventEngine:
             signature = _runtime_signature(session.state)
             result = agent.next_internal_event(session.state)
             if _runtime_signature(session.state) != signature:
-                raise DynamicsError("prediction callback mutated its runtime input")
+                raise DynamicsError(
+                    "prediction callback mutated its runtime input",
+                    context={"invariant": "prediction_input_mutated"},
+                )
             validate_runtime_state(session.state)
             return result
 
@@ -281,9 +305,15 @@ class EventEngine:
             current_time=session.state.segment.started_at,
         )
         if choice is None:
-            raise DynamicsError("nonterminal session has no next causal event")
+            raise DynamicsError(
+                "nonterminal session has no next causal event",
+                context={"invariant": "missing_next_event"},
+            )
         if choice.timestamp < session.state.time:
-            raise TimeOrderError("selected event precedes the runtime cursor")
+            raise TimeOrderError(
+                "selected event precedes the runtime cursor",
+                context={"invariant": "selected_event_time"},
+            )
         if isinstance(choice.event, InternalEvent):
             choice = replace(
                 choice,
@@ -302,9 +332,14 @@ class EventEngine:
         require_time(target_time, "target_time")
         validate_runtime_state(state)
         if state.core.mode is Mode.TERMINAL:
-            raise DynamicsError("cannot advance a terminal state")
+            raise DynamicsError(
+                "cannot advance a terminal state", context={"invariant": "advance_after_terminal"}
+            )
         if target_time < state.time:
-            raise TimeOrderError("advance time cannot precede the current runtime time")
+            raise TimeOrderError(
+                "advance time cannot precede the current runtime time",
+                context={"invariant": "advance_time"},
+            )
         elapsed = target_time - state.segment.started_at
         if elapsed == 0.0:
             return state
@@ -320,12 +355,21 @@ class EventEngine:
     @staticmethod
     def _require_callback_result(before: RuntimeState, after: RuntimeState) -> None:
         if not isinstance(after, RuntimeState) or after.core.mode is Mode.TERMINAL:
-            raise DynamicsError("callback must return a nonterminal RuntimeState")
+            raise DynamicsError(
+                "callback must return a nonterminal RuntimeState",
+                context={"invariant": "callback_runtime_result"},
+            )
         for name in ("flow_evaluations", "checkpoint_flow_evaluations", "guard_predictions"):
             if getattr(after.core.counters, name) != getattr(before.core.counters, name):
-                raise DynamicsError("callback changed an engine-owned counter")
+                raise DynamicsError(
+                    "callback changed an engine-owned counter",
+                    context={"invariant": "callback_counter_owner"},
+                )
         if after.core.actions[: len(before.core.actions)] != before.core.actions:
-            raise DynamicsError("callback rewrote an already emitted action")
+            raise DynamicsError(
+                "callback rewrote an already emitted action",
+                context={"invariant": "callback_actions_rewritten"},
+            )
 
     @staticmethod
     def _require_emitted_matches_state(
@@ -335,7 +379,10 @@ class EventEngine:
             not isinstance(emitted, list)
             or tuple(emitted) != after.core.actions[len(before.core.actions) :]
         ):
-            raise DynamicsError("emitted actions do not match the new runtime actions")
+            raise DynamicsError(
+                "emitted actions do not match the new runtime actions",
+                context={"invariant": "callback_emission_mismatch"},
+            )
 
     @staticmethod
     def _terminalize(before: RuntimeState, event: ExternalEvent) -> RuntimeCore:
@@ -389,7 +436,10 @@ class EventEngine:
             self._require_callback_result(before, after)
             self._require_emitted_matches_state(before, after, emitted)
         if _runtime_signature(before) != signature:
-            raise DynamicsError("jump callback mutated its runtime input")
+            raise DynamicsError(
+                "jump callback mutated its runtime input",
+                context={"invariant": "jump_input_mutated"},
+            )
         validate_post_jump(before, event, after)
         selected_record_id = None
         selected_rank = None
@@ -433,9 +483,14 @@ class EventEngine:
         """Run causal events through a host time, then materialize without an event."""
         require_time(pause_time, "pause_time")
         if session.state.core.mode is Mode.TERMINAL:
-            raise DynamicsError("cannot pause an already-terminal session")
+            raise DynamicsError(
+                "cannot pause an already-terminal session",
+                context={"invariant": "pause_after_terminal"},
+            )
         if pause_time < session.state.time:
-            raise TimeOrderError("pause cannot precede the current runtime time")
+            raise TimeOrderError(
+                "pause cannot precede the current runtime time", context={"invariant": "pause_time"}
+            )
         while True:
             choice = self._next_choice(session, agent)
             if choice.timestamp > pause_time:
@@ -464,7 +519,10 @@ class EventEngine:
         while not self.step(session, agent):
             pass
         if session.terminal_score is None:
-            raise DynamicsError("terminal session is missing its score")
+            raise DynamicsError(
+                "terminal session is missing its score",
+                context={"invariant": "missing_terminal_score"},
+            )
         return EpisodeResult(
             session.public_id,
             session.terminal_score,

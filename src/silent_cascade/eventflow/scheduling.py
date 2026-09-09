@@ -194,7 +194,9 @@ class ScheduledChoice:
 def selected_gap_clamp_streak(previous: int, choice: ScheduledChoice) -> int:
     """Pure selected-event accounting; external selection breaks a clamp streak."""
     if type(previous) is not int or not 0 <= previous <= 4:
-        raise DynamicsError("invalid selected gap-clamp streak")
+        raise DynamicsError(
+            "invalid selected gap-clamp streak", context={"invariant": "gap_clamp_streak"}
+        )
     if not isinstance(choice.event, InternalEvent) or not choice.was_gap_clamped:
         return 0
     if previous == 4:

@@ -1463,6 +1463,17 @@ and must never restore a failed session as runnable. Task 9 crash JSON uses an
 opt-in sanitized error/traceback and a canonical runtime-config hash; a real
 checkpoint sibling and reference remain Task 11, with no fabricated reference.
 
+Task 9 diagnostic review ruling: sanitized runtime errors use the reusable
+`logging.runtime_diagnostics.runtime_diagnostic_identity` projection. It retains
+only a built-in typed error code and a closed allowlisted invariant identifier,
+with an explicit `replay_certifiable` flag. Unknown identifiers and callback
+diagnostics are unclassified and cannot certify a reproduced failure. Static
+engine failure branches have bounded identifiers; arbitrary error messages,
+extra context values, filenames, source text and chained exception text remain
+excluded. Traceback labels come only from an explicit installed-project
+module/function allowlist and include bounded line numbers; these diagnostic
+locations are separate from semantic failure identity.
+
 - [ ] **Step 3: Write failing crash-bundle tests**
 
 Configure a temporary crash root, trigger a dynamics failure, and assert one
@@ -1806,6 +1817,12 @@ checkpoint. Replay must restore the scripted session on CPU, execute one step,
 and reproduce the recorded typed failure. A missing/escaping checkpoint
 reference or a different error code/context fails closed.
 
+Use Task 9's canonical public diagnostic projection for this comparison.
+Different approved invariant identifiers must differ even when their broad
+error codes are identical. An unknown/unclassified diagnostic must fail closed,
+including when both original and reproduced failures have the same generic
+code; a false or missing `replay_certifiable` flag cannot certify success.
+
 Update the root-command expectation from `{doctor}` to `{doctor, replay}`;
 nested Phase 1 command groups remain intact.
 
@@ -1864,6 +1881,12 @@ filename with no absolute path or `..`, load the scripted checkpoint on CPU,
 execute exactly one step, and require the same typed error code and canonical
 context. It must not dynamically import an agent or continue past the
 reproduced failure.
+
+Concretely, require a recognized original diagnostic and a reproduced identity
+whose `runtime_diagnostic_identity(error).replay_certifiable` is true, then
+compare its canonical `to_payload()` with the original sanitized error payload.
+Do not use raw arbitrary exception context, generic-code equality or traceback
+locations as a substitute. Replay entry-point frames can legitimately differ.
 
 - [ ] **Step 6: Route doctor through production math**
 

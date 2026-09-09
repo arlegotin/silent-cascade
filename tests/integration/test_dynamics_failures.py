@@ -372,3 +372,25 @@ def test_wrapped_provenance_failure_preserves_traceback_and_original_cause(confi
     data = json.loads(next(tmp_path.glob("*.json")).read_text())
     assert data["traceback_text"]
     assert "PRIVATE-" not in json.dumps(data)
+
+
+@pytest.mark.parametrize(
+    "mutation,identity",
+    [("segment", "segment_storage_changed"), ("history", "public_history_changed")],
+)
+def test_engine_boundary_failures_publish_distinct_safe_diagnostic_identities(
+    config, tmp_path, mutation, identity
+):
+    agent = ScriptedEventFlowAgent()
+    engine = EventEngine(config, crash_root=tmp_path)
+    session = engine.start_episode(episode(), agent)
+    engine.step(session, agent)
+    if mutation == "segment":
+        session.state.segment.parameters.flow_rates.z_fast[0] = 2.0
+    else:
+        object.__setattr__(session.state.core.memory.records[0].record, "confidence", 0.5)
+    with pytest.raises(DynamicsError):
+        engine.step(session, agent)
+    data = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert data["error"]["context"] == {"invariant": identity, "replay_certifiable": True}
+    assert "silent_cascade.eventflow.engine.EventEngine._check_session:" in data["traceback_text"]

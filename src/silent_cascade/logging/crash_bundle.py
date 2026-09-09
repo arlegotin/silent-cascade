@@ -69,17 +69,17 @@ def write_crash_bundle(
     # Opt-in runtime mode never serializes exception messages, arbitrary context,
     # source lines, filenames or chained exceptions, which can contain private
     # environment data. Existing Phase 1 callers retain their original format.
-    error_payload = error.to_payload()
-    traceback_text = (
-        "".join(traceback.format_exception(error))
-        if not sanitize_diagnostics
-        else "\n".join(
-            f"frame {index}: line {frame.lineno}"
-            for index, frame in enumerate(traceback.extract_tb(error.__traceback__)[-20:])
-        )
-    )
     if sanitize_diagnostics:
-        error_payload = {"code": error.code, "message": "runtime execution failed", "context": {}}
+        from silent_cascade.logging.runtime_diagnostics import (
+            runtime_diagnostic_identity,
+            safe_project_traceback,
+        )
+
+        error_payload = runtime_diagnostic_identity(error).to_payload()
+        traceback_text = safe_project_traceback(error)
+    else:
+        error_payload = error.to_payload()
+        traceback_text = "".join(traceback.format_exception(error))
     manifest = CrashBundleManifest(
         bundle_id=resolved_id,
         created_at_utc=created_at.astimezone(UTC),
