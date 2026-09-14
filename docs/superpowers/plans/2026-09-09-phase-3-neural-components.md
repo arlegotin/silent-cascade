@@ -413,6 +413,12 @@ records fail before choosing a victim. A tensor cache must rebuild/invalidate
 the evicted slot; no stale embedding or support reference survives. Primary
 `append_perceived_fact` still raises on overflow and is never redirected here.
 
+Effective protection is the union of caller-protected IDs and every record ID
+referenced by a stored record's `support_ids`. Reject existing dangling support
+IDs before mutation. If this leaves no eligible victim, raise the same controlled
+memory-exhaustion error. Never remove or rewrite immutable support history just
+to make an eviction possible; perceived-only primary behavior remains unchanged.
+
 Use this private selection kernel after validating incoming/protected IDs;
 `records` contains the existing stored-slot objects, not neural embeddings:
 
