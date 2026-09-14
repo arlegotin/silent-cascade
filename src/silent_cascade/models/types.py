@@ -107,6 +107,38 @@ class TensorWorkspace:
             accumulators=torch.zeros(batch_size, 3, dtype=torch.float32, device=resolved),
         )
 
+    @classmethod
+    def _from_functional_update(
+        cls, latent: torch.Tensor, accumulators: torch.Tensor
+    ) -> "TensorWorkspace":
+        """Build from trusted bounded equations without device-synchronizing scans.
+
+        Public construction remains fully validated. Analytic flow and convex
+        jumps use this private boundary after validating their inputs and applying
+        equations that preserve the workspace bounds by construction.
+        """
+        if not isinstance(latent, torch.Tensor) or latent.ndim != 2:
+            raise NeuralError("functional latent must be a rank-two tensor")
+        batch_size = _require_batch_size(latent.shape[0])
+        latent = _validate_tensor(
+            latent,
+            shape=(batch_size, _LATENT_DIM),
+            dtype=torch.float32,
+            device=None,
+            name="functional latent",
+        )
+        accumulators = _validate_tensor(
+            accumulators,
+            shape=(batch_size, 3),
+            dtype=torch.float32,
+            device=latent.device,
+            name="functional accumulators",
+        )
+        instance = cls.__new__(cls)
+        object.__setattr__(instance, "latent", latent)
+        object.__setattr__(instance, "accumulators", accumulators)
+        return instance
+
     @property
     def batch_size(self) -> int:
         return self.latent.shape[0]
@@ -183,3 +215,71 @@ class ModelContext:
     @property
     def device(self) -> torch.device:
         return self.workspace.device
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalFeatures:
+    """Current public FACT or ACTIVATE fields for an active row batch.
+
+    Event kind IDs are local neural IDs: ``0`` is FACT and ``1`` is ACTIVATE.
+    Padding, outcome, end, future-event, and private-target representations are
+    deliberately absent from this schema.
+    """
+
+    subject_ids: torch.Tensor
+    object_ids: torch.Tensor
+    record_kind_ids: torch.Tensor
+    hazard_ids: torch.Tensor
+    provenance_ids: torch.Tensor
+    record_scalar_features: torch.Tensor
+    activation_entity_ids: torch.Tensor
+    event_kinds: torch.Tensor
+    time_features: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.subject_ids, torch.Tensor) or self.subject_ids.ndim != 1:
+            raise NeuralError("external subject_ids must be a rank-one tensor")
+        batch_size = _require_batch_size(self.subject_ids.shape[0])
+        device = self.subject_ids.device
+        specifications = {
+            "subject_ids": ((batch_size,), torch.int64, False),
+            "object_ids": ((batch_size,), torch.int64, False),
+            "record_kind_ids": ((batch_size,), torch.int64, False),
+            "hazard_ids": ((batch_size,), torch.int64, False),
+            "provenance_ids": ((batch_size,), torch.int64, False),
+            "record_scalar_features": ((batch_size, 6), torch.float32, True),
+            "activation_entity_ids": ((batch_size,), torch.int64, False),
+            "event_kinds": ((batch_size,), torch.int64, False),
+            "time_features": ((batch_size, 2), torch.float32, True),
+        }
+        for item in fields(self):
+            shape, dtype, finite = specifications[item.name]
+            value = _validate_tensor(
+                getattr(self, item.name),
+                shape=shape,
+                dtype=dtype,
+                device=device,
+                name=item.name,
+                finite=finite,
+            )
+            object.__setattr__(self, item.name, value.clone())
+        bounded_ids = (
+            (self.subject_ids, 64, "subject IDs"),
+            (self.object_ids, 64, "object IDs"),
+            (self.record_kind_ids, 3, "record kind IDs"),
+            (self.hazard_ids, 5, "hazard IDs"),
+            (self.provenance_ids, 3, "provenance IDs"),
+            (self.activation_entity_ids, 64, "activation entity IDs"),
+            (self.event_kinds, 2, "external event kind IDs"),
+        )
+        for values, upper, name in bounded_ids:
+            if bool(((values < 0) | (values >= upper)).any()):
+                raise NeuralError(f"{name} must be in [0, {upper})")
+
+    @property
+    def batch_size(self) -> int:
+        return self.subject_ids.shape[0]
+
+    @property
+    def device(self) -> torch.device:
+        return self.subject_ids.device
