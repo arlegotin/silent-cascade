@@ -1,0 +1,27 @@
+neural:
+  architecture_profile: production
+  max_trainable_parameters: 5000000
+  memory_slots: 64
+  max_batch_size: 128
+  entity_count: 64
+  entity_dim: 32
+  kind_dim: 8
+  hazard_dim: 8
+  provenance_dim: 4
+  record_scalar_dim: 6
+  record_input_dim: 90
+  record_hidden_dim: 192
+  record_dim: 96
+  external_input_dim: 132
+  external_hidden_dim: 256
+  external_dim: 256
+  mode_count: 6
+  mode_dim: 8
+  time_feature_dim: 2
+  hypothesis_feature_dim: 8
+  retrieval_query_input_dim: 496
+  query_dim: 256
+  top_k: 4
+  controller_hidden_dim: 512
+  jump_hidden_dim: 512
+  head_hidden_dim: 256
