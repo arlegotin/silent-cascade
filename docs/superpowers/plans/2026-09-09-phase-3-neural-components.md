@@ -454,7 +454,7 @@ def _eviction_id(records, protected_ids):
 def test_preview_is_finite_for_empty_memory(model_context, neural_config):
     from dataclasses import replace
     from silent_cascade.memory.retrieval import RetrievalScorer
-    context = replace(model_context, eligible=torch.zeros_like(model_context.eligible))
+    context = replace(model_context, eligibility=torch.zeros_like(model_context.eligibility))
     preview = RetrievalScorer(neural_config.neural).preview(context)
     assert torch.isfinite(preview.features).all()
     assert preview.features.eq(0).all()
