@@ -7,6 +7,7 @@ import pytest
 from silent_cascade.errors import DynamicsError
 from silent_cascade.memory.store import BoundedMemory, RuntimeMemoryRecord, append_perceived_fact
 from silent_cascade.schemas import (
+    ActivationPayload,
     ExternalEvent,
     ExternalEventKind,
     MemoryRecord,
@@ -41,6 +42,27 @@ def _replace_rank(
             replace(
                 slot,
                 record=replace(slot.record, confidence=confidence, observed_at=observed_at),
+            )
+            if slot.record.record_id == record_id
+            else slot
+            for slot in memory.records
+        ),
+    )
+
+
+def _replace_supports(
+    memory: BoundedMemory, record_id: int, support_ids: tuple[int, ...]
+) -> BoundedMemory:
+    return replace(
+        memory,
+        records=tuple(
+            replace(
+                slot,
+                record=replace(
+                    slot.record,
+                    provenance=Provenance.INFERRED,
+                    support_ids=support_ids,
+                ),
             )
             if slot.record.record_id == record_id
             else slot
@@ -111,6 +133,61 @@ def test_eviction_protects_active_and_support_ids_and_rebuilds_victim_slot() -> 
     assert result.memory.lookup(0).record.record_id == 0
     with pytest.raises(DynamicsError, match="missing"):
         result.memory.lookup(1)
+
+
+def test_stored_support_references_join_effective_protection_transitively() -> None:
+    from silent_cascade.memory.eviction import append_with_stress_eviction
+
+    memory = _full_memory()
+    memory = _replace_rank(memory, 0, confidence=0.0, observed_at=0.0)
+    memory = _replace_rank(memory, 1, confidence=0.1, observed_at=1.0)
+    memory = _replace_rank(memory, 2, confidence=0.2, observed_at=2.0)
+    memory = _replace_supports(memory, 62, (0,))
+    memory = _replace_supports(memory, 63, (62,))
+
+    result = append_with_stress_eviction(memory, _safe_event(64), protected_ids=frozenset())
+
+    assert result.evicted_record_id == 1
+    assert result.memory.lookup(62).record.support_ids == (0,)
+    assert result.memory.lookup(63).record.support_ids == (62,)
+    assert result.memory.lookup(0).record.record_id == 0
+
+
+def test_all_stored_ids_referenced_raises_controlled_exhaustion_without_mutation() -> None:
+    from silent_cascade.memory.eviction import append_with_stress_eviction
+
+    memory = _replace_supports(_full_memory(), 63, tuple(range(63)))
+    memory = _replace_supports(memory, 62, (63,))
+    before = memory
+
+    with pytest.raises(DynamicsError, match="No unprotected"):
+        append_with_stress_eviction(memory, _safe_event(64), protected_ids=frozenset())
+    assert memory == before
+
+
+def test_dangling_stored_support_is_rejected_before_nonfull_append() -> None:
+    from silent_cascade.memory.eviction import append_with_stress_eviction
+
+    memory = append_perceived_fact(BoundedMemory(64), _safe_event(1))
+    memory = _replace_supports(memory, 1, (99,))
+    before = memory
+
+    with pytest.raises(DynamicsError, match="dangling support"):
+        append_with_stress_eviction(memory, _safe_event(2), protected_ids=frozenset())
+    assert memory == before
+
+
+def test_invalid_incoming_event_fails_without_mutation() -> None:
+    from silent_cascade.errors import EpisodeInvariantError
+    from silent_cascade.memory.eviction import append_with_stress_eviction
+
+    memory = _full_memory()
+    before = memory
+    invalid = ExternalEvent(64, 64.0, ExternalEventKind.ACTIVATE, ActivationPayload(1))
+
+    with pytest.raises(EpisodeInvariantError, match="only FACT"):
+        append_with_stress_eviction(memory, invalid, protected_ids=frozenset())
+    assert memory == before
 
 
 def test_all_protected_duplicate_and_invalid_inputs_fail_without_mutation() -> None:

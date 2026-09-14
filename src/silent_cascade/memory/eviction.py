@@ -40,6 +40,16 @@ def _validated_protected_ids(memory: BoundedMemory, protected_ids: object) -> fr
     return protected_ids
 
 
+def _stored_support_ids(memory: BoundedMemory) -> frozenset[int]:
+    stored_ids = {slot.record.record_id for slot in memory.records}
+    referenced_ids = frozenset(
+        support_id for slot in memory.records for support_id in slot.record.support_ids
+    )
+    if not referenced_ids <= stored_ids:
+        raise DynamicsError("memory contains a dangling support record ID")
+    return referenced_ids
+
+
 def _eviction_id(records: tuple[RuntimeMemoryRecord, ...], protected_ids: frozenset[int]) -> int:
     candidates = [slot.record for slot in records if slot.record.record_id not in protected_ids]
     if not candidates:
@@ -58,9 +68,10 @@ def append_with_stress_eviction(
 ) -> EvictionResult:
     """Append one perceived FACT, evicting a deterministic unprotected full slot."""
     validated_memory = _validated_memory(memory)
-    validated_protected_ids = _validated_protected_ids(validated_memory, protected_ids)
+    caller_protected_ids = _validated_protected_ids(validated_memory, protected_ids)
+    effective_protected_ids = caller_protected_ids | _stored_support_ids(validated_memory)
     if len(validated_memory.records) == validated_memory.capacity and all(
-        slot.record.record_id in validated_protected_ids for slot in validated_memory.records
+        slot.record.record_id in effective_protected_ids for slot in validated_memory.records
     ):
         raise DynamicsError("No unprotected memory record can be evicted")
     if not isinstance(event, ExternalEvent):
@@ -72,7 +83,7 @@ def append_with_stress_eviction(
     if len(validated_memory.records) < validated_memory.capacity:
         return EvictionResult(append_perceived_fact(validated_memory, validated_event), None)
 
-    victim_id = _eviction_id(validated_memory.records, validated_protected_ids)
+    victim_id = _eviction_id(validated_memory.records, effective_protected_ids)
     replacement = RuntimeMemoryRecord(incoming)
     updated = replace(
         validated_memory,
