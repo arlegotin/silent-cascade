@@ -133,12 +133,8 @@ def _crossing_values(
 ) -> torch.Tensor:
     active = (accumulators < 1.0) & (targets > 1.0)
     result = torch.full_like(accumulators, torch.inf)
-    if bool(active.any()):
-        offsets = (
-            torch.log1p((1.0 - accumulators[active]) / (targets[active] - 1.0)) / rates[active]
-        )
-        result = result.masked_scatter(active, offsets)
-    return result
+    offsets = torch.log1p((1.0 - accumulators[active]) / (targets[active] - 1.0)) / rates[active]
+    return result.masked_scatter(active, offsets)
 
 
 def crossings_batch(
@@ -148,6 +144,8 @@ def crossings_batch(
     if not isinstance(accumulators, torch.Tensor) or accumulators.ndim != 2:
         raise NeuralError("accumulators must be a rank-two tensor")
     batch_size = accumulators.shape[0]
+    if not 1 <= batch_size <= 128:
+        raise NeuralError("crossing batch size must be between 1 and 128")
     shape = (batch_size, 3)
     device = accumulators.device
     accumulators = _validate_float_tensor(

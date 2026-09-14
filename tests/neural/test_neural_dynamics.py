@@ -130,6 +130,66 @@ def test_batch_flow_preserves_controller_gradients() -> None:
         assert tensor.grad.abs().sum() > 0
 
 
+def test_batch_flow_value_and_gradients_match_actual_scalar_runtime_row() -> None:
+    from silent_cascade.eventflow.flow import start_segment, state_at
+    from silent_cascade.eventflow.state import (
+        ContinuousChannels,
+        RuntimeCore,
+        SegmentParameters,
+        make_initial_continuous_state,
+    )
+    from silent_cascade.models.dynamics import BatchedSegmentParameters, flow_batch
+
+    batch_target = torch.full((1, 456), 0.25, requires_grad=True)
+    batch_rate = torch.full((1, 456), 0.7, requires_grad=True)
+    guard_targets = torch.full((1, 3), 0.5)
+    batch_parameters = BatchedSegmentParameters(
+        batch_target,
+        batch_rate,
+        guard_targets,
+        guard_targets,
+        torch.ones(1, 3),
+    )
+    batch_value = flow_batch(
+        TensorWorkspace.zeros(1, "cpu"), batch_parameters, torch.tensor([0.25])
+    ).latent[0, 0]
+    batch_value.backward()
+
+    scalar_target = torch.full((256,), 0.25, requires_grad=True)
+    scalar_rate = torch.full((256,), 0.7, requires_grad=True)
+    zero_channels = {
+        "z_slow": torch.zeros(64),
+        "drives": torch.zeros(8),
+        "focus_key": torch.zeros(64),
+        "hypothesis_latent": torch.zeros(64),
+    }
+    scalar_parameters = SegmentParameters(
+        flow_targets=ContinuousChannels(z_fast=scalar_target, **zero_channels),
+        flow_rates=ContinuousChannels(
+            z_fast=scalar_rate,
+            z_slow=torch.ones(64),
+            drives=torch.ones(8),
+            focus_key=torch.ones(64),
+            hypothesis_latent=torch.ones(64),
+        ),
+        guard_targets=torch.full((3,), 0.5),
+        guard_rates=torch.ones(3),
+    )
+    runtime = start_segment(
+        RuntimeCore(make_initial_continuous_state()),
+        scalar_parameters,
+        time=2.0,
+        parent_event_id=1,
+        prediction_snapshot_sha256="b" * 64,
+    )
+    scalar_value = state_at(runtime, 2.25).z_fast[0]
+    scalar_value.backward()
+
+    torch.testing.assert_close(batch_value, scalar_value)
+    torch.testing.assert_close(batch_target.grad[0, 0], scalar_target.grad[0])
+    torch.testing.assert_close(batch_rate.grad[0, 0], scalar_rate.grad[0])
+
+
 @pytest.mark.parametrize(
     "dt",
     [
@@ -172,6 +232,57 @@ def test_batch_crossings_only_differentiate_active_near_threshold_entries() -> N
         assert torch.isfinite(tensor.grad).all()
         assert tensor.grad[0, 0] != 0
         assert tensor.grad[0, 1:].eq(0).all()
+
+
+def test_batch_crossing_value_and_gradients_match_completed_scalar_row() -> None:
+    from silent_cascade.eventflow.guards import crossing_offsets_tensor
+    from silent_cascade.models.dynamics import crossings_batch
+
+    batch_accumulators = torch.tensor([[0.25, 1.0, 0.0]], requires_grad=True)
+    batch_targets = torch.tensor([[1.75, 1.5, 0.9]], requires_grad=True)
+    batch_rates = torch.tensor([[2.0, 3.0, 4.0]], requires_grad=True)
+    batch_value = crossings_batch(batch_accumulators, batch_targets, batch_rates)[0, 0]
+    batch_value.backward()
+
+    scalar_accumulators = torch.tensor([0.25, 1.0, 0.0], requires_grad=True)
+    scalar_targets = torch.tensor([1.75, 1.5, 0.9], requires_grad=True)
+    scalar_rates = torch.tensor([2.0, 3.0, 4.0], requires_grad=True)
+    scalar_value = crossing_offsets_tensor(scalar_accumulators, scalar_targets, scalar_rates)[0]
+    scalar_value.backward()
+
+    torch.testing.assert_close(batch_value, scalar_value)
+    torch.testing.assert_close(batch_accumulators.grad[0], scalar_accumulators.grad)
+    torch.testing.assert_close(batch_targets.grad[0], scalar_targets.grad)
+    torch.testing.assert_close(batch_rates.grad[0], scalar_rates.grad)
+
+
+@pytest.mark.parametrize("batch_size", [0, 129])
+def test_batch_crossings_reject_batch_sizes_outside_shared_bounds(batch_size: int) -> None:
+    from silent_cascade.models.dynamics import crossings_batch
+
+    shape = (batch_size, 3)
+    with pytest.raises(NeuralError, match="batch size"):
+        crossings_batch(torch.zeros(shape), torch.full(shape, 0.9), torch.ones(shape))
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_all_dormant_crossings_support_finite_empty_loss_backward(device: str) -> None:
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS is unavailable")
+    from silent_cascade.models.dynamics import crossings_batch
+
+    accumulators = torch.zeros(2, 3, device=device, requires_grad=True)
+    targets = torch.full((2, 3), 0.9, device=device, requires_grad=True)
+    rates = torch.ones(2, 3, device=device, requires_grad=True)
+    offsets = crossings_batch(accumulators, targets, rates)
+    loss = offsets[torch.isfinite(offsets)].sum()
+    assert loss.item() == 0.0
+    assert loss.requires_grad
+    loss.backward()
+    for tensor in (accumulators, targets, rates):
+        assert tensor.grad is not None
+        assert torch.isfinite(tensor.grad).all()
+        assert not bool(tensor.grad.any())
 
 
 def test_flow_uses_trusted_functional_workspace_boundary(monkeypatch) -> None:

@@ -132,7 +132,9 @@ external/internal jumps, asserting actual MPS device placement and float32 outpu
 - Numerical safety: public boundaries reject malformed/nonfinite/out-of-domain tensors;
   hot equations operate only after validation. Dormant entries never enter logarithms;
   their sole output sentinel is `inf`. Flow and convex jumps preserve bounds by
-  construction; exact-zero elapsed time is bit-identical.
+  construction; exact-zero elapsed time is value-identical. Signed-zero bit patterns
+  are not part of this batched training-kernel contract; the frozen scalar runtime's
+  separate zero-time identity behavior remains unchanged.
 - Synchronization boundary: public `TensorWorkspace`, `ModelContext`,
   `ExternalFeatures`, and `BatchedSegmentParameters` construction retain finite/bounds
   scans; controller output construction therefore still validates its complete emitted
@@ -165,5 +167,118 @@ the parity test then passed. Initial Ruff output found only six line-length form
 violations in new tests; canonical formatting and a repeated check resolved them.
 
 ## Concerns
+
+None.
+
+---
+
+## Fix Round 1: Bounded Crossing Batches and Dormant Autograd
+
+### Review Findings Verified
+
+1. `crossings_batch` derived `batch_size` from the first dimension but never applied
+   the shared `1..128` bound, so `(0,3)` and `(129,3)` tensors passed validation.
+2. `_crossing_values` returned a newly allocated `full_like` when `active.any()` was
+   false. Besides the avoidable device synchronization and host branch, this output
+   had no autograd connection to accumulators, targets, or rates. A finite-selected
+   empty loss therefore could not call `backward()`.
+3. The original gradient tests established finite gradients independently but did not
+   numerically compare them with the completed scalar row kernels.
+
+### TDD RED
+
+Added behavioral regressions for both out-of-range batch sizes, all-dormant
+finite-selected empty-loss backward on CPU/MPS, and value/gradient parity for one
+analytic flow entry and one active crossing against actual scalar `state_at` and
+`crossing_offsets_tensor` rows.
+
+Command before production correction:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest -q \
+  tests/neural/test_neural_dynamics.py \
+  -k 'batch_sizes_outside or all_dormant or value_and_gradients_match'
+```
+
+Relevant output:
+
+```text
+..FFFs                                                                   [100%]
+E   Failed: DID NOT RAISE <class 'silent_cascade.models.errors.NeuralError'>
+E   Failed: DID NOT RAISE <class 'silent_cascade.models.errors.NeuralError'>
+E   assert False  # loss.requires_grad
+3 failed, 2 passed, 1 skipped, 13 deselected in 0.27s
+```
+
+The two scalar gradient-parity controls passed before the fix. The three expected
+failures isolated the missing batch bound and graph-disconnected dormant branch.
+
+### Fix
+
+- Reject crossing batches outside `1..128` immediately after rank validation and
+  before validating any peer tensors.
+- Remove `bool(active.any())` and always compute the stable formula on the active
+  slices. For an all-dormant batch those slices are empty, so no dormant value enters
+  a logarithm, while `masked_scatter` retains the zero-gradient autograd connection.
+- Corrected the original report's exact-zero wording from bit-identical to
+  value-identical; no nondifferentiable signed-zero special case was introduced.
+
+### GREEN
+
+Focused review regressions:
+
+```text
+.....s                                                                   [100%]
+5 passed, 1 skipped, 13 deselected in 0.25s
+```
+
+Complete Task 4 suite:
+
+```text
+................s.s.....s..........s                                     [100%]
+32 passed, 4 skipped in 0.36s
+```
+
+Scoped neural, frozen scalar flow/guards, and import-boundary gate:
+
+```text
+........................................................s...s........... [ 32%]
+................s.s..........s....s.......s...............s............. [ 65%]
+........s........................................s...................s.. [ 97%]
+.....                                                                    [100%]
+210 passed, 11 skipped in 1.78s
+```
+
+Native Apple MPS Task 4 regressions, including all-dormant backward:
+
+```text
+....                                                                     [100%]
+4 passed in 0.23s
+```
+
+Repository-wide static verification:
+
+```text
+All checks passed!
+137 files already formatted
+```
+
+### Fix-Round Files Changed
+
+- `src/silent_cascade/models/dynamics.py`
+- `tests/neural/test_neural_dynamics.py`
+- `.superpowers/sdd/2026-09-09-phase-3-neural-components/task-4-report.md`
+
+### Fix-Round Self-Review
+
+- Mutation check: removing the batch bound fails both endpoint tests; restoring the
+  host conditional makes the empty loss graph-disconnected and fails CPU/MPS; changing
+  either flow or crossing derivatives fails direct scalar gradient parity.
+- Dormant safety: only values selected by the active mask enter division and `log1p`.
+  The public result remains `inf` for every dormant entry and no loss reduces it.
+- Scope: no controller, jump, type schema, frozen scalar source, initializer,
+  configuration, lock, CLI, or unrelated file changed in this fix round.
+
+### Fix-Round Concerns
 
 None.
