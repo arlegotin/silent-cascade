@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`, approved version 1.0.2, especially Sections 5, 8, 9.4, 13, 17 Phase 3, and 18.
 
-**Status:** Proposed; implementation requires explicit user approval in the task thread. This document is not an implementation-completion claim.
+**Status:** User-approved on 2026-09-14 ("proceed, use subagents"); completion tracked in `docs/PLAN.md`. This document is not an implementation-completion claim.
 
 **Repository inspected:** `main` at `b4d65a60ee412b87870ce5e17d08b75f60709b4c`, with a clean worktree before planning.
 
