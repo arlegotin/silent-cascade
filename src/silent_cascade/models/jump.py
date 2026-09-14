@@ -110,7 +110,11 @@ def inject_external(state: TensorWorkspace, raw_injection: torch.Tensor) -> Tens
     )
     updated_prefix = _bounded_jump(state.latent[:, :320], raw)
     latent = torch.cat((updated_prefix, state.latent[:, 320:]), dim=1)
-    return TensorWorkspace._from_functional_update(latent, torch.zeros_like(state.accumulators))
+    result = TensorWorkspace._from_functional_update(latent, torch.zeros_like(state.accumulators))
+    from silent_cascade.eval.compute import _record_jump_application
+
+    _record_jump_application(state.batch_size)
+    return result
 
 
 class SharedJump(nn.Module):
@@ -181,6 +185,10 @@ class SharedJump(nn.Module):
             )
         )
         latent = _bounded_jump(context.workspace.latent, raw)
-        return TensorWorkspace._from_functional_update(
+        result = TensorWorkspace._from_functional_update(
             latent, torch.zeros_like(context.workspace.accumulators)
         )
+        from silent_cascade.eval.compute import _record_jump_application
+
+        _record_jump_application(context.batch_size)
+        return result

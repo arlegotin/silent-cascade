@@ -117,7 +117,7 @@ def flow_batch(
     )
     if bool((elapsed < 0.0).any()):
         raise NeuralError("dt must be nonnegative")
-    return TensorWorkspace._from_functional_update(
+    result = TensorWorkspace._from_functional_update(
         _flow_values(state.latent, parameters.flow_targets, parameters.flow_rates, elapsed),
         _flow_values(
             state.accumulators,
@@ -126,6 +126,10 @@ def flow_batch(
             elapsed,
         ),
     )
+    from silent_cascade.eval.compute import _record_flow_evaluation
+
+    _record_flow_evaluation(state.batch_size, state.batch_size * (456 + 3))
+    return result
 
 
 def _crossing_values(
