@@ -144,7 +144,8 @@ class RetrievalScorer(nn.Module):
         scores = self(context)
         eligible = scores.eligible_mask
         live = eligible.any(dim=1)
-        features = scores.raw_scores.new_zeros((context.batch_size, self.config.preview_dim))
+        zero_anchor = scores.raw_scores.sum(dim=1, keepdim=True) * 0.0
+        features = zero_anchor.expand(-1, self.config.preview_dim).clone()
         if bool(live.any()):
             live_logits = scores.masked_logits[live]
             live_eligible = eligible[live]

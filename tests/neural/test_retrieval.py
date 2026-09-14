@@ -109,6 +109,41 @@ def test_preview_is_finite_for_empty_memory(model_context, neural_config) -> Non
     assert not preview.has_candidate.any()
 
 
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_empty_preview_backward_gives_finite_zero_encoder_and_scorer_gradients(
+    public_memories, neural_config, device
+) -> None:
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS is unavailable")
+    from silent_cascade.memory.encoder import RecordEncoder
+    from silent_cascade.memory.retrieval import RetrievalScorer
+    from silent_cascade.memory.tensor_store import pack_memory
+    from silent_cascade.models.types import ModelContext, TensorWorkspace
+
+    config = neural_config.neural
+    encoder = RecordEncoder(config).to(device)
+    scorer = RetrievalScorer(config).to(device)
+    records = pack_memory(public_memories, (0.0, 9.0), device=device)
+    context = ModelContext(
+        workspace=TensorWorkspace.zeros(2, device),
+        memory_embeddings=encoder(records),
+        eligibility=torch.zeros((2, 64), dtype=torch.bool, device=device),
+        support_mask=torch.zeros((2, 64), dtype=torch.bool, device=device),
+        active_slot_indices=torch.full((2,), -1, dtype=torch.int64, device=device),
+        modes=torch.tensor([1, 4], dtype=torch.int64, device=device),
+        time_features=torch.zeros((2, 2), dtype=torch.float32, device=device),
+        hypothesis_features=torch.zeros((2, 8), dtype=torch.float32, device=device),
+    )
+
+    scorer.preview(context).features.sum().backward()
+
+    for module in (encoder, scorer):
+        gradients = [parameter.grad for parameter in module.parameters()]
+        assert all(gradient is not None for gradient in gradients)
+        assert all(torch.isfinite(gradient).all() for gradient in gradients)
+        assert all(not bool(gradient.any()) for gradient in gradients)
+
+
 def test_preview_one_candidate_has_zero_margin_and_entropy(model_context, neural_config) -> None:
     from silent_cascade.memory.retrieval import RetrievalScorer
 
@@ -259,8 +294,14 @@ def test_encoder_and_scorer_have_finite_gradients_and_permutation_equivariance(
     config = neural_config.neural
     encoder = RecordEncoder(config).to(device)
     scorer = RetrievalScorer(config).to(device)
+    _configure_bilinear_scorer(scorer, (0,))
+    with torch.no_grad():
+        scorer.query_network[0].bias[0] = 1.0
     records = pack_memory(public_memories, (0.0, 9.0), device=device)
     embeddings = encoder(records)
+    discrimination = torch.zeros_like(embeddings)
+    discrimination[0, :3, 0] = torch.tensor([0.0, 10.0, 20.0], dtype=torch.float32, device=device)
+    embeddings = embeddings + discrimination
     context = ModelContext(
         workspace=TensorWorkspace.zeros(2, device),
         memory_embeddings=embeddings,
@@ -291,7 +332,7 @@ def test_encoder_and_scorer_have_finite_gradients_and_permutation_equivariance(
     )
     torch.testing.assert_close(permuted_preview.features, preview.features, rtol=1e-5, atol=1e-6)
 
-    loss = scores.raw_scores[context.eligibility].sum() + preview.features.sum()
+    loss = preview.features[:, 4:].square().sum()
     loss.backward()
     for module in (encoder, scorer):
         gradients = [parameter.grad for parameter in module.parameters()]

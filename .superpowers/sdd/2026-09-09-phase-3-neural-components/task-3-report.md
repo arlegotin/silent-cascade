@@ -149,3 +149,126 @@ repository-wide result recorded above.
 ## Concerns
 
 None.
+
+---
+
+## Fix Round 1: Graph-Connected Empty Preview
+
+### Reviewer Finding
+
+An entirely ineligible batch returned preview features created by `new_zeros`. The values
+were correct, but the tensor was disconnected from autograd, so a preview-only training
+loss raised at `backward()`. The original gradient test could not detect this because it
+added an independent raw-score loss term. It also did not isolate gradient flow through
+the soft top-4 pool.
+
+### Root Cause
+
+`RetrievalScorer.preview(...)` always performed its one scorer call, but initialized
+`features` as a fresh leaf with `requires_grad=False`. Live rows acquired a graph through
+`index_copy`; an all-empty batch skipped that branch and returned the disconnected leaf.
+The approved value-level early-return pattern therefore needed bounded differentiability
+hardening for preview-only teacher-forced losses.
+
+### TDD RED
+
+Before the production fix, added two real-component regressions:
+
+- an all-ineligible preview-only backward requiring finite, allocated, exactly zero
+  gradients for every encoder and scorer parameter;
+- a discriminating three-candidate pool-only squared loss over `features[:, 4:]`, with no
+  raw-score side term, requiring finite nonzero encoder and scorer gradients while
+  retaining permutation checks.
+
+Command:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest -q tests/neural/test_retrieval.py -k 'empty_preview_backward or encoder_and_scorer'
+```
+
+Relevant output:
+
+```text
+Fs.s                                                                     [100%]
+E   RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn
+1 failed, 1 passed, 2 skipped, 9 deselected in 0.42s
+```
+
+The empty-preview failure was the expected symptom. The pool-only case already passing
+confirmed that the live pool implementation was differentiable and that the prior test's
+raw-score term, rather than a production pool defect, was the coverage gap.
+
+### Fix
+
+- Derive a per-row zero anchor from the finite raw scorer output:
+  `scores.raw_scores.sum(dim=1, keepdim=True) * 0.0`.
+- Expand and clone that anchor to the fixed 100-wide preview before the existing live-row
+  `index_copy`.
+- Preserve exact zero empty values, single-call scoring, no invalid masked-logit math, no
+  cache/state mutation, and unchanged live preview semantics.
+
+### GREEN
+
+Focused CPU/sandbox gate:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest -q tests/neural/test_retrieval.py -k 'empty_preview_backward or encoder_and_scorer'
+.s.s                                                                     [100%]
+2 passed, 2 skipped, 9 deselected in 0.27s
+```
+
+Native Apple MPS regressions:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest -q \
+  'tests/neural/test_retrieval.py::test_empty_preview_backward_gives_finite_zero_encoder_and_scorer_gradients[mps]' \
+  'tests/neural/test_retrieval.py::test_encoder_and_scorer_have_finite_gradients_and_permutation_equivariance[mps]'
+..                                                                       [100%]
+2 passed in 0.69s
+```
+
+Final scoped neural and import-boundary gate:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run pytest -q tests/neural tests/regression/test_import_boundaries.py
+......................................................s...............s. [ 70%]
+......s...............s.......                                           [100%]
+98 passed, 4 skipped in 1.88s
+```
+
+The four sandbox skips are hardware-conditioned; both Task 3 MPS regressions passed in
+the native run above.
+
+Repository-wide static gate:
+
+```text
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run ruff check .
+All checks passed!
+UV_CACHE_DIR=/tmp/silent-cascade-uv-cache uv run ruff format --check .
+131 files already formatted
+```
+
+### Fix-Round Files Changed
+
+- `src/silent_cascade/memory/retrieval.py`
+- `tests/neural/test_retrieval.py`
+- `.superpowers/sdd/2026-09-09-phase-3-neural-components/task-3-report.md`
+
+### Fix-Round Self-Review
+
+- The empty preview now has a `grad_fn` derived solely from the already-computed finite raw
+  scores; backward allocates finite exact-zero gradients through the scorer and encoder.
+- The live pool regression uses three deliberately separated candidate embeddings and a
+  deterministic bilinear scorer, avoiding one-candidate, equal-score, and
+  identical-embedding degeneracies.
+- Removing score dependence from pool weights or restoring a disconnected empty zero
+  defeats a named gradient assertion. The reviewed production method still contains
+  exactly one scorer invocation and no preview cache.
+- Empty and mixed-row values, eligibility, ties, permutation tolerance, host ID decoding,
+  and preview immutability remain covered by the unchanged Task 3 tests.
+- No frozen source, initializer, configuration, lock, CLI, workflow, or unrelated file was
+  changed.
+
+### Fix-Round Concerns
+
+None.
