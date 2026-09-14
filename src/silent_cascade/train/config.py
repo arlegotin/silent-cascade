@@ -55,7 +55,34 @@ class TrainingConfig(StrictModel):
     @field_validator("betas", mode="before")
     @classmethod
     def restore_yaml_tuple(cls, value: object) -> object:
-        return tuple(value) if isinstance(value, list) else value
+        value = tuple(value) if isinstance(value, list) else value
+        if isinstance(value, tuple) and any(type(item) is not float for item in value):
+            raise ValueError("each AdamW beta must be an exact float")
+        return value
+
+    @field_validator("foreach", "fused", mode="before")
+    @classmethod
+    def require_exact_boolean_type(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("AdamW execution flags must be exact booleans")
+        return value
+
+    @field_validator(
+        "early_stop_patience_validations",
+        "checkpoint_keep_best",
+        "checkpoint_keep_latest",
+        "model_seed",
+        "train_root_seed",
+        "train_public_id_seed",
+        "validation_root_seed",
+        "validation_public_id_seed",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("training constant must be an exact integer")
+        return value
 
     @field_validator(
         "learning_rate",

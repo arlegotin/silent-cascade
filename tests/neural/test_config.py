@@ -12,6 +12,7 @@ from silent_cascade.train.config import (
     MAX_PHASE3_CONFIG_BYTES,
     MAX_PHASE3_CONFIG_DEPTH,
     Phase3Config,
+    TrainingConfig,
     parse_phase3_canonical,
 )
 from silent_cascade.train.state import CheckpointDescriptor, TrainingError, TrainProgress
@@ -23,6 +24,10 @@ PHASE3_CONFIG_PATHS = (
     Path("configs/model/neural_components.yaml"),
     Path("configs/train/one_hop.yaml"),
 )
+
+
+class FloatSubtype(float):
+    pass
 
 
 def test_phase3_config_adds_neural_fields_without_changing_phase2(neural_config):
@@ -102,6 +107,93 @@ def test_phase3_config_rejects_unknown_keys_and_bool_for_int(tmp_path: Path):
     integer_float.write_text("training:\n  gradient_clip_norm: 1\n")
     with pytest.raises(ConfigurationError, match="configuration validation failed"):
         resolve_config(Phase3Config, [*PHASE3_CONFIG_PATHS, integer_float])
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_trainable_parameters",
+        "memory_slots",
+        "max_batch_size",
+        "entity_count",
+        "entity_dim",
+        "kind_dim",
+        "hazard_dim",
+        "provenance_dim",
+        "record_scalar_dim",
+        "record_input_dim",
+        "record_hidden_dim",
+        "record_dim",
+        "external_input_dim",
+        "external_hidden_dim",
+        "external_dim",
+        "mode_count",
+        "mode_dim",
+        "time_feature_dim",
+        "hypothesis_feature_dim",
+        "retrieval_query_input_dim",
+        "query_dim",
+        "top_k",
+        "controller_hidden_dim",
+        "jump_hidden_dim",
+        "head_hidden_dim",
+    ],
+)
+def test_phase3_yaml_rejects_float_for_every_integer_neural_literal(neural_config, field):
+    value = getattr(neural_config.neural, field)
+    with pytest.raises(ConfigurationError, match="configuration validation failed"):
+        resolve_config(
+            Phase3Config,
+            PHASE3_CONFIG_PATHS,
+            set_overrides=[f"neural.{field}={value}.0"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_yaml_value"),
+    [
+        ("foreach", "0"),
+        ("fused", "0"),
+        ("early_stop_patience_validations", "15.0"),
+        ("checkpoint_keep_best", "3.0"),
+        ("checkpoint_keep_latest", "1.0"),
+        ("model_seed", "11.0"),
+        ("train_root_seed", "311.0"),
+        ("train_public_id_seed", "331.0"),
+        ("validation_root_seed", "313.0"),
+        ("validation_public_id_seed", "337.0"),
+    ],
+)
+def test_phase3_yaml_rejects_wrong_types_for_training_literals(field, wrong_yaml_value):
+    with pytest.raises(ConfigurationError, match="configuration validation failed"):
+        resolve_config(
+            Phase3Config,
+            PHASE3_CONFIG_PATHS,
+            set_overrides=[f"training.{field}={wrong_yaml_value}"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [
+        ("learning_rate", FloatSubtype(3.0e-4)),
+        ("weight_decay", FloatSubtype(1.0e-4)),
+        ("epsilon", FloatSubtype(1.0e-8)),
+        ("gradient_clip_norm", FloatSubtype(1.0)),
+    ],
+)
+def test_training_float_literals_require_exact_float_inputs(neural_config, field, wrong_value):
+    values = neural_config.training.model_dump()
+    values[field] = wrong_value
+    with pytest.raises(ValueError, match="exact float"):
+        TrainingConfig.model_validate(values)
+
+
+def test_adamw_beta_elements_require_exact_float_inputs(neural_config):
+    values = neural_config.training.model_dump()
+    values["betas"] = (FloatSubtype(0.9), FloatSubtype(0.999))
+    with pytest.raises(ValueError, match=r"beta.*exact float"):
+        TrainingConfig.model_validate(values)
 
 
 def test_phase3_config_rejects_coordinated_runtime_limit_enlargement(tmp_path: Path):
@@ -224,6 +316,10 @@ def test_training_progress_and_descriptor_are_strict_bounded_contracts():
         CheckpointDescriptor.model_validate(
             {**descriptor.model_dump(), "relative_path": "../escape.safetensors"}
         )
+    with pytest.raises(ValueError, match="exact float"):
+        TrainProgress.model_validate({**progress.model_dump(), "best_metric": 1})
+    with pytest.raises(ValueError, match="exact float"):
+        CheckpointDescriptor.model_validate({**descriptor.model_dump(), "validation_metric": 1})
 
 
 def test_phase3_errors_have_stable_family_and_codes():

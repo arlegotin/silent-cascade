@@ -6,6 +6,34 @@ from pydantic import Field, field_validator, model_validator
 
 from silent_cascade.validation import StrictModel
 
+_NEURAL_INTEGER_FIELDS = (
+    "max_trainable_parameters",
+    "memory_slots",
+    "max_batch_size",
+    "entity_count",
+    "entity_dim",
+    "kind_dim",
+    "hazard_dim",
+    "provenance_dim",
+    "record_scalar_dim",
+    "record_input_dim",
+    "record_hidden_dim",
+    "record_dim",
+    "external_input_dim",
+    "external_hidden_dim",
+    "external_dim",
+    "mode_count",
+    "mode_dim",
+    "time_feature_dim",
+    "hypothesis_feature_dim",
+    "retrieval_query_input_dim",
+    "query_dim",
+    "top_k",
+    "controller_hidden_dim",
+    "jump_hidden_dim",
+    "head_hidden_dim",
+)
+
 
 class LossWeights(StrictModel):
     """Combined loss coefficients with the approved fourfold pilot envelope."""
@@ -62,6 +90,13 @@ class NeuralModelConfig(StrictModel):
     controller_hidden_dim: Literal[512, 128] = 512
     jump_hidden_dim: Literal[512, 128] = 512
     head_hidden_dim: Literal[256, 64] = 256
+
+    @field_validator(*_NEURAL_INTEGER_FIELDS, mode="before")
+    @classmethod
+    def require_exact_integer_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("neural dimension must be an exact integer")
+        return value
 
     @model_validator(mode="after")
     def validate_closed_profile(self) -> Self:

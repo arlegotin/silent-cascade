@@ -44,6 +44,13 @@ class CheckpointDescriptor(StrictModel):
             raise ValueError("checkpoint path must use portable relative separators")
         return value
 
+    @field_validator("validation_metric", mode="before")
+    @classmethod
+    def require_exact_optional_float(cls, value: object) -> object:
+        if value is not None and type(value) is not float:
+            raise ValueError("validation metric must be an exact float when present")
+        return value
+
 
 class TrainProgress(StrictModel):
     """Durable private counters and selection state; never a model input."""
@@ -59,6 +66,13 @@ class TrainProgress(StrictModel):
     patience_counter: int = Field(ge=0, le=15)
     retained_checkpoints: tuple[CheckpointDescriptor, ...] = Field(max_length=4)
     validation_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("best_metric", mode="before")
+    @classmethod
+    def require_exact_optional_float(cls, value: object) -> object:
+        if value is not None and type(value) is not float:
+            raise ValueError("best metric must be an exact float when present")
+        return value
 
     @model_validator(mode="after")
     def validate_selection_state(self) -> Self:
