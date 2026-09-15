@@ -47,6 +47,27 @@ fixed-64 debug overfit reaches only 63/64 complete chains by step 1000, with
 not meet the complete engineering gate. These failed learning results remain
 part of the development record; no production acceptance is claimed.
 
+Bounded follow-up ruling: evaluate exactly one intermediate global candidate,
+`epsilon=1e-7`, before any production freeze. The retained `1e-6` model's sole
+failed example selected an unreachable hazard instead of the correct SAFE on
+its second recall. Public memory embeddings, masks, active slot, mode and
+hypothesis fields matched the teacher path exactly before that choice; the
+different flowed fast state explained the changed ranking. Diagnostic-only
+state substitution restored the correct ranking, but no teacher state or
+timing is added to the actual unassisted evaluator. The observed issue is a
+learning/exposure tradeoff, not a discovered pointer or memory-mask defect.
+
+`1e-7` has a worst-case fresh-step sensitivity bound of 3000, still 10x below
+the original, while damping genuine small-gradient updates less than `1e-6`.
+Cost if wrong: it may still fail numerical parity or the unchanged learning
+gate. This is the final candidate in this bounded adjustment, declared before
+testing; failure requires reassessment, not an automatic sweep, altered fixture
+or higher step budget. Apply it consistently to real training, both devices
+and profiles, parity, checkpoints/resume and later comparable conditions.
+Regenerate hashes/evidence and reject both older epsilon configurations. The
+previous failed attempts remain recorded, and all other settings, thresholds
+and canonical specification bytes remain unchanged.
+
 ## 2026-09-08 — Final Phase 1 leakage-evidence closure
 
 The terminal science and code audits rejected the five artifacts collected at

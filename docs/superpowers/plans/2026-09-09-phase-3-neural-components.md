@@ -351,7 +351,7 @@ interval 2, validation size 16, and the same architecture/default losses.
 Record its separate config hash; it can never satisfy the production gate.
 Loss coefficients from Task 8 belong to `training.loss_weights` with
 the exact specification defaults. Configure AdamW with default betas
-`(0.9,0.999)`, epsilon `1e-6`, `foreach=False`, `fused=False`, no scheduler.
+`(0.9,0.999)`, epsilon `1e-7`, `foreach=False`, `fused=False`, no scheduler.
 
 Pre-freeze correction (2026-09-15, standing approval): the original plan selected
 epsilon `1e-8`. A real fixed-seed CPU/MPS first-step comparison passed every
@@ -361,16 +361,28 @@ put the net values near epsilon, and AdamW amplified backend rounding into a
 maximum weight difference near `5.48e-5`. Independent scalar analysis reproduced
 the difference. This is not a claim of incorrect backend arithmetic.
 
-Use `1e-6` consistently in both profiles, both devices, real training, parity,
+Use `1e-7` consistently in both profiles, both devices, real training, parity,
 archives and resume. This is a deliberate optimizer change, not an equivalent
 formula or test-only workaround: it lowers worst-case fresh-step sensitivity
-`learning_rate / epsilon` from 30000 to 300, while potentially slowing genuine
+`learning_rate / epsilon` from 30000 to 3000, while potentially slowing genuine
 small-gradient learning. The value is fixed before retesting, not selected from
 an undisclosed passing-value sweep. Keep every tolerance, fixture, loss, seed,
 budget and accuracy threshold unchanged. Regenerate configuration hashes and
 reject old-configuration resume; do not reuse previous debug learning evidence
 as evidence for this optimizer. Canonical specification Section 8.6 does not
 fix epsilon and remains byte-identical. See `docs/deviations.md` for the ruling.
+
+The first stabilization candidate, `1e-6`, passed the unchanged numerical and
+resume checks but failed the fixed-64 learning gate at the unchanged 1000-step
+limit (63/64 chains). A saved-model probe localized the remaining error to
+learned fast-state exposure under the deliberately zero-world-time content
+harness; memory, masks, mode and discrete decisions before that error agreed.
+It is not corrected with teacher state or a different evaluator. Declare one
+intermediate candidate, `1e-7`, before retesting: its worst-case update
+sensitivity is 10x below the original, with less small-gradient damping than
+`1e-6`. Preserve the complete three-configuration development history. If this
+candidate fails either unchanged gate, stop this bounded optimizer adjustment
+and reassess; do not continue an automatic sweep or raise the step limit.
 
 - [ ] **Step 4: Run the tests to GREEN**, plus existing Phase 2 config tests and
   `uv run ruff check .`; prove original resolved Phase 2 SHA remains
@@ -1284,7 +1296,8 @@ history for the final whole-phase review.
 
 Apply the pre-freeze optimizer correction documented under Task 1, using TDD:
 first assert both resolved profiles and the actual optimizer factory use
-`epsilon=1e-6`, and assert explicit old `epsilon=1e-8` input is rejected. Record
+`epsilon=1e-7`, and assert explicit old `epsilon=1e-8` and `epsilon=1e-6` inputs
+are rejected. Record
 RED against the old configuration before changing its strict Literal and both
 YAML values. Update checkpoint/resume fixtures to the same global value; preserve
 all corruption checks. Re-run the original fixed-seed native parity test without
