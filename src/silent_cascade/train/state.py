@@ -29,6 +29,7 @@ class CheckpointDescriptor(StrictModel):
     optimizer_step: int = Field(ge=0, le=75_000)
     stage: TrainingStage
     validation_metric: float | None = Field(default=None, ge=0.0, le=1.0)
+    validation_composition_metric: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("relative_path")
     @classmethod
@@ -37,6 +38,7 @@ class CheckpointDescriptor(StrictModel):
         if (
             path.is_absolute()
             or not path.parts
+            or path.as_posix() != value
             or any(part in {"", ".", ".."} for part in path.parts)
         ):
             raise ValueError("checkpoint path must be a safe relative path")
@@ -44,12 +46,18 @@ class CheckpointDescriptor(StrictModel):
             raise ValueError("checkpoint path must use portable relative separators")
         return value
 
-    @field_validator("validation_metric", mode="before")
+    @field_validator("validation_metric", "validation_composition_metric", mode="before")
     @classmethod
     def require_exact_optional_float(cls, value: object) -> object:
         if value is not None and type(value) is not float:
             raise ValueError("validation metric must be an exact float when present")
         return value
+
+    @model_validator(mode="after")
+    def require_scored_composition(self) -> Self:
+        if self.validation_composition_metric is not None and self.validation_metric is None:
+            raise ValueError("composition score requires an evaluated complete-chain score")
+        return self
 
 
 class TrainProgress(StrictModel):
@@ -63,11 +71,16 @@ class TrainProgress(StrictModel):
     train_public_id_seed: int = Field(ge=0, le=(1 << 63) - 1)
     best_metric: float | None = Field(default=None, ge=0.0, le=1.0)
     best_step: int | None = Field(default=None, ge=0, le=75_000)
+    # Score actually evaluated at optimizer_step; clear on the next optimizer step.
+    validation_metric: float | None = Field(default=None, ge=0.0, le=1.0)
+    validation_composition_metric: float | None = Field(default=None, ge=0.0, le=1.0)
     patience_counter: int = Field(ge=0, le=15)
     retained_checkpoints: tuple[CheckpointDescriptor, ...] = Field(max_length=4)
     validation_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
-    @field_validator("best_metric", mode="before")
+    @field_validator(
+        "best_metric", "validation_metric", "validation_composition_metric", mode="before"
+    )
     @classmethod
     def require_exact_optional_float(cls, value: object) -> object:
         if value is not None and type(value) is not float:
@@ -80,6 +93,12 @@ class TrainProgress(StrictModel):
             raise ValueError("best metric and best step must either both be present or both absent")
         if self.best_step is not None and self.best_step > self.optimizer_step:
             raise ValueError("best step cannot exceed the current optimizer step")
+        if self.validation_metric is not None and (
+            self.best_metric is None or self.validation_metric > self.best_metric
+        ):
+            raise ValueError("current validation metric cannot exceed the recorded best metric")
+        if self.validation_composition_metric is not None and self.validation_metric is None:
+            raise ValueError("current composition score requires a current complete-chain score")
         paths = [descriptor.relative_path for descriptor in self.retained_checkpoints]
         if len(paths) != len(set(paths)):
             raise ValueError("retained checkpoint paths must be unique")
