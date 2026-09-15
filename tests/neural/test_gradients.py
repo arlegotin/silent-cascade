@@ -90,7 +90,7 @@ def test_two_full_loss_optimizer_steps_build_fresh_graphs(neural_config):
     model = EventFlowModel(_debug_model_config(neural_config))
     examples = _examples_for_variants_and_depths(neural_config)
     batch = pack_training_examples(examples)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, eps=1e-7)
     totals = []
     for _ in range(2):
         optimizer.zero_grad(set_to_none=True)

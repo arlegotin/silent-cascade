@@ -71,6 +71,40 @@ def test_evaluation_restores_training_mode(neural_config, component_corpus):
     )
 
 
+def test_functional_composition_work_is_metered(neural_config, component_corpus, monkeypatch):
+    from silent_cascade.eval import compute
+    from silent_cascade.train.component_eval import predict_components
+
+    torch.manual_seed(11)
+    model = EventFlowModel(neural_config.neural)
+    # Force an active learned guard to exercise the real functional updates.
+    with torch.no_grad():
+        model.controller.network[-1].bias[912:915] = 2.0
+    calls = []
+    original = compute._record_functional_operations
+
+    def record(**operations):
+        import inspect
+
+        if inspect.currentframe().f_back.f_globals["__name__"].endswith("component_eval"):
+            calls.append(operations)
+        original(**operations)
+
+    monkeypatch.setattr(compute, "_record_functional_operations", record)
+    # Patch the consumer alias too once implemented.
+    monkeypatch.setattr(
+        "silent_cascade.train.component_eval._record_functional_operations", record, raising=False
+    )
+    with compute.NeuralComputeMeter(model) as meter:
+        predictions = predict_components(model, component_corpus.public_batch(0, 8))
+    compositions = sum(len(row.content) for row in predictions.rows)
+    assert compositions > 0
+    assert sum(call.get("sigmoid_ops", 0) for call in calls) == compositions
+    assert sum(call.get("tanh_ops", 0) for call in calls) == compositions * 64
+    assert sum(call.get("exp_log_ops", 0) for call in calls) == compositions
+    assert meter.snapshot().operation_estimates["sigmoid_ops"] >= compositions
+
+
 def test_prediction_fresh_process_blocks_all_private_environment_imports(
     neural_config, component_corpus, tmp_path
 ):

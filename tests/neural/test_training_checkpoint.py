@@ -44,7 +44,7 @@ def optimizer(model):
         lr=3e-4,
         weight_decay=1e-4,
         betas=(0.9, 0.999),
-        eps=1e-8,
+        eps=1e-7,
         foreach=False,
         fused=False,
     )
@@ -104,6 +104,32 @@ def test_empty_optimizer_shared_names_and_explicit_rng_restore(saved, resolved_n
     for key, value in model.state_dict().items():
         torch.testing.assert_close(value, restored.model.state_dict()[key], rtol=0, atol=0)
     assert len(list(restored.model.parameters())) == len(list(model.parameters()))
+
+
+@pytest.mark.parametrize("epsilon", [1e-8, 1e-6])
+def test_rejects_archive_from_pre_stabilization_configuration(
+    saved, resolved_neural_config, epsilon
+):
+    from silent_cascade.hashing import canonical_json_bytes
+
+    module, path, _, _, _ = saved
+    metadata, tensors = unpack(path)
+    old_config = json.loads(metadata["config_json"])
+    old_config["training"]["epsilon"] = epsilon
+    metadata["config_json"] = canonical_json_bytes(old_config).decode()
+    metadata["config_sha256"] = hashlib.sha256(metadata["config_json"].encode()).hexdigest()
+    for group in metadata["groups"]:
+        group["options"]["eps"] = epsilon
+    old_archive = rewrite(path, metadata, tensors)
+    before = snapshot_global_rng()
+    with pytest.raises(TrainingError):
+        module.load_training_checkpoint(
+            old_archive,
+            expected_config_sha256=metadata["config_sha256"],
+            expected_source_commit=SOURCE,
+            device="cpu",
+        )
+    assert torch.equal(before.torch_cpu_state, torch.get_rng_state())
 
 
 @pytest.mark.parametrize(

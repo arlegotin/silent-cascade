@@ -1,0 +1,360 @@
+"""Executable numerical evidence; callers inspect measured mismatches, never log text."""
+
+import platform
+import random
+from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import fields, is_dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Literal
+
+import numpy as np
+import torch
+from pydantic import Field
+
+from silent_cascade.config import ResolvedConfig
+from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
+from silent_cascade.models.config import LossWeights
+from silent_cascade.models.dynamics import crossings_batch
+from silent_cascade.models.event_flow import EventFlowModel
+from silent_cascade.models.losses import event_flow_loss
+from silent_cascade.rng import seed_all, snapshot_global_rng
+from silent_cascade.train.batches import TrainingBatch, next_training_batch
+from silent_cascade.train.checkpoints import (
+    _device,
+    _model_hash,
+    _snapshot,
+    load_training_checkpoint,
+    save_training_checkpoint,
+)
+from silent_cascade.train.component_eval import predict_components
+from silent_cascade.train.config import Phase3Config, TrainingConfig
+from silent_cascade.train.state import TrainingError, TrainProgress
+from silent_cascade.train.trainer import _check_unroll, make_optimizer, train_one_step
+from silent_cascade.train.unroll import teacher_forced_unroll
+from silent_cascade.validation import StrictModel
+
+
+class Comparison(StrictModel):
+    rtol: float
+    atol: float
+    compared: int = Field(ge=0)
+    mismatches: int = Field(ge=0)
+    max_absolute_error: float = Field(ge=0)
+    max_relative_error: float = Field(ge=0)
+    max_absolute_name: str
+    max_relative_name: str
+    tested_names: tuple[str, ...]
+    failed_names: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        return self.compared > 0 and self.mismatches == 0
+
+
+class DeviceParityEvidence(StrictModel):
+    schema_version: Literal["phase3-device-parity-v1"] = "phase3-device-parity-v1"
+    devices: tuple[Literal["cpu"], Literal["mps"]] = ("cpu", "mps")
+    output_dtype: Literal["float32"] = "float32"
+    python_version: str
+    torch_version: str
+    threads: int
+    model_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    example_hashes: tuple[str, ...]
+    forward: Comparison
+    losses: Comparison
+    gradients: Comparison
+    updated_weights: Comparison
+    recalled_record_mismatches: int
+    action_class_mismatches: int
+    active_crossings: int
+    dormant_crossings: int
+    empty_memory_rows: int
+    foundation_model_calls: Literal[0] = 0
+
+    @property
+    def passed(self) -> bool:
+        return (
+            all(c.passed for c in (self.forward, self.losses, self.gradients, self.updated_weights))
+            and self.recalled_record_mismatches == self.action_class_mismatches == 0
+            and self.active_crossings > 0
+            and self.dormant_crossings > 0
+            and self.empty_memory_rows > 0
+        )
+
+
+class ResumeEvidence(StrictModel):
+    schema_version: Literal["phase3-cpu-resume-v1"] = "phase3-cpu-resume-v1"
+    device: Literal["cpu"] = "cpu"
+    python_version: str
+    torch_version: str
+    threads: int
+    config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    checkpoint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    resumed_step: Literal[2] = 2
+    next_batch_counter: Literal[2] = 2
+    example_hashes: tuple[str, ...]
+    parameters: Comparison
+    optimizer: Comparison
+    losses: Comparison
+    rng_mismatches: int
+    batch_hash_mismatches: int
+    foundation_model_calls: Literal[0] = 0
+
+    @property
+    def passed(self) -> bool:
+        return all(c.passed for c in (self.parameters, self.optimizer, self.losses)) and (
+            self.rng_mismatches == self.batch_hash_mismatches == 0
+        )
+
+
+def _tensors(value, prefix="") -> dict[str, torch.Tensor]:
+    if isinstance(value, torch.Tensor):
+        return {prefix: value.detach().cpu().clone()}
+    if is_dataclass(value):
+        items = ((field.name, getattr(value, field.name)) for field in fields(value))
+    elif isinstance(value, Mapping):
+        items = value.items()
+    elif isinstance(value, (tuple, list)):
+        items = enumerate(value)
+    else:
+        return {}
+    result = {}
+    for name, child in items:
+        result.update(_tensors(child, f"{prefix}/{name}"))
+    return result
+
+
+def _compare(left, right, *, rtol, atol) -> Comparison:
+    names = tuple(sorted(set(left) | set(right)))
+    count = mismatches = 0
+    absolute = relative = 0.0
+    absolute_name = relative_name = ""
+    failed = []
+    for name in names:
+        if name not in left or name not in right or left[name].shape != right[name].shape:
+            mismatches += 1
+            failed.append(name)
+            continue
+        a, b = left[name], right[name]
+        count += a.numel()
+        if a.dtype != b.dtype:
+            mismatches += a.numel()
+            failed.append(name)
+            continue
+        if a.is_floating_point():
+            finite = torch.isfinite(a) & torch.isfinite(b)
+            # Exactly equal signed infinity is valid for dormant guards/masked scores.
+            equal = (a == b) | (finite & ((a - b).abs() <= atol + rtol * a.abs()))
+            delta = (a[finite].double() - b[finite].double()).abs()
+            rel = delta / a[finite].double().abs().clamp_min(torch.finfo(torch.float32).tiny)
+            maximum = float(delta.max()) if delta.numel() else 0.0
+            maximum_relative = float(rel.max()) if rel.numel() else 0.0
+            if maximum > absolute:
+                absolute, absolute_name = maximum, name
+            if maximum_relative > relative:
+                relative, relative_name = maximum_relative, name
+        else:
+            equal = a == b
+        wrong = int((~equal).sum())
+        mismatches += wrong
+        if wrong:
+            failed.append(name)
+    return Comparison(
+        rtol=rtol,
+        atol=atol,
+        compared=count,
+        mismatches=mismatches,
+        max_absolute_error=absolute,
+        max_relative_error=relative,
+        max_absolute_name=absolute_name,
+        max_relative_name=relative_name,
+        tested_names=names,
+        failed_names=tuple(failed),
+    )
+
+
+def _parity_step(model, batch, device):
+    current = deepcopy(model).to(device)
+    batch = batch.to(device)
+    training = TrainingConfig(
+        profile="phase3_smoke",
+        batch_size=8,
+        max_steps=4,
+        validation_every_steps=2,
+        fixed_validation_episodes=16,
+    )
+    optimizer = make_optimizer(current, training)
+    optimizer.zero_grad(set_to_none=True)
+    unroll = teacher_forced_unroll(current, batch)
+    _check_unroll(unroll)
+    loss = event_flow_loss(unroll.loss_inputs(), LossWeights())
+    if loss.total.dtype != torch.float32 or loss.total.device.type != device:
+        raise TrainingError("parity output must be float32 on the requested native device")
+    forward = _tensors(
+        {
+            "observations": unroll.observations,
+            "boundaries": unroll.boundaries,
+            "steps": unroll.steps,
+            "final_context": unroll.final_context,
+            "pre_jump_latent": unroll.pre_jump_latent,
+            "post_jump_latent": unroll.post_jump_latent,
+        }
+    )
+    # Exercise true empty-memory preview/control and explicit active/dormant guards.
+    empty = current.initial_context(1, device=device)
+    forward.update(_tensors(current.preview_and_control(empty), "empty"))
+    offsets = crossings_batch(
+        torch.zeros((1, 3), device=device),
+        torch.tensor([[1.5, 0.5, 1.0]], device=device),
+        torch.ones((1, 3), device=device),
+    )
+    forward.update(_tensors(offsets, "guard_probe"))
+    loss_values = _tensors(loss)
+    predictions = predict_components(current, batch.public)
+    loss.total.backward()
+    gradients = _tensors({n: p.grad for n, p in current.named_parameters() if p.grad is not None})
+    torch.nn.utils.clip_grad_norm_(current.parameters(), 1.0, error_if_nonfinite=True)
+    optimizer.step()
+    weights = _tensors(dict(current.named_parameters()))
+    return forward, loss_values, gradients, weights, predictions
+
+
+def measure_device_parity(model: EventFlowModel, batch: TrainingBatch) -> DeviceParityEvidence:
+    """Compare identical CPU-initialized weights through forward/backward/AdamW on native MPS."""
+    _device("mps")
+    if not isinstance(model, EventFlowModel) or not isinstance(batch, TrainingBatch):
+        raise TypeError("parity requires EventFlowModel and TrainingBatch")
+    cpu_model = deepcopy(model).cpu()
+    tensors, aliases, _ = _snapshot(cpu_model)
+    cpu = _parity_step(cpu_model, batch, "cpu")
+    mps = _parity_step(cpu_model, batch, "mps")
+    comparisons = [
+        _compare(cpu[i], mps[i], rtol=1e-4 if i < 2 else 1e-3, atol=1e-5) for i in range(4)
+    ]
+    crossings = [v for k, v in cpu[0].items() if k.endswith("/crossings") or k == "guard_probe"]
+    return DeviceParityEvidence(
+        python_version=platform.python_version(),
+        torch_version=str(torch.__version__),
+        threads=torch.get_num_threads(),
+        model_state_sha256=_model_hash(tensors, aliases),
+        example_hashes=batch.example_hashes,
+        forward=comparisons[0],
+        losses=comparisons[1],
+        gradients=comparisons[2],
+        updated_weights=comparisons[3],
+        recalled_record_mismatches=sum(
+            a.record_ids != b.record_ids for a, b in zip(cpu[4].rows, mps[4].rows, strict=True)
+        ),
+        action_class_mismatches=sum(
+            a.action_class != b.action_class for a, b in zip(cpu[4].rows, mps[4].rows, strict=True)
+        ),
+        active_crossings=sum(int(torch.isfinite(v).sum()) for v in crossings),
+        dormant_crossings=sum(int(torch.isposinf(v).sum()) for v in crossings),
+        empty_memory_rows=1,
+    )
+
+
+def _optimizer_tensors(model, optimizer):
+    return _tensors(
+        {name: optimizer.state[parameter] for name, parameter in model.named_parameters()}
+    )
+
+
+def _draws():
+    return random.random(), float(np.random.random()), torch.rand(5)
+
+
+def measure_cpu_resume(config: ResolvedConfig[Phase3Config], source_commit: str) -> ResumeEvidence:
+    """Execute two real batches, save after one, restore and exactly repeat the second."""
+    _device("cpu")
+    before = snapshot_global_rng()
+    try:
+        seed_all(config.config.training.model_seed)
+        model = EventFlowModel(config.config.neural)
+        optimizer = make_optimizer(model, config.config.training)
+        first = next_training_batch(config.config, stage="one_hop", batch_counter=0)
+        train_one_step(model, optimizer, first, config.config)
+        progress = TrainProgress(
+            optimizer_step=1,
+            next_batch_counter=1,
+            stage="one_hop",
+            train_root_seed=311,
+            train_public_id_seed=331,
+            patience_counter=0,
+            retained_checkpoints=(),
+            validation_manifest_sha256="0" * 64,
+        )
+        with TemporaryDirectory(prefix="silent-cascade-resume-") as directory:
+            path = Path(directory).resolve()
+            saved = save_training_checkpoint(
+                path, model, optimizer, progress, config=config, source_commit=source_commit
+            )
+            expected_draws = _draws()
+            expected_batch = next_training_batch(config.config, stage="one_hop", batch_counter=1)
+            expected_loss = train_one_step(model, optimizer, expected_batch, config.config)
+            restored = load_training_checkpoint(
+                path / saved.relative_path,
+                expected_config_sha256=config.sha256,
+                expected_source_commit=source_commit,
+                device="cpu",
+            )
+            restored.restore_rng()
+            actual_draws = _draws()
+            actual_batch = next_training_batch(
+                config.config, stage="one_hop", batch_counter=restored.progress.next_batch_counter
+            )
+            actual_loss = train_one_step(
+                restored.model, restored.optimizer, actual_batch, config.config
+            )
+
+            def loss_tensors(result):
+                return {
+                    name: torch.tensor(value, dtype=torch.float64)
+                    for name, value in {
+                        "total": result.loss,
+                        **result.terms,
+                        **result.subterms,
+                    }.items()
+                }
+
+            return ResumeEvidence(
+                python_version=platform.python_version(),
+                torch_version=str(torch.__version__),
+                threads=torch.get_num_threads(),
+                config_sha256=config.sha256,
+                source_commit=source_commit,
+                checkpoint_sha256=saved.file_sha256,
+                model_state_sha256=saved.model_state_sha256,
+                example_hashes=actual_batch.example_hashes,
+                parameters=_compare(
+                    _tensors(dict(model.named_parameters())),
+                    _tensors(dict(restored.model.named_parameters())),
+                    rtol=0.0,
+                    atol=0.0,
+                ),
+                optimizer=_compare(
+                    _optimizer_tensors(model, optimizer),
+                    _optimizer_tensors(restored.model, restored.optimizer),
+                    rtol=0.0,
+                    atol=0.0,
+                ),
+                losses=_compare(
+                    loss_tensors(expected_loss), loss_tensors(actual_loss), rtol=0.0, atol=0.0
+                ),
+                rng_mismatches=sum(
+                    a != b for a, b in zip(expected_draws[:2], actual_draws[:2], strict=True)
+                )
+                + int((expected_draws[2] != actual_draws[2]).sum()),
+                batch_hash_mismatches=sum(
+                    a != b
+                    for a, b in zip(
+                        expected_batch.example_hashes, actual_batch.example_hashes, strict=True
+                    )
+                ),
+            )
+    finally:
+        restore_rng_snapshot(before, restore_mps=before.torch_mps_state is not None)

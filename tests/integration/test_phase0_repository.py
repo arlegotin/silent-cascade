@@ -191,6 +191,8 @@ def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     assert "tests/regression/test_phase1_fixtures.py" in smoke.stdout
     assert "tests/regression/test_import_boundaries.py" in smoke.stdout
     assert "tests/integration/test_cli_replay.py" in smoke.stdout
+    assert "tests/neural/test_training_cli.py" in smoke.stdout
+    assert "tests/neural/test_training_imports.py" in smoke.stdout
 
     workflows = ROOT / ".github" / "workflows"
     assert not workflows.exists() or not any(workflows.iterdir())

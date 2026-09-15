@@ -290,6 +290,8 @@ def _guard_reductions(inputs: LossInputs, shape: tuple[int, int]) -> dict[str, _
     inactive = _reduce_selected(inactive_values, boundary, position_shape=shape)
 
     crossing = inputs.crossing_offsets[boundary]
+    if bool((torch.isnan(crossing) | torch.isneginf(crossing)).any()):
+        raise NeuralError("real crossing offsets cannot contain NaN or negative infinity")
     correct_crossing = crossing[positions, kinds]
     temporal_rows = torch.isfinite(correct_crossing)
     temporal_mask = torch.zeros_like(boundary)

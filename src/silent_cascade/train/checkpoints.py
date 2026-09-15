@@ -783,6 +783,29 @@ def load_weights(path: Path, *, expected_sha256: str, device: str) -> EventFlowM
         return model
 
 
+@dataclass(frozen=True, slots=True)
+class WeightRestore:
+    """One validated archive read, including its complete canonical configuration."""
+
+    model: EventFlowModel
+    config: ResolvedConfig[Phase3Config]
+    descriptor: CheckpointDescriptor
+
+
+def load_weight_bundle(path: Path, *, expected_sha256: str, device: str) -> WeightRestore:
+    """Load safe weights and bound metadata together; no arbitrary Python state."""
+    with _errors():
+        _expected_hash(expected_sha256, 64)
+        model, _, metadata, config, descriptor = _decode(
+            path, weights=True, device=device, expected_sha=expected_sha256
+        )
+        return WeightRestore(
+            model,
+            ResolvedConfig(config, metadata.config_json.encode(), metadata.config_sha256, ()),
+            descriptor,
+        )
+
+
 @contextmanager
 def _index_lock(directory: Path):
     with archive_parent(directory / ".checkpoint-index.lock", error_factory=TrainingError) as (

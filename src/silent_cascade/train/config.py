@@ -32,7 +32,7 @@ class TrainingConfig(StrictModel):
     learning_rate: Literal[3.0e-4] = 3.0e-4
     weight_decay: Literal[1.0e-4] = 1.0e-4
     betas: tuple[Literal[0.9], Literal[0.999]] = (0.9, 0.999)
-    epsilon: Literal[1.0e-8] = 1.0e-8
+    epsilon: Literal[1.0e-7] = 1.0e-7
     foreach: Literal[False] = False
     fused: Literal[False] = False
     scheduler: Literal["none"] = "none"

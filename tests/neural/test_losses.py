@@ -13,6 +13,20 @@ def _float(value):
     return tensor.to(torch.float32).requires_grad_(True)
 
 
+@pytest.mark.parametrize("bad", [float("nan"), -float("inf")])
+@pytest.mark.parametrize("guard", [0, 2])
+def test_real_crossings_reject_invalid_nonfinite_even_for_wrong_guard(bad, guard):
+    from dataclasses import replace
+
+    from silent_cascade.models.losses import event_flow_loss
+
+    inputs = hand_calculated_inputs()
+    crossings = inputs.crossing_offsets.detach().clone()
+    crossings[0, 0, guard] = bad
+    with pytest.raises(NeuralError, match="crossing"):
+        event_flow_loss(replace(inputs, crossing_offsets=crossings), LossWeights())
+
+
 def loss_inputs(**overrides) -> LossInputs:
     shape = (2, 2)
     values = {

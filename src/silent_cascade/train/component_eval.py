@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING
 import torch
 from torch.nn import functional as F
 
-from silent_cascade.eval.compute import NeuralComputeMeter, NeuralComputeSnapshot
+from silent_cascade.eval.compute import (
+    NeuralComputeMeter,
+    NeuralComputeSnapshot,
+    _record_functional_operations,
+)
 from silent_cascade.memory.retrieval import select_record_ids
 from silent_cascade.models.errors import NeuralError
 from silent_cascade.models.event_flow import EventFlowModel
@@ -182,6 +186,7 @@ def predict_components(
             support = predicted.append_support_logit >= 0
             continuing = predicted.continue_search_logit >= 0
             confidence = predicted.confidence_logit.sigmoid()
+            _record_functional_operations(sigmoid_ops=confidence.numel())
             support_mask = current.support_mask.clone()
             support_mask[torch.arange(len(proceed), device=device), slot_tensor] |= support
             modes = torch.where(role == 1, 3, torch.where((role == 0) & continuing, 1, 4))
@@ -207,10 +212,12 @@ def predict_components(
                     terminal[:, None], hypothesis, current.hypothesis_features
                 ),
             )
+            _record_functional_operations(exp_log_ops=predicted.normalized_deadline.numel())
             workspace = model.jump(current, torch.ones_like(rows))
             learned_focus = torch.tanh(
                 model.focus_projection(model.record_encoder.encode_entities(focus))
             )
+            _record_functional_operations(tanh_ops=learned_focus.numel())
             latent = torch.cat(
                 (
                     workspace.latent[:, :328],

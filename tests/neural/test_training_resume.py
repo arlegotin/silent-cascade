@@ -53,7 +53,7 @@ def test_checkpoint_resume_reproduces_next_step_and_global_draws(tmp_path, devic
     torch.manual_seed(11)
     model = EventFlowModel(config.config.neural).to(device)
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=3e-4, weight_decay=1e-4, eps=1e-8, foreach=False, fused=False
+        model.parameters(), lr=3e-4, weight_decay=1e-4, eps=1e-7, foreach=False, fused=False
     )
 
     def step(model, optimizer, counter):

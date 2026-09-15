@@ -30,6 +30,30 @@ class FloatSubtype(float):
     pass
 
 
+@pytest.mark.parametrize("profile", ["smoke", "one_hop"])
+def test_profiles_and_real_optimizer_use_global_stabilized_epsilon(profile):
+    from silent_cascade.models.event_flow import EventFlowModel
+    from silent_cascade.train.trainer import make_optimizer
+
+    resolved = resolve_config(
+        Phase3Config, (*PHASE3_CONFIG_PATHS[:-1], Path(f"configs/train/{profile}.yaml"))
+    )
+    optimizer = make_optimizer(EventFlowModel(resolved.config.neural), resolved.config.training)
+    assert resolved.config.training.epsilon == 1e-7
+    assert all(group["eps"] == 1e-7 for group in optimizer.param_groups)
+
+
+@pytest.mark.parametrize("profile", ["smoke", "one_hop"])
+@pytest.mark.parametrize("epsilon", ["1.0e-8", "1.0e-6"])
+def test_pre_stabilization_optimizer_configuration_is_rejected(profile, epsilon):
+    with pytest.raises(ConfigurationError, match="configuration validation failed"):
+        resolve_config(
+            Phase3Config,
+            (*PHASE3_CONFIG_PATHS[:-1], Path(f"configs/train/{profile}.yaml")),
+            set_overrides=(f"training.epsilon={epsilon}",),
+        )
+
+
 def test_phase3_config_adds_neural_fields_without_changing_phase2(neural_config):
     assert neural_config.neural.entity_dim == 32
     assert neural_config.neural.record_dim == 96
@@ -178,7 +202,7 @@ def test_phase3_yaml_rejects_wrong_types_for_training_literals(field, wrong_yaml
     [
         ("learning_rate", FloatSubtype(3.0e-4)),
         ("weight_decay", FloatSubtype(1.0e-4)),
-        ("epsilon", FloatSubtype(1.0e-8)),
+        ("epsilon", FloatSubtype(1.0e-7)),
         ("gradient_clip_norm", FloatSubtype(1.0)),
     ],
 )

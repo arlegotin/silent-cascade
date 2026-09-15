@@ -177,7 +177,7 @@ def test_slot_permutation_preserves_predictions_and_teacher_selection(model, exa
 def test_two_optimizer_steps_build_fresh_graphs(model, examples):
     from silent_cascade.train.unroll import teacher_forced_unroll
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, eps=1e-7)
     batch = positive_batch(examples)
     losses = []
     for _ in range(2):
