@@ -1082,6 +1082,9 @@ Training checkpoints do not replace paused-world runtime checkpoints.
 
 **Files:** Create `train/{component_eval,curriculum,trainer}.py` and
 `tests/neural/{test_component_eval,test_curriculum,test_trainer,test_tiny_overfit}.py`.
+Extend the new `train/curriculum_data.py` recipe schema/loader with the minimal
+production-versus-debug checks needed by this complete driver. Task 12 retains
+final source-closure and Git-introduction authentication.
 
 **Interfaces:**
 
@@ -1204,6 +1207,22 @@ Use a single deterministic data producer initially (`num_workers=0` if using
 a DataLoader); advance the durable next-batch counter only with a completed
 step checkpoint. On failure, archive the current batch key and prior checkpoint
 reference without disguising the failed batch as consumed.
+
+Checkpoint at initial step zero, each scheduled validation, and final stop.
+Only checkpoint-committed journals/counters are durable consumed progress;
+retain interrupted segment journals under distinct attempt IDs and replay
+deterministically from the preceding checkpoint. A crash during validation or
+publication may require replaying up to 1,000 optimizer steps (two in smoke).
+This cadence avoids a full archive write per update without changing the
+validation interval, step ceiling, or failure semantics.
+
+Both approved profiles use the complete driver. Pull forward only the recipe
+schema/loader support required for exact production/debug profile, count,
+split, seed, config/source binding, regeneration and variant-allocation checks.
+Do not add a runtime placeholder refusing one-hop merely because Task 12 has
+not yet run. Task 12 supplies the final historical source authentication and
+may tighten these new loader/driver boundaries. No production corpus is
+published and no production training is executed before Task 13.
 
 Curriculum policy records oracle/bootstrap evidence and one-hop completion.
 Promotion to two-hop requires this component gate; promotion from two-hop to
