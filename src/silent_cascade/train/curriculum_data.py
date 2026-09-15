@@ -420,11 +420,11 @@ class ComponentManifestEntry(BaseModel):
 
 
 class ComponentManifest(BaseModel):
-    """Bounded recipe format; debug provenance does not authenticate source."""
+    """Bounded recipes; source-history authentication is an independent gate."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     schema_version: Literal["phase3-component-manifest-v1"] = "phase3-component-manifest-v1"
-    publication: Literal["debug"] = "debug"
+    publication: Literal["debug", "production"] = "debug"
     curriculum_version: Literal["ofd-one-hop-v1"] = "ofd-one-hop-v1"
     generator_version: Literal["ofd-v1"] = "ofd-v1"
     source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -439,6 +439,19 @@ class ComponentManifest(BaseModel):
             raise ValueError("manifest counts or unique keys disagree")
         if len({e.public_hash for e in self.entries}) != self.count:
             raise ValueError("manifest public hashes must be unique")
+        if self.publication == "production":
+            if self.count != 10_000:
+                raise ValueError("production component manifests require exactly 10000 episodes")
+            for index, entry in enumerate(self.entries):
+                key = entry.key
+                if (key.split, key.root_seed, key.public_id_seed, key.episode_index, key.stage) != (
+                    "validation",
+                    313,
+                    337,
+                    index,
+                    "one_hop",
+                ):
+                    raise ValueError("production manifest must use exact ordered validation keys")
         return self
 
     @classmethod
@@ -469,6 +482,11 @@ class ComponentManifest(BaseModel):
     def _examples(self, config: Phase3Config) -> tuple[CurriculumExample, ...]:
         if self.config_hash != hashlib.sha256(canonical_json_bytes(config)).hexdigest():
             raise ValueError("manifest configuration hash mismatch")
+        if self.publication == "production" and (
+            config.training.profile != "phase3_one_hop"
+            or config.neural.architecture_profile != "production"
+        ):
+            raise ValueError("production manifest requires the production one-hop configuration")
         examples = tuple(make_curriculum_example(config, entry.key) for entry in self.entries)
         for entry, example in zip(self.entries, examples, strict=True):
             if (entry.public_hash, entry.example_hash, entry.accepted_attempt) != (
@@ -477,6 +495,16 @@ class ComponentManifest(BaseModel):
                 example.accepted_attempt,
             ):
                 raise ValueError("manifest example hash or accepted attempt mismatch")
+        if self.publication == "production":
+            counts = {
+                variant: sum(e.variant == variant for e in examples) for variant in EpisodeVariant
+            }
+            if counts != {
+                EpisodeVariant.POSITIVE: 5000,
+                EpisodeVariant.SAFE_NEGATIVE: 2500,
+                EpisodeVariant.DISCONNECTED_NEGATIVE: 2500,
+            }:
+                raise ValueError("production manifest variant allocation mismatch")
         return examples
 
     def build_corpus(self, config: Phase3Config) -> ComponentCorpus:

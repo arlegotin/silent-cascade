@@ -77,6 +77,7 @@ class TrainProgress(StrictModel):
     patience_counter: int = Field(ge=0, le=15)
     retained_checkpoints: tuple[CheckpointDescriptor, ...] = Field(max_length=4)
     validation_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    training_journal_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator(
         "best_metric", "validation_metric", "validation_composition_metric", mode="before"
