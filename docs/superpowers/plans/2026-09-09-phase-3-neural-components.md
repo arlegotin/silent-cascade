@@ -2120,6 +2120,7 @@ are excluded. The one-hop workload contains at most four content transitions.
 ### Return D: Integrate the Versioned Recipe, Numerics and Evidence
 
 **Files:** Modify `train/config.py`, `train/trainer.py`, `train/verification.py`,
+the profile-dispatch checks in `train/curriculum_data.py` and `train/checkpoints.py`,
 `train/provenance.py`, `train/evidence.py`, `train/evidence_types.py`,
 `scripts/verify_phase3_gate_artifact.py`, and their focused neural tests;
 create `train/objective.py`, `configs/train/one_hop_content_v2.yaml`,
@@ -2144,6 +2145,10 @@ without a new default field silently changing historical hashes. Record the
 derived identity/coefficient explicitly in new step/evidence metadata and bind
 them to the canonical profile; they are not independently tunable options.
 No new seed, loss-weight sweep, schedule, update allowance or runtime agent.
+Use explicit profile-family properties for production/debug and curriculum
+stage where shared consumers need them; do not let a new production profile
+fall through an old `else smoke` branch. Preserve the actual data transform,
+seed namespaces, canonical serialization and checkpoint ownership semantics.
 
 **Interfaces:**
 
@@ -2247,12 +2252,17 @@ source revision. Cross-recipe resume must reject before changing model/RNG.
   name its original verifier/source in archival reproduction instructions.
   Update exact overlay validation and production-profile tests to distinguish
   the two reviewed recipes without accepting arbitrary paths or profiles.
+  `measure_offline_imports` currently embeds `configs/train/smoke.yaml` in its
+  real subprocess. Give it an explicit validated recipe/config input so the
+  new gate probes `smoke_content_v2.yaml` and reports the combined objective;
+  its independent verifier must derive that exact same-family smoke identity.
+  Retain network/import denial and actual one-step/eight-public-row execution.
 - [ ] **Step 5 — Actual native numerical prerequisites:** After focused tests
   pass, run native CPU/MPS float32 parity for the original B8 fixture and
   corrected-config B8/B128 counter-0 batches with the production architecture
   and seed 11. Preserve the Return B original-timed epsilon1e-6 result separately.
   Configured v2 parity must execute the **actual combined training objective**
-  and epsilon1e-6; an old timed-only smoke helper is insufficient. Keep all raw
+and epsilon1e-6; an old timed-only smoke helper is insufficient. Keep all raw
   tensor/choice comparisons, genuine empty memory and active/dormant guards.
   Use rtol1e-4/atol1e-5 forward/loss, rtol1e-3/atol1e-5 gradients/weights,
   exact CPU resume and rtol1e-4/atol1e-5 MPS resume. Any failure stops the
