@@ -1,0 +1,53 @@
+{
+  "schema_version": "phase3-component-attempt-index-v1",
+  "status": "rejected",
+  "phase_complete": false,
+  "run_id": "phase3-components/event_flow/11/one-hop-v1",
+  "source_commit": "5a96b673f67a634d268f000a240e0de0f3dca034",
+  "config_sha256": "26b21c1acd79e6c47375f03c4e68da24fadddde9ae150454bbd3db7f50237041",
+  "validation_manifest": {
+    "path": "manifests/validation/phase3/one-hop-10000.json",
+    "sha256": "5f57796f0798e9b494e47663f25e89c5fa0ebb33b79bac7601b77e4b969a2e32"
+  },
+  "artifact": {
+    "path": "manifests/validation/phase3/attempts/one-hop-v1/component-gate.json",
+    "sha256": "b4e04bb7b742f2bd3564e7538150d16dacb50382fdd840d6afe23f80b77396c2",
+    "bytes": 17635868,
+    "passed": false
+  },
+  "selected_checkpoint": {
+    "relative_path": "training-1e10d697eb0e5283a4cbc85574ed907a8ba35d13972835684e563a96c99ec134.safetensors",
+    "file_sha256": "1e10d697eb0e5283a4cbc85574ed907a8ba35d13972835684e563a96c99ec134",
+    "optimizer_step": 10000
+  },
+  "selected_weights": {
+    "relative_path": "weights-26bb303619d694f6a8329cc7ff06dc796410193d788f5f3fc73813ad7cea73d9.safetensors",
+    "file_sha256": "26bb303619d694f6a8329cc7ff06dc796410193d788f5f3fc73813ad7cea73d9"
+  },
+  "training": {
+    "completed_updates": 25000,
+    "stop_reason": "early_stopping"
+  },
+  "metrics": {
+    "required_recall": {
+      "correct": 17364,
+      "required": 17500
+    },
+    "required_composition": {
+      "correct": 15788,
+      "required": 17500
+    },
+    "complete_chain": {
+      "correct": 8423,
+      "required": 10000
+    }
+  },
+  "process_exits": {
+    "fit": 0,
+    "evaluation": 0,
+    "evaluation_repeat": 0,
+    "collector": 0,
+    "verifier": 1
+  },
+  "verifier_error": "artifact_integrity_error: numerical comparison failed or empty"
+}

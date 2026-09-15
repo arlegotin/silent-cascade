@@ -4,6 +4,43 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-15 — Archive the rejected Phase 3 one-hop attempt
+
+The first production one-hop run used the immutable 10,000-row corpus and the
+declared `epsilon=1e-7` configuration, then stopped naturally at 25,000 updates
+after 15 validations without improvement. The selected update 10,000 reached
+17,364/17,500 required recalls, 15,788/17,500 required compositions, and
+8,423/10,000 complete chains. All 25 scheduled validations were non-passing;
+two full CPU evaluations reproduced the selected predictions and metrics
+exactly. This is a rejected attempt, not a negative acceptance result.
+
+The collector also measured three native CPU/MPS updated-weight mismatches at
+the unchanged rtol `1e-3`, atol `1e-5` gate. Independent diagnosis reproduced
+the coordinates and found that opposing loss gradients cancel near `1e-7`,
+with the guard loss group's CPU/MPS difference dominating the residual. Actual
+moments explain the AdamW updates within `1.5664267209725136e-9`; no incorrect
+AdamW formula was found. The particular guard subterm/backend origin remains
+unmeasured, so neither the numerical tolerance nor optimizer setting is changed.
+
+Read-only content diagnostics found an evolving stopping tradeoff: unwanted
+extra terminal retrievals on disconnected rows and premature null stops on
+positive/safe rows. Explicit-clock substitution changed zero decisions in a
+bounded 18-case readout, while teacher latent state corrected all nine sampled
+failures. This supports, but does not prove beyond those cases, latent-context
+exposure; it does not establish a source defect or authorize a repair.
+
+Ruling: move the exact 17,635,868-byte failed artifact, SHA-256
+`b4e04bb7b742f2bd3564e7538150d16dacb50382fdd840d6afe23f80b77396c2`,
+from the canonical acceptance filename to
+`manifests/validation/phase3/attempts/one-hop-v1/component-gate.json` and bind it
+with a small rejected-attempt index. The canonical filename is reserved for an
+independently passing artifact, and Phase 3 stays In progress. No corpus, raw
+artifact byte, run log, checkpoint, source, configuration, scientific threshold,
+or prior-phase delivery row changes. Cost if wrong: reproduction must follow a
+separate historical path, but retaining the failed artifact at the canonical
+acceptance path would falsely require completion metadata and misrepresent a
+numerically rejected result.
+
 ## 2026-09-15 — Phase 3 artifact volume selection
 
 The source volume has about 5.4 GiB free. A disposable production-shaped B128

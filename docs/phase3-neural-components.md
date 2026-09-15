@@ -21,6 +21,73 @@ fixture. Its secondary untimed action accuracy is only 32/64; this does not
 establish timed competence.
 No production acceptance result is claimed.
 
+## Rejected one-hop production attempt
+
+The first production attempt is preserved, without relabeling it as acceptance,
+under [its versioned attempt index](../manifests/validation/phase3/attempts/one-hop-v1/attempt.json).
+It ran the declared CPU configuration unchanged: AdamW learning rate `3e-4`,
+weight decay `1e-4`, betas `0.9/0.999`, epsilon `1e-7`, batch 128, clip norm
+1.0, model seed 11, train seeds 311/331, validation seeds 313/337, validation
+every 1,000 updates, a 75,000-update ceiling, and patience 15. It stopped
+naturally at update 25,000 with `early_stopping`; the maximum recorded gradient
+norm was 68.28138732910156. All 25 scheduled validations were non-passing:
+
+| Update | Recall | Composition | Complete chain |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 17,411/17,500 | 14,937/17,500 | 7,462/10,000 |
+| 2,000 | 17,432/17,500 | 15,171/17,500 | 7,694/10,000 |
+| 3,000 | 17,439/17,500 | 15,475/17,500 | 7,997/10,000 |
+| 4,000 | 17,451/17,500 | 15,386/17,500 | 7,905/10,000 |
+| 5,000 | 17,495/17,500 | 15,806/17,500 | 8,308/10,000 |
+| 6,000 | 17,137/17,500 | 15,002/17,500 | 7,856/10,000 |
+| 7,000 | 17,492/17,500 | 15,613/17,500 | 8,115/10,000 |
+| 8,000 | 17,491/17,500 | 15,384/17,500 | 7,887/10,000 |
+| 9,000 | 17,493/17,500 | 15,233/17,500 | 7,734/10,000 |
+| 10,000 | 17,364/17,500 | 15,788/17,500 | 8,423/10,000 |
+| 11,000 | 17,445/17,500 | 15,760/17,500 | 8,305/10,000 |
+| 12,000 | 17,357/17,500 | 15,574/17,500 | 8,212/10,000 |
+| 13,000 | 17,445/17,500 | 15,636/17,500 | 8,189/10,000 |
+| 14,000 | 16,094/17,500 | 13,165/17,500 | 7,070/10,000 |
+| 15,000 | 15,423/17,500 | 11,943/17,500 | 6,520/10,000 |
+| 16,000 | 15,815/17,500 | 12,583/17,500 | 6,767/10,000 |
+| 17,000 | 15,850/17,500 | 12,480/17,500 | 6,631/10,000 |
+| 18,000 | 15,825/17,500 | 12,160/17,500 | 6,340/10,000 |
+| 19,000 | 14,761/17,500 | 10,356/17,500 | 5,595/10,000 |
+| 20,000 | 17,033/17,500 | 14,074/17,500 | 7,041/10,000 |
+| 21,000 | 16,508/17,500 | 13,147/17,500 | 6,647/10,000 |
+| 22,000 | 17,179/17,500 | 14,242/17,500 | 7,063/10,000 |
+| 23,000 | 17,285/17,500 | 14,052/17,500 | 6,768/10,000 |
+| 24,000 | 17,099/17,500 | 13,768/17,500 | 6,682/10,000 |
+| 25,000 | 17,258/17,500 | 13,720/17,500 | 6,489/10,000 |
+
+The deterministic rule selected update 10,000. Its category-level complete
+chains were positive 4,908/5,000, safe 2,453/2,500, and disconnected
+1,062/2,500; secondary untimed action accuracy was 4,775/10,000. Two complete
+CPU evaluations of the exported weights produced identical ordered predictions,
+raw decisions, and metrics across all 10,000 rows, so repetition confirmed the
+failure rather than repairing it. Fit, both evaluations, and collection exited
+0; these process outcomes do not imply acceptance.
+
+The independent artifact verifier exited 1 because native production-batch
+CPU/MPS parity had three updated-weight mismatches in 2,781,042 compared values,
+while forward values, losses, raw gradients, CPU exact resume, and MPS resume
+passed their unchanged tolerances. Bounded diagnosis reproduced all three
+coordinates. Opposing loss contributions near `1e-3` cancel to raw gradients
+near `1e-7`; CPU/MPS differences in the guard loss group dominate the residual,
+and the observed AdamW moments predict the updates within
+`1.5664267209725136e-9`. This is numerical near-cancellation, not evidence of an
+incorrect AdamW formula. The specific guard subterm or backend operation remains
+unidentified, and the numeric gate remains failed.
+
+Read-only outcome classification found both unwanted extra terminal retrievals
+and later premature null stops. In a bounded 18-case discriminator, swapping
+only explicit clock features changed zero continuation decisions; all nine
+preselected failures remained wrong with the untimed latent state and correct
+with the teacher latent state. This supports a latent-context exposure
+hypothesis for those cases, but it does not identify a unique latent channel,
+prove a model-code defect, or establish a repair. The archived artifact remains
+`passed=false`; Phase 3 remains in progress.
+
 ## Training
 
 Supply every configuration layer explicitly and in order. Paths can be absolute;
