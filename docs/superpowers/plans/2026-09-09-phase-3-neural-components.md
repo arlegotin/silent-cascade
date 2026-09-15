@@ -1400,6 +1400,8 @@ the current directory is this checkout. No README benchmark claim is added.
 update new `train/verification.py` and `tests/neural/test_device_parity.py` to
 derive empty-memory coverage from actual probe eligibility and expose measured
 native MPS resume as part of evidence integration;
+align the new `train/curriculum_data.py` manifest-read constant with this task's
+32 MiB manifest limit (the trainer already imports the same constant);
 modify `tests/integration/test_phase0_repository.py` for a new Phase 3 delivery
 state check, without altering Phase 1/2 accepted rows or tests.
 
@@ -1484,6 +1486,13 @@ debug gates use 16 and are explicitly non-acceptance. Bound manifests/gates at
 32 MiB and metadata at 8 MiB; parse exact primitive types and reject duplicate
 keys, nonfinite JSON numbers, noncanonical hashes, wrong schemas, or recursion
 overflow with typed errors.
+
+The minimal Task 10 manifest loader initially used an 8,000,000-byte bound.
+Set its shared `MAX_COMPONENT_MANIFEST_BYTES` to `32 * 1024 * 1024` and test
+the manifest read boundary. This aligns existing new-phase consumers with the
+declared contract; it does not increase the separate metadata bound or change
+generator/transform semantics. Cost: a larger, still strictly bounded accepted
+manifest input, with no historical Phase 1/2 IO helper change.
 
 Each raw episode row contains its public ID/example hash, corpus position,
 private target record/role/focus/class/status sequence, actual predicted

@@ -23,6 +23,12 @@ Cost if wrong: one additional module to maintain and authenticate; the separatio
 keeps producer execution out of the verifier's schema imports. Both corrections
 are recorded before production corpus creation or training.
 
+The minimal new Phase 3 manifest loader's 8,000,000-byte provisional limit is
+also aligned with Task 12's already-declared 32 MiB manifest bound. Trainer and
+loader share that constant; the separate 8 MiB metadata limit and all historical
+Phase 1/2 IO helpers remain unchanged. Cost if wrong: a larger, but still bounded,
+manifest read; no dataset or transform semantics change.
+
 ## 2026-09-15 — Pre-freeze Phase 3 AdamW stabilization
 
 Standing approval for reversible configuration and plan corrections is applied
