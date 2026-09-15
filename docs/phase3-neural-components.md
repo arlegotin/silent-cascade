@@ -1,5 +1,44 @@
 # Local neural components
 
+## Final review hardening and historical evidence — 2026-09-15
+
+Whole-phase review found that production fit/resume and standalone evaluation
+checked matching source labels without authenticating the code executing those
+commands. The shared production boundary now checks the actual loaded checkout,
+clean source closure, latest effective approved plan and exact committed recipe
+before corpus generation, model loading, RNG restoration or output creation.
+Archive configurations reconstruct that recipe when their portable metadata has
+no overlay paths. Durable checkpoints and final evaluation publication recheck
+execution identity. Debug smoke profiles remain portable outside Git and are
+ineligible for production acceptance. Fit success, evaluation success and raw
+evaluation envelopes are version 2 and explicitly label `publication` as `debug`
+or `production`; checkpoint archives and numeric evidence formats are unchanged.
+Run and attempt creation now uses pinned
+no-follow directory descriptors; rejected symlink paths leave their targets unchanged.
+
+The independently authenticated historical source
+`061fd4079f30956b3f51c706bbb374eb5ae0c2db` remains supported: its corpus
+`one-hop-10000-content-v2.json` has SHA-256
+`2d36a77d8ea1a0b361553a321bd4af9405539e310c1bc432d2036ab4c17eb412`,
+and its gate `component-gate-content-v2.json` has SHA-256
+`4090494bd7b3fc072a4654a3ed5c9eaf6a5d65afe7cf9402394f791f8191a0e0`.
+Both artifacts and the earlier rejected run are immutable historical evidence.
+The interface fixes change their literal execution closure, so those artifacts
+cannot supply current-source acceptance or be relabeled as newly executed.
+
+The delivery map now designates
+`manifests/validation/phase3/one-hop-10000-content-v2-authenticated.json` and
+`manifests/validation/phase3/component-gate-content-v2-authenticated.json`.
+Phase 3 is In progress pending the scoped rereview and fresh source-bound run.
+That run must use the unchanged `teacher_timed_plus_content_v2` recipe, coefficient
+1.0, epsilon 1e-6, seed 11 and the identical 10,000 ordered examples. All original
+numeric tolerances, acceptance gates and scientific claim boundaries remain fixed.
+The designated final-source production corpus and acceptance fit remain pending;
+the final-source native/debug checks are prerequisites only. An isolated mutation
+diagnostic accidentally crossed its checkpoint sentinel and completed 16 updates
+before termination. Its full files were preserved, the batch sentinel was corrected,
+and none of that diagnostic is acceptance evidence or a resumed production run.
+
 Phase 3 provides a teacher-forced trainer and an unassisted **untimed** component
 evaluator. The evaluator checks learned retrieval, composition and stopping with
 at most two RECALL/COMPOSE pairs. It does not demonstrate autonomous world-time
@@ -195,9 +234,11 @@ The complete run can be reproduced locally and offline in an isolated checkout
 starting from the reviewed source, with absent manifest/gate output targets and
 a new owner-only run directory. The freeze and collector publishers use
 exclusive no-clobber creation: do not aim them at the committed canonical files
-in a current checkout. To audit the current delivery, reuse the committed
-manifest and gate, authenticate their hashes, and run only the independent
-verifier at the end of this block. These are the historically executed producer
+in a current checkout. To audit this historical delivery, use its compatible
+source checkout and committed manifest/gate, authenticate their hashes, and run
+only the independent verifier at the end of this block. The final-hardening
+delivery has a separate designation and cannot reuse this gate as current-source
+acceptance. These are the historically executed producer
 command forms; set the two local storage variables without committing their
 machine-specific values:
 
@@ -341,8 +382,10 @@ uv run python -m silent_cascade.train evaluate-components \
 ```
 
 Evaluation uses CPU and reads the complete canonical configuration from the safe,
-hash-verified weight archive. It regenerates the exact bound corpus without
-assuming a checkout directory. All predictions are completed before labels are
+hash-verified weight archive. Production authenticates the executing checkout and
+committed recipe before model construction or corpus regeneration, and rechecks
+before publication. Debug profiles remain portable outside Git and explicitly
+ineligible for acceptance. All predictions are completed before labels are
 scored. Missing/wrong predictions remain in the metric denominators. Output
 parents must exist and must not contain symlinks; publication uses an open parent
 directory descriptor and refuses an existing file. No pickle or arbitrary Python
@@ -357,13 +400,13 @@ human-readable. The strict Pydantic schemas are in `train.cli`:
 
 | Schema | Contents |
 | --- | --- |
-| `phase3-fit-result-v1` (`FitSuccess`) | `status=ok`, `foundation_model_calls=0`, `result`: progress, stop reason, latest/selected/weights descriptors, validation history, actual device, selection rule and checkpoint cadence |
-| `phase3-evaluate-result-v1` (`EvaluationSuccess`) | `status=ok`, output path/SHA-256, checkpoint SHA-256, episode count, zero foundation-model calls |
-| `phase3-component-evaluation-v1` (`EvaluationArtifact`, output file) | Source/configuration/checkpoint/manifest hashes, seed and curriculum version, raw predictions, full metric numerators/denominators and per-row outcomes, batch compute records, `timed=false`, `device=cpu` |
+| `phase3-fit-result-v2` (`FitSuccess`) | `status=ok`, `publication=debug` or `production`, `foundation_model_calls=0`, `result`: progress, stop reason, latest/selected/weights descriptors, validation history, actual device, selection rule and checkpoint cadence |
+| `phase3-evaluate-result-v2` (`EvaluationSuccess`) | `status=ok`, `publication=debug` or `production`, output path/SHA-256, checkpoint SHA-256, episode count, zero foundation-model calls |
+| `phase3-component-evaluation-v2` (`EvaluationArtifact`, output file) | `publication=debug` or `production`, source/configuration/checkpoint/manifest hashes, seed and curriculum version, raw predictions, full metric numerators/denominators and per-row outcomes, batch compute records, `timed=false`, `device=cpu` |
 | `phase3-cli-error-v1` (`ErrorResponse`) | `status=error`, `error` containing stable typed `code`, `message` and JSON `context` |
 
 Typical error codes are `usage_error`, `configuration_error`, `training_error`
-and `neural_error`. Full structured schemas can be inspected with each class's
+`provenance_error` and `neural_error`. Full structured schemas can be inspected with each class's
 `model_json_schema()`; unknown fields and invalid primitive types are rejected.
 
 ## Local checks and numerical evidence

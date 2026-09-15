@@ -46,6 +46,9 @@ weights = result["weights"]
 app(args=["evaluate-components", "--weights", str(directory / "run" / weights["relative_path"]),
           "--expected-checkpoint-sha256", weights["file_sha256"], "--manifest", str(manifest),
           "--output", str(directory / "evaluation.json")], standalone_mode=False)
+evaluation = json.loads((directory / "evaluation.json").read_bytes())
+assert evaluation['schema_version'] == 'phase3-component-evaluation-v2'
+assert evaluation['publication'] == 'debug'
 """
 
 

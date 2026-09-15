@@ -804,6 +804,21 @@ def load_weight_bundle(path: Path, *, expected_sha256: str, device: str) -> Weig
         )
 
 
+def read_weight_metadata(
+    path: Path, *, expected_sha256: str
+) -> tuple[ResolvedConfig[Phase3Config], str]:
+    """Check bounded archive metadata/hash without constructing a model or restoring RNG."""
+    with _errors():
+        _expected_hash(expected_sha256, 64)
+        raw, _, metadata, config = _read(path, weights=True)
+        if _sha(raw) != expected_sha256:
+            raise TrainingError("weights archive hash mismatch")
+        return (
+            ResolvedConfig(config, metadata.config_json.encode(), metadata.config_sha256, ()),
+            metadata.source_commit,
+        )
+
+
 @contextmanager
 def _index_lock(directory: Path):
     with archive_parent(directory / ".checkpoint-index.lock", error_factory=TrainingError) as (

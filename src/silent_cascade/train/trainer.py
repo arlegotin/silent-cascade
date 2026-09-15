@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
@@ -36,7 +35,9 @@ from silent_cascade.train.curriculum_data import (
     CurriculumKey,
     make_curriculum_example,
 )
+from silent_cascade.train.execution import authenticate_production_execution
 from silent_cascade.train.objective import training_objective
+from silent_cascade.train.run_directory import create_attempt_directory, prepare_run_directory
 from silent_cascade.train.state import CheckpointDescriptor, TrainingError, TrainProgress
 from silent_cascade.train.traces import build_teacher_trace, component_target
 
@@ -273,7 +274,7 @@ def _verified_history(run_dir, progress):
     return history
 
 
-def _manifest_corpus(config, path, source_commit):
+def _manifest_metadata(config, path, source_commit):
     from silent_cascade.train.curriculum_data import MAX_COMPONENT_MANIFEST_BYTES, ComponentManifest
 
     with archive_parent(path, error_factory=TrainingError) as (parent, name):
@@ -301,7 +302,12 @@ def _manifest_corpus(config, path, source_commit):
             or key.episode_index != index
         ):
             raise TrainingError("Validation manifest key/split/seed/stage/order mismatch")
-    return manifest.build_corpus(config.config), hashlib.sha256(payload).hexdigest()
+    return manifest, hashlib.sha256(payload).hexdigest()
+
+
+def _manifest_corpus(config, path, source_commit):
+    manifest, digest = _manifest_metadata(config, path, source_commit)
+    return manifest.build_corpus(config.config), digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,19 +346,18 @@ def run_training(
         raise TrainingError("Training device must be cpu or mps")
     if device == "mps" and not torch.backends.mps.is_available():
         raise TrainingError("Requested MPS device is unavailable")
-    corpus, manifest_hash = _manifest_corpus(config, validation_manifest, source_commit)
+    manifest, manifest_hash = _manifest_metadata(config, validation_manifest, source_commit)
+    authenticate_production_execution(config, manifest=manifest, source_commit=source_commit)
+    corpus = manifest.build_corpus(config.config)
     device = device or next(
         device
         for device in config.config.runtime.device_preference
         if device == "cpu" or torch.backends.mps.is_available()
     )
-    run_dir = run_dir.absolute()
+    run_dir = prepare_run_directory(run_dir, resume=resume is not None)
     history = []
     prior = None
     if resume is None:
-        if run_dir.exists() and any(run_dir.iterdir()):
-            raise TrainingError("Existing run directory requires explicit resume")
-        run_dir.mkdir(parents=True, exist_ok=True)
         seed_all(training.model_seed)
         model = EventFlowModel(config.config.neural).to(device)
         optimizer = make_optimizer(model, training)
@@ -385,7 +390,7 @@ def run_training(
         history = _verified_history(run_dir, progress)
         model, optimizer = restored.model, restored.optimizer
         restored.restore_rng()
-    attempt = Path(tempfile.mkdtemp(prefix="attempt-", dir=run_dir))
+    attempt = create_attempt_directory(run_dir)
     _write_json(
         attempt / "start.json", {"prior": prior, "next_batch_counter": progress.next_batch_counter}
     )
@@ -394,6 +399,7 @@ def run_training(
 
     def checkpoint(validation=None):
         nonlocal prior, segment_steps, progress
+        authenticate_production_execution(config, manifest=manifest, source_commit=source_commit)
         journal = {
             "schema_version": "phase3-training-journal-v1",
             "step": progress.optimizer_step,
@@ -536,6 +542,7 @@ def run_training(
         expected_source_commit=source_commit,
         device=device,
     )
+    authenticate_production_execution(config, manifest=manifest, source_commit=source_commit)
     weights = export_weights(
         run_dir, selected_restore.model, config=config, source_commit=source_commit
     )

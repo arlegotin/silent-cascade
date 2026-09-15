@@ -94,10 +94,12 @@ PHASE3_SOURCE_PATHS = (
     "src/silent_cascade/train/curriculum_data.py",
     "src/silent_cascade/train/evidence.py",
     "src/silent_cascade/train/evidence_types.py",
+    "src/silent_cascade/train/execution.py",
     "src/silent_cascade/train/numeric_inventory.py",
     "src/silent_cascade/train/objective.py",
     "src/silent_cascade/train/observations.py",
     "src/silent_cascade/train/provenance.py",
+    "src/silent_cascade/train/run_directory.py",
     "src/silent_cascade/train/state.py",
     "src/silent_cascade/train/traces.py",
     "src/silent_cascade/train/trainer.py",
@@ -189,7 +191,7 @@ def authenticate_source(root: Path, source: str, plan: str) -> str:
     return head
 
 
-def validate_config(config, root):
+def validate_config(config, root, *, allow_empty_sources=False):
     if not isinstance(config, ResolvedConfig) or not isinstance(config.config, Phase3Config):
         raise ProvenanceError("expected resolved Phase3Config")
     expected = (
@@ -199,11 +201,16 @@ def validate_config(config, root):
         "configs/model/neural_components.yaml",
         config.config.training.overlay_path,
     )
-    if tuple(relative(root, path) for path in config.source_paths) != expected:
-        raise ProvenanceError("gate requires the exact ordered source configuration overlays")
     if (
-        resolve_config(Phase3Config, tuple(root / name for name in expected)).sha256
-        != config.sha256
+        not (allow_empty_sources and not config.source_paths)
+        and tuple(relative(root, path) for path in config.source_paths) != expected
+    ):
+        raise ProvenanceError("gate requires the exact ordered source configuration overlays")
+    resolved = resolve_config(Phase3Config, tuple(root / name for name in expected))
+    if (
+        resolved.sha256 != config.sha256
+        or resolved.canonical_json != config.canonical_json
+        or resolved.canonical_json != canonical_json_bytes(config.config)
     ):
         raise ProvenanceError("configuration differs from committed overlays")
     return expected

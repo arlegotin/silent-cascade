@@ -2,6 +2,27 @@
 
 This append-only log records necessary, explicitly approved departures from the canonical Silent Cascade design.
 
+## 2026-09-15 — Final Phase 3 execution authentication
+
+Whole-phase findings I1 and M1 require one collective interface-hardening wave.
+Production producers now authenticate the actual loaded checkout and committed
+recipe before compute, and recheck before durable publication. Run directory
+creation uses no-follow descriptors so symlink rejection has no target writes.
+Portable debug profiles remain non-acceptance. Archive codecs, model math,
+optimizer, examples, budgets and tolerances are unchanged.
+
+This changes the literal execution closure of the independently authenticated
+historical content-v2 result at `061fd4079f30956b3f51c706bbb374eb5ae0c2db`.
+Its gate SHA-256 `4090494bd7b3fc072a4654a3ed5c9eaf6a5d65afe7cf9402394f791f8191a0e0`
+and corpus SHA-256 `2d36a77d8ea1a0b361553a321bd4af9405539e310c1bc432d2036ab4c17eb412`
+remain unchanged and supported as historical evidence. They are not relabeled.
+Current acceptance therefore designates the separate `*-content-v2-authenticated.json`
+corpus/gate paths and temporarily restores the Phase 3 In progress row.
+After one scoped rereview, the fresh seed-11 unchanged-recipe run regenerates
+the same ordered corpus under the new source envelope and runs to its natural
+stopping rule. Extra local compute/storage is the tradeoff; neither evidence
+selection nor scientific protocol is relaxed. See Phase 3 plan Section 8.
+
 ## Current status
 
 ## 2026-09-15 — Close independent Phase 3 numeric and raw-position coverage

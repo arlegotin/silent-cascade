@@ -155,6 +155,8 @@ def _trust(report, manifest_raw, root, expected):
                 "src/silent_cascade/train/content_unroll.py",
                 "src/silent_cascade/train/objective.py",
                 "src/silent_cascade/train/numeric_inventory.py",
+                "src/silent_cascade/train/execution.py",
+                "src/silent_cascade/train/run_directory.py",
                 "configs/train/one_hop_content_v2.yaml",
                 "configs/train/smoke_content_v2.yaml",
                 "manifests/validation/phase3/delivery.json",

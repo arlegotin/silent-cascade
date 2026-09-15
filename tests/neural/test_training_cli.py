@@ -55,6 +55,7 @@ def test_real_fit_resume_and_evaluate(cli_inputs, tmp_path):
     fit = runner.invoke(app, fit_args(manifest, directory))
     assert fit.exit_code == 0, fit.output
     result = FitSuccess.model_validate_json(fit.stdout)
+    assert result.publication == "debug"
     assert result.result.progress.optimizer_step == 4
     assert result.result.weights.config_sha256 == config.sha256
     conflict = runner.invoke(app, fit_args(manifest, directory))

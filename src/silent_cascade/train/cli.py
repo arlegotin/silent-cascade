@@ -12,17 +12,23 @@ from typer.core import TyperGroup
 from silent_cascade.config import resolve_config
 from silent_cascade.errors import SilentCascadeError
 from silent_cascade.eval.compute import NeuralComputeSnapshot
-from silent_cascade.train.checkpoints import _device, _expected_hash, load_weight_bundle
+from silent_cascade.train.checkpoints import (
+    _device,
+    _expected_hash,
+    load_weight_bundle,
+    read_weight_metadata,
+)
 from silent_cascade.train.component_eval import (
     ComponentMetrics,
     ComponentPrediction,
     evaluate_components,
 )
 from silent_cascade.train.config import Phase3Config
+from silent_cascade.train.execution import authenticate_production_execution
 from silent_cascade.train.state import TrainingError
 from silent_cascade.train.trainer import (
     TrainingRunResult,
-    _manifest_corpus,
+    _manifest_metadata,
     _write_json,
     run_training,
 )
@@ -42,14 +48,16 @@ class ErrorResponse(StrictModel):
 
 
 class FitSuccess(StrictModel):
-    schema_version: Literal["phase3-fit-result-v1"] = "phase3-fit-result-v1"
+    schema_version: Literal["phase3-fit-result-v2"] = "phase3-fit-result-v2"
     status: Literal["ok"] = "ok"
+    publication: Literal["debug", "production"]
     foundation_model_calls: Literal[0] = 0
     result: TrainingRunResult
 
 
 class EvaluationArtifact(StrictModel):
-    schema_version: Literal["phase3-component-evaluation-v1"] = "phase3-component-evaluation-v1"
+    schema_version: Literal["phase3-component-evaluation-v2"] = "phase3-component-evaluation-v2"
+    publication: Literal["debug", "production"]
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     checkpoint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -66,8 +74,9 @@ class EvaluationArtifact(StrictModel):
 
 
 class EvaluationSuccess(StrictModel):
-    schema_version: Literal["phase3-evaluate-result-v1"] = "phase3-evaluate-result-v1"
+    schema_version: Literal["phase3-evaluate-result-v2"] = "phase3-evaluate-result-v2"
     status: Literal["ok"] = "ok"
+    publication: Literal["debug", "production"]
     output: str
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     checkpoint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -128,7 +137,12 @@ def fit(
         resume=resume,
         device=device,
     )
-    typer.echo(FitSuccess(result=result).model_dump_json())
+    typer.echo(
+        FitSuccess(
+            result=result,
+            publication="production" if resolved.config.training.is_production else "debug",
+        ).model_dump_json()
+    )
 
 
 @app.command("evaluate-components")
@@ -142,14 +156,16 @@ def evaluate(
     _device("cpu")
     if output.exists() or output.is_symlink():
         raise TrainingError("Evaluation output already exists")
+    config, source = read_weight_metadata(weights, expected_sha256=expected_checkpoint_sha256)
+    metadata, manifest_hash = _manifest_metadata(config, manifest, source)
+    authenticate_production_execution(config, manifest=metadata, source_commit=source)
     restored = load_weight_bundle(weights, expected_sha256=expected_checkpoint_sha256, device="cpu")
-    corpus, manifest_hash = _manifest_corpus(
-        restored.config, manifest, restored.descriptor.source_commit
-    )
+    corpus = metadata.build_corpus(config.config)
     evaluation = evaluate_components(
         restored.model, corpus, batch_size=restored.config.config.training.batch_size
     )
     artifact = EvaluationArtifact(
+        publication=metadata.publication,
         source_commit=restored.descriptor.source_commit,
         config_sha256=restored.config.sha256,
         checkpoint_sha256=expected_checkpoint_sha256,
@@ -165,9 +181,11 @@ def evaluate(
             for counter in evaluation.compute
         ),
     )
+    authenticate_production_execution(config, manifest=metadata, source_commit=source)
     digest = _write_json(output, artifact)
     typer.echo(
         EvaluationSuccess(
+            publication=metadata.publication,
             output=str(output),
             output_sha256=digest,
             checkpoint_sha256=expected_checkpoint_sha256,

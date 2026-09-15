@@ -400,8 +400,8 @@ def _assert_phase3_delivery_state(root, plan_index):
     assert mapping == {
         "schema_version": "phase3-delivery-map-v1",
         "recipe": "teacher_timed_plus_content_v2",
-        "manifest": "manifests/validation/phase3/one-hop-10000-content-v2.json",
-        "gate": "manifests/validation/phase3/component-gate-content-v2.json",
+        "manifest": "manifests/validation/phase3/one-hop-10000-content-v2-authenticated.json",
+        "gate": "manifests/validation/phase3/component-gate-content-v2-authenticated.json",
     }
     legacy = root / "manifests/validation/phase3/component-gate.json"
     assert not legacy.exists() and not legacy.is_symlink(), "conflicting legacy designated gate"
@@ -448,7 +448,9 @@ def test_phase3_corpus_is_not_completion_and_present_gate_cannot_be_unearned(tmp
     (directory / "delivery.json").write_text(
         (ROOT / "manifests/validation/phase3/delivery.json").read_text()
     )
-    (directory / "one-hop-10000.json").write_text("{}")
+    (directory / "one-hop-10000-content-v2-authenticated.json").write_text("{}")
+    # Both historical envelopes may remain; neither can substitute for the designation.
+    (directory / "component-gate-content-v2.json").write_text('{"passed":true}')
     _assert_phase3_delivery_state(tmp_path, index)
     with pytest.raises(AssertionError):
         _assert_phase3_delivery_state(
@@ -458,7 +460,7 @@ def test_phase3_corpus_is_not_completion_and_present_gate_cannot_be_unearned(tmp
     with pytest.raises(AssertionError):
         _assert_phase3_delivery_state(tmp_path, index)
     (directory / "component-gate.json").unlink()
-    (directory / "component-gate-content-v2.json").write_text(
+    (directory / "component-gate-content-v2-authenticated.json").write_text(
         '{"objective_version":"teacher_timed_plus_content_v2","passed":false}'
     )
     with pytest.raises(AssertionError):
@@ -484,8 +486,8 @@ def test_phase3_delivery_map_cannot_bypass_verification(tmp_path, mutation):
     mapping = {
         "schema_version": "phase3-delivery-map-v1",
         "recipe": "teacher_timed_plus_content_v2",
-        "manifest": "manifests/validation/phase3/one-hop-10000-content-v2.json",
-        "gate": "manifests/validation/phase3/component-gate-content-v2.json",
+        "manifest": "manifests/validation/phase3/one-hop-10000-content-v2-authenticated.json",
+        "gate": "manifests/validation/phase3/component-gate-content-v2-authenticated.json",
     }
     if mutation == "recipe":
         mapping["recipe"] = "teacher_timed_v1"
@@ -495,7 +497,9 @@ def test_phase3_delivery_map_cannot_bypass_verification(tmp_path, mutation):
         (directory / "component-gate.json").write_text("{}")
     path.write_text(json.dumps(mapping))
     if mutation == "symlink":
-        (directory / "component-gate-content-v2.json").symlink_to(tmp_path / "absent.json")
+        (directory / "component-gate-content-v2-authenticated.json").symlink_to(
+            tmp_path / "absent.json"
+        )
     with pytest.raises(AssertionError):
         _assert_phase3_delivery_state(tmp_path, "| 3 — Neural components | plan | In progress. |")
 

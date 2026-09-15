@@ -2330,3 +2330,196 @@ Carry the extra exposure and measured training compute into the Phase5 baseline
 plan so every recurrent comparator receives equivalent content supervision.
 This is a versioned component-training correction, not factor-four tuning of
 the original loss coefficients, a scientific protocol change or a new claim.
+
+## 8. Final Review Hardening — 2026-09-15
+
+This is the single collective fix wave from the whole-phase review of
+`daa729d..4829bbcaaca64725d62ef06db6606b464fe353d6`, under the user's standing
+approval for reversible in-scope plan corrections. It addresses Important I1
+(production execution-source authentication) and Minor M1 (directory creation
+before symlink rejection). It does not change the canonical specification,
+model, objective, optimizer, corpus examples, numeric tolerances or acceptance
+gates. Preserve the full review and both historical production attempts.
+
+### Design and evidence ruling
+
+Use a shared production preflight at the callable training boundary and before
+standalone evaluation constructs a model. Read bounded manifest/archive metadata,
+authenticate the actual loaded checkout and its declared source closure, and
+validate canonical configuration before generating the corpus or creating output.
+Both initial fit and resume go through the same boundary. Reuse the existing
+`authenticate_source` mechanism; do not build a competing trust-anchor system.
+Debug profiles remain explicitly non-acceptance and continue to run from an
+installed wheel outside Git. Low-level tensor/weight loading is not itself a
+publication claim and does not require every unit-test model to live in Git.
+
+Create run/attempt directories only through validated no-follow directory
+descriptors. Preserve the existing archive codec and its protections. An invalid
+leaf symlink or symlinked ancestor must be rejected before its target is modified.
+
+The retained `061fd4079f30956b3f51c706bbb374eb5ae0c2db` run was independently
+authenticated at launch and collection; its result is supported, not erased or
+relabeled by these interface findings. Nevertheless, correcting files in the
+literal execution closure makes its gate incompatible with current-source
+acceptance. Preserve that gate and corpus at their existing paths and designate
+a separately identified final-source corpus/gate. Do not weaken closure checks
+or transfer historical training to a new source label. After source fixes and
+the one scoped rereview pass, execute one fresh unchanged-recipe run for final
+acceptance. This run regenerates current-source evidence; rejected-input tests
+themselves require no long training. Cost: additional local compute and storage,
+but no altered validation selection, mathematical training or scientific gate.
+
+### Files and interfaces
+
+- Create `src/silent_cascade/train/execution.py` for shared production-source
+  preflight, and `src/silent_cascade/train/run_directory.py` for no-follow
+  directory preparation/attempt creation.
+- Modify only the necessary Phase3 portions of `train/trainer.py`,
+  `train/cli.py`, `train/provenance.py`, and, if a metadata-only public accessor
+  is needed, `train/checkpoints.py`. Reuse `_read`/bounded archive validation;
+  do not change tensor/archive formats or checkpoint selection.
+- Add new source paths to both literal source-closure inventories, including
+  `scripts/verify_phase3_gate_artifact.py`'s independent inventory. Do not remove
+  existing paths or weaken byte/origin/ancestry checks.
+- Update `manifests/validation/phase3/delivery.json` and its exact integration
+  expectations for the new designated paths below. Existing historical gates
+  cannot substitute for the new designated gate.
+- Add `tests/neural/test_production_execution.py` and
+  `tests/neural/test_run_directory.py`; extend the existing CLI, trainer,
+  provenance, checkpoint, package and delivery tests only as required.
+- Update `docs/PLAN.md`'s Phase3 row to In progress while the new designated
+  gate is absent; preserve Phase1/2 rows. Document the findings and immutable
+  historical result in `docs/phase3-neural-components.md` and `docs/deviations.md`.
+- No changes to any frozen Phase1/2 source, specification, prior phase plans,
+  historical corpus/gate bytes, model/loss/configuration values, or CI/CD.
+
+Required shared interface:
+
+```python
+def authenticate_production_execution(
+    config: ResolvedConfig[Phase3Config],
+    *,
+    manifest: ComponentManifest,
+    source_commit: str,
+) -> None:
+    """Reject misattributed production execution; debug is non-acceptance."""
+
+def prepare_run_directory(path: Path, *, resume: bool) -> Path:
+    """Validate/create a real run directory without following symlinks."""
+
+def create_attempt_directory(path: Path) -> Path:
+    """Create one unique attempt through a validated directory descriptor."""
+```
+
+Extract metadata-only manifest validation from `_manifest_corpus` without
+changing its schema/key/seed/profile checks or the corpus it builds. Production
+authentication uses the manifest's source/plan identities and the actual package
+root, validates loaded local dependency origins, and compares the canonical
+configuration with the exact committed recipe. Nonempty configuration source
+paths must be the exact ordered overlays. A configuration decoded from a checked
+weights archive may have empty source paths; reconstruct and compare the committed
+recipe instead of trusting absent paths. Existing checkpoint/index/source fields
+retain the verified identity; a new archive format is not required merely to
+repeat that field. Recheck execution identity before durable production checkpoint
+or final evaluation publication so source changes during a run fail loudly.
+
+For standalone evaluation, verify bounded weights metadata and expected archive
+hash before authentication, then call the normal checked model loader with that
+same hash. Do not construct a model or regenerate a corpus first. A second bounded
+archive read is acceptable; do not add a new codec to avoid it. Debug/package
+outputs must remain unmistakably ineligible for production acceptance.
+
+### Ordered fix and validation steps
+
+- [ ] **Step 1 — Reproduce I1 and M1 without a production fit.** Use the real
+  isolated-checkout/child-process helpers in `test_phase3_provenance.py`. A
+  production manifest, archive and source label must agree while the executing
+  source is changed, stale or loaded from a foreign package. Exercise CLI fit,
+  callable fit, both resume paths and evaluation. Assert typed rejection before
+  corpus generation, model construction, RNG restoration or any output creation.
+  Use downstream sentinels to stop immediately if the old implementation crosses
+  that boundary; do not run 75,000 updates to demonstrate a missing preflight.
+  Test dirty and separately committed source changes and foreign dependency origins.
+
+  The directory regression must observe the real target tree, not only an error:
+
+  ```python
+  def test_symlink_run_rejection_has_no_target_side_effects(tmp_path, smoke_config):
+      from silent_cascade.train.trainer import run_training
+      from silent_cascade.train.state import TrainingError
+      from .test_trainer import _manifest
+
+      target = tmp_path / "target"
+      target.mkdir()
+      link = tmp_path / "run-link"
+      link.symlink_to(target, target_is_directory=True)
+      manifest = _manifest(smoke_config, tmp_path / "manifest.json")
+      before = tuple(target.iterdir())
+      with pytest.raises(TrainingError):
+          run_training(smoke_config, validation_manifest=manifest, run_dir=link,
+                       source_commit="a" * 40, device="cpu")
+      assert tuple(target.iterdir()) == before
+  ```
+
+  Reuse/import the existing `smoke_config` fixture explicitly in the new test
+  module. Add the ancestor variant `run-link/new/run`, asserting that neither
+  intermediate nor attempt directories appear in the target. Cover a legitimate
+  empty real run, fresh missing real parents, and resume of an existing real run.
+- [ ] **Step 2 — Apply the minimal source and directory fixes.** All production
+  producer routes call the checked boundary; debug remains non-acceptance and
+  both installed-wheel smoke profiles still work. No model-math, corpus, loss,
+  optimizer, budget or tolerance changes. Directory operations use `O_NOFOLLOW`,
+  `O_DIRECTORY` and descriptor-relative creation, close descriptors on every exit,
+  and preserve the existing explicit-resume/nonempty-run behavior. Unique attempt
+  naming must not consume the Python/NumPy/Torch training RNG streams.
+- [ ] **Step 3 — Refresh delivery identity honestly.** Set the new fixed map
+  below and an In progress row; retain both older corpora/gates unchanged. Extend
+  delivery regressions for missing/new/conflicting gates and forged Complete rows.
+  No archived or merely asserted success may satisfy the new designation.
+- [ ] **Step 4 — Verify and commit the source fix.** Run focused RED/GREEN and
+  covering CLI/trainer/checkpoint/provenance/package/import/delivery regressions,
+  local Ruff and the full local `make verify`. Commit this plan clarification
+  with the source fix and truthful delivery state. On the clean committed source,
+  run a real same-recipe debug smoke plus native production-B128 parity/CPU+MPS
+  resume and the independent complete-inventory checks, using unchanged tolerances.
+  Retain actual commands/exits/hashes. These are prerequisites, not a new fit.
+- [ ] **Step 5 — One scoped rereview, then release execution.** The same final
+  reviewer verifies I1, M1 and fix-introduced breakage against the full fix diff,
+  including the new source/data boundary. Do not launch the final production run
+  before that review passes. Later generated evidence and final local exits remain
+  explicit pending conditions resolved from actual artifacts by the controller;
+  no second broad review or second independent source-fix wave is authorized here.
+- [ ] **Step 6 — Regenerate final current-source acceptance.** Capture the reviewed
+  source and latest effective primary-plan revision, reissue exactly the same
+  10,000 ordered examples under the new source envelope, verify equality with
+  both historical corpora, and commit only that manifest before fitting. Use
+  fresh seed11, the unchanged content-v2 recipe and the exact Task13 workload,
+  CPU OMP1, one live process, persistent owner-only storage and no silent restart.
+  Run to its natural stopping rule. Retain every validation and adverse outcome.
+  Export the actual selected weights; perform both complete CPU evaluations,
+  actual configured native evidence collection and independent verification.
+  Never relabel or resume either completed historical run under the new source.
+- [ ] **Step 7 — Finish delivery from actual evidence.** Only a valid passing
+  new gate permits the exact Complete row. Append the full new history/variant/
+  action/compute/numeric/source/config/manifest/weights data and reproduction
+  commands while preserving all historical results. Run Task13's precommit and
+  postcommit local gates and final independent verifier; commit only compatible
+  artifacts/docs. The controller checks every remaining scoped-review condition,
+  preserves all coordination/diagnostic evidence, and performs the prescribed
+  final cleanup. Do not start Phase4 or claim autonomous timed OFD success.
+
+### Final-source identities (recipe and schemas unchanged)
+
+| Item | Designated identity |
+| --- | --- |
+| Training overlay | `configs/train/one_hop_content_v2.yaml` |
+| Smoke overlay | `configs/train/smoke_content_v2.yaml` |
+| Corpus | `manifests/validation/phase3/one-hop-10000-content-v2-authenticated.json` |
+| Acceptance artifact | `manifests/validation/phase3/component-gate-content-v2-authenticated.json` |
+| Logical run | `phase3-components/event_flow/11/one-hop-content-v2-authenticated` |
+| Execution-log namespace | `phase3-task13-final-hardening` |
+
+The recipe stays `teacher_timed_plus_content_v2`, coefficient1.0 and epsilon1e-6;
+the component/numeric evidence envelopes remain v3 unless their actual primitive
+schema changes. Source/plan/manifest/run identities change; historical bytes do
+not. The new corpus is not a new draw or validation-selection opportunity.
