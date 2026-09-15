@@ -27,12 +27,14 @@ _ALLOCATION_NAMES = {
 class TrainingConfig(StrictModel):
     """Bounded AdamW workload for the supported Phase 3 execution profiles."""
 
-    profile: Literal["phase3_one_hop", "phase3_smoke"]
+    profile: Literal[
+        "phase3_one_hop", "phase3_smoke", "phase3_one_hop_content_v2", "phase3_smoke_content_v2"
+    ]
     optimizer: Literal["adamw"] = "adamw"
     learning_rate: Literal[3.0e-4] = 3.0e-4
     weight_decay: Literal[1.0e-4] = 1.0e-4
     betas: tuple[Literal[0.9], Literal[0.999]] = (0.9, 0.999)
-    epsilon: Literal[1.0e-7] = 1.0e-7
+    epsilon: Literal[1.0e-7, 1.0e-6] = 1.0e-7
     foreach: Literal[False] = False
     fused: Literal[False] = False
     scheduler: Literal["none"] = "none"
@@ -51,6 +53,38 @@ class TrainingConfig(StrictModel):
     validation_public_id_seed: Literal[337] = 337
     curriculum_version: Literal["ofd-one-hop-v1"] = "ofd-one-hop-v1"
     loss_weights: LossWeights = Field(default_factory=LossWeights)
+
+    @property
+    def is_production(self) -> bool:
+        return self.profile in ("phase3_one_hop", "phase3_one_hop_content_v2")
+
+    @property
+    def curriculum_stage(self) -> str:
+        return "one_hop" if self.is_production else "smoke"
+
+    @property
+    def objective_version(self) -> str:
+        return (
+            "teacher_timed_plus_content_v2"
+            if self.profile in ("phase3_one_hop_content_v2", "phase3_smoke_content_v2")
+            else "teacher_timed_v1"
+        )
+
+    @property
+    def content_auxiliary_weight(self) -> float:
+        return 1.0 if self.objective_version == "teacher_timed_plus_content_v2" else 0.0
+
+    @property
+    def overlay_path(self) -> str:
+        return "configs/train/" + self.profile.removeprefix("phase3_") + ".yaml"
+
+    @property
+    def smoke_overlay_path(self) -> str:
+        return (
+            "configs/train/smoke_content_v2.yaml"
+            if self.content_auxiliary_weight
+            else "configs/train/smoke.yaml"
+        )
 
     @field_validator("betas", mode="before")
     @classmethod
@@ -105,12 +139,11 @@ class TrainingConfig(StrictModel):
             self.validation_every_steps,
             self.fixed_validation_episodes,
         )
-        expected = {
-            "phase3_one_hop": (128, 75_000, 1_000, 10_000),
-            "phase3_smoke": (8, 4, 2, 16),
-        }[self.profile]
+        expected = (128, 75_000, 1_000, 10_000) if self.is_production else (8, 4, 2, 16)
         if workload != expected:
             raise ValueError(f"{self.profile} workload must equal its approved bounded profile")
+        if self.epsilon != (1e-6 if self.content_auxiliary_weight else 1e-7):
+            raise ValueError("AdamW epsilon must match the approved objective profile")
         return self
 
 

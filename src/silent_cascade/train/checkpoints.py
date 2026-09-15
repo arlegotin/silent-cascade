@@ -376,9 +376,7 @@ def _descriptor(metadata: _Metadata, filename: str, sha: str) -> CheckpointDescr
         config_sha256=metadata.config_sha256,
         source_commit=metadata.source_commit,
         optimizer_step=progress.optimizer_step if progress else 0,
-        stage=progress.stage
-        if progress
-        else ("smoke" if config.training.profile == "phase3_smoke" else "one_hop"),
+        stage=progress.stage if progress else config.training.curriculum_stage,
         validation_metric=(
             progress.validation_metric
             if progress.validation_metric is not None

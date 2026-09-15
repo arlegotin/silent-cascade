@@ -20,6 +20,10 @@ def checkout(path):
         )
     for name in ("pyproject.toml", "uv.lock", ".gitignore"):
         shutil.copy2(ROOT / name, path / name)
+    mapping = Path("manifests/validation/phase3/delivery.json")
+    if (ROOT / mapping).exists():
+        (path / mapping).parent.mkdir(parents=True)
+        shutil.copy2(ROOT / mapping, path / mapping)
     for args in (
         ("init", "-q"),
         ("config", "user.email", "test@example.invalid"),
@@ -53,7 +57,7 @@ from silent_cascade.train.provenance import freeze_component_manifest
 root = Path.cwd()
 source = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
 paths = ['configs/base.yaml','configs/data/primary.yaml','configs/model/event_flow.yaml',
-         'configs/model/neural_components.yaml','configs/train/smoke.yaml']
+         'configs/model/neural_components.yaml','configs/train/smoke_content_v2.yaml']
 config = resolve_config(Phase3Config, tuple(Path(p) for p in paths))
 manifest_path = root / 'component-manifest.json'
 manifest = freeze_component_manifest(config, source_commit=source, plan_revision=source,
@@ -69,6 +73,10 @@ def test_source_closure_includes_ancestor_initializers_and_execution_consumers()
         "train/observations.py",
         "train/checkpoints.py",
         "train/verification.py",
+        "train/objective.py",
+        "train/content_unroll.py",
+        "models/content_loss.py",
+        "models/content_types.py",
         "train/evidence_types.py",
         "models/__init__.py",
         "train/__init__.py",
@@ -93,11 +101,13 @@ assert manifest.count == 16 and manifest.publication == 'debug'
 assert [e.key.episode_index for e in manifest.entries] == list(range(16))
 assert all(e.key.root_seed == 313 and e.key.public_id_seed == 337 for e in manifest.entries)
 original = manifest_path.read_bytes()
+subprocess.run(['git','add','component-manifest.json'], check=True)
+subprocess.run(['git','commit','-qm','introduce immutable manifest'], check=True)
 try:
-    freeze_component_manifest(config, source_commit=source,
-                              plan_revision=source, output_path=manifest_path)
-except ProvenanceError:
-    pass
+    from silent_cascade.train.provenance import publish
+    publish(manifest_path, {'collision': 'different manifest bytes'})
+except ProvenanceError as error:
+    assert 'publication' in str(error) or 'exist' in str(error)
 else:
     raise AssertionError('freeze overwrote an existing recipe')
 assert manifest_path.read_bytes() == original

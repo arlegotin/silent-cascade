@@ -96,12 +96,63 @@ def test_independent_verifier_accepts_real_debug_and_refuses_acceptance(debug_co
         "compute_bilinear",
         "compute_memory",
         "compute_module_calls",
+        "objective",
+        "coefficient",
+        "optimizer",
+        "missing_timed_numeric",
+        "missing_content_numeric",
+        "missing_step",
+        "step_loss",
+        "step_counter",
+        "counter_zero",
+        "offline_objective",
+        "raw_row_total",
+        "auxiliary_denominator",
+        "numeric_counter",
+        "missing_forward_context",
     ],
 )
 def test_independent_verifier_rejects_raw_tampering(debug_component_gate, tmp_path, kind):
     gate = debug_component_gate
     raw = json.loads((gate / "component-gate.json").read_bytes())
-    if kind == "count":
+    if kind == "raw_row_total":
+        raw["training"]["diagnostic_samples"][0]["result"]["per_position"][
+            "content/retrieval"
+        ].pop()
+    elif kind == "auxiliary_denominator":
+        result = raw["training"]["diagnostic_samples"][0]["result"]
+        result["denominators"]["content/retrieval"] *= 2
+        result["numerators"]["content/retrieval"] *= 2
+    elif kind == "numeric_counter":
+        raw["numeric"]["parity"]["forward"]["compared"] -= 1
+    elif kind == "missing_forward_context":
+        data = raw["numeric"]["parity"]["forward"]
+        key = "/content/final_context/workspace/latent"
+        data["tested_names"].remove(key)
+        data["compared"] -= data["tensor_elements"].pop(key)
+    elif kind == "objective":
+        raw["objective_version"] = "teacher_timed_v1"
+    elif kind == "coefficient":
+        raw["auxiliary_coefficient"] = 0.0
+    elif kind == "optimizer":
+        raw["numeric"]["parity"]["optimizer_options"]["eps"] = 1e-7
+    elif kind in ("missing_timed_numeric", "missing_content_numeric"):
+        prefix = "/timed/" if kind == "missing_timed_numeric" else "/content/"
+        data = raw["numeric"]["parity"]["forward"]
+        data["tested_names"] = [
+            name for name in data["tested_names"] if not name.startswith(prefix)
+        ]
+    elif kind == "missing_step":
+        raw["training"]["diagnostic_samples"].pop()
+    elif kind == "step_loss":
+        raw["training"]["diagnostic_samples"][0]["result"]["terms"].pop("content/retrieval")
+    elif kind == "step_counter":
+        raw["training"]["step_counters"].pop()
+    elif kind == "counter_zero":
+        raw["numeric"]["cpu_resume"]["first_example_hashes"] = []
+    elif kind == "offline_objective":
+        raw["offline"]["objective_version"] = "teacher_timed_v1"
+    elif kind == "count":
         raw["summary"]["complete_chain_correct"] += 1
     elif kind == "bool":
         raw["summary"]["complete_chain_correct"] = False

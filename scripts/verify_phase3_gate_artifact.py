@@ -147,6 +147,20 @@ def _trust(report, manifest_raw, root, expected):
         tuple(p["source_paths"]) == paths == tuple(sorted(set(paths))),
         "source closure substitution",
     )
+    _require(
+        set(
+            (
+                "src/silent_cascade/models/content_loss.py",
+                "src/silent_cascade/models/content_types.py",
+                "src/silent_cascade/train/content_unroll.py",
+                "src/silent_cascade/train/objective.py",
+                "configs/train/one_hop_content_v2.yaml",
+                "configs/train/smoke_content_v2.yaml",
+                "manifests/validation/phase3/delivery.json",
+            )
+        ).issubset(paths),
+        "objective source closure incomplete",
+    )
     digest = hashlib.sha256(b"silent-cascade/phase3/source-tree/v1\0")
     for name in paths:
         raw, encoded = _blob(root, source, name), name.encode()
@@ -195,12 +209,16 @@ def _trust(report, manifest_raw, root, expected):
     _executing_checkout(root)
 
     production = report["publication"] == "production"
+    from silent_cascade.train.config import parse_phase3_canonical
+
+    training = parse_phase3_canonical(p["config_canonical_json"]).training
+    _require(training.is_production is production, "profile publication mismatch")
     paths = [
         "configs/base.yaml",
         "configs/data/primary.yaml",
         "configs/model/event_flow.yaml",
         "configs/model/neural_components.yaml",
-        "configs/train/one_hop.yaml" if production else "configs/train/smoke.yaml",
+        training.overlay_path,
     ]
     _require(p["config_paths"] == paths, "configuration layer order mismatch")
     resolved = resolve_config(Phase3Config, tuple(root / name for name in paths))
@@ -334,26 +352,61 @@ def _summary(rows):
     return result
 
 
-def _numeric(report, config):
+def _objective_identity(data, training):
+    _require(
+        data["objective_version"] == training.objective_version
+        and type(data["auxiliary_coefficient"]) is float
+        and data["auxiliary_coefficient"] == training.content_auxiliary_weight,
+        "configured objective identity mismatch",
+    )
+
+
+def _optimizer_options(data, training):
+    expected = {
+        "lr": training.learning_rate,
+        "betas": list(training.betas),
+        "eps": training.epsilon,
+        "weight_decay": training.weight_decay,
+        "foreach": False,
+        "fused": False,
+        "amsgrad": False,
+        "maximize": False,
+        "capturable": False,
+        "differentiable": False,
+        "decoupled_weight_decay": True,
+    }
+    _require(
+        _canonical(data["optimizer_options"]) == _canonical(expected),
+        "configured optimizer mismatch",
+    )
+
+
+def _batch_hashes(config, counter):
+    return [example.example_hash for example in _batch_examples(config, counter)]
+
+
+def _batch_examples(config, counter):
     from silent_cascade.train.curriculum_data import CurriculumKey, make_curriculum_example
 
     training = config.config.training
+    return [
+        make_curriculum_example(
+            config.config,
+            CurriculumKey(
+                training.curriculum_version,
+                "train",
+                training.train_root_seed,
+                training.train_public_id_seed,
+                counter * training.batch_size + offset,
+                "one_hop",
+            ),
+        )
+        for offset in range(training.batch_size)
+    ]
 
-    def expected_batch(counter):
-        return [
-            make_curriculum_example(
-                config.config,
-                CurriculumKey(
-                    training.curriculum_version,
-                    "train",
-                    training.train_root_seed,
-                    training.train_public_id_seed,
-                    counter * training.batch_size + offset,
-                    "one_hop",
-                ),
-            ).example_hash
-            for offset in range(training.batch_size)
-        ]
+
+def _numeric(report, config):
+    training = config.config.training
 
     p, numeric = report["provenance"], report["numeric"]
     parity = numeric["parity"]
@@ -369,10 +422,39 @@ def _numeric(report, config):
         "missing actual native parity coverage",
     )
     _require(
-        parity["example_hashes"] == expected_batch(0),
+        parity["example_hashes"] == _batch_hashes(config, 0),
         "parity batch identity mismatch",
     )
-    continuation = expected_batch(1)
+    forward_names = set(parity["forward"]["tested_names"])
+    for branch in ("timed", "content") if training.content_auxiliary_weight else ("timed",):
+        _require(
+            all(
+                f"/{branch}/{path}" in forward_names
+                for path in (
+                    "final_context/workspace/latent",
+                    "final_context/workspace/accumulators",
+                    "final_context/memory_embeddings",
+                    "observations/0/context/workspace/latent",
+                )
+            ),
+            "missing objective forward tensors",
+        )
+        _require(
+            f"/{branch}/total" in parity["losses"]["tested_names"], "missing objective loss tensors"
+        )
+        required_terms, reductions = _loss_keys(branch)
+        for group, keys in (
+            ("terms", required_terms),
+            ("subterms", reductions),
+            ("numerators", reductions),
+            ("denominators", reductions),
+            ("per_position", reductions),
+        ):
+            _require(
+                all(f"/{branch}/{group}/{key}" in parity["losses"]["tested_names"] for key in keys),
+                "missing objective reduction tensors",
+            )
+    continuation = _batch_hashes(config, 1)
     for name, device, rtol, atol in (
         ("cpu_resume", "cpu", 0.0, 0.0),
         ("mps_resume", "mps", 1e-4, 1e-5),
@@ -380,7 +462,7 @@ def _numeric(report, config):
         data = numeric[name]
         _require(data["example_hashes"] == continuation, "resume batch identity mismatch")
         _require(
-            data["schema_version"] == f"phase3-{device}-resume-v1" and data["device"] == device,
+            data["schema_version"] == f"phase3-{device}-resume-v2" and data["device"] == device,
             "wrong resume device/schema",
         )
         _require(
@@ -393,7 +475,19 @@ def _numeric(report, config):
         )
         for kind in ("parameters", "optimizer", "losses"):
             _comparison(data[kind], rtol, atol)
+        _require(
+            data["first_example_hashes"] == _batch_hashes(config, 0),
+            "resume counter-zero batch missing",
+        )
+        if training.content_auxiliary_weight:
+            for branch in ("timed", "content"):
+                _require(
+                    f"{branch}/total" in data["losses"]["tested_names"],
+                    "resume objective context missing",
+                )
     for data in (parity, numeric["cpu_resume"], numeric["mps_resume"]):
+        _objective_identity(data, training)
+        _optimizer_options(data, training)
         _require(
             (data["python_version"], data["torch_version"], data["threads"])
             == (p["python_version"], p["torch_version"], p["threads"]),
@@ -415,10 +509,245 @@ def _comparison(data, rtol, atol):
         _require(
             data["max_absolute_error"] == data["max_relative_error"] == 0, "CPU resume is not exact"
         )
+    _require(
+        set(data["tensor_elements"]) == set(data["tested_names"])
+        and sum(data["tensor_elements"].values()) == data["compared"],
+        "incomplete numeric tensor counters",
+    )
+
+
+def _loss_keys(branch):
+    compose = {
+        "compose_role",
+        "compose_status",
+        "compose_confidence",
+        "compose_append_support",
+        "compose_continue_search",
+    }
+    if branch == "content":
+        terms = {"recall_available", "retrieval", "compose_type", "focus", "hazard", "log_delay"}
+        return terms, (terms - {"compose_type"}) | compose
+    terms = {
+        "guard",
+        "retrieval",
+        "compose_type",
+        "focus",
+        "hazard",
+        "deadline",
+        "action",
+        "action_time",
+        "state",
+        "event_cost",
+    }
+    reductions = {
+        "guard",
+        "guard_active_margin",
+        "guard_inactive_margin",
+        "guard_time",
+        "guard_race",
+        "guard_final_dormancy",
+        "retrieval",
+        "focus",
+        "hazard",
+        "deadline_log_delay",
+        "deadline_normalized",
+        "action_positive",
+        "action_abstention",
+        "action_time",
+        "state_slow_change",
+        "state_bound",
+        "event_cost",
+    } | compose
+    return terms, reductions
+
+
+def _step_diagnostics(sample, config):
+    from silent_cascade.schemas import InternalEventKind
+    from silent_cascade.train.traces import build_teacher_trace
+
+    training = config.config.training
+    values = sample["result"]
+    _objective_identity(values, training)
+    _require(
+        sample["example_hashes"] == _batch_hashes(config, sample["step"] - 1),
+        "step counter batch identity mismatch",
+    )
+    expected_keys = {
+        "terms": set(),
+        "subterms": set(),
+        "numerators": set(),
+        "denominators": set(),
+        "per_position": set(),
+    }
+    branches = ("timed", "content") if training.content_auxiliary_weight else ("timed",)
+    steps = [
+        step
+        for example in _batch_examples(config, sample["step"] - 1)
+        for step in build_teacher_trace(example).steps
+    ]
+    counts = {"retrieval": sum(step.kind is InternalEventKind.RECALL for step in steps)}
+    counts["recall_available"] = counts["retrieval"]
+    for key, attribute in (
+        ("compose_role", "role"),
+        ("compose_status", "status"),
+        ("compose_confidence", "confidence"),
+        ("compose_append_support", "append_support"),
+        ("compose_continue_search", "continue_search"),
+        ("focus", "focus"),
+        ("hazard", "hazard_type"),
+        ("log_delay", "log_delay"),
+        ("deadline_log_delay", "log_delay"),
+        ("deadline_normalized", "normalized_deadline"),
+    ):
+        counts[key] = sum(getattr(step, attribute) is not None for step in steps)
+
+    def close(left, right):
+        # Host reconciliation of archived float32 reductions; not a device tolerance.
+        return math.isclose(left, right, rel_tol=2e-6, abs_tol=1e-6)
+
+    def flatten(value):
+        return (
+            [v for child in value for v in flatten(child)] if isinstance(value, list) else [value]
+        )
+
+    for branch in branches:
+        prefix = branch + "/" if training.content_auxiliary_weight else ""
+        terms, reductions = _loss_keys(branch)
+        expected_keys["terms"].update(prefix + key for key in terms)
+        for group in ("subterms", "numerators", "denominators", "per_position"):
+            expected_keys[group].update(prefix + key for key in reductions)
+        for key in reductions:
+            full = prefix + key
+            numerator, denominator = values["numerators"][full], values["denominators"][full]
+            if key in counts:
+                _require(denominator == counts[key], "raw target reduction denominator mismatch")
+            _require(
+                type(denominator) is float and denominator >= 0 and denominator.is_integer(),
+                "invalid raw loss denominator",
+            )
+            _require(
+                close(values["subterms"][full], numerator / denominator if denominator else 0.0),
+                "raw reduction arithmetic mismatch",
+            )
+            raw = values["per_position"][full]
+            _require(
+                isinstance(raw, list) and len(raw) == training.batch_size,
+                "raw reduction row totals missing",
+            )
+            # Event-cost positions store per-boundary means; all other reductions
+            # store additive position contributions, including ragged jump states.
+            if key != "event_cost":
+                _require(close(sum(flatten(raw)), numerator), "raw position numerator mismatch")
+        term = {key: values["terms"][prefix + key] for key in terms}
+        sub = {key: values["subterms"][prefix + key] for key in reductions}
+        for key in terms & reductions:
+            _require(close(term[key], sub[key]), "training term reduction mismatch")
+        _require(
+            close(
+                term["compose_type"],
+                sum(
+                    sub["compose_" + key]
+                    for key in ("role", "status", "confidence", "append_support", "continue_search")
+                )
+                / 5,
+            ),
+            "compose group mismatch",
+        )
+        if branch == "timed":
+            _require(
+                close(
+                    term["deadline"], (sub["deadline_log_delay"] + sub["deadline_normalized"]) / 2
+                ),
+                "deadline group mismatch",
+            )
+            action = sub["action_positive"] + sub["action_abstention"]
+            if (
+                values["denominators"][prefix + "action_positive"]
+                and values["denominators"][prefix + "action_abstention"]
+            ):
+                action /= 2
+            _require(
+                close(term["action"], action)
+                and close(term["state"], sub["state_slow_change"] + sub["state_bound"]),
+                "action/state group mismatch",
+            )
+            total = sum(term[key] * getattr(training.loss_weights, key) for key in terms)
+        else:
+            total = sum(
+                term[key] * weight
+                for key, weight in (
+                    ("recall_available", 1),
+                    ("retrieval", 1),
+                    ("compose_type", 1),
+                    ("focus", 0.5),
+                    ("hazard", 1),
+                    ("log_delay", 0.125),
+                )
+            )
+        _require(close(values[branch + "_loss"], total), "branch objective total mismatch")
+    for group, keys in expected_keys.items():
+        _require(set(values[group]) == keys, "missing or extra step diagnostics")
+    _require(
+        close(
+            values["loss"],
+            values["timed_loss"]
+            + training.content_auxiliary_weight * (values["content_loss"] or 0.0),
+        ),
+        "combined objective arithmetic mismatch",
+    )
+    outer = values["compute"]
+    snapshots = [values[branch + "_compute"] for branch in branches]
+    for snapshot in [outer, *snapshots]:
+        _require(
+            snapshot["foundation_model_calls"] == 0 and snapshot["parameters"] > 0,
+            "training compute missing or nonzero foundation calls",
+        )
+    _require(
+        outer["backward_macs"] > 0 and all(s["backward_macs"] == 0 for s in snapshots),
+        "invalid forward/backward training accounting",
+    )
+    _require(
+        outer["estimated_macs"] == outer["forward_macs"], "training forward MAC estimate mismatch"
+    )
+    for field in (
+        "forward_macs",
+        "row_transitions",
+        "records_scored",
+        "eligible_records",
+        "flow_evaluations",
+        "jump_applications",
+        "opportunities",
+    ):
+        _require(
+            outer[field] == sum(s[field] for s in snapshots), "branch compute accounting mismatch"
+        )
+    for key in set(outer["module_calls"]) | {
+        key for snapshot in snapshots for key in snapshot["module_calls"]
+    }:
+        _require(
+            outer["module_calls"].get(key, 0)
+            == sum(s["module_calls"].get(key, 0) for s in snapshots),
+            "branch module call mismatch",
+        )
 
 
 def _training(report, config):
     p, data = report["provenance"], report["training"]
+    _objective_identity(data, config.config.training)
+    _require(
+        data["step_counters"] == list(range(data["step_count"])), "incomplete training counters"
+    )
+    _require(
+        data["objective_step_counts"]
+        == {config.config.training.objective_version: data["step_count"]},
+        "incomplete objective counters",
+    )
+    _require(
+        [sample["step"] for sample in data["diagnostic_samples"]] == [1, 2],
+        "missing counter-zero/one step diagnostics",
+    )
+    for sample in data["diagnostic_samples"]:
+        _step_diagnostics(sample, config)
     _path(data["run_path"])
     _path(data["result_path"])
     _require(
@@ -735,6 +1064,7 @@ def verify_phase3_gate_artifact(
         manifest_raw = read_bytes(manifest_path, MAX_ARTIFACT_BYTES)
         decode_json(manifest_raw, MAX_ARTIFACT_BYTES)
         config = _trust(raw, manifest_raw, repo_root, expected_source_commit)
+        _objective_identity(raw, config.config.training)
         from silent_cascade.train.curriculum_data import ComponentManifest
 
         manifest = ComponentManifest.model_validate_json(manifest_raw)
@@ -800,6 +1130,7 @@ def verify_phase3_gate_artifact(
         _numeric(raw, config)
         _training(raw, config)
         offline = raw["offline"]
+        _objective_identity(offline, config.config.training)
         _require(
             offline["training_steps"] == 1
             and offline["predicted_rows"] == 8
@@ -811,7 +1142,10 @@ def verify_phase3_gate_artifact(
         from silent_cascade.config import resolve_config
         from silent_cascade.train.config import Phase3Config
 
-        smoke_paths = [*raw["provenance"]["config_paths"][:-1], "configs/train/smoke.yaml"]
+        smoke_paths = [
+            *raw["provenance"]["config_paths"][:-1],
+            config.config.training.smoke_overlay_path,
+        ]
         _require(
             offline["config_sha256"]
             == resolve_config(Phase3Config, tuple(repo_root / path for path in smoke_paths)).sha256,

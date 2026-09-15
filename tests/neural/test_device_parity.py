@@ -25,6 +25,10 @@ def test_cpu_resume_evidence_is_exact_and_measured():
     assert evidence.batch_hash_mismatches == 0
     assert len(evidence.checkpoint_sha256) == 64
     assert evidence.config_sha256 == config.sha256
+    assert evidence.objective_version == "teacher_timed_v1"
+    assert evidence.auxiliary_coefficient == 0.0
+    assert evidence.optimizer_options["eps"] == 1e-7
+    assert len(evidence.first_example_hashes) == 8
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="native MPS unavailable")
@@ -91,7 +95,7 @@ def test_mps_resume_evidence_measures_native_draws_and_restores_rng(monkeypatch)
     monkeypatch.setattr(torch, "rand", tracked)
     evidence = measure_mps_resume(config, source_commit="a" * 40)
     assert evidence.passed and evidence.device == "mps"
-    assert evidence.schema_version == "phase3-mps-resume-v1"
+    assert evidence.schema_version == "phase3-mps-resume-v2"
     assert evidence.parameters.rtol == evidence.optimizer.rtol == evidence.losses.rtol == 1e-4
     assert evidence.parameters.atol == evidence.optimizer.atol == evidence.losses.atol == 1e-5
     assert len(draws) == 2 and torch.equal(draws[0], draws[1])

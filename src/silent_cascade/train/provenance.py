@@ -34,7 +34,10 @@ PHASE3_SOURCE_PATHS = (
     "configs/model/event_flow.yaml",
     "configs/model/neural_components.yaml",
     "configs/train/one_hop.yaml",
+    "configs/train/one_hop_content_v2.yaml",
     "configs/train/smoke.yaml",
+    "configs/train/smoke_content_v2.yaml",
+    "manifests/validation/phase3/delivery.json",
     "pyproject.toml",
     "scripts/check_phase3_components.py",
     "scripts/verify_phase3_gate_artifact.py",
@@ -67,6 +70,8 @@ PHASE3_SOURCE_PATHS = (
     "src/silent_cascade/models/__init__.py",
     "src/silent_cascade/models/common.py",
     "src/silent_cascade/models/config.py",
+    "src/silent_cascade/models/content_loss.py",
+    "src/silent_cascade/models/content_types.py",
     "src/silent_cascade/models/controller.py",
     "src/silent_cascade/models/dynamics.py",
     "src/silent_cascade/models/errors.py",
@@ -84,10 +89,12 @@ PHASE3_SOURCE_PATHS = (
     "src/silent_cascade/train/cli.py",
     "src/silent_cascade/train/component_eval.py",
     "src/silent_cascade/train/config.py",
+    "src/silent_cascade/train/content_unroll.py",
     "src/silent_cascade/train/curriculum.py",
     "src/silent_cascade/train/curriculum_data.py",
     "src/silent_cascade/train/evidence.py",
     "src/silent_cascade/train/evidence_types.py",
+    "src/silent_cascade/train/objective.py",
     "src/silent_cascade/train/observations.py",
     "src/silent_cascade/train/provenance.py",
     "src/silent_cascade/train/state.py",
@@ -189,9 +196,7 @@ def validate_config(config, root):
         "configs/data/primary.yaml",
         "configs/model/event_flow.yaml",
         "configs/model/neural_components.yaml",
-        "configs/train/one_hop.yaml"
-        if config.config.training.profile == "phase3_one_hop"
-        else "configs/train/smoke.yaml",
+        config.config.training.overlay_path,
     )
     if tuple(relative(root, path) for path in config.source_paths) != expected:
         raise ProvenanceError("gate requires the exact ordered source configuration overlays")
@@ -223,7 +228,7 @@ def freeze_component_manifest(
     relative(root, output_path)
     authenticate_source(root, source_commit, plan_revision)
     validate_config(config, root)
-    production = config.config.training.profile == "phase3_one_hop"
+    production = config.config.training.is_production
     examples = tuple(
         make_curriculum_example(
             config.config,

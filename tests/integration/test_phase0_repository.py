@@ -385,14 +385,32 @@ def _assert_phase2_frozen_baseline(root, plan_index):
 
 
 def _assert_phase3_delivery_state(root, plan_index):
+    import json
+
     rows = [line for line in plan_index.splitlines() if line.startswith("| 3 —")]
     assert len(rows) == 1
     cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
-    path = root / "manifests/validation/phase3/component-gate.json"
+    map_path = root / "manifests/validation/phase3/delivery.json"
+    for parent in map_path.parents:
+        assert not parent.is_symlink()
+        if parent == root:
+            break
+    assert map_path.is_file() and not map_path.is_symlink()
+    mapping = json.loads(map_path.read_bytes())
+    assert mapping == {
+        "schema_version": "phase3-delivery-map-v1",
+        "recipe": "teacher_timed_plus_content_v2",
+        "manifest": "manifests/validation/phase3/one-hop-10000-content-v2.json",
+        "gate": "manifests/validation/phase3/component-gate-content-v2.json",
+    }
+    legacy = root / "manifests/validation/phase3/component-gate.json"
+    assert not legacy.exists() and not legacy.is_symlink(), "conflicting legacy designated gate"
+    path = root / mapping["gate"]
     if not path.exists() and not path.is_symlink():
         assert re.match(r"^(?:Proposed|In progress)(?:[;:.]|$)", cell)
         return
     assert path.is_file() and not path.is_symlink()
+    assert json.loads(path.read_bytes()).get("objective_version") == mapping["recipe"]
     match = _PHASE3_COMPLETE_GATE.fullmatch(cell)
     assert match is not None, "present Phase 3 gate requires exact completion metadata"
     from silent_cascade.errors import SilentCascadeError
@@ -403,7 +421,7 @@ def _assert_phase3_delivery_state(root, plan_index):
     try:
         result = verify(
             artifact_path=path,
-            manifest_path=root / "manifests/validation/phase3/one-hop-10000.json",
+            manifest_path=root / mapping["manifest"],
             repo_root=root,
             expected_source_commit=match.group("source"),
         )
@@ -427,6 +445,9 @@ def test_phase3_corpus_is_not_completion_and_present_gate_cannot_be_unearned(tmp
     index = "| 3 — Neural components | plan | In progress; corpus only. |"
     directory = tmp_path / "manifests/validation/phase3"
     directory.mkdir(parents=True)
+    (directory / "delivery.json").write_text(
+        (ROOT / "manifests/validation/phase3/delivery.json").read_text()
+    )
     (directory / "one-hop-10000.json").write_text("{}")
     _assert_phase3_delivery_state(tmp_path, index)
     with pytest.raises(AssertionError):
@@ -436,6 +457,38 @@ def test_phase3_corpus_is_not_completion_and_present_gate_cannot_be_unearned(tmp
     (directory / "component-gate.json").write_text("{}")
     with pytest.raises(AssertionError):
         _assert_phase3_delivery_state(tmp_path, index)
+    (directory / "component-gate.json").unlink()
+    (directory / "component-gate-content-v2.json").write_text(
+        '{"objective_version":"teacher_timed_plus_content_v2","passed":false}'
+    )
+    with pytest.raises(AssertionError):
+        _assert_phase3_delivery_state(tmp_path, index)
+
+
+@pytest.mark.parametrize("mutation", ["recipe", "escape", "symlink", "legacy_conflict"])
+def test_phase3_delivery_map_cannot_bypass_verification(tmp_path, mutation):
+    import json
+
+    directory = tmp_path / "manifests/validation/phase3"
+    directory.mkdir(parents=True)
+    path = directory / "delivery.json"
+    mapping = {
+        "schema_version": "phase3-delivery-map-v1",
+        "recipe": "teacher_timed_plus_content_v2",
+        "manifest": "manifests/validation/phase3/one-hop-10000-content-v2.json",
+        "gate": "manifests/validation/phase3/component-gate-content-v2.json",
+    }
+    if mutation == "recipe":
+        mapping["recipe"] = "teacher_timed_v1"
+    elif mutation == "escape":
+        mapping["gate"] = "../gate.json"
+    elif mutation == "legacy_conflict":
+        (directory / "component-gate.json").write_text("{}")
+    path.write_text(json.dumps(mapping))
+    if mutation == "symlink":
+        (directory / "component-gate-content-v2.json").symlink_to(tmp_path / "absent.json")
+    with pytest.raises(AssertionError):
+        _assert_phase3_delivery_state(tmp_path, "| 3 — Neural components | plan | In progress. |")
 
 
 def test_phase3_pin_rejects_coordinated_phase2_substitution(tmp_path):

@@ -483,8 +483,7 @@ class ComponentManifest(BaseModel):
         if self.config_hash != hashlib.sha256(canonical_json_bytes(config)).hexdigest():
             raise ValueError("manifest configuration hash mismatch")
         if self.publication == "production" and (
-            config.training.profile != "phase3_one_hop"
-            or config.neural.architecture_profile != "production"
+            not config.training.is_production or config.neural.architecture_profile != "production"
         ):
             raise ValueError("production manifest requires the production one-hop configuration")
         examples = tuple(make_curriculum_example(config, entry.key) for entry in self.entries)

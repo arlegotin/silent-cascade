@@ -5,11 +5,14 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 from .test_training_cli import CONFIGS, ROOT
 from .test_training_imports import OFFLINE_SCRIPT
 
 
-def test_installed_wheel_executes_training_offline_outside_checkout(tmp_path):
+@pytest.mark.parametrize("profile", ["smoke", "smoke_content_v2"])
+def test_installed_wheel_executes_training_offline_outside_checkout(tmp_path, profile):
     build = subprocess.run(
         ["uv", "build", "--wheel", "--offline", "--out-dir", str(tmp_path / "dist")],
         cwd=ROOT,
@@ -38,7 +41,7 @@ def test_installed_wheel_executes_training_offline_outside_checkout(tmp_path):
             OFFLINE_SCRIPT,
             str(stage),
             str(unrelated),
-            *map(str, CONFIGS),
+            *map(str, (*CONFIGS[:-1], ROOT / f"configs/train/{profile}.yaml")),
         ],
         cwd=unrelated,
         env=environment,

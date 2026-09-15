@@ -220,6 +220,8 @@ def _training_evidence(root, run, restored_weights, config, source, manifest_has
     cursor = result.progress.training_journal_sha256
     seen, gradient_max, step_count = set(), 0.0, 0
     measured_history = []
+    step_counters, diagnostic_samples = [], []
+    objective_step_counts = {}
     while cursor is not None:
         require(cursor not in seen and len(seen) <= 75000, "cyclic or oversized journal")
         seen.add(cursor)
@@ -228,6 +230,24 @@ def _training_evidence(root, run, restored_weights, config, source, manifest_has
         for entry in journal["steps"]:
             step = _bound(attempt / entry["path"], entry["sha256"])
             values = step["result"]
+            require(
+                values["objective_version"] == config.config.training.objective_version
+                and values["auxiliary_coefficient"]
+                == config.config.training.content_auxiliary_weight,
+                "training objective identity mismatch",
+            )
+            objective_step_counts[values["objective_version"]] = (
+                objective_step_counts.get(values["objective_version"], 0) + 1
+            )
+            step_counters.append(step["step"] - 1)
+            if step["step"] <= 2:
+                diagnostic_samples.append(
+                    {
+                        "step": step["step"],
+                        "example_hashes": step["example_hashes"],
+                        "result": values,
+                    }
+                )
             require(
                 type(values["gradient_norm"]) is float and values["gradient_norm"] >= 0,
                 "invalid measured training gradient norm",
@@ -293,6 +313,11 @@ def _training_evidence(root, run, restored_weights, config, source, manifest_has
     return TrainingEvidence.model_validate_json(
         canonical_json_bytes(
             dict(
+                objective_version=config.config.training.objective_version,
+                auxiliary_coefficient=config.config.training.content_auxiliary_weight,
+                objective_step_counts=objective_step_counts,
+                step_counters=sorted(step_counters),
+                diagnostic_samples=sorted(diagnostic_samples, key=lambda row: row["step"]),
                 run_path=run_name,
                 result_path=relative(run, path),
                 result_sha256=hashlib.sha256(raw).hexdigest(),
@@ -404,7 +429,7 @@ def collect_component_gate(
         seed_all(11)
         model = EventFlowModel(config.config.neural)
         batch = next_training_batch(config.config, stage="one_hop", batch_counter=0)
-        parity = measure_device_parity(model, batch)
+        parity = measure_device_parity(model, batch, training=config.config.training)
         cpu_resume = measure_cpu_resume(config, source_commit)
         mps_resume = measure_mps_resume(config, source_commit)
     finally:
@@ -433,6 +458,8 @@ def collect_component_gate(
         and mps_resume.passed
     )
     report = ComponentGateReport(
+        objective_version=config.config.training.objective_version,
+        auxiliary_coefficient=config.config.training.content_auxiliary_weight,
         publication=manifest.publication,
         provenance=provenance,
         training=training,
@@ -446,7 +473,7 @@ def collect_component_gate(
         replay_samples=samples,
         repeated_prediction_count=len(rows),
         repeated_prediction_mismatches=mismatches,
-        offline=measure_offline_imports(),
+        offline=measure_offline_imports(config.config.training),
         passed=passed,
     )
     metadata = report.model_dump(mode="json", exclude={"rows", "compute"})

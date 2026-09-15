@@ -6,16 +6,16 @@ at most two RECALL/COMPOSE pairs. It does not demonstrate autonomous world-time
 scheduling or timed OFD success. Root `silent-cascade train` belongs to Phase 4;
 the separate module below exposes two complete commands.
 
-Before source freeze, a documented optimizer correction sets AdamW epsilon to
-`1e-7` globally in both profiles and on both devices. At the original `1e-8`,
+Before the first source freeze, a documented optimizer correction set AdamW epsilon to
+`1e-7` in the original profiles and on both devices. At the original `1e-8`,
 10 first-step weights failed native parity through amplification of nearly
 cancelling gradients. The original fixture now passes unchanged tolerances.
 This is a real optimizer change that can damp small-gradient learning; see the
 [versioned rationale](deviations.md#2026-09-15--pre-freeze-phase-3-adamw-stabilization).
-Old configuration archives are rejected and learning evidence must be regenerated.
+The unsupported pre-stabilization `1e-8` configuration remains rejected.
 An intermediate `1e-6` trial passed numerical parity but reached only 63/64
 chains at the unchanged 1,000-step learning limit; that failed attempt is
-retained in the development record. The final `1e-7` candidate passes native
+retained in the development record. The original B8 `1e-7` candidate passed native
 parity and reaches 64/64 content chains at step 900 of the unchanged learning
 fixture. Its secondary untimed action accuracy is only 32/64; this does not
 establish timed competence.
@@ -90,6 +90,24 @@ prove a model-code defect, or establish a repair. The archived artifact remains
 
 ## Training
 
+The corrected recipe is explicitly named `teacher_timed_plus_content_v2`.
+Its only profiles are `phase3_one_hop_content_v2` and `phase3_smoke_content_v2`,
+with their original workloads and epsilon `1e-6`. The original `one_hop.yaml`
+and `smoke.yaml` bytes and their `teacher_timed_v1`, epsilon `1e-7` identity
+remain supported for historical configuration and checkpoint decoding. A
+checkpoint cannot resume across recipe/configuration identities.
+
+The shared `train.objective.training_objective` always computes the complete
+original timed objective. For v2 it additionally computes the reviewed fresh
+public observation graph and teacher-forced untimed content path, then sums
+both actual losses with fixed auxiliary coefficient `1.0`. The profile derives
+the objective identity and coefficient; neither is an independent setting.
+There is one backward, clip and AdamW update per original batch counter.
+Step diagnostics retain both `timed/` and `content/` reduction namespaces,
+branch losses, and branch forward compute. The outer compute snapshot already
+includes both graphs and backward; branch snapshots must not be added to it.
+The public evaluator and every scientific gate remain unchanged.
+
 Supply every configuration layer explicitly and in order. Paths can be absolute;
 installed wheels contain the Python modules but do not discover configuration
 files from the checkout or the current directory.
@@ -100,7 +118,7 @@ uv run python -m silent_cascade.train fit \
   --config /path/to/checkout/configs/data/primary.yaml \
   --config /path/to/checkout/configs/model/event_flow.yaml \
   --config /path/to/checkout/configs/model/neural_components.yaml \
-  --config /path/to/checkout/configs/train/smoke.yaml \
+  --config /path/to/checkout/configs/train/smoke_content_v2.yaml \
   --validation-manifest /path/to/debug-validation-manifest.json \
   --run-dir /path/to/new-run \
   --expected-source-commit SOURCE_SHA \
@@ -111,7 +129,7 @@ uv run python -m silent_cascade.train fit \
 configuration override parser; unknown fields, incompatible profiles and changed
 manifest bindings fail. The smoke profile runs four updates, validates every two
 updates and requires the matching 16-row debug manifest. The production
-`configs/train/one_hop.yaml` profile requires its source/configuration-bound
+`configs/train/one_hop_content_v2.yaml` profile requires its source/configuration-bound
 10,000-row production manifest and uses the approved 75,000-step ceiling,
 1,000-step validation interval and 15-validation patience. That workload is an
 explicit phase acceptance run, never part of local smoke.
@@ -182,7 +200,7 @@ retains its three pytest processes, then runs the doctor and package build
 locally. No hosted automation is used. The fixed-training-set tiny overfit test
 is an engineering regression, not held-out acceptance evidence.
 
-`train.verification.measure_device_parity(model, batch)` executes identical
+`train.verification.measure_device_parity(model, batch, training=config.training)` executes identical
 CPU-initialized weights on CPU and native MPS through the complete teacher graph,
 every named output/loss, backward and an AdamW update. It also tests actual
 empty-memory preview/control and active/dormant crossings. Forward/loss tolerances
@@ -201,3 +219,24 @@ exactly. Its evidence includes the actual archive hash. Both APIs expose a
 derived `passed` property; collectors must use primitive results, not infer a
 pass from a test log. A native MPS failure remains a failed gate; a sandbox skip
 does not mean native MPS is absent.
+
+New `phase3-component-gate-v2` evidence records the derived objective identity,
+actual optimizer options, both numeric contexts, the complete contiguous batch
+counter sequence, and full raw step diagnostics for counters zero and one.
+Every logged step is checked against the fixed objective during collection;
+the independent verifier reconstructs sample reduction arithmetic and branch
+compute accounting. Numeric comparison records also reconcile each tensor's
+element count. The offline subprocess accepts the validated recipe and executes
+the matching v1 or v2 smoke overlay, one real update and eight public rows under
+network and optional-import denial.
+
+The source-bound [delivery map](../manifests/validation/phase3/delivery.json)
+designates only the corrected 10,000-row manifest and corrected gate paths.
+Neither file is created by this integration. Missing delivery evidence requires
+Phase 3 to remain in progress; present evidence must independently pass and
+match exact Complete metadata. A legacy designated gate cannot bypass this
+check. The failed v1 archive remains unchanged in its attempt directory.
+To reproduce its rejection, use the verifier and source revision
+`5a96b673f67a634d268f000a240e0de0f3dca034` named by that archive, with its original
+`one-hop-10000.json` manifest and recorded weights; the v2 schema does not
+reinterpret the old bytes as new evidence.

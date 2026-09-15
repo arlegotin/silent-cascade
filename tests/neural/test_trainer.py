@@ -77,7 +77,9 @@ def test_nonfinite_internal_final_guard_cannot_be_masked(smoke_config, monkeypat
     model = EventFlowModel(smoke_config.config.neural)
     optimizer = trainer.make_optimizer(model, smoke_config.config.training)
     batch = next_training_batch(smoke_config.config, stage="one_hop", batch_counter=0)
-    original = trainer.teacher_forced_unroll
+    from silent_cascade.train import objective
+
+    original = objective.teacher_forced_unroll
 
     def corrupt(*args):
         unroll = original(*args)
@@ -90,7 +92,7 @@ def test_nonfinite_internal_final_guard_cannot_be_masked(smoke_config, monkeypat
             unroll, steps=(*unroll.steps[:-1], replace(unroll.steps[-1], post_parameters=corrupted))
         )
 
-    monkeypatch.setattr(trainer, "teacher_forced_unroll", corrupt)
+    monkeypatch.setattr(objective, "teacher_forced_unroll", corrupt)
     with pytest.raises(TrainingError, match="Nonfinite internal"):
         trainer.train_one_step(model, optimizer, batch, smoke_config.config)
 

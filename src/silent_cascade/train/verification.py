@@ -19,10 +19,8 @@ from pydantic import Field
 
 from silent_cascade.config import ResolvedConfig
 from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
-from silent_cascade.models.config import LossWeights
 from silent_cascade.models.dynamics import crossings_batch
 from silent_cascade.models.event_flow import EventFlowModel
-from silent_cascade.models.losses import event_flow_loss
 from silent_cascade.rng import seed_all, snapshot_global_rng
 from silent_cascade.train.batches import TrainingBatch, next_training_batch
 from silent_cascade.train.checkpoints import (
@@ -34,9 +32,9 @@ from silent_cascade.train.checkpoints import (
 )
 from silent_cascade.train.component_eval import predict_components
 from silent_cascade.train.config import Phase3Config, TrainingConfig
+from silent_cascade.train.objective import training_objective
 from silent_cascade.train.state import TrainingError, TrainProgress
-from silent_cascade.train.trainer import _check_unroll, make_optimizer, train_one_step
-from silent_cascade.train.unroll import teacher_forced_unroll
+from silent_cascade.train.trainer import _check_objective, make_optimizer, train_one_step
 from silent_cascade.validation import StrictModel
 
 
@@ -51,6 +49,7 @@ class Comparison(StrictModel):
     max_relative_name: str
     tested_names: tuple[str, ...]
     failed_names: tuple[str, ...]
+    tensor_elements: dict[str, int]
 
     @property
     def passed(self) -> bool:
@@ -58,7 +57,10 @@ class Comparison(StrictModel):
 
 
 class DeviceParityEvidence(StrictModel):
-    schema_version: Literal["phase3-device-parity-v1"] = "phase3-device-parity-v1"
+    schema_version: Literal["phase3-device-parity-v2"] = "phase3-device-parity-v2"
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
+    optimizer_options: dict[str, object]
     devices: tuple[Literal["cpu"], Literal["mps"]] = ("cpu", "mps")
     output_dtype: Literal["float32"] = "float32"
     python_version: str
@@ -89,7 +91,10 @@ class DeviceParityEvidence(StrictModel):
 
 
 class ResumeEvidence(StrictModel):
-    schema_version: Literal["phase3-cpu-resume-v1"] = "phase3-cpu-resume-v1"
+    schema_version: Literal["phase3-cpu-resume-v2"] = "phase3-cpu-resume-v2"
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
+    optimizer_options: dict[str, object]
     device: Literal["cpu"] = "cpu"
     python_version: str
     torch_version: str
@@ -101,6 +106,7 @@ class ResumeEvidence(StrictModel):
     resumed_step: Literal[2] = 2
     next_batch_counter: Literal[2] = 2
     example_hashes: tuple[str, ...]
+    first_example_hashes: tuple[str, ...]
     parameters: Comparison
     optimizer: Comparison
     losses: Comparison
@@ -116,7 +122,7 @@ class ResumeEvidence(StrictModel):
 
 
 class MPSResumeEvidence(ResumeEvidence):
-    schema_version: Literal["phase3-mps-resume-v1"] = "phase3-mps-resume-v1"
+    schema_version: Literal["phase3-mps-resume-v2"] = "phase3-mps-resume-v2"
     device: Literal["mps"] = "mps"
 
 
@@ -183,13 +189,14 @@ def _compare(left, right, *, rtol, atol) -> Comparison:
         max_relative_name=relative_name,
         tested_names=names,
         failed_names=tuple(failed),
+        tensor_elements={name: value.numel() for name, value in left.items()},
     )
 
 
-def _parity_step(model, batch, device):
+def _parity_step(model, batch, device, training=None):
     current = deepcopy(model).to(device)
     batch = batch.to(device)
-    training = TrainingConfig(
+    training = training or TrainingConfig(
         profile="phase3_smoke",
         batch_size=8,
         max_steps=4,
@@ -198,21 +205,11 @@ def _parity_step(model, batch, device):
     )
     optimizer = make_optimizer(current, training)
     optimizer.zero_grad(set_to_none=True)
-    unroll = teacher_forced_unroll(current, batch)
-    _check_unroll(unroll)
-    loss = event_flow_loss(unroll.loss_inputs(), LossWeights())
-    if loss.total.dtype != torch.float32 or loss.total.device.type != device:
+    objective = training_objective(current, batch, training)
+    _check_objective(objective)
+    if objective.total.dtype != torch.float32 or objective.total.device.type != device:
         raise TrainingError("parity output must be float32 on the requested native device")
-    forward = _tensors(
-        {
-            "observations": unroll.observations,
-            "boundaries": unroll.boundaries,
-            "steps": unroll.steps,
-            "final_context": unroll.final_context,
-            "pre_jump_latent": unroll.pre_jump_latent,
-            "post_jump_latent": unroll.post_jump_latent,
-        }
-    )
+    forward = _tensors({"timed": objective.timed, "content": objective.content})
     # Exercise true empty-memory preview/control and explicit active/dormant guards.
     empty = current.initial_context(1, device=device)
     forward.update(_tensors(current.preview_and_control(empty), "empty"))
@@ -222,11 +219,15 @@ def _parity_step(model, batch, device):
         torch.ones((1, 3), device=device),
     )
     forward.update(_tensors(offsets, "guard_probe"))
-    loss_values = _tensors(loss)
+    loss_values = _tensors(
+        {"timed": objective.timed_loss, "content": objective.content_loss, "total": objective.total}
+    )
     predictions = predict_components(current, batch.public)
-    loss.total.backward()
+    objective.total.backward()
     gradients = _tensors({n: p.grad for n, p in current.named_parameters() if p.grad is not None})
-    torch.nn.utils.clip_grad_norm_(current.parameters(), 1.0, error_if_nonfinite=True)
+    torch.nn.utils.clip_grad_norm_(
+        current.parameters(), training.gradient_clip_norm, error_if_nonfinite=True
+    )
     optimizer.step()
     weights = _tensors(dict(current.named_parameters()))
     return (
@@ -236,23 +237,36 @@ def _parity_step(model, batch, device):
         weights,
         predictions,
         (~empty.eligibility.any(dim=1)).cpu(),
+        {key: value for key, value in optimizer.param_groups[0].items() if key != "params"},
     )
 
 
-def measure_device_parity(model: EventFlowModel, batch: TrainingBatch) -> DeviceParityEvidence:
+def measure_device_parity(
+    model: EventFlowModel, batch: TrainingBatch, *, training: TrainingConfig | None = None
+) -> DeviceParityEvidence:
     """Compare identical CPU-initialized weights through forward/backward/AdamW on native MPS."""
     _device("mps")
     if not isinstance(model, EventFlowModel) or not isinstance(batch, TrainingBatch):
         raise TypeError("parity requires EventFlowModel and TrainingBatch")
+    training = training or TrainingConfig(
+        profile="phase3_smoke",
+        batch_size=8,
+        max_steps=4,
+        validation_every_steps=2,
+        fixed_validation_episodes=16,
+    )
     cpu_model = deepcopy(model).cpu()
     tensors, aliases, _ = _snapshot(cpu_model)
-    cpu = _parity_step(cpu_model, batch, "cpu")
-    mps = _parity_step(cpu_model, batch, "mps")
+    cpu = _parity_step(cpu_model, batch, "cpu", training)
+    mps = _parity_step(cpu_model, batch, "mps", training)
     comparisons = [
         _compare(cpu[i], mps[i], rtol=1e-4 if i < 2 else 1e-3, atol=1e-5) for i in range(4)
     ]
     crossings = [v for k, v in cpu[0].items() if k.endswith("/crossings") or k == "guard_probe"]
     return DeviceParityEvidence(
+        objective_version=training.objective_version,
+        auxiliary_coefficient=training.content_auxiliary_weight,
+        optimizer_options=cpu[6],
         python_version=platform.python_version(),
         torch_version=str(torch.__version__),
         threads=torch.get_num_threads(),
@@ -347,17 +361,28 @@ def _measure_resume(config, source_commit, device):
             )
 
             def loss_tensors(result):
-                return {
-                    name: torch.tensor(value, dtype=torch.float64)
-                    for name, value in {
-                        "total": result.loss,
-                        **result.terms,
-                        **result.subterms,
-                    }.items()
-                }
+                values = {"total": torch.tensor(result.loss, dtype=torch.float64)}
+                for name in ("terms", "subterms", "numerators", "denominators", "per_position"):
+                    values.update(
+                        {
+                            f"{name}/{key}": torch.tensor(value, dtype=torch.float64)
+                            for key, value in getattr(result, name).items()
+                        }
+                    )
+                values["timed/total"] = torch.tensor(result.timed_loss, dtype=torch.float64)
+                if result.content_loss is not None:
+                    values["content/total"] = torch.tensor(result.content_loss, dtype=torch.float64)
+                return values
 
             evidence_type = ResumeEvidence if device == "cpu" else MPSResumeEvidence
             return evidence_type(
+                objective_version=config.config.training.objective_version,
+                auxiliary_coefficient=config.config.training.content_auxiliary_weight,
+                optimizer_options={
+                    key: value
+                    for key, value in restored.optimizer.param_groups[0].items()
+                    if key != "params"
+                },
                 python_version=platform.python_version(),
                 torch_version=str(torch.__version__),
                 threads=torch.get_num_threads(),
@@ -366,6 +391,7 @@ def _measure_resume(config, source_commit, device):
                 checkpoint_sha256=saved.file_sha256,
                 model_state_sha256=saved.model_state_sha256,
                 example_hashes=actual_batch.example_hashes,
+                first_example_hashes=first.example_hashes,
                 parameters=_compare(
                     _tensors(dict(model.named_parameters())),
                     _tensors(dict(restored.model.named_parameters())),
@@ -399,11 +425,13 @@ def _measure_resume(config, source_commit, device):
         restore_rng_snapshot(before, restore_mps=before.torch_mps_state is not None)
 
 
-def measure_offline_imports():
+def measure_offline_imports(training: TrainingConfig):
     """Fresh interpreter runs one real smoke update and public evaluation with denial hooks."""
     from silent_cascade.train.evidence_types import OfflineEvidence, decode_json
 
     root = Path(__file__).resolve().parents[3]
+    if not isinstance(training, TrainingConfig):
+        raise TypeError("offline probe requires the actual validated training recipe")
     program = r"""
 import importlib.abc
 import json
@@ -433,7 +461,7 @@ from silent_cascade.train.batches import next_training_batch
 from silent_cascade.train.trainer import make_optimizer, train_one_step
 from silent_cascade.train.component_eval import predict_components
 paths = ('configs/base.yaml', 'configs/data/primary.yaml', 'configs/model/event_flow.yaml',
-         'configs/model/neural_components.yaml', 'configs/train/smoke.yaml')
+         'configs/model/neural_components.yaml', sys.argv[1])
 config = resolve_config(Phase3Config, tuple(Path(p) for p in paths))
 torch.manual_seed(11)
 model = EventFlowModel(config.config.neural)
@@ -441,7 +469,8 @@ optimizer = make_optimizer(model, config.config.training)
 batch = next_training_batch(config.config, stage='one_hop', batch_counter=0)
 step = train_one_step(model, optimizer, batch, config.config)
 predictions = predict_components(model, batch.public)
-print(json.dumps(dict(schema_version='phase3-offline-import-probe-v1',
+print(json.dumps(dict(schema_version='phase3-offline-import-probe-v2',
+    objective_version=step.objective_version, auxiliary_coefficient=step.auxiliary_coefficient,
     config_sha256=config.sha256,
     training_steps=int(max(s['step'].item() for s in optimizer.state.values())),
     predicted_rows=len(predictions.rows), backward_macs=step.compute.backward_macs,
@@ -450,7 +479,7 @@ print(json.dumps(dict(schema_version='phase3-offline-import-probe-v1',
     foundation_model_calls=step.compute.foundation_model_calls)))
 """
     completed = subprocess.run(
-        [sys.executable, "-B", "-c", program],
+        [sys.executable, "-B", "-c", program, training.smoke_overlay_path],
         cwd=root,
         env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
         capture_output=True,

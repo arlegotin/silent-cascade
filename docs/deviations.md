@@ -4,6 +4,44 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-15 — Version the corrected Phase 3 training objective
+
+Return D implements the explicitly approved fixed recipe
+`teacher_timed_plus_content_v2`: the original timed loss plus the reviewed
+teacher-forced untimed content auxiliary, coefficient `1.0`, with AdamW epsilon
+`1e-6`. The new `one_hop_content_v2.yaml` and `smoke_content_v2.yaml` retain the
+original workloads, loss weights, seed namespaces, schedule and update limits.
+No epsilon, loss or seed search is authorized. Old overlays remain byte-for-byte
+unchanged, derive `teacher_timed_v1` and retain epsilon `1e-7`; original archives
+still decode canonically. Recipe identity is derived from the profile and is
+never serialized as an extra default configuration field.
+
+One shared objective builder now serves actual optimization and configured
+native parity. One outer compute meter includes both fresh forward graphs and
+their shared backward/update; branch snapshots describe their own forwards.
+Version 2 evidence binds objective/coefficient, actual optimizer options, both
+numeric contexts, contiguous counters and raw counter-zero/one diagnostics.
+The independent verifier reconstructs reduction and counter arithmetic. Full
+step logs remain immutable source/configuration-bound execution records; the
+bounded gate embeds the first two actual step diagnostics and complete counter
+coverage rather than all per-position tensors for up to 75,000 updates.
+
+The previously deferred overwrite regression now reaches the actual immutable
+publisher with conflicting bytes after committing the first manifest. Identical
+bytes are an allowed idempotent publication; conflicting bytes must fail and
+leave the committed bytes unchanged. This follows the existing archive ownership
+and atomic-publication contract, without changing the publisher.
+
+Adverse history remains: the original epsilon `1e-6` timed-only fixed64 trial
+stopped at 63/64, the original production epsilon `1e-7` run failed both content
+and updated-weight parity, and the disposable original-timed epsilon `1e-6`
+B128 diagnostic is only preliminary numerical evidence. These do not substitute
+for configured combined-objective native/resume and fixed64 prerequisites.
+The immutable delivery map names only the corrected manifest/gate paths; it is
+not a results artifact. No corrected production fit or 10,000-row manifest is
+created in Return D. Scientific gates, the public evaluator, zero foundation
+calls and the completed Phase 1/2 identities remain unchanged.
+
 ## 2026-09-15 — Archive the rejected Phase 3 one-hop attempt
 
 The first production one-hop run used the immutable 10,000-row corpus and the

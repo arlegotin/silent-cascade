@@ -18,7 +18,6 @@ from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.models.config import NeuralModelConfig
 from silent_cascade.models.event_flow import EventFlowModel
-from silent_cascade.models.losses import event_flow_loss
 from silent_cascade.rng import seed_all
 from silent_cascade.train.batches import next_training_batch, pack_training_examples
 from silent_cascade.train.checkpoints import (
@@ -37,9 +36,9 @@ from silent_cascade.train.curriculum_data import (
     CurriculumKey,
     make_curriculum_example,
 )
+from silent_cascade.train.objective import training_objective
 from silent_cascade.train.state import CheckpointDescriptor, TrainingError, TrainProgress
 from silent_cascade.train.traces import build_teacher_trace, component_target
-from silent_cascade.train.unroll import teacher_forced_unroll
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +51,12 @@ class StepResult:
     per_position: dict[str, list]
     gradient_norm: float
     compute: NeuralComputeSnapshot
+    objective_version: str
+    auxiliary_coefficient: float
+    timed_loss: float
+    content_loss: float | None
+    timed_compute: NeuralComputeSnapshot
+    content_compute: NeuralComputeSnapshot | None
 
 
 def make_optimizer(model, training):
@@ -91,17 +96,46 @@ def _check_unroll(unroll):
             raise TrainingError("Nonfinite internal post-jump state")
 
 
+def _finite_state(value):
+    if isinstance(value, torch.Tensor):
+        if not bool(torch.isfinite(value).all()):
+            raise TrainingError("Nonfinite internal training state or loss")
+    elif is_dataclass(value):
+        for item in fields(value):
+            _finite_state(getattr(value, item.name))
+    elif isinstance(value, Mapping):
+        for child in value.values():
+            _finite_state(child)
+    elif isinstance(value, (tuple, list)):
+        for child in value:
+            _finite_state(child)
+
+
+def _check_objective(objective):
+    _check_unroll(objective.timed)
+    _finite_state(objective.timed.final_context)
+    _finite_state(objective.timed_loss)
+    if objective.content is not None:
+        for observation in objective.content.observations:
+            _finite_state(observation.context)
+            _finite_state(observation.parameters)
+        for step in objective.content.steps:
+            _finite_state(step.prediction_context)
+            _finite_state(step.post_context)
+            _finite_state(step.composition)
+        _finite_state(objective.content.final_context)
+        _finite_state(objective.content_loss)
+    _finite_state(objective.total)
+
+
 def train_one_step(model, optimizer, batch, config) -> StepResult:
     """Full trace graph, finite checks, backward, clip, then the AdamW update."""
     model.train()
     optimizer.zero_grad(set_to_none=True)
     with NeuralComputeMeter(model) as meter:
-        unroll = teacher_forced_unroll(model, batch)
-        _check_unroll(unroll)
-        loss = event_flow_loss(unroll.loss_inputs(), config.training.loss_weights)
-        if not bool(torch.isfinite(loss.total)):
-            raise TrainingError("Nonfinite training loss")
-        loss.total.backward()
+        objective = training_objective(model, batch, config.training)
+        _check_objective(objective)
+        objective.total.backward()
         for name, parameter in model.named_parameters():
             if parameter.grad is not None and not bool(torch.isfinite(parameter.grad).all()):
                 raise TrainingError(f"Nonfinite gradient in {name}")
@@ -112,18 +146,37 @@ def train_one_step(model, optimizer, batch, config) -> StepResult:
         for name, parameter in model.named_parameters():
             if not bool(torch.isfinite(parameter).all()):
                 raise TrainingError(f"Nonfinite parameter after update in {name}")
+    branches = (
+        [("", objective.timed_loss)]
+        if objective.content is None
+        else [("timed/", objective.timed_loss), ("content/", objective.content_loss)]
+    )
     values = {
-        name: {key: float(value.detach()) for key, value in getattr(loss, name).items()}
+        name: {
+            prefix + key: float(value.detach())
+            for prefix, loss in branches
+            for key, value in getattr(loss, name).items()
+        }
         for name in ("terms", "subterms", "numerators", "denominators")
     }
     return StepResult(
-        float(loss.total.detach()),
+        float(objective.total.detach()),
         **values,
         per_position={
-            key: value.detach().cpu().tolist() for key, value in loss.per_position.items()
+            prefix + key: value.detach().cpu().tolist()
+            for prefix, loss in branches
+            for key, value in loss.per_position.items()
         },
         gradient_norm=float(norm),
         compute=meter.snapshot(),
+        objective_version=objective.objective_version,
+        auxiliary_coefficient=objective.auxiliary_coefficient,
+        timed_loss=float(objective.timed_loss.total.detach()),
+        content_loss=None
+        if objective.content_loss is None
+        else float(objective.content_loss.total.detach()),
+        timed_compute=objective.timed.compute,
+        content_compute=None if objective.content is None else objective.content.compute,
     )
 
 
@@ -224,7 +277,7 @@ def _manifest_corpus(config, path, source_commit):
         )
     manifest = ComponentManifest.model_validate_json(payload)
     training = config.config.training
-    production = training.profile == "phase3_one_hop"
+    production = training.is_production
     if manifest.publication != ("production" if production else "debug"):
         raise TrainingError("Validation manifest publication does not match training profile")
     if manifest.source_revision != source_commit:
@@ -277,7 +330,7 @@ def run_training(
     if not isinstance(config, ResolvedConfig) or not isinstance(config.config, Phase3Config):
         raise TrainingError("Training requires a resolved Phase3Config")
     training = config.config.training
-    stage = "one_hop" if training.profile == "phase3_one_hop" else "smoke"
+    stage = training.curriculum_stage
     if device is not None and (type(device) is not str or device not in ("cpu", "mps")):
         raise TrainingError("Training device must be cpu or mps")
     if device == "mps" and not torch.backends.mps.is_available():

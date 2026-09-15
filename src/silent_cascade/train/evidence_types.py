@@ -74,10 +74,14 @@ class ComparisonData(StrictModel):
     max_relative_name: str
     tested_names: tuple[str, ...]
     failed_names: tuple[str, ...]
+    tensor_elements: dict[str, Count]
 
 
 class ParityData(StrictModel):
-    schema_version: Literal["phase3-device-parity-v1"]
+    schema_version: Literal["phase3-device-parity-v2"]
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
+    optimizer_options: dict[str, object]
     devices: tuple[Literal["cpu"], Literal["mps"]]
     output_dtype: Literal["float32"]
     python_version: str
@@ -98,7 +102,10 @@ class ParityData(StrictModel):
 
 
 class ResumeData(StrictModel):
-    schema_version: Literal["phase3-cpu-resume-v1", "phase3-mps-resume-v1"]
+    schema_version: Literal["phase3-cpu-resume-v2", "phase3-mps-resume-v2"]
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
+    optimizer_options: dict[str, object]
     device: Literal["cpu", "mps"]
     python_version: str
     torch_version: str
@@ -110,6 +117,7 @@ class ResumeData(StrictModel):
     resumed_step: Annotated[int, Field(strict=True, ge=2, le=2)]
     next_batch_counter: Annotated[int, Field(strict=True, ge=2, le=2)]
     example_hashes: tuple[Hash, ...]
+    first_example_hashes: tuple[Hash, ...]
     parameters: ComparisonData
     optimizer: ComparisonData
     losses: ComparisonData
@@ -262,7 +270,18 @@ class DescriptorData(StrictModel):
     validation_composition_metric: float | None
 
 
+class StepDiagnostic(StrictModel):
+    step: int = Field(strict=True, ge=1, le=2)
+    example_hashes: tuple[Hash, ...]
+    result: dict[str, object]
+
+
 class TrainingEvidence(StrictModel):
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
+    objective_step_counts: dict[str, Count]
+    step_counters: tuple[Count, ...] = Field(max_length=75000)
+    diagnostic_samples: tuple[StepDiagnostic, StepDiagnostic]
     run_path: str
     result_path: str
     result_sha256: Hash
@@ -297,7 +316,9 @@ class ValidationPoint(StrictModel):
 
 
 class OfflineEvidence(StrictModel):
-    schema_version: Literal["phase3-offline-import-probe-v1"]
+    schema_version: Literal["phase3-offline-import-probe-v2"]
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
     config_sha256: Hash
     training_steps: Count
     predicted_rows: Count
@@ -344,7 +365,9 @@ class ReplaySample(StrictModel):
 
 
 class ComponentGateReport(StrictModel):
-    schema_version: Literal["phase3-component-gate-v1"] = "phase3-component-gate-v1"
+    schema_version: Literal["phase3-component-gate-v2"] = "phase3-component-gate-v2"
+    objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
+    auxiliary_coefficient: float
     publication: Literal["debug", "production"]
     evidence_kind: Literal["neural component engineering evidence"] = (
         "neural component engineering evidence"

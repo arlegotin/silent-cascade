@@ -25,6 +25,13 @@ def test_gate_records_every_real_failure_and_measured_numeric_evidence(debug_com
     assert report.offline.training_steps == 1
     assert report.offline.predicted_rows == 8
     assert report.offline.blocked_import_attempts == report.offline.network_attempts == 0
+    assert (
+        report.objective_version
+        == report.offline.objective_version
+        == "teacher_timed_plus_content_v2"
+    )
+    assert report.training.step_counters == (0, 1, 2, 3)
+    assert [sample.step for sample in report.training.diagnostic_samples] == [1, 2]
 
 
 def test_collect_rejects_checkpoint_identity_before_publication(debug_component_gate):
