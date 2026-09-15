@@ -43,7 +43,6 @@ from silent_cascade.eventflow.checkpoint_rng import (
     validate_rng_restore,
 )
 from silent_cascade.hashing import canonical_json_bytes
-from silent_cascade.io import atomic_create_bytes, atomic_write_bytes
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.rng import RngSnapshot, snapshot_global_rng
 from silent_cascade.train.config import Phase3Config, parse_phase3_canonical
@@ -393,6 +392,90 @@ def _descriptor(metadata: _Metadata, filename: str, sha: str) -> CheckpointDescr
     )
 
 
+def _publish_bytes_at(parent: int, name: str, raw: bytes, *, replace: bool) -> None:
+    """Durably publish bytes using only a previously validated directory FD.
+
+    Archive creation uses a no-clobber hard link; only the mutable index uses
+    replacement. Temporary creation, publication and cleanup never resolve the
+    original directory pathname again, even if it is renamed or substituted.
+    """
+    if Path(name).name != name or name in {"", ".", ".."}:
+        raise TrainingError("invalid publication filename")
+    temporary = None
+    published = False
+    try:
+        for _ in range(16):
+            candidate = ".phase3-checkpoint-" + os.urandom(16).hex() + ".tmp"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=parent,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        else:
+            raise TrainingError("cannot create a unique publication temporary file")
+        try:
+            remaining = memoryview(raw)
+            while remaining:
+                count = os.write(descriptor, remaining)
+                if count <= 0:
+                    raise OSError("publication write made no progress")
+                remaining = remaining[count:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if replace:
+            try:
+                info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISREG(info.st_mode):
+                    raise TrainingError("publication target must be a regular file")
+            os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+            temporary = None
+            published = True
+        else:
+            try:
+                os.link(
+                    temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False
+                )
+                published = True
+            except FileExistsError as existing_error:
+                existing = read_archive_at(
+                    parent, name, max_bytes=max(1, len(raw)), error_factory=TrainingError
+                )
+                if existing != raw:
+                    raise TrainingError(
+                        "content-addressed archive already exists with conflicting bytes"
+                    ) from existing_error
+            os.unlink(temporary, dir_fd=parent)
+            temporary = None
+        os.fsync(parent)
+    except BaseException as error:
+        context = {"published": published, "reason": str(error)}
+        if temporary is not None:
+            try:
+                os.unlink(temporary, dir_fd=parent)
+                os.fsync(parent)
+            except OSError as cleanup_error:
+                context.update(temporary_name=temporary, cleanup_error=str(cleanup_error))
+        if not isinstance(error, Exception):
+            error.add_note(f"checkpoint publication: {context}")
+            raise
+        raise TrainingError(
+            "checkpoint published but durability or cleanup unconfirmed"
+            if published
+            else "checkpoint publication failed",
+            context=context,
+        ) from error
+
+
 def _publish(directory: Path, metadata: _Metadata, tensors: dict, *, weights: bool):
     raw_metadata = canonical_json_bytes(metadata)
     _json(raw_metadata)
@@ -404,17 +487,7 @@ def _publish(directory: Path, metadata: _Metadata, tensors: dict, *, weights: bo
     path = directory / name
     # Validate all parent components and existing output without following links.
     with archive_parent(path, error_factory=TrainingError) as (parent, basename):
-        try:
-            existing = read_archive_at(
-                parent, basename, max_bytes=len(raw), error_factory=TrainingError
-            )
-        except FileNotFoundError:
-            atomic_create_bytes(path, raw, mode=0o600)
-        else:
-            if existing != raw:
-                raise TrainingError(
-                    "content-addressed archive already exists with conflicting bytes"
-                )
+        _publish_bytes_at(parent, basename, raw, replace=False)
     return _descriptor(metadata, name, sha)
 
 
@@ -488,14 +561,22 @@ def export_weights(
         return _publish(path, metadata, tensors, weights=True)
 
 
-def _read(path: Path, *, weights: bool):
-    with archive_parent(path, error_factory=TrainingError) as (parent, name):
+def _read(path: Path, *, weights: bool, parent: int | None = None):
+    if parent is not None:
         raw = read_archive_at(
             parent,
-            name,
+            path.name,
             max_bytes=MAX_WEIGHTS_BYTES if weights else MAX_TRAINING_BYTES,
             error_factory=TrainingError,
         )
+    else:
+        with archive_parent(path, error_factory=TrainingError) as (pinned, name):
+            raw = read_archive_at(
+                pinned,
+                name,
+                max_bytes=MAX_WEIGHTS_BYTES if weights else MAX_TRAINING_BYTES,
+                error_factory=TrainingError,
+            )
     if len(raw) < 8:
         raise TrainingError("truncated archive")
     header_size = struct.unpack("<Q", raw[:8])[0]
@@ -745,11 +826,11 @@ def _index_identity(index):
     )
 
 
-def _owned(directory: Path, descriptor: CheckpointDescriptor, identity=None):
+def _owned(directory: Path, descriptor: CheckpointDescriptor, identity=None, *, parent: int):
     CheckpointDescriptor.model_validate_json(descriptor.model_dump_json())
     if descriptor.relative_path != f"training-{descriptor.file_sha256}.safetensors":
         raise TrainingError("index archive name is not canonical")
-    raw, _, metadata, _ = _read(directory / descriptor.relative_path, weights=False)
+    raw, _, metadata, _ = _read(directory / descriptor.relative_path, weights=False, parent=parent)
     if descriptor != _descriptor(metadata, descriptor.relative_path, _sha(raw)):
         raise TrainingError("index descriptor disagrees with archive")
     if metadata.owner_directory != str(directory.absolute()):
@@ -779,7 +860,7 @@ def _load_index(directory, parent):
     if any(item.optimizer_step > index.latest.optimizer_step for item in index.owned):
         raise TrainingError("index latest pointer is stale")
     for item in index.owned:
-        _owned(directory, item, _index_identity(index))
+        _owned(directory, item, _index_identity(index), parent=parent)
     return index
 
 
@@ -806,10 +887,10 @@ def load_checkpoint_index(path: Path) -> CheckpointIndex:
         return _load_index(path, parent)
 
 
-def _write_index(path, index):
+def _write_index(parent, index):
     raw = canonical_json_bytes(index)
     _json(raw)
-    atomic_write_bytes(path / _INDEX, raw, mode=0o600)
+    _publish_bytes_at(parent, _INDEX, raw, replace=True)
 
 
 def update_checkpoint_index(
@@ -820,7 +901,7 @@ def update_checkpoint_index(
 ) -> CheckpointIndex:
     """Atomically retain latest, best three and cumulative selected/evidence pins."""
     with _errors(), _index_lock(path) as parent:
-        metadata = _owned(path, descriptor)
+        metadata = _owned(path, descriptor, parent=parent)
         identity = _identity(metadata)
         try:
             os.stat(_INDEX, dir_fd=parent, follow_symlinks=False)
@@ -836,7 +917,7 @@ def update_checkpoint_index(
         owned = {item.relative_path: item for item in old.owned} if old else {}
         pins = {item.relative_path: item for item in old.protected} if old else {}
         for item in (descriptor, *protected):
-            _owned(path, item, identity)
+            _owned(path, item, identity, parent=parent)
             if item.relative_path in owned and owned[item.relative_path] != item:
                 raise TrainingError("conflicting owned descriptor")
             owned[item.relative_path] = item
@@ -855,7 +936,7 @@ def update_checkpoint_index(
             protected=tuple(pins.values()),
             owned=tuple(owned.values()),
         )
-        _write_index(path, index)
+        _write_index(parent, index)
         return index
 
 
@@ -875,7 +956,7 @@ def prune_training_checkpoints(path: Path) -> tuple[str, ...]:
             return ()
         # Every owned file was verified before either index publication or deletion.
         _write_index(
-            path,
+            parent,
             index.model_copy(
                 update={"owned": tuple(item for item in index.owned if item.relative_path in kept)}
             ),

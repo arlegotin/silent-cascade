@@ -3,7 +3,9 @@
 import hashlib
 import importlib
 import json
+import os
 import struct
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -542,3 +544,124 @@ def test_index_breaks_chain_ties_by_composition_then_earliest_step(
     assert index.best == (descriptors[1], descriptors[2], descriptors[0])
     assert index.latest == descriptors[4]
     assert descriptors[1].validation_composition_metric == 0.9
+
+
+def test_archive_publication_stays_in_pinned_directory_after_parent_swap(
+    saved, resolved_neural_config, tmp_path, monkeypatch
+):
+    module, _, _, model, _ = saved
+    run, parked, outside = (tmp_path / name for name in ("run", "parked", "outside"))
+    run.mkdir()
+    outside.mkdir()
+    original = module.archive_parent
+
+    @contextmanager
+    def swap_after_validation(path, **kwargs):
+        with original(path, **kwargs) as pinned:
+            run.rename(parked)
+            run.symlink_to(outside, target_is_directory=True)
+            yield pinned
+
+    monkeypatch.setattr(module, "archive_parent", swap_after_validation)
+    descriptor = module.export_weights(
+        run, model, config=resolved_neural_config, source_commit=SOURCE
+    )
+    assert (parked / descriptor.relative_path).is_file()
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["update", "prune"])
+def test_index_publication_and_pruning_share_pinned_directory_after_parent_swap(
+    saved, resolved_neural_config, tmp_path, monkeypatch, operation
+):
+    module, _, _, model, opt = saved
+    run, parked, outside = (tmp_path / name for name in ("run", "parked", "outside"))
+    run.mkdir()
+    outside.mkdir()
+    first = module.save_training_checkpoint(
+        run, model, opt, progress(), config=resolved_neural_config, source_commit=SOURCE
+    )
+    module.update_checkpoint_index(run, first)
+    second = module.save_training_checkpoint(
+        run, model, opt, progress(1), config=resolved_neural_config, source_commit=SOURCE
+    )
+    if operation == "prune":
+        module.update_checkpoint_index(run, second)
+    original = module._write_index
+    outside_index = outside / "checkpoint-index.json"
+    outside_index.write_bytes(b"unrelated index")
+
+    def swap_before_publication(*args):
+        run.rename(parked)
+        run.symlink_to(outside, target_is_directory=True)
+        return original(*args)
+
+    monkeypatch.setattr(module, "_write_index", swap_before_publication)
+    if operation == "update":
+        module.update_checkpoint_index(run, second)
+    else:
+        assert module.prune_training_checkpoints(run) == (first.relative_path,)
+        assert not (parked / first.relative_path).exists()
+    assert outside_index.read_bytes() == b"unrelated index"
+    index = json.loads((parked / "checkpoint-index.json").read_bytes())
+    assert index["latest"]["relative_path"] == second.relative_path
+    if operation == "prune":
+        assert [item["relative_path"] for item in index["owned"]] == [second.relative_path]
+
+
+def test_pinned_publication_reuses_identical_bytes_and_never_clobbers(tmp_path):
+    module = codec()
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        module._publish_bytes_at(parent, "archive", b"original", replace=False)
+        module._publish_bytes_at(parent, "archive", b"original", replace=False)
+        with pytest.raises(TrainingError):
+            module._publish_bytes_at(parent, "archive", b"conflict", replace=False)
+        assert (tmp_path / "archive").read_bytes() == b"original"
+        assert sorted(item.name for item in tmp_path.iterdir()) == ["archive"]
+    finally:
+        os.close(parent)
+
+
+@pytest.mark.parametrize(
+    "failure", ["write", "file_sync", "directory_sync", "link", "replace", "cleanup"]
+)
+def test_pinned_publication_reports_failures_and_cleans_owned_temporary_files(
+    tmp_path, monkeypatch, failure
+):
+    module = codec()
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    original_sync = os.fsync
+    original_unlink = os.unlink
+    try:
+
+        def fail(*args, **kwargs):
+            raise OSError("injected publication failure")
+
+        def sync(descriptor):
+            if (descriptor == parent) == (failure == "directory_sync"):
+                fail()
+            return original_sync(descriptor)
+
+        if failure in {"file_sync", "directory_sync"}:
+            monkeypatch.setattr(module.os, "fsync", sync)
+        else:
+            monkeypatch.setattr(module.os, "unlink" if failure == "cleanup" else failure, fail)
+        with pytest.raises(TrainingError) as caught:
+            module._publish_bytes_at(parent, "archive", b"durable", replace=failure == "replace")
+        published = failure in {"directory_sync", "cleanup"}
+        assert caught.value.context["published"] is published
+        if published:
+            assert (tmp_path / "archive").read_bytes() == b"durable"
+        else:
+            assert not (tmp_path / "archive").exists()
+        leftovers = [item for item in tmp_path.iterdir() if item.name != "archive"]
+        if failure == "cleanup":
+            assert len(leftovers) == 1
+            assert "cleanup_error" in caught.value.context
+            # Remove only the exact temporary file created by this fault-injection test.
+            original_unlink(leftovers[0])
+        else:
+            assert leftovers == []
+    finally:
+        os.close(parent)
