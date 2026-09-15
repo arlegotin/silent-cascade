@@ -1824,3 +1824,75 @@ learned checkpoint/replay registration, trace/crash integration, the root CLI
 and historical-evidence transition, autonomous two-hop gate, and one-seed IID
 pilot. Neither a high teacher-forced score nor this untimed one-hop component
 gate pre-satisfies any of those requirements.
+
+## 7. Task 13 Corrective Return — 2026-09-15
+
+This is the approved plan's source-correction path, exercised under the user's
+standing approval for reversible, in-scope plan/configuration corrections. Task
+13 is **not complete**. Its first production run naturally stopped at 25,000
+updates with no passing validation. The selected step 10,000 yielded recall
+17,364/17,500, composition 15,788/17,500, and complete content chains
+8,423/10,000. Two exported-weight CPU evaluations reproduced every prediction.
+The collector wrote `passed=false`; the independent verifier exited 1 because
+three production-B128 updated weights failed the unchanged CPU/MPS tolerance.
+This is rejected engineering evidence, not an accepted negative gate.
+
+Source corrections must be separately reviewed before another Task 13 fit.
+Keep all scientific thresholds, validation examples, public evaluator semantics,
+teacher-timed EventFlow behavior, update ceilings, prior-phase pins and the
+canonical specification unchanged. No Phase 4 work is authorized by this return.
+
+### Return A: Preserve the Actual Failed Attempt
+
+**Files:** Relocate only the generated, untracked
+`manifests/validation/phase3/component-gate.json` to
+`manifests/validation/phase3/attempts/one-hop-v1/component-gate.json`; create
+`manifests/validation/phase3/attempts/one-hop-v1/attempt.json`; append measured
+history to `docs/phase3-neural-components.md` and `docs/deviations.md`.
+Do not change source, tests, configurations, the original validation manifest,
+or either prior-phase delivery row. Leave Phase 3 In progress.
+
+**Interfaces:** This is archival data, not a new acceptance schema or verifier.
+The attempt index binds the exact artifact, original manifest, source/config,
+selected checkpoint and actual process exits. Its consumers are the history
+document and subsequent delivery review; it must not claim `valid=true`.
+
+- [ ] **Step 1:** Before touching the artifact, verify it is an owned regular
+  non-symlink file of 17,635,868 bytes with SHA-256
+  `b4e04bb7b742f2bd3564e7538150d16dacb50382fdd840d6afe23f80b77396c2`.
+  Verify the exact archive destination does not exist and its parent chain has
+  no symlinks. Preserve the original corpus at its current committed path.
+- [ ] **Step 2:** Move that one generated file recoverably to the archive path,
+  without modifying its bytes or embedded provenance. Recheck the same length
+  and SHA-256 at the destination and absence at the former canonical path.
+  No run log, checkpoint, diagnostic or corpus is deleted or overwritten.
+- [ ] **Step 3:** Write the small attempt index through `apply_patch`, with
+  `status: rejected`, `phase_complete: false`, source
+  `5a96b673f67a634d268f000a240e0de0f3dca034`, config
+  `26b21c1acd79e6c47375f03c4e68da24fadddde9ae150454bbd3db7f50237041`,
+  corpus SHA-256
+  `5f57796f0798e9b494e47663f25e89c5fa0ebb33b79bac7601b77e4b969a2e32`,
+  selected weights SHA-256
+  `26bb303619d694f6a8329cc7ff06dc796410193d788f5f3fc73813ad7cea73d9`,
+  selected training step 10,000, completed updates 25,000, stop reason
+  `early_stopping`, all three raw metric pairs, and verifier exit 1/error
+  `artifact_integrity_error: numerical comparison failed or empty`.
+  Record fit/evaluation/evaluation-repeat/collector exits 0 separately from
+  acceptance. Include portable repository-relative paths and logical run ID
+  `phase3-components/event_flow/11/one-hop-v1`; no machine-specific paths.
+- [ ] **Step 4:** Document all 25 nonpassing scheduled validations, per-variant
+  selected results, secondary untimed action 4,775/10,000, repeat equality,
+  original optimizer history, and the measured diagnostic limits. Explicitly
+  distinguish the latent-context exposure hypothesis from a proven model-code
+  defect, and numerical near-cancellation from an incorrect AdamW formula.
+- [ ] **Step 5:** Run the existing repository delivery tests locally and check
+  exact archive/corpus hashes and `git diff --check`. Do not change the test
+  that requires any designated acceptance artifact to pass independently.
+  Commit only the archive/index and truthful history docs with message
+  `docs: preserve rejected Phase 3 component attempt`.
+
+The archival ruling changes location, not evidence: the original canonical
+filename denotes acceptance to the repository checker and cannot honestly hold
+this rejected attempt. The cost is a separate historical path that reproduction
+instructions must name explicitly. A corrected run will use distinct config,
+manifest, gate and run identities; never overwrite or relabel these v1 bytes.
