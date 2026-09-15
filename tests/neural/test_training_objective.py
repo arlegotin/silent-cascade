@@ -233,3 +233,30 @@ def test_corrected_optimizer_checkpoint_and_portable_stage_survive(tmp_path):
     assert restored.optimizer.param_groups[0]["eps"] == 1e-6
     weights = export_weights(tmp_path, model, config=config, source_commit="a" * 40)
     assert weights.stage == "smoke"
+
+
+def test_timed_observation_time_state_cannot_hide_nonfinite_values(monkeypatch):
+    from dataclasses import replace
+
+    from silent_cascade.train import objective
+    from silent_cascade.train.state import TrainingError
+
+    config = corrected_config().config
+    model = EventFlowModel(config.neural)
+    optimizer = make_optimizer(model, config.training)
+    batch = next_training_batch(config, stage="one_hop", batch_counter=0)
+    original = objective.teacher_forced_unroll
+
+    def corrupt(*args):
+        unroll = original(*args)
+        boundary = unroll.observations[0]
+        context = copy(boundary.context)
+        object.__setattr__(context, "time_features", context.time_features * torch.nan)
+        return replace(
+            unroll, observations=(replace(boundary, context=context), *unroll.observations[1:])
+        )
+
+    monkeypatch.setattr(objective, "teacher_forced_unroll", corrupt)
+    with pytest.raises(TrainingError, match="Nonfinite"):
+        train_one_step(model, optimizer, batch, config)
+    assert not optimizer.state

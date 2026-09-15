@@ -108,6 +108,16 @@ branch losses, and branch forward compute. The outer compute snapshot already
 includes both graphs and backward; branch snapshots must not be added to it.
 The public evaluator and every scientific gate remain unchanged.
 
+The corrected fixed64 engineering regression reached 64/64 full chains and
+112/112 required recalls/compositions at update 175 within its unchanged
+1,000-update cap. All three variants passed (32 positive, 16 safe, 16
+disconnected); secondary untimed action accuracy remained 32/64. A preceding
+recording-helper attempt stopped at update 25 due to a snapshot unpack error;
+that partial record is retained separately and has no learning-gate conclusion.
+Configured B8/B128 native parity and CPU/MPS resume prerequisites passed before
+the corrected learning run. These engineering results establish no timed or
+held-out production acceptance.
+
 Supply every configuration layer explicitly and in order. Paths can be absolute;
 installed wheels contain the Python modules but do not discover configuration
 files from the checkout or the current directory.

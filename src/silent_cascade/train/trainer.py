@@ -113,6 +113,11 @@ def _finite_state(value):
 
 def _check_objective(objective):
     _check_unroll(objective.timed)
+    for boundary in (*objective.timed.observations, *objective.timed.boundaries):
+        _finite_state(boundary.context)
+    for step in objective.timed.steps:
+        _finite_state(step.prediction_context)
+        _finite_state(step.post_context)
     _finite_state(objective.timed.final_context)
     _finite_state(objective.timed_loss)
     if objective.content is not None:

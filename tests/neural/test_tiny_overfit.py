@@ -18,7 +18,7 @@ def test_real_fixed_64_overfit():
                 "configs/data/primary.yaml",
                 "configs/model/event_flow.yaml",
                 "configs/model/neural_components.yaml",
-                "configs/train/smoke.yaml",
+                "configs/train/smoke_content_v2.yaml",
             )
         ),
     )
