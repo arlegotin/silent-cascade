@@ -4,6 +4,28 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-15 — Phase 3 artifact volume selection
+
+The source volume has about 5.4 GiB free. A disposable production-shaped B128
+optimizer step generated 184,035 bytes of raw log data before the prior
+checkpoint descriptor, projecting about 13 GiB for the unchanged 75,000-step
+ceiling. Seventy-five validation artifacts and retained checkpoints add to that.
+A separate lossless gzip probe reduced a comparable row to 59,736 bytes, still
+about 4.3 GiB for steps alone with little safety margin. These are storage probes,
+not acceptance training or convergence evidence.
+
+Under standing approval, use an explicit persistent local artifact directory
+under the current user's Application Support directory on the main data volume
+(about 214 GiB free), with a 20 GiB free-space preflight. Source and commits stay
+in this repository. Preserve the existing raw format, every log and failure,
+workload and checkpoint policy; delete nothing and use no symlink. Collector
+inputs accept that explicit owned real run directory while retaining safe
+descriptor-relative reads and exact source/configuration/corpus bindings.
+Committed evidence uses portable run IDs, relative archive names and hashes;
+the physical path remains in ignored local execution records. Cost if wrong:
+artifacts require a separate explicit backup/replay path and consume data-volume
+space, but this avoids truncating the workload or changing scientific settings.
+
 ## 2026-09-15 — Phase 3 evidence integration boundaries
 
 Task 12 inspection found that native MPS checkpoint continuation was covered by

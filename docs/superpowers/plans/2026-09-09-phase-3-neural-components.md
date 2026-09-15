@@ -1511,10 +1511,20 @@ The independent verifier shares closed **data-only** schemas/safe reads but not
 producer metric arithmetic, pass validators, or hash-chain implementation. It
 checks all counts/denominators, strict `>99%` thresholds, exact variant totals,
 checkpoint/source/config/manifest hashes, finite gradient/numeric evidence,
-and zero foundation calls. Selected weights remain under `runs/`; raw artifact
+and zero foundation calls. Selected weights remain in the explicitly selected
+local run directory, outside version control; raw artifact
 verification binds their SHA, while a separate execution check loads those
 weights and reproduces all raw component decisions on CPU. Do not claim that
 arithmetic/hash verification alone proves the training computation occurred.
+
+The run directory may be on a persistent local data volume rather than beneath
+the checkout. Accept an explicit owned canonical real directory, retain all
+descriptor-relative archive checks, and reject symlink traversal. This is an
+execution-location choice, not a new storage backend. Commit portable run IDs,
+relative archive names and hashes; keep the absolute machine-specific location
+in ignored local execution records. Optional `--weights` supplies the physical
+archive path for verification. Do not infer or silently fall back to a different
+run location. Source/configuration/corpus remain repository-bound.
 
 After independently reconstructing correct/required counts from the recorded
 sequences, use exact integer arithmetic for each acceptance threshold:
@@ -1595,7 +1605,8 @@ existing frozen Phase 1 baseline, so coordinated substitutions cannot pass.
 **Files:** Create the two Task 13 manifest/gate files; modify only the Phase 3
 delivery row in `docs/PLAN.md` and append measured results to
 `docs/phase3-neural-components.md`. Model checkpoints and full training logs
-stay in ignored `runs/phase3-components/`; do not commit normal checkpoints.
+stay in the explicitly selected local run directory, outside version control;
+do not commit normal checkpoints or machine-specific storage paths.
 
 This task changes **no implementation, tests, configuration, spec, or approved
 plan**. A source correction returns to a reviewed source task and invalidates
@@ -1610,7 +1621,19 @@ phase3_source_commit="$(git rev-parse HEAD)"
 phase3_plan_revision="$(git log -1 --format=%H -- docs/superpowers/plans/2026-09-09-phase-3-neural-components.md)"
 git merge-base --is-ancestor "$phase3_plan_revision" "$phase3_source_commit"
 test -z "$(git status --porcelain)"
+phase3_run_dir="$(uv run --offline python -c 'from pathlib import Path; import shutil; root = Path.home() / "Library" / "Application Support"; assert shutil.disk_usage(root).free >= 20 * 1024**3, "Phase 3 requires 20 GiB of free artifact space"; print(root / "silent-cascade" / "runs" / "phase3-components" / "event_flow" / "11" / "one-hop-v1")')"
 ```
+
+The repository volume has only about 5.4 GiB free at the preflight. One actual
+disposable production-shaped step serializes to about 184 KiB; all 75,000 raw
+step logs can require about 13 GiB before validation/checkpoint artifacts. A
+lossless gzip probe still projected about 4.3 GiB for steps alone. Use the
+explicit persistent main-volume path above (about 214 GiB free at preflight),
+with private owner-only directories and at least 20 GiB free. Preserve all raw
+logs, the full workload and existing storage format. Do not delete unrelated
+files, use a symlink, or rely on early convergence to fit the smaller volume.
+Recheck available space during execution. Cost: artifacts live separately from
+the source checkout and require their explicit path for backup/replay.
 
 At execution start, after actual user approval, update this plan's status to
 `User-approved; completion tracked in docs/PLAN.md` and commit that approval
@@ -1643,7 +1666,7 @@ OMP_NUM_THREADS=1 uv run --offline python -m silent_cascade.train fit \
   --config configs/train/one_hop.yaml \
   --validation-manifest manifests/validation/phase3/one-hop-10000.json \
   --expected-source-commit "$phase3_source_commit" \
-  --run-dir runs/phase3-components/event_flow/11/one-hop-v1 --device cpu
+  --run-dir "$phase3_run_dir" --device cpu
 ```
 
 Use the measured faster CPU placement with one Torch CPU thread, and recheck
@@ -1681,7 +1704,7 @@ uv run --offline python -m silent_cascade.train evaluate-components \
   --weights "$phase3_weights_path" \
   --expected-checkpoint-sha256 "$phase3_weights_sha256" \
   --manifest manifests/validation/phase3/one-hop-10000.json \
-  --output runs/phase3-components/event_flow/11/one-hop-v1/cpu-evaluation.json
+  --output "$phase3_run_dir/cpu-evaluation.json"
 ```
 
 The CPU result must independently exceed all three thresholds. Run it twice
@@ -1699,7 +1722,7 @@ uv run --offline python scripts/check_phase3_components.py collect \
   --config configs/train/one_hop.yaml \
   --manifest manifests/validation/phase3/one-hop-10000.json \
   --weights "$phase3_weights_path" --expected-checkpoint-sha256 "$phase3_weights_sha256" \
-  --training-run runs/phase3-components/event_flow/11/one-hop-v1 \
+  --training-run "$phase3_run_dir" \
   --expected-source-commit "$phase3_source_commit" \
   --expected-plan-base-revision "$phase3_plan_revision" \
   --output manifests/validation/phase3/component-gate.json
