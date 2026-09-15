@@ -4,6 +4,41 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-15 — Pre-freeze Phase 3 AdamW stabilization
+
+Standing approval for reversible configuration and plan corrections is applied
+to a Phase 3 implementation-plan choice, not a relaxation of the canonical
+scientific protocol. Specification Section 8.6 fixes AdamW, learning rate,
+weight decay, float32, clipping and budgets, but does not specify epsilon. The
+canonical specification and accepted Phase 1/2 evidence remain unchanged.
+
+The original `epsilon=1e-8` failed the fixed native CPU/MPS first-update gate on
+ten weights (maximum absolute difference about `5.48e-5`), despite passing the
+forward, loss, raw-gradient and discrete-choice comparisons. At controller
+weight `[371,295]`, raw gradients were approximately `-4.265e-7` and `-2.026e-7`
+after cancellation of opposing contributions near `1e-3`. A global norm near
+`35.0978` placed the clipped gradients near epsilon. Independent analysis of
+the actual fresh-step AdamW equation predicted a difference of `5.4776e-5`.
+The Metal-preference diagnostic did not fix the mismatch. No production
+component corpus, final training run or frozen test was used for this decision.
+
+Ruling: declare `epsilon=1e-6` globally in Phase 3 training and smoke profiles,
+on both CPU and MPS, including parity, checkpoint and resume paths. This lowers
+the worst-case first-step sensitivity bound `learning_rate / epsilon` by 100x.
+It is a real optimizer hyperparameter change, not algebraically equivalent code
+or a device-specific test workaround. Cost if wrong: genuine small-gradient
+updates are damped and convergence may worsen; the unchanged tiny-overfit,
+component-accuracy and training-budget gates must detect that. Later comparable
+learned conditions must share this declared setting.
+
+The value is fixed before retesting, with no hidden passing-value sweep. Keep
+the same numerical tolerances, seeded parity fixture, model, losses, learning
+rate, decay, clipping, seeds, budgets and scientific thresholds. New canonical
+configuration hashes must bind all new runs; old optimizer archives cannot be
+resumed under the revision. Preserve the original failure and regenerate all
+affected debug/acceptance evidence. This entry records a correction to verify,
+not a claim that the revised optimizer already passes.
+
 ## 2026-09-08 — Final Phase 1 leakage-evidence closure
 
 The terminal science and code audits rejected the five artifacts collected at

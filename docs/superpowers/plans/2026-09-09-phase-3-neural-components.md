@@ -351,7 +351,26 @@ interval 2, validation size 16, and the same architecture/default losses.
 Record its separate config hash; it can never satisfy the production gate.
 Loss coefficients from Task 8 belong to `training.loss_weights` with
 the exact specification defaults. Configure AdamW with default betas
-`(0.9,0.999)`, epsilon `1e-8`, `foreach=False`, `fused=False`, no scheduler.
+`(0.9,0.999)`, epsilon `1e-6`, `foreach=False`, `fused=False`, no scheduler.
+
+Pre-freeze correction (2026-09-15, standing approval): the original plan selected
+epsilon `1e-8`. A real fixed-seed CPU/MPS first-step comparison passed every
+forward/loss/gradient and discrete-choice check but failed ten updated weights.
+Opposing objective gradients near `1e-3` cancelled to about `1e-7`; norm clipping
+put the net values near epsilon, and AdamW amplified backend rounding into a
+maximum weight difference near `5.48e-5`. Independent scalar analysis reproduced
+the difference. This is not a claim of incorrect backend arithmetic.
+
+Use `1e-6` consistently in both profiles, both devices, real training, parity,
+archives and resume. This is a deliberate optimizer change, not an equivalent
+formula or test-only workaround: it lowers worst-case fresh-step sensitivity
+`learning_rate / epsilon` from 30000 to 300, while potentially slowing genuine
+small-gradient learning. The value is fixed before retesting, not selected from
+an undisclosed passing-value sweep. Keep every tolerance, fixture, loss, seed,
+budget and accuracy threshold unchanged. Regenerate configuration hashes and
+reject old-configuration resume; do not reuse previous debug learning evidence
+as evidence for this optimizer. Canonical specification Section 8.6 does not
+fix epsilon and remains byte-identical. See `docs/deviations.md` for the ruling.
 
 - [ ] **Step 4: Run the tests to GREEN**, plus existing Phase 2 config tests and
   `uv run ruff check .`; prove original resolved Phase 2 SHA remains
@@ -1248,6 +1267,9 @@ widths only in that explicitly debug profile; production model widths stay fixed
 **Files:** Create `train/{cli,__main__,verification}.py`,
 `docs/phase3-neural-components.md`, and
 `tests/neural/{test_training_cli,test_device_parity,test_training_imports,test_training_package}.py`;
+update new Phase 3 `train/config.py`, both `configs/train/{smoke,one_hop}.yaml`
+and neural config/checkpoint/resume fixtures for the documented global epsilon
+correction;
 modify `Makefile` and `tests/integration/test_phase0_repository.py` only where
 needed for actual local smoke/test commands. Existing root CLI and frozen source
 remain unchanged.
@@ -1259,6 +1281,19 @@ positive infinity, and record executed functional confidence/focus/hypothesis
 operations in `train/component_eval.py`. Valid-input objectives and every
 numeric tolerance remain unchanged; retain the findings and verification
 history for the final whole-phase review.
+
+Apply the pre-freeze optimizer correction documented under Task 1, using TDD:
+first assert both resolved profiles and the actual optimizer factory use
+`epsilon=1e-6`, and assert explicit old `epsilon=1e-8` input is rejected. Record
+RED against the old configuration before changing its strict Literal and both
+YAML values. Update checkpoint/resume fixtures to the same global value; preserve
+all corruption checks. Re-run the original fixed-seed native parity test without
+changing its batch, weights or comparisons, exact CPU/native MPS resume, the
+fixed-64 tiny-overfit gate and the full local gate. Save new canonical hashes
+and retain the original failing measurements. Later learned comparators must
+share the declared optimizer stabilization, never receive a device-specific or
+numerically weaker setup. No production run may consume old-configuration
+checkpoints or claim the old debug learning result under the new hash.
 
 **Interfaces:** `python -m silent_cascade.train` exposes exactly:
 
