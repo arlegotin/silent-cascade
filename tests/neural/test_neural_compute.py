@@ -4,6 +4,17 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
+
+
+class _OperationTrace(TorchDispatchMode):
+    def __init__(self) -> None:
+        super().__init__()
+        self.operations: list[object] = []
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        self.operations.append(func)
+        return func(*args, **(kwargs or {}))
 
 
 def test_linear_mac_accounting() -> None:
@@ -65,6 +76,47 @@ def test_repeated_instrumentation_does_not_duplicate_or_leave_hooks() -> None:
         assert not layer._forward_hooks
         assert not layer._forward_pre_hooks
         assert not layer._backward_hooks
+
+
+def test_retained_output_loses_meter_tensor_hook_on_context_exit() -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+
+    layer = torch.nn.Linear(3, 5)
+    values = torch.ones(2, 3, requires_grad=True)
+    with NeuralComputeMeter(layer) as first:
+        retained = layer(values)
+        assert retained._backward_hooks
+    assert not retained._backward_hooks
+    retained.sum().backward()
+    assert first.snapshot().backward_macs == 0
+
+    layer.zero_grad(set_to_none=True)
+    values.grad = None
+    with NeuralComputeMeter(layer) as second:
+        layer(values).sum().backward()
+    assert second.snapshot().backward_macs == 2 * (2 * 3 * 5)
+
+
+def test_forward_hooks_add_no_tensor_operations_and_freeze_public_counts(
+    model_context, neural_config
+) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.models.event_flow import EventFlowModel
+
+    model = EventFlowModel(neural_config.neural)
+    with torch.no_grad(), _OperationTrace() as plain:
+        model.preview_and_control(model_context)
+    with NeuralComputeMeter(model) as meter, torch.no_grad(), _OperationTrace() as measured:
+        model.preview_and_control(model_context)
+    assert measured.operations == plain.operations
+    expected_eligible = int(model_context.eligibility.sum())
+    snapshot = meter.snapshot()
+    assert snapshot.eligible_records == expected_eligible
+    assert snapshot.opportunities == 2
+    model_context.eligibility.zero_()
+    model_context.modes.zero_()
+    assert meter.snapshot().eligible_records == expected_eligible
+    assert meter.snapshot().opportunities == 2
 
 
 def test_meter_preserves_outputs_gradients_and_rng() -> None:
@@ -158,6 +210,66 @@ def test_external_encoding_without_injection_is_not_a_jump(neural_config) -> Non
     )
     assert snapshot.forward_macs == expected_linear_macs
     assert snapshot.operation_estimates["embedding_output_bytes"] > 0
+
+
+def test_external_injection_and_activation_focus_count_functional_nonlinears(
+    neural_config,
+) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.models.event_flow import EventFlowModel
+    from silent_cascade.models.types import ExternalFeatures
+
+    model = EventFlowModel(neural_config.neural)
+    context = model.initial_context(2, device="cpu")
+    event = ExternalFeatures(
+        subject_ids=torch.tensor([1, 2]),
+        object_ids=torch.tensor([2, 3]),
+        record_kind_ids=torch.tensor([0, 0]),
+        hazard_ids=torch.tensor([4, 4]),
+        provenance_ids=torch.tensor([0, 0]),
+        record_scalar_features=torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.2, 0.8]] * 2),
+        activation_entity_ids=torch.tensor([0, 4]),
+        event_kinds=torch.tensor([0, 1]),
+        time_features=torch.tensor([[0.2, 0.0], [0.3, 0.0]]),
+    )
+    with NeuralComputeMeter(model) as meter:
+        model.observe(context, event)
+    estimates = meter.snapshot().operation_estimates
+    assert estimates["sigmoid_ops"] == 2 * 320
+    assert estimates["tanh_ops"] == 2 * 320 + 64
+
+
+def test_retrieval_preview_counts_executed_softmax_and_logsumexp_slots(
+    model_context, neural_config
+) -> None:
+    from dataclasses import replace
+
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.models.event_flow import EventFlowModel
+
+    eligibility = model_context.eligibility.clone()
+    eligibility[1] = False
+    context = replace(model_context, eligibility=eligibility)
+    model = EventFlowModel(neural_config.neural)
+    with NeuralComputeMeter(model) as meter:
+        model.preview_and_control(context)
+    estimates = meter.snapshot().operation_estimates
+    assert estimates["softmax_ops"] == 2 * 64
+    assert estimates["logsumexp_ops"] == 64
+
+
+def test_shared_jump_functional_nonlinears_are_not_double_counted(
+    model_context, neural_config
+) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.models.event_flow import EventFlowModel
+
+    model = EventFlowModel(neural_config.neural)
+    with NeuralComputeMeter(model) as meter:
+        model.jump(model_context, torch.tensor([0, 2]))
+    estimates = meter.snapshot().operation_estimates
+    assert estimates["sigmoid_ops"] == 2 * 456
+    assert estimates["tanh_ops"] == 2 * 456
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS unavailable")

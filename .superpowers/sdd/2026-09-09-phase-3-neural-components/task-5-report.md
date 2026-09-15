@@ -123,10 +123,12 @@ uv run ruff format --check <nine Task 5 production/test paths>
 9 files already formatted
 ```
 
-`git diff --check` produced no output. Native MPS was unavailable on this host,
-so the guarded real-MPS coverage could not execute here; CPU behavior and the
-MPS-null peak-allocation contract are covered. Per the phase instruction, the
-16-minute repository-wide `make verify` was intentionally deferred.
+`git diff --check` produced no output. The initial sandbox-limited interpreter
+check hid MPS and was incorrectly reported as host unavailability. An approved
+`uv run` check reports `mps_available=True`, and the native-MPS coverage passes.
+PyTorch still exposes no true peak-allocation API, so `None` remains the correct
+peak result. Per the phase instruction, the 16-minute repository-wide
+`make verify` was intentionally deferred.
 
 ## Files Changed
 
@@ -136,6 +138,7 @@ MPS-null peak-allocation contract are covered. Per the phase instruction, the
 - `src/silent_cascade/eval/compute.py`
 - `src/silent_cascade/models/dynamics.py`
 - `src/silent_cascade/models/jump.py`
+- `src/silent_cascade/memory/retrieval.py` (functional accounting seam)
 - `tests/neural/test_heads.py`
 - `tests/neural/test_event_flow_model.py`
 - `tests/neural/test_neural_compute.py`
@@ -157,3 +160,71 @@ MPS-null peak-allocation contract are covered. Per the phase instruction, the
 No correctness concerns. Platform MPS peak APIs expose current allocation but
 not a true peak in this installed PyTorch, so the snapshot deliberately reports
 `None`, as required, instead of fabricating zero or mislabeling an endpoint.
+
+## Fix Round 1 — Review Findings
+
+### Corrections
+
+- Retain every handle returned by `Tensor.register_hook` and remove it in the
+  meter's unconditional exit cleanup. A retained output now has an empty actual
+  tensor hook mapping after the context exits; backward outside the context does
+  not change the meter, while a later measured backward counts normally.
+- Forward hooks now retain only public eligibility/mode tensor references and
+  integer shape metadata. After MPS synchronization and after stopping elapsed
+  timing, exit copies those tensors to CPU, performs reductions there, freezes
+  integer totals, and releases the references. A Torch dispatch trace proves
+  measured and unmeasured forward calls execute the same tensor operations.
+- Added metadata-only functional seams for external/shared jump sigmoid+tanh,
+  ACTIVATE focus tanh, and retrieval-preview softmax/logsumexp. Removed the old
+  SharedJump module estimate so the internal jump remains single-counted.
+- Added a durable complete assembled-model MPS regression covering observe,
+  preview/controller, recall, compose, action, jump, flow, and backward.
+
+### TDD RED
+
+```text
+uv run pytest -q <five focused review tests>
+4 failed, 1 passed in 1.07s
+```
+
+Observed failures were the retained tensor hook, five extra measured dispatch
+operations including `aten.sum`, missing external/focus sigmoid-tanh keys, and
+missing retrieval softmax/logsumexp keys. The single-count SharedJump baseline
+passed before the seam change.
+
+### Incremental GREEN
+
+```text
+tensor-hook lifecycle/backward tests: 3 passed in 0.06s
+metadata-only dispatch/count tests:   3 passed in 0.52s
+functional nonlinear count tests:    3 passed in 0.10s
+native assembled MPS regression:     1 passed in 1.21s
+```
+
+The approved-context device check was:
+
+```text
+uv run python -c "import torch; print(f'mps_available={torch.backends.mps.is_available()}')"
+mps_available=True
+```
+
+### Fix-Round Verification
+
+```text
+uv run pytest -q tests/neural/test_heads.py tests/neural/test_event_flow_model.py tests/neural/test_neural_compute.py
+26 passed in 0.90s
+
+uv run pytest -q tests/neural tests/regression/test_import_boundaries.py tests/unit/test_flow.py tests/unit/test_guards.py tests/unit/test_eventflow_protocols.py tests/unit/test_eventflow_state.py
+338 passed in 2.72s
+
+uv run ruff check <ten scoped production/test paths>
+All checks passed!
+
+uv run ruff format --check <ten scoped production/test paths>
+10 files already formatted
+```
+
+The assembled native-MPS run produced float32 finite outputs and gradients,
+counted 256 scored records and zero foundation-model calls, retained the exact
+`2,781,042 / 2,048 / 2,778,994` parameter split, and reported peak allocation
+as `None` because the installed PyTorch has no true MPS peak API.

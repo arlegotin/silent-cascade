@@ -32,7 +32,11 @@ def _require_batch_tensor(
 def _bounded_jump(previous: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
     targets, gate_logits = raw.chunk(2, dim=1)
     gates = torch.sigmoid(gate_logits)
-    return (1.0 - gates) * previous + gates * torch.tanh(targets)
+    bounded_targets = torch.tanh(targets)
+    from silent_cascade.eval.compute import _record_functional_operations
+
+    _record_functional_operations(sigmoid_ops=gates.numel(), tanh_ops=bounded_targets.numel())
+    return (1.0 - gates) * previous + gates * bounded_targets
 
 
 class ExternalEncoder(nn.Module):

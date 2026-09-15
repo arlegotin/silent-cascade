@@ -3,6 +3,7 @@
 from dataclasses import replace
 from inspect import signature
 
+import pytest
 import torch
 
 from silent_cascade.models.types import ExternalFeatures
@@ -145,3 +146,91 @@ def test_model_prediction_methods_return_neutral_outputs(model_context, neural_c
     assert model.compose(model_context).role_logits.shape == (2, 5)
     assert model.action(model_context).class_logits.shape == (2, 5)
     assert model.jump(model_context, torch.tensor([0, 2])).latent.shape == (2, 456)
+
+
+@torch.no_grad()
+def _assert_mps_float32(*values: torch.Tensor) -> None:
+    for value in values:
+        assert value.device.type == "mps"
+        assert value.dtype is torch.float32
+        assert torch.isfinite(value).all()
+
+
+@torch.no_grad()
+def _mps_external_features() -> ExternalFeatures:
+    return ExternalFeatures(
+        subject_ids=torch.tensor([1, 2], dtype=torch.int64, device="mps"),
+        object_ids=torch.tensor([2, 3], dtype=torch.int64, device="mps"),
+        record_kind_ids=torch.tensor([0, 0], dtype=torch.int64, device="mps"),
+        hazard_ids=torch.tensor([4, 4], dtype=torch.int64, device="mps"),
+        provenance_ids=torch.tensor([0, 0], dtype=torch.int64, device="mps"),
+        record_scalar_features=torch.tensor(
+            [[1.0, 0.0, 0.0, 0.0, 0.2, 0.8]] * 2,
+            device="mps",
+        ),
+        activation_entity_ids=torch.tensor([4, 5], dtype=torch.int64, device="mps"),
+        event_kinds=torch.tensor([1, 1], dtype=torch.int64, device="mps"),
+        time_features=torch.tensor([[0.5, 0.0], [0.6, 0.0]], device="mps"),
+    )
+
+
+@torch.no_grad()
+def _mps_memory_context(context):
+    return replace(
+        context,
+        memory_embeddings=torch.zeros(2, 64, 96, device="mps"),
+        eligibility=torch.ones(2, 64, dtype=torch.bool, device="mps"),
+        active_slot_indices=torch.tensor([0, 1], dtype=torch.int64, device="mps"),
+    )
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS unavailable")
+def test_assembled_model_executes_complete_native_mps_graph(neural_config) -> None:
+    from dataclasses import fields
+
+    from silent_cascade.eval.compute import NeuralComputeMeter, parameter_counts
+    from silent_cascade.models.dynamics import flow_batch
+    from silent_cascade.models.event_flow import EventFlowModel
+
+    model = EventFlowModel(neural_config.neural).to("mps")
+    context = _mps_memory_context(model.initial_context(2, device="mps"))
+    with NeuralComputeMeter(model) as meter:
+        observed = model.observe(context, _mps_external_features())
+        preview, parameters = model.preview_and_control(observed)
+        scores = model.recall_scores(observed)
+        composition = model.compose(observed)
+        action = model.action(observed)
+        jumped = model.jump(observed, torch.tensor([0, 2], dtype=torch.int64, device="mps"))
+        flowed = flow_batch(jumped, parameters, torch.full((2,), 0.1, device="mps"))
+        loss = (
+            preview.features.sum()
+            + scores.raw_scores.sum()
+            + sum(getattr(composition, field.name).sum() for field in fields(composition))
+            + action.class_logits.sum()
+            + action.lead_fraction.sum()
+            + flowed.latent.sum()
+        )
+        loss.backward()
+    _assert_mps_float32(
+        observed.workspace.latent,
+        preview.features,
+        parameters.flow_targets,
+        scores.raw_scores,
+        composition.role_logits,
+        action.class_logits,
+        jumped.latent,
+        flowed.latent,
+    )
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )
+    snapshot = meter.snapshot()
+    assert snapshot.records_scored == 256
+    assert snapshot.foundation_model_calls == 0
+    assert snapshot.mps_peak_allocation_bytes is None
+    assert parameter_counts(model) == {
+        "total": 2_781_042,
+        "entity_table": 2_048,
+        "non_entity": 2_778_994,
+    }

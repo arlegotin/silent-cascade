@@ -112,6 +112,9 @@ class EventFlowModel(nn.Module):
                     )
                 )
             )
+            from silent_cascade.eval.compute import _record_functional_operations
+
+            _record_functional_operations(tanh_ops=activation_focus.numel())
             focus = latent[:, 328:392].index_copy(0, activation_rows, activation_focus)
             latent = torch.cat((latent[:, :328], focus, latent[:, 392:]), dim=1)
             workspace = TensorWorkspace._from_functional_update(latent, workspace.accumulators)

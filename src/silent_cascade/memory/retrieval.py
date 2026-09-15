@@ -175,6 +175,12 @@ class RetrievalScorer(nn.Module):
                 eligible,
                 self.config.top_k,
             )[live]
+            from silent_cascade.eval.compute import _record_functional_operations
+
+            _record_functional_operations(
+                softmax_ops=2 * live_logits.numel(),
+                logsumexp_ops=live_logits.numel(),
+            )
             live_features = torch.cat((metrics, pooled), dim=1)
             features = features.index_copy(0, live.nonzero(as_tuple=True)[0], live_features)
         return RetrievalPreview(features=features, has_candidate=live)

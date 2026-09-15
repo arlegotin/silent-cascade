@@ -70,6 +70,12 @@ def _record_jump_application(batch_size: int) -> None:
         meter._row_transitions += batch_size
 
 
+def _record_functional_operations(**operations: int) -> None:
+    """Record already-executed functional work using integer metadata only."""
+    for meter in _ACTIVE_METERS.get():
+        meter._operation_estimates.update(operations)
+
+
 class NeuralComputeMeter:
     """Observe module and functional neural work without changing execution."""
 
@@ -78,6 +84,7 @@ class NeuralComputeMeter:
             raise TypeError("module must be an nn.Module")
         self.module = module
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
+        self._tensor_handles: list[torch.utils.hooks.RemovableHandle] = []
         self._token: Token[tuple[NeuralComputeMeter, ...]] | None = None
         self._entered = False
         self._finished = False
@@ -85,12 +92,14 @@ class NeuralComputeMeter:
         self._operation_estimates: Counter[str] = Counter()
         self._row_transitions = 0
         self._records_scored = 0
-        self._eligible_record_counts: list[torch.Tensor] = []
+        self._eligibility_references: list[torch.Tensor] = []
+        self._eligible_records = 0
         self._forward_macs = 0
         self._backward_macs = 0
         self._flow_evaluations = 0
         self._jump_applications = 0
-        self._opportunity_counts: list[torch.Tensor] = []
+        self._mode_references: list[torch.Tensor] = []
+        self._opportunities = 0
         self._memory_bytes = 0
         self._elapsed_seconds = 0.0
         self._started_at = 0.0
@@ -142,14 +151,31 @@ class NeuralComputeMeter:
             if self._uses_mps:
                 torch.mps.synchronize()
             self._elapsed_seconds = perf_counter() - self._started_at
+            self._freeze_public_counts()
         finally:
             for handle in self._handles:
                 handle.remove()
             self._handles.clear()
+            for handle in self._tensor_handles:
+                handle.remove()
+            self._tensor_handles.clear()
             if self._token is not None:
                 _ACTIVE_METERS.reset(self._token)
                 self._token = None
             self._finished = True
+
+    def _freeze_public_counts(self) -> None:
+        """Copy observed public masks to CPU and reduce after measured timing."""
+        self._eligible_records = sum(
+            int(reference.detach().to(device="cpu", copy=True).sum().item())
+            for reference in self._eligibility_references
+        )
+        self._opportunities = sum(
+            int((reference.detach().to(device="cpu", copy=True) != 0).sum().item())
+            for reference in self._mode_references
+        )
+        self._eligibility_references.clear()
+        self._mode_references.clear()
 
     def _forward_hook(
         self,
@@ -167,7 +193,7 @@ class NeuralComputeMeter:
             if module.bias is not None:
                 self._operation_estimates["linear_bias_adds"] += rows * module.out_features
             if isinstance(output, torch.Tensor) and output.requires_grad:
-                output.register_hook(self._backward_counter(macs))
+                self._tensor_handles.append(output.register_hook(self._backward_counter(macs)))
         elif isinstance(module, nn.SiLU):
             self._operation_estimates["silu_ops"] += 4 * _tensor_elements(output)
         elif isinstance(module, nn.LayerNorm):
@@ -186,7 +212,7 @@ class NeuralComputeMeter:
             self._forward_macs += bilinear_macs
             self._operation_estimates["bilinear_dot_macs"] += bilinear_macs
             self._records_scored += batch_size * slots
-            self._eligible_record_counts.append(context.eligibility.sum().detach())  # type: ignore[union-attr]
+            self._eligibility_references.append(context.eligibility)  # type: ignore[union-attr]
             self._memory_bytes = max(
                 self._memory_bytes,
                 context.memory_embeddings.numel()  # type: ignore[union-attr]
@@ -196,15 +222,11 @@ class NeuralComputeMeter:
         elif name == "FlowGuardController":
             context = inputs[0]
             batch_size = context.batch_size  # type: ignore[union-attr]
-            self._opportunity_counts.append((context.modes != 0).sum().detach())  # type: ignore[union-attr]
+            self._mode_references.append(context.modes)  # type: ignore[union-attr]
             self._row_transitions += batch_size
             self._operation_estimates["tanh_ops"] += batch_size * 456
             self._operation_estimates["sigmoid_ops"] += batch_size * 3
             self._operation_estimates["exp_log_ops"] += batch_size * (456 + 3)
-        elif name == "SharedJump":
-            batch_size = inputs[0].batch_size  # type: ignore[union-attr]
-            self._operation_estimates["tanh_ops"] += batch_size * 456
-            self._operation_estimates["sigmoid_ops"] += batch_size * 456
         elif name == "ComposeHeads":
             batch_size = inputs[0].batch_size  # type: ignore[union-attr]
             self._row_transitions += batch_size
@@ -231,14 +253,14 @@ class NeuralComputeMeter:
             module_calls=MappingProxyType(dict(self._module_calls)),
             row_transitions=self._row_transitions,
             records_scored=self._records_scored,
-            eligible_records=sum(int(count.item()) for count in self._eligible_record_counts),
+            eligible_records=self._eligible_records,
             estimated_macs=self._forward_macs,
             forward_macs=self._forward_macs,
             backward_macs=self._backward_macs,
             operation_estimates=MappingProxyType(dict(self._operation_estimates)),
             flow_evaluations=self._flow_evaluations,
             jump_applications=self._jump_applications,
-            opportunities=sum(int(count.item()) for count in self._opportunity_counts),
+            opportunities=self._opportunities,
             parameters=sum(parameter.numel() for parameter in self.module.parameters()),
             memory_bytes=self._memory_bytes,
             foundation_model_calls=0,
