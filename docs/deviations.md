@@ -4,6 +4,23 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-15 — Close independent Phase 3 numeric and raw-position coverage
+
+Return D review identified incomplete independently required tensor inventories
+and an unchecked event-cost raw-position exception. Coordinated omissions were
+reproduced through the full source-authenticated debug verifier, not only its
+numeric validation layer. The correction derives exact tensor names/shapes from
+the closed architecture and deterministic public/teacher trace widths; AdamW
+slots and both resume reductions must be complete. Event-cost boundary means
+are weighted by their legal-guard multiplicities and padding must remain zero.
+No learned model is constructed or executed during independent verification.
+
+The expanded component-gate, device-parity and CPU/MPS-resume envelopes are
+version 3, including actual tensor ranks/dimensions. Earlier shape-less v2 bytes
+remain immutable named-source records, not silently relabeled v3. The fixed
+training recipe remains `teacher_timed_plus_content_v2`; model arithmetic,
+optimizer settings, numerical tolerances and scientific acceptance are unchanged.
+
 ## 2026-09-15 — Version the corrected Phase 3 training objective
 
 Return D implements the explicitly approved fixed recipe

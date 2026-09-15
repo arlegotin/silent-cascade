@@ -74,6 +74,7 @@ def test_source_closure_includes_ancestor_initializers_and_execution_consumers()
         "train/checkpoints.py",
         "train/verification.py",
         "train/objective.py",
+        "train/numeric_inventory.py",
         "train/content_unroll.py",
         "models/content_loss.py",
         "models/content_types.py",

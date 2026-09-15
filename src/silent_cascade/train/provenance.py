@@ -94,6 +94,7 @@ PHASE3_SOURCE_PATHS = (
     "src/silent_cascade/train/curriculum_data.py",
     "src/silent_cascade/train/evidence.py",
     "src/silent_cascade/train/evidence_types.py",
+    "src/silent_cascade/train/numeric_inventory.py",
     "src/silent_cascade/train/objective.py",
     "src/silent_cascade/train/observations.py",
     "src/silent_cascade/train/provenance.py",

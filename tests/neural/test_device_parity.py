@@ -11,6 +11,43 @@ from silent_cascade.train.config import Phase3Config
 from .test_training_cli import CONFIGS
 
 
+def test_comparison_records_actual_tensor_ranks_and_dimensions():
+    from silent_cascade.train.evidence_types import ComparisonData
+    from silent_cascade.train.verification import _compare
+
+    tensors = {"matrix": torch.zeros(2, 3), "scalar": torch.tensor(1.0)}
+    result = _compare(tensors, tensors, rtol=0.0, atol=0.0)
+    assert result.model_dump()["tensor_shapes"] == {"matrix": (2, 3), "scalar": ()}
+    stored = ComparisonData.model_validate_json(result.model_dump_json())
+    assert stored.tensor_shapes == {"matrix": (2, 3), "scalar": ()}
+
+
+@pytest.mark.parametrize("profile", ["production", "debug"])
+def test_closed_parameter_inventory_covers_actual_unique_model_parameters(profile):
+    from silent_cascade.models.config import NeuralModelConfig
+    from silent_cascade.train.numeric_inventory import parameter_shapes
+
+    config = (
+        NeuralModelConfig()
+        if profile == "production"
+        else NeuralModelConfig(
+            architecture_profile="debug",
+            record_hidden_dim=96,
+            external_hidden_dim=64,
+            query_dim=64,
+            controller_hidden_dim=128,
+            jump_hidden_dim=128,
+            head_hidden_dim=64,
+        )
+    )
+    model = EventFlowModel(config)
+    actual = {"/" + name: tuple(value.shape) for name, value in model.named_parameters()}
+    assert parameter_shapes(config) == actual
+    assert sum(value.numel() for value in model.parameters()) == (
+        2_781_042 if profile == "production" else 771_090
+    )
+
+
 def test_cpu_resume_evidence_is_exact_and_measured():
     from silent_cascade.train.verification import measure_cpu_resume
 
@@ -29,6 +66,23 @@ def test_cpu_resume_evidence_is_exact_and_measured():
     assert evidence.auxiliary_coefficient == 0.0
     assert evidence.optimizer_options["eps"] == 1e-7
     assert len(evidence.first_example_hashes) == 8
+    from runpy import run_path
+
+    from silent_cascade.train.numeric_inventory import parameter_shapes
+
+    verify = run_path("scripts/verify_phase3_gate_artifact.py")
+    verify["_comparison"](
+        evidence.parameters.model_dump(mode="json"),
+        0.0,
+        0.0,
+        parameter_shapes(config.config.neural),
+    )
+    verify["_comparison"](
+        evidence.losses.model_dump(mode="json"),
+        0.0,
+        0.0,
+        verify["_loss_shapes"](config, 1, resume=True),
+    )
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="native MPS unavailable")
@@ -50,6 +104,24 @@ def test_neural_one_step_cpu_mps_agree():
     assert evidence.updated_weights.compared > 100_000
     assert evidence.active_crossings > 0 and evidence.dormant_crossings > 0
     assert evidence.empty_memory_rows > 0
+    from runpy import run_path
+
+    from silent_cascade.train.numeric_inventory import forward_shapes
+
+    verify = run_path("scripts/verify_phase3_gate_artifact.py")
+    b, observations, steps, _ = verify["_trace_layout"](config, 0)
+    verify["_comparison"](
+        evidence.forward.model_dump(mode="json"),
+        1e-4,
+        1e-5,
+        forward_shapes(config.config.neural, b, observations, steps, content=False),
+    )
+    verify["_comparison"](
+        evidence.losses.model_dump(mode="json"),
+        1e-4,
+        1e-5,
+        verify["_loss_shapes"](config, 0, resume=False),
+    )
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="native MPS unavailable")
@@ -95,7 +167,7 @@ def test_mps_resume_evidence_measures_native_draws_and_restores_rng(monkeypatch)
     monkeypatch.setattr(torch, "rand", tracked)
     evidence = measure_mps_resume(config, source_commit="a" * 40)
     assert evidence.passed and evidence.device == "mps"
-    assert evidence.schema_version == "phase3-mps-resume-v2"
+    assert evidence.schema_version == "phase3-mps-resume-v3"
     assert evidence.parameters.rtol == evidence.optimizer.rtol == evidence.losses.rtol == 1e-4
     assert evidence.parameters.atol == evidence.optimizer.atol == evidence.losses.atol == 1e-5
     assert len(draws) == 2 and torch.equal(draws[0], draws[1])

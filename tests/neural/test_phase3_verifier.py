@@ -15,7 +15,9 @@ def verifier():
     ]
 
 
-def verify_in_checkout(gate, artifact=None, *, allow_debug=True, reject=False, prelude=""):
+def verify_in_checkout(
+    gate, artifact=None, *, allow_debug=True, reject=False, prelude="", error_contains=""
+):
     """Execute real verification using the package in the authenticated fixture checkout."""
     from .test_phase3_provenance import execute
 
@@ -31,8 +33,9 @@ try:
     result = verify(artifact_path=Path({str(artifact or gate / "component-gate.json")!r}),
         manifest_path=Path.cwd()/'component-manifest.json', repo_root=Path.cwd(),
         allow_debug={allow_debug!r})
-except ArtifactIntegrityError:
+except ArtifactIntegrityError as error:
     assert {reject!r}, 'valid real artifact rejected'
+    assert {error_contains!r} in str(error), str(error)
     print('{{}}')
 else:
     assert not {reject!r}, 'tampered artifact accepted'
@@ -63,6 +66,86 @@ def test_independent_verifier_accepts_real_debug_and_refuses_acceptance(debug_co
     result = verify_in_checkout(gate)
     assert result["valid"] and not result["passed"] and result["episode_count"] == 16
     verify_in_checkout(gate, allow_debug=False, reject=True)
+
+
+@pytest.mark.parametrize(
+    "section,group",
+    [("parity", name) for name in ("forward", "losses", "gradients", "updated_weights")]
+    + [
+        (device + "_resume", name)
+        for device in ("cpu", "mps")
+        for name in ("parameters", "optimizer", "losses")
+    ],
+)
+@pytest.mark.parametrize("mutation", ["omit", "dimension", "same_elements"])
+def test_independent_verifier_rejects_coordinated_numeric_omission(
+    debug_component_gate, tmp_path, section, group, mutation
+):
+    """Removing actual non-sentinel evidence must fail even with consistent totals."""
+    gate = debug_component_gate
+    raw = json.loads((gate / "component-gate.json").read_text())
+    comparison = raw["numeric"][section][group]
+    if group == "forward":
+        name = "/content/observations/0/context/time_features"
+    elif group == "losses":
+        name = (
+            "/content/per_position/retrieval"
+            if section == "parity"
+            else "per_position/content/retrieval"
+        )
+    else:
+        name = next(key for key, count in comparison["tensor_elements"].items() if count > 1)
+    assert name in comparison["tested_names"]
+    if mutation == "omit":
+        comparison["tested_names"].remove(name)
+        comparison["compared"] -= comparison["tensor_elements"].pop(name)
+        comparison["tensor_shapes"].pop(name)
+    elif mutation == "dimension":
+        comparison["tensor_elements"][name] -= 1
+        comparison["compared"] -= 1
+        comparison["tensor_shapes"][name] = [comparison["tensor_elements"][name]]
+    else:
+        comparison["tensor_shapes"][name].insert(0, 1)
+    artifact = tmp_path / "coordinated-omission.json"
+    artifact.write_text(json.dumps(raw))
+    verify_in_checkout(gate, artifact, reject=True, error_contains="numeric tensor inventory")
+
+
+@pytest.mark.parametrize("mutation", ["empty", "short", "padding", "value"])
+def test_independent_verifier_reconciles_event_cost_positions(
+    debug_component_gate, tmp_path, mutation
+):
+    gate = debug_component_gate
+    raw = json.loads((gate / "component-gate.json").read_text())
+    positions = raw["training"]["diagnostic_samples"][0]["result"]["per_position"][
+        "timed/event_cost"
+    ]
+    assert any(any(row) for row in positions)
+    if mutation == "empty":
+        positions[:] = [[] for _ in positions]
+    elif mutation == "short":
+        positions[0].pop()
+    elif mutation == "padding":
+        positions[0].append(0.0)
+    else:
+        positions[0][0] += 1.0
+    artifact = tmp_path / "event-cost.json"
+    artifact.write_text(json.dumps(raw))
+    verify_in_checkout(gate, artifact, reject=True, error_contains="raw ")
+
+
+@pytest.mark.parametrize("section", ["gate", "parity", "cpu_resume", "mps_resume"])
+def test_expanded_numeric_contract_does_not_relabel_older_schema(
+    debug_component_gate, tmp_path, section
+):
+    gate = debug_component_gate
+    raw = json.loads((gate / "component-gate.json").read_text())
+    envelope = raw if section == "gate" else raw["numeric"][section]
+    assert envelope["schema_version"].endswith("-v3")
+    envelope["schema_version"] = envelope["schema_version"][:-1] + "2"
+    artifact = tmp_path / "older-schema.json"
+    artifact.write_text(json.dumps(raw))
+    verify_in_checkout(gate, artifact, reject=True)
 
 
 @pytest.mark.parametrize(

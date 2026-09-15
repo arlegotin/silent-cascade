@@ -154,6 +154,7 @@ def _trust(report, manifest_raw, root, expected):
                 "src/silent_cascade/models/content_types.py",
                 "src/silent_cascade/train/content_unroll.py",
                 "src/silent_cascade/train/objective.py",
+                "src/silent_cascade/train/numeric_inventory.py",
                 "configs/train/one_hop_content_v2.yaml",
                 "configs/train/smoke_content_v2.yaml",
                 "manifests/validation/phase3/delivery.json",
@@ -204,7 +205,11 @@ def _trust(report, manifest_raw, root, expected):
 
     # Import the remaining recipe/target helpers now, then authenticate the loaded
     # paths before any configuration resolution or corpus reconstruction occurs.
-    for name in ("silent_cascade.train.curriculum_data", "silent_cascade.train.traces"):
+    for name in (
+        "silent_cascade.train.curriculum_data",
+        "silent_cascade.train.traces",
+        "silent_cascade.train.numeric_inventory",
+    ):
         importlib.import_module(name)
     _executing_checkout(root)
 
@@ -405,13 +410,73 @@ def _batch_examples(config, counter):
     ]
 
 
-def _numeric(report, config):
-    training = config.config.training
+def _trace_layout(config, counter):
+    from silent_cascade.train.traces import build_teacher_trace
 
+    examples = _batch_examples(config, counter)
+    traces = [build_teacher_trace(example) for example in examples]
+    return (
+        len(examples),
+        max(len(example.public.events) for example in examples),
+        max(len(trace.steps) for trace in traces),
+        traces,
+    )
+
+
+def _loss_shapes(config, counter, *, resume):
+    from silent_cascade.train.numeric_inventory import reduction_position_shape
+
+    b, observations, steps, _ = _trace_layout(config, counter)
+    content = bool(config.config.training.content_auxiliary_weight)
+    shapes = {"total" if resume else "/total": ()}
+    for branch in ("timed", "content") if content else ("timed",):
+        shapes[("" if resume else "/") + branch + "/total"] = ()
+        terms, reductions = _loss_keys(branch)
+        for group, keys in (
+            ("terms", terms),
+            ("subterms", reductions),
+            ("numerators", reductions),
+            ("denominators", reductions),
+            ("per_position", reductions),
+        ):
+            for key in keys:
+                name = (
+                    f"{group}/" + (f"{branch}/" if content else "") + key
+                    if resume
+                    else f"/{branch}/{group}/{key}"
+                )
+                shapes[name] = (
+                    reduction_position_shape(key, b, observations, steps)
+                    if group == "per_position"
+                    else ()
+                )
+    return shapes
+
+
+def _numeric(report, config):
+    from silent_cascade.train.numeric_inventory import forward_shapes, parameter_shapes
+
+    training = config.config.training
+    parameters = parameter_shapes(config.config.neural)
+    b, observations, steps, _ = _trace_layout(config, 0)
+    expected = {
+        "forward": forward_shapes(
+            config.config.neural,
+            b,
+            observations,
+            steps,
+            content=bool(training.content_auxiliary_weight),
+        ),
+        "losses": _loss_shapes(config, 0, resume=False),
+        "gradients": parameters,
+        "updated_weights": parameters,
+    }
     p, numeric = report["provenance"], report["numeric"]
     parity = numeric["parity"]
     for label in ("forward", "losses", "gradients", "updated_weights"):
-        _comparison(parity[label], 1e-4 if label in ("forward", "losses") else 1e-3, 1e-5)
+        _comparison(
+            parity[label], 1e-4 if label in ("forward", "losses") else 1e-3, 1e-5, expected[label]
+        )
     _require(
         parity["recalled_record_mismatches"] == parity["action_class_mismatches"] == 0,
         "discrete device mismatch",
@@ -425,35 +490,15 @@ def _numeric(report, config):
         parity["example_hashes"] == _batch_hashes(config, 0),
         "parity batch identity mismatch",
     )
-    forward_names = set(parity["forward"]["tested_names"])
-    for branch in ("timed", "content") if training.content_auxiliary_weight else ("timed",):
-        _require(
-            all(
-                f"/{branch}/{path}" in forward_names
-                for path in (
-                    "final_context/workspace/latent",
-                    "final_context/workspace/accumulators",
-                    "final_context/memory_embeddings",
-                    "observations/0/context/workspace/latent",
-                )
-            ),
-            "missing objective forward tensors",
-        )
-        _require(
-            f"/{branch}/total" in parity["losses"]["tested_names"], "missing objective loss tensors"
-        )
-        required_terms, reductions = _loss_keys(branch)
-        for group, keys in (
-            ("terms", required_terms),
-            ("subterms", reductions),
-            ("numerators", reductions),
-            ("denominators", reductions),
-            ("per_position", reductions),
-        ):
-            _require(
-                all(f"/{branch}/{group}/{key}" in parity["losses"]["tested_names"] for key in keys),
-                "missing objective reduction tensors",
-            )
+    resume_shapes = {
+        "parameters": parameters,
+        "optimizer": {
+            f"{name}/{slot}": (() if slot == "step" else shape)
+            for name, shape in parameters.items()
+            for slot in ("step", "exp_avg", "exp_avg_sq")
+        },
+        "losses": _loss_shapes(config, 1, resume=True),
+    }
     continuation = _batch_hashes(config, 1)
     for name, device, rtol, atol in (
         ("cpu_resume", "cpu", 0.0, 0.0),
@@ -462,7 +507,7 @@ def _numeric(report, config):
         data = numeric[name]
         _require(data["example_hashes"] == continuation, "resume batch identity mismatch")
         _require(
-            data["schema_version"] == f"phase3-{device}-resume-v2" and data["device"] == device,
+            data["schema_version"] == f"phase3-{device}-resume-v3" and data["device"] == device,
             "wrong resume device/schema",
         )
         _require(
@@ -474,17 +519,11 @@ def _numeric(report, config):
             data["rng_mismatches"] == data["batch_hash_mismatches"] == 0, "resume identity mismatch"
         )
         for kind in ("parameters", "optimizer", "losses"):
-            _comparison(data[kind], rtol, atol)
+            _comparison(data[kind], rtol, atol, resume_shapes[kind])
         _require(
             data["first_example_hashes"] == _batch_hashes(config, 0),
             "resume counter-zero batch missing",
         )
-        if training.content_auxiliary_weight:
-            for branch in ("timed", "content"):
-                _require(
-                    f"{branch}/total" in data["losses"]["tested_names"],
-                    "resume objective context missing",
-                )
     for data in (parity, numeric["cpu_resume"], numeric["mps_resume"]):
         _objective_identity(data, training)
         _optimizer_options(data, training)
@@ -495,7 +534,7 @@ def _numeric(report, config):
         )
 
 
-def _comparison(data, rtol, atol):
+def _comparison(data, rtol, atol, shapes):
     _require(data["rtol"] == rtol and data["atol"] == atol, "numeric tolerance changed")
     _require(
         data["compared"] > 0
@@ -510,9 +549,11 @@ def _comparison(data, rtol, atol):
             data["max_absolute_error"] == data["max_relative_error"] == 0, "CPU resume is not exact"
         )
     _require(
-        set(data["tensor_elements"]) == set(data["tested_names"])
-        and sum(data["tensor_elements"].values()) == data["compared"],
-        "incomplete numeric tensor counters",
+        set(data["tested_names"]) == set(shapes)
+        and data["tensor_shapes"] == {name: list(shape) for name, shape in shapes.items()}
+        and data["tensor_elements"] == {name: math.prod(shape) for name, shape in shapes.items()}
+        and data["compared"] == sum(math.prod(shape) for shape in shapes.values()),
+        "incomplete numeric tensor inventory or dimensions",
     )
 
 
@@ -562,8 +603,9 @@ def _loss_keys(branch):
 
 
 def _step_diagnostics(sample, config):
+    from silent_cascade.eventflow.guards import allowed_mode_mask
     from silent_cascade.schemas import InternalEventKind
-    from silent_cascade.train.traces import build_teacher_trace
+    from silent_cascade.train.numeric_inventory import reduction_position_shape
 
     training = config.config.training
     values = sample["result"]
@@ -580,10 +622,12 @@ def _step_diagnostics(sample, config):
         "per_position": set(),
     }
     branches = ("timed", "content") if training.content_auxiliary_weight else ("timed",)
-    steps = [
-        step
-        for example in _batch_examples(config, sample["step"] - 1)
-        for step in build_teacher_trace(example).steps
+    b, observations, width, traces = _trace_layout(config, sample["step"] - 1)
+    steps = [step for trace in traces for step in trace.steps]
+    event_counts = [
+        [sum(allowed_mode_mask(step.pre_mode)) for step in trace.steps]
+        + [0] * (width - len(trace.steps))
+        for trace in traces
     ]
     counts = {"retrieval": sum(step.kind is InternalEventKind.RECALL for step in steps)}
     counts["recall_available"] = counts["retrieval"]
@@ -605,10 +649,15 @@ def _step_diagnostics(sample, config):
         # Host reconciliation of archived float32 reductions; not a device tolerance.
         return math.isclose(left, right, rel_tol=2e-6, abs_tol=1e-6)
 
-    def flatten(value):
-        return (
-            [v for child in value for v in flatten(child)] if isinstance(value, list) else [value]
+    def positions(value, shape):
+        if not shape:
+            _require(type(value) is float and math.isfinite(value), "invalid raw position value")
+            return [value]
+        _require(
+            isinstance(value, list) and len(value) == shape[0],
+            "raw reduction position shape mismatch",
         )
+        return [v for child in value for v in positions(child, shape[1:])]
 
     for branch in branches:
         prefix = branch + "/" if training.content_auxiliary_weight else ""
@@ -630,14 +679,25 @@ def _step_diagnostics(sample, config):
                 "raw reduction arithmetic mismatch",
             )
             raw = values["per_position"][full]
-            _require(
-                isinstance(raw, list) and len(raw) == training.batch_size,
-                "raw reduction row totals missing",
-            )
-            # Event-cost positions store per-boundary means; all other reductions
-            # store additive position contributions, including ragged jump states.
-            if key != "event_cost":
-                _require(close(sum(flatten(raw)), numerator), "raw position numerator mismatch")
+            flat = positions(raw, reduction_position_shape(key, b, observations, width))
+            if key == "event_cost":
+                counts_flat = [count for row in event_counts for count in row]
+                _require(denominator == sum(counts_flat), "event-cost legal-guard count mismatch")
+                _require(
+                    all(
+                        value == 0.0
+                        for value, count in zip(flat, counts_flat, strict=True)
+                        if count == 0
+                    ),
+                    "nonzero event-cost padding",
+                )
+                # Each stored position is the mean over this boundary's legal guards.
+                position_total = sum(
+                    value * count for value, count in zip(flat, counts_flat, strict=True)
+                )
+            else:
+                position_total = sum(flat)
+            _require(close(position_total, numerator), "raw position numerator mismatch")
         term = {key: values["terms"][prefix + key] for key in terms}
         sub = {key: values["subterms"][prefix + key] for key in reductions}
         for key in terms & reductions:

@@ -50,6 +50,7 @@ class Comparison(StrictModel):
     tested_names: tuple[str, ...]
     failed_names: tuple[str, ...]
     tensor_elements: dict[str, int]
+    tensor_shapes: dict[str, tuple[int, ...]]
 
     @property
     def passed(self) -> bool:
@@ -57,7 +58,7 @@ class Comparison(StrictModel):
 
 
 class DeviceParityEvidence(StrictModel):
-    schema_version: Literal["phase3-device-parity-v2"] = "phase3-device-parity-v2"
+    schema_version: Literal["phase3-device-parity-v3"] = "phase3-device-parity-v3"
     objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
     auxiliary_coefficient: float
     optimizer_options: dict[str, object]
@@ -91,7 +92,7 @@ class DeviceParityEvidence(StrictModel):
 
 
 class ResumeEvidence(StrictModel):
-    schema_version: Literal["phase3-cpu-resume-v2"] = "phase3-cpu-resume-v2"
+    schema_version: Literal["phase3-cpu-resume-v3"] = "phase3-cpu-resume-v3"
     objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
     auxiliary_coefficient: float
     optimizer_options: dict[str, object]
@@ -122,7 +123,7 @@ class ResumeEvidence(StrictModel):
 
 
 class MPSResumeEvidence(ResumeEvidence):
-    schema_version: Literal["phase3-mps-resume-v2"] = "phase3-mps-resume-v2"
+    schema_version: Literal["phase3-mps-resume-v3"] = "phase3-mps-resume-v3"
     device: Literal["mps"] = "mps"
 
 
@@ -190,6 +191,7 @@ def _compare(left, right, *, rtol, atol) -> Comparison:
         tested_names=names,
         failed_names=tuple(failed),
         tensor_elements={name: value.numel() for name, value in left.items()},
+        tensor_shapes={name: tuple(value.shape) for name, value in left.items()},
     )
 
 

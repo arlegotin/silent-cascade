@@ -230,13 +230,18 @@ derived `passed` property; collectors must use primitive results, not infer a
 pass from a test log. A native MPS failure remains a failed gate; a sandbox skip
 does not mean native MPS is absent.
 
-New `phase3-component-gate-v2` evidence records the derived objective identity,
+New `phase3-component-gate-v3` evidence records the derived objective identity,
 actual optimizer options, both numeric contexts, the complete contiguous batch
 counter sequence, and full raw step diagnostics for counters zero and one.
 Every logged step is checked against the fixed objective during collection;
 the independent verifier reconstructs sample reduction arithmetic and branch
-compute accounting. Numeric comparison records also reconcile each tensor's
-element count. The offline subprocess accepts the validated recipe and executes
+compute accounting. Version 3 parity/resume records carry actual tensor shapes;
+the verifier derives exact names, ranks, dimensions and element counts from the
+authenticated architecture and regenerated public/teacher trace structure,
+including every AdamW slot and both resume reductions. Verification constructs
+no neural model. Event-cost positions are checked at every padded boundary and
+weighted by that boundary's legal-guard count to reconstruct their numerator.
+The offline subprocess accepts the validated recipe and executes
 the matching v1 or v2 smoke overlay, one real update and eight public rows under
 network and optional-import denial.
 
@@ -248,5 +253,7 @@ match exact Complete metadata. A legacy designated gate cannot bypass this
 check. The failed v1 archive remains unchanged in its attempt directory.
 To reproduce its rejection, use the verifier and source revision
 `5a96b673f67a634d268f000a240e0de0f3dca034` named by that archive, with its original
-`one-hop-10000.json` manifest and recorded weights; the v2 schema does not
-reinterpret the old bytes as new evidence.
+`one-hop-10000.json` manifest and recorded weights. Earlier shape-less v2 debug
+evidence likewise uses its named verifier/source; v3 does not reinterpret old
+bytes as the expanded contract. Evidence schema v3 does not rename or alter the
+fixed `teacher_timed_plus_content_v2` training recipe.

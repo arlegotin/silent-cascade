@@ -75,10 +75,11 @@ class ComparisonData(StrictModel):
     tested_names: tuple[str, ...]
     failed_names: tuple[str, ...]
     tensor_elements: dict[str, Count]
+    tensor_shapes: dict[str, tuple[Count, ...]]
 
 
 class ParityData(StrictModel):
-    schema_version: Literal["phase3-device-parity-v2"]
+    schema_version: Literal["phase3-device-parity-v3"]
     objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
     auxiliary_coefficient: float
     optimizer_options: dict[str, object]
@@ -102,7 +103,7 @@ class ParityData(StrictModel):
 
 
 class ResumeData(StrictModel):
-    schema_version: Literal["phase3-cpu-resume-v2", "phase3-mps-resume-v2"]
+    schema_version: Literal["phase3-cpu-resume-v3", "phase3-mps-resume-v3"]
     objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
     auxiliary_coefficient: float
     optimizer_options: dict[str, object]
@@ -365,7 +366,7 @@ class ReplaySample(StrictModel):
 
 
 class ComponentGateReport(StrictModel):
-    schema_version: Literal["phase3-component-gate-v2"] = "phase3-component-gate-v2"
+    schema_version: Literal["phase3-component-gate-v3"] = "phase3-component-gate-v3"
     objective_version: Literal["teacher_timed_v1", "teacher_timed_plus_content_v2"]
     auxiliary_coefficient: float
     publication: Literal["debug", "production"]
