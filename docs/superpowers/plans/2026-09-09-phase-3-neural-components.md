@@ -1252,6 +1252,14 @@ modify `Makefile` and `tests/integration/test_phase0_repository.py` only where
 needed for actual local smoke/test commands. Existing root CLI and frozen source
 remain unchanged.
 
+Resolve the inherited pre-freeze numerical/accounting integration findings in
+the new Phase 3 code with focused RED/GREEN tests: reject NaN/negative-infinite
+real crossing inputs in `models/losses.py` while preserving valid dormant
+positive infinity, and record executed functional confidence/focus/hypothesis
+operations in `train/component_eval.py`. Valid-input objectives and every
+numeric tolerance remain unchanged; retain the findings and verification
+history for the final whole-phase review.
+
 **Interfaces:** `python -m silent_cascade.train` exposes exactly:
 
 ```text
