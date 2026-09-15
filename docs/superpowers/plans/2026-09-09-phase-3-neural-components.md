@@ -1938,3 +1938,385 @@ This ruling revisits the earlier bounded adjustment after independent
 latent-exposure and production-B128 diagnoses. It does not erase either prior
 failure. Cost if wrong: small-gradient learning can slow and the corrected
 objective can introduce new cancellations; both require fresh unchanged gates.
+
+### Return C: Expose the Actual Untimed Content Context During Training
+
+**Goal:** Test the diagnosed latent-context exposure mismatch without replacing
+the timed EventFlow objective or changing the public component evaluator.
+
+**Design ruling:** Every corrected optimizer update uses the original batch
+twice: the unchanged full teacher-timed unroll and a fresh, differentiable
+teacher-forced content unroll with no internal world-time advance. Sum their
+losses with fixed auxiliary coefficient 1.0, then backward/clip/update once.
+Alternating objectives would halve timed updates under the same ceiling;
+adding a new no-match architecture is not justified by the current evidence.
+Cost if wrong: the second unroll adds real compute and its gradients may compete
+with timed learning. No convergence claim follows from choosing this design.
+
+Return C implements the independently testable auxiliary unroll/loss only;
+Return D supplies its real training/evidence consumer before another release
+gate. Do not wire it into an incomplete production recipe in this subtask.
+
+**Files:** Create `src/silent_cascade/models/content_types.py`,
+`src/silent_cascade/models/content_loss.py`, and
+`src/silent_cascade/train/content_unroll.py`; create
+`tests/neural/test_content_loss.py` and `tests/neural/test_content_unroll.py`.
+Keep `event_flow_loss`, `teacher_forced_unroll`, `predict_components`, scoring,
+model architecture, generator and schemas unchanged. Reuse existing functional
+context/observation APIs. Do not call the timed `_apply_teacher`, which injects
+teacher clocks and normalized deadlines.
+
+**Interfaces:**
+
+```python
+# models/content_types.py; neutral tensors, no train/env imports
+@dataclass(frozen=True, slots=True)
+class ContentLossInputs:
+    boundary_mask: torch.Tensor          # bool[B,T], content only
+    recall_mask: torch.Tensor            # bool[B,T]
+    raw_recall_target: torch.Tensor      # float32[B,T], raw controller A
+    retrieval_logits: torch.Tensor      # float32[B,T,64]
+    retrieval_eligible_mask: torch.Tensor  # bool[B,T,64]
+    retrieval_target: torch.Tensor       # int64[B,T]
+    role_logits: torch.Tensor            # float32[B,T,5]
+    status_logits: torch.Tensor          # float32[B,T,3]
+    confidence_logit: torch.Tensor       # float32[B,T]
+    append_support_logit: torch.Tensor   # float32[B,T]
+    continue_search_logit: torch.Tensor  # float32[B,T]
+    next_focus_logits: torch.Tensor      # float32[B,T,64]
+    hazard_logits: torch.Tensor          # float32[B,T,4]
+    log_delay: torch.Tensor              # float32[B,T]
+    # Same-shaped *_target and bool *_mask fields for role, status,
+    # confidence, append_support, continue_search, focus, hazard, log_delay.
+    # Integer labels: role/status/focus/hazard. Other targets: float32.
+
+# models/content_loss.py
+def content_loss(inputs: ContentLossInputs) -> LossBreakdown: ...
+
+# train/content_unroll.py
+@dataclass(frozen=True, slots=True)
+class ContentOperation:
+    prediction_context: ModelContext
+    post_context: ModelContext
+    row_mask: torch.Tensor
+    kind: torch.Tensor
+    raw_recall_target: torch.Tensor
+    retrieval: RetrievalScores
+    composition: ComposePredictions
+
+@dataclass(frozen=True, slots=True)
+class ContentUnrollResult:
+    observations: tuple[Boundary, ...]
+    steps: tuple[ContentOperation, ...]
+    final_context: ModelContext
+    targets: TeacherTargets
+    compute: NeuralComputeSnapshot
+    diagnostic_label: str = "teacher-forced-untimed-content"
+    def loss_inputs(self) -> ContentLossInputs: ...
+
+def teacher_forced_content_unroll(
+    model: EventFlowModel, batch: TrainingBatch
+) -> ContentUnrollResult: ...
+```
+
+The comment-expanded target fields above are an exact Cartesian contract, not
+an optional dictionary: `role_target`, `status_target`, `confidence_target`,
+`append_support_target`, `continue_search_target`, `focus_target`,
+`hazard_target`, `log_delay_target`, and the eight corresponding `_mask` fields.
+All inputs use the existing bounded B<=128 and T<=11 layout; ACT/padding rows
+are excluded. The one-hop workload contains at most four content transitions.
+
+- [ ] **Step 1 — RED, loss:** Write hand-derived mixed-role fixtures using real
+  tensor reducers. For one active RECALL target A=0.8, assert the availability
+  numerator is 0.3 and denominator 1. For equal two-class eligible retrieval
+  logits, assert CE `log(2)`. Reject an ineligible target even if its logit is
+  large; verify invalid padding is selected away before arithmetic. Independently
+  assert every term's numerator, denominator, mask and per-position shape.
+  Empty masks must yield graph-connected zero, not NaN or detached constants.
+
+  ```python
+  loss = content_loss(fixture)
+  assert loss.terms["recall_available"].item() == pytest.approx(0.3)
+  assert loss.denominators["recall_available"].item() == 1
+  assert loss.terms["retrieval"].item() == pytest.approx(math.log(2))
+  loss.total.backward()
+  assert fixture.raw_recall_target.grad[0, 0].item() == pytest.approx(-1.0)
+  ```
+
+- [ ] **Step 2 — RED, trajectory:** Use the existing real seeded model,
+  curriculum examples and packer. Hook observation flow separately from
+  internal computation: external observations retain their actual flow; every
+  internal `prediction_context.time_features` equals that row's post-activation
+  features. Assert no internal flow/crossing/ACT evaluation. Changing a future
+  teacher record/label cannot change an earlier prediction. Check all three
+  variants, ragged content lengths, no calls for quiescent/padded rows, terminal
+  exclusion, correct active-record lifetime and consumed-record eligibility.
+
+  ```python
+  result = teacher_forced_content_unroll(model, batch)
+  activation = result.observations[-1].context.time_features
+  for step in result.steps:
+      torch.testing.assert_close(
+          step.prediction_context.time_features[step.row_mask],
+          activation[step.row_mask], rtol=0, atol=0,
+      )
+  # Capture actual calls, not a mock returning the desired trajectory.
+  assert internal_flow_calls == 0
+  assert action_calls == 0
+  ```
+
+- [ ] **Step 3 — Run RED:** Run only the two new focused test modules with
+  `OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline pytest -q`. Record the actual
+  missing-behavior failures before implementation; fix fixture errors first.
+
+- [ ] **Step 4 — Minimal implementation:** Start from a fresh `observe_public`
+  graph. Before each required RECALL, call `preview_and_control`, retain its raw
+  A and score retrieval before disclosing the teacher-selected slot. Install
+  that slot/HAVE_MEMORY only after prediction, apply the existing RECALL jump,
+  then predict COMPOSE immediately with no intervening flow/controller tick.
+  After prediction, apply teacher content/focus/support/continuation state,
+  retain active record through the COMPOSE jump, clear it afterward and mask
+  it consumed. Use functional gather/scatter; preserve the full gradient graph.
+  Keep actual public observation time but fixed activation-time internal clocks.
+  Teacher hazard delay may enter a terminal hypothesis only after prediction,
+  as an activation-relative delay, never the teacher-timed normalized deadline.
+  No further auxiliary prediction uses a terminal timing register.
+
+  Auxiliary loss is exactly:
+
+  ```python
+  total = (
+      recall_available + retrieval + compose_type
+      + 0.5 * focus + hazard + 0.125 * log_delay
+  )
+  ```
+
+  `recall_available = mean(relu(1.10 - raw_A_recall))` over required RECALLs.
+  Retrieval is eligible-slot CE. `compose_type` equally averages the existing
+  five masked role/status/confidence/append/continue subterm means. Focus and
+  hazard are their masked CE; delay is masked Smooth L1 on `log1p(delay)`.
+  The 0.125 delay coefficient retains the original 0.25 two-component deadline
+  mean's delay contribution. Do not add timed crossing/race, normalized-deadline,
+  ACT, inactive-guard, final-dormancy, state or event-cost terms to this branch.
+  They remain in the original timed objective. Do not fabricate a SEARCHING
+  no-match target: the diagnosed explicit disconnected continue=false target
+  is the minimal supported supervision, and legal public dormancy stays valid.
+
+- [ ] **Step 5 — GREEN and interface checks:** Run the two new tests and existing
+  unroll/loss/gradient/import-boundary tests. Demonstrate gradients reach the
+  early encoder and RECALL/COMPOSE jumps, and two successive backward/update
+  cycles use fresh graphs. Compare captured pre-prediction contexts against the
+  public evaluator on the *same public slot order* when prior learned choices
+  agree with teacher choices. Test slot permutation separately. Do not compare
+  distinct pooling orders as if bitwise equality were guaranteed. Confirm no
+  producer model API acquires a teacher/private input and no public evaluation
+  is patched to return a correct answer. Record exact forward meter counters;
+  duplicated public observations are real counted compute.
+- [ ] **Step 6 — Commit and independent review:** Commit with
+  `feat: train content decisions in immediate latent contexts`. The review
+  checks the auxiliary contract and unchanged timed/public paths. Return D,
+  not this unit task, owns source-bound production integration and its gates.
+
+### Return D: Integrate the Versioned Recipe, Numerics and Evidence
+
+**Files:** Modify `train/config.py`, `train/trainer.py`, `train/verification.py`,
+`train/provenance.py`, `train/evidence.py`, `train/evidence_types.py`,
+`scripts/verify_phase3_gate_artifact.py`, and their focused neural tests;
+create `train/objective.py`, `configs/train/one_hop_content_v2.yaml`,
+`configs/train/smoke_content_v2.yaml`,
+`manifests/validation/phase3/delivery.json`, and
+`tests/neural/test_training_objective.py`. Update `train/cli.py`, checkpoint
+tests, package/import tests and `scripts/check_phase3_components.py` only where
+needed by the changed contracts. Modify the Phase 3 delivery check/tests in
+`tests/integration/test_phase0_repository.py` without changing Phase 1/2 pins.
+Document the fixed recipe and adverse history in `docs/phase3-neural-components.md`
+and `docs/deviations.md`. Preserve the old two training overlays byte-for-byte.
+
+**Recipe identity:** Add exactly `phase3_one_hop_content_v2` and
+`phase3_smoke_content_v2` profiles with the original respective workloads
+`(128,75000,1000,10000)` and `(8,4,2,16)`. New overlays explicitly set epsilon
+`1e-6`. Existing v1 profiles retain epsilon `1e-7`; reject cross-version epsilon
+combinations and all unapproved values. The profile itself defines the objective
+version and fixed auxiliary coefficient, exposed as read-only derived properties
+`objective_version` (`teacher_timed_v1` or `teacher_timed_plus_content_v2`) and
+`content_auxiliary_weight` (0.0 or 1.0). This preserves old canonical config bytes
+without a new default field silently changing historical hashes. Record the
+derived identity/coefficient explicitly in new step/evidence metadata and bind
+them to the canonical profile; they are not independently tunable options.
+No new seed, loss-weight sweep, schedule, update allowance or runtime agent.
+
+**Interfaces:**
+
+```python
+# train/objective.py
+@dataclass(frozen=True, slots=True)
+class TrainingObjective:
+    total: torch.Tensor
+    timed: UnrollResult
+    timed_loss: LossBreakdown
+    content: ContentUnrollResult | None
+    content_loss: LossBreakdown | None
+    objective_version: str
+    auxiliary_coefficient: float
+
+def training_objective(
+    model: EventFlowModel, batch: TrainingBatch, training: TrainingConfig
+) -> TrainingObjective: ...
+
+# verification.py: optional argument preserves explicit old fixtures;
+# every new configured evidence caller MUST pass its actual training config.
+def measure_device_parity(
+    model: EventFlowModel, batch: TrainingBatch,
+    *, training: TrainingConfig | None = None,
+) -> DeviceParityEvidence: ...
+```
+
+The shared objective builder always computes the unchanged timed branch.
+It computes content only for v2; `total = timed_loss.total +
+training.content_auxiliary_weight * content_loss.total`. Its real consumers
+are `train_one_step` and configured device parity. Do not create a second
+approximate training implementation inside verification. Preserve actual
+forward/loss tensors for both branches, all gradients and updated parameters.
+V1 reproduction remains explicit, not silently upgraded to v2. Old archives
+must still canonical-decode; source-bound historical execution uses its named
+source revision. Cross-recipe resume must reject before changing model/RNG.
+
+- [ ] **Step 1 — RED, training:** Tests assert the v2 optimizer sees both losses,
+  one original batch counter, exactly one backward/clip/update, and unchanged
+  timed term values. `StepResult` exposes both namespaces (`timed/...`,
+  `content/...`), scalar totals, raw reduction diagnostics, objective identity
+  and per-branch forward/combined compute. All tensor-valued states and selected
+  losses/gradients must be finite. No fake all-zero auxiliary groups.
+
+  ```python
+  objective = training_objective(model, batch, corrected.training)
+  torch.testing.assert_close(
+      objective.total,
+      objective.timed_loss.total + objective.content_loss.total,
+      rtol=0, atol=0,
+  )
+  result = train_one_step(model, optimizer, batch, corrected)
+  assert result.objective_version == "teacher_timed_plus_content_v2"
+  assert result.auxiliary_coefficient == 1.0
+  assert result.compute.foundation_model_calls == 0
+  ```
+
+  Also test v1 canonical JSON round trips byte-for-byte, v2 rejects wrong
+  epsilon/profile pairings, and actual optimizer options survive checkpoint
+  save/load. A v1 checkpoint cannot resume a v2 run or mutate state on rejection.
+- [ ] **Step 2 — RED, evidence:** Tampering with objective version/coefficient,
+  missing either branch's actual numeric tensor names or step diagnostics,
+  mismatched configured optimizer, incomplete counters, omitted counter-0/1
+  batches, raw row totals or source closure must fail independently. Existing
+  tamper and executing-source tests remain. Include Return C's three modules,
+  objective module, two new overlays and fixed delivery map in the literal
+  authenticated source closure. Producer arithmetic is not verifier authority.
+- [ ] **Step 3 — RED, delivery:** The fixed map declares only:
+
+  ```json
+  {
+    "schema_version": "phase3-delivery-map-v1",
+    "recipe": "teacher_timed_plus_content_v2",
+    "manifest": "manifests/validation/phase3/one-hop-10000-content-v2.json",
+    "gate": "manifests/validation/phase3/component-gate-content-v2.json"
+  }
+  ```
+
+  This is an immutable source-bound path/recipe mapping, not a results file.
+  Hashes are bound by exact Complete metadata and independent gate/manifest
+  verification when present. Test missing gate + In progress, unearned Complete,
+  present nonpass gate + In progress, nonpassing verification, mismatched map
+  recipe, path escapes, symlinks, conflicting old/new designated gates and
+  coordinated prior-phase substitution. A failed archive never qualifies as
+  delivery. Presence of the old canonical `component-gate.json` must not bypass
+  validation merely because the map points elsewhere. Keep legacy test fixtures
+  explicit; do not broadly exempt rejected artifacts from the delivery check.
+- [ ] **Step 4 — Run RED and implement:** Run focused changed tests first.
+  Integrate the fixed recipe and shared builder. Preserve full timed loss
+  construction and public prediction code. Prefix v2 diagnostics without key
+  collisions; CPU/MPS resume comparisons include both objective contexts.
+  Use one outer `NeuralComputeMeter` across both forward graphs and backward;
+  branch snapshots describe their own forwards and must not be summed again
+  into the already inclusive outer total. Every duplicate observation/scorer/
+  controller/jump/flow operation counts. Keep `next_batch_counter ==
+  optimizer_step`, existing journal ordering, atomic publication and retention.
+
+  New gate evidence must identify the v2 objective explicitly and validate both
+  contexts; version its schema where its shape changes rather than pretending
+  old bytes have new fields. Preserve the original failed v1 JSON exactly and
+  name its original verifier/source in archival reproduction instructions.
+  Update exact overlay validation and production-profile tests to distinguish
+  the two reviewed recipes without accepting arbitrary paths or profiles.
+- [ ] **Step 5 — Actual native numerical prerequisites:** After focused tests
+  pass, run native CPU/MPS float32 parity for the original B8 fixture and
+  corrected-config B8/B128 counter-0 batches with the production architecture
+  and seed 11. Preserve the Return B original-timed epsilon1e-6 result separately.
+  Configured v2 parity must execute the **actual combined training objective**
+  and epsilon1e-6; an old timed-only smoke helper is insufficient. Keep all raw
+  tensor/choice comparisons, genuine empty memory and active/dormant guards.
+  Use rtol1e-4/atol1e-5 forward/loss, rtol1e-3/atol1e-5 gradients/weights,
+  exact CPU resume and rtol1e-4/atol1e-5 MPS resume. Any failure stops the
+  candidate before a long fit; diagnose it, do not change tolerance or epsilon.
+- [ ] **Step 6 — Actual learning/local prerequisites:** Run the existing fixed64
+  overfit workload under the corrected recipe with the unchanged 1,000-update
+  cap and >=0.99 full-chain assertion (therefore 64/64), retaining all variants,
+  recall/composition counts and secondary action results. No extra pilot or
+  hyperparameter search is predeclared. Run local `make verify`, historical
+  Phase1/2 verifiers, installed-package/offline checks and fresh source-bound
+  smoke evidence. Resolve the previously deferred overwrite-regression Minor
+  in `test_phase3_provenance.py` here if its surface changes: demonstrate the
+  actual no-clobber collision after the first manifest is committed, or directly
+  test the publisher and verify unchanged bytes, not merely a dirty-tree error.
+  Report actual per-step wall time, metadata bytes and free-space projection
+  for the new recipe; the original throughput/storage estimates are not valid
+  for two graphs. Do not start another fit before these prerequisites pass.
+- [ ] **Step 7 — Commit and review:** Commit the source/config/evidence correction
+  with `fix: align component training and verify the configured objective`.
+  Obtain independent spec/quality review of the full correction, including
+  historical compatibility, actual native evidence and unchanged scientific
+  gates. Corrections use TDD and scoped re-review. Capture this reviewed commit
+  and effective plan revision as the next Task13 source identities.
+
+### Return E: Resume Task 13 with New Identities Only
+
+After Returns A–D and reviews, repeat Task13's full evidence workflow with:
+
+| Item | Corrected identity |
+| --- | --- |
+| Training overlay | `configs/train/one_hop_content_v2.yaml` |
+| Smoke overlay | `configs/train/smoke_content_v2.yaml` |
+| Corpus | `manifests/validation/phase3/one-hop-10000-content-v2.json` |
+| Acceptance artifact | `manifests/validation/phase3/component-gate-content-v2.json` |
+| Logical run ID | `phase3-components/event_flow/11/one-hop-content-v2` |
+
+Reissue the source/config-bound corpus metadata before training, and prove its
+10,000 ordered keys, public IDs, public/example hashes, exact variant allocation
+and content labels equal the original corpus. Commit it before fit. Keep the
+original corpus bytes and rejected attempt untouched. A new metadata envelope
+is not a new selection of validation examples.
+
+Fit from fresh seed11 weights, B128, at most75,000 total updates, validation
+every1,000 on all10,000 rows, patience15 and the original checkpoint-selection
+rules. Keep every attempted validation and all raw logs. The extra content
+branch does not grant additional updates. One live fit only, persistent
+main-volume storage with measured sufficient space, no hidden model/network.
+On completion, export selected weights, repeat full public CPU evaluation
+twice, collect actual configured native parity/resume/offline evidence and run
+independent verification. Archive any new rejected attempt with exact bytes;
+do not place it in a designated delivery path while claiming In progress.
+
+Only a valid independently passing artifact plus fresh local checks permits
+the exact Complete row. Then finish Task13's documentation/commit, independent
+task review and the final whole-phase review from `daa729d`. The conclusion
+remains untimed neural-component engineering evidence, never autonomous timed
+OFD success. Any source change after this freeze invalidates incompatible v2
+evidence and requires another explicit reviewed source-return ruling.
+
+**Spec/fairness boundary:** The auxiliary uses only the already authorized
+oracle content supervision, never private model inputs. The original real-time
+teacher trace remains trained in full on every update, satisfying the timing
+contract; it is not replaced with an activation-time cognitive experiment.
+Carry the extra exposure and measured training compute into the Phase5 baseline
+plan so every recurrent comparator receives equivalent content supervision.
+This is a versioned component-training correction, not factor-four tuning of
+the original loss coefficients, a scientific protocol change or a new claim.
