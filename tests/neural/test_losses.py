@@ -201,12 +201,44 @@ def test_hand_calculated_guard_reductions_and_boundary_denominators():
         assert result.numerators[name].item() == pytest.approx(numerator, abs=2e-6)
         assert result.denominators[name].item() == denominator
         assert result.subterms[name].item() == pytest.approx(numerator / denominator, abs=2e-6)
-    assert result.terms["guard"].item() == pytest.approx(
-        0.6 / 3 + 0.175 / 3 + expected_time + 0.105 / 2 + 1.0 / 12.0,
-        abs=2e-6,
-    )
+    expected_guard_numerator = 0.6 + 0.175 + 2.0 * expected_time + 0.105 + 1.0 / 6.0
+    assert result.numerators["guard"].item() == pytest.approx(expected_guard_numerator, abs=2e-6)
+    assert result.denominators["guard"].item() == 5
+    assert result.terms["guard"].item() == pytest.approx(expected_guard_numerator / 5.0, abs=2e-6)
     assert result.per_position["guard_time"].shape == (2, 2)
     assert result.per_position["guard_time"][0, 1].item() == 0.0
+
+
+def test_guard_averages_real_and_final_boundaries_equally_with_sparse_timing():
+    from silent_cascade.models.losses import event_flow_loss
+
+    boundary = torch.tensor([[True, True], [False, True]])
+    raw = torch.tensor([[[0.9, 0.8, 0.8], [0.8, 0.9, 0.8]], [[float("nan")] * 3, [0.8, 0.8, 0.9]]])
+    final = torch.tensor(
+        [
+            [[float("nan")] * 3, [1.1, 1.1, 1.1]],
+            [[float("nan")] * 3, [1.1, 1.1, 1.1]],
+        ]
+    )
+    result = event_flow_loss(
+        loss_inputs(
+            raw_guard_targets=_float(raw),
+            crossing_offsets=_float(torch.full((2, 2, 3), torch.inf)),
+            legal_guard_mask=boundary.unsqueeze(-1).expand(-1, -1, 3),
+            boundary_mask=boundary,
+            kind_target=torch.tensor([[0, 1], [-1, 2]]),
+            delta_target=torch.tensor([[1.0, 1.0], [0.0, 1.0]]),
+            final_guard_targets=_float(final),
+            final_dormancy_mask=torch.tensor([[False, True], [False, True]]),
+        ),
+        LossWeights(),
+    )
+    assert result.denominators["guard_time"].item() == 0
+    assert result.terms["guard"].item() == pytest.approx(0.2, abs=2e-6)
+    assert result.numerators["guard"].item() == pytest.approx(1.0, abs=2e-6)
+    assert result.denominators["guard"].item() == 5
+    assert result.per_position["guard"].shape == (2, 2, 2)
+    torch.testing.assert_close(result.per_position["guard"][0, 1], torch.tensor([0.2, 0.2]))
 
 
 def test_hand_calculated_classification_and_composition_reductions():

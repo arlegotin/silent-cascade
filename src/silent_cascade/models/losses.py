@@ -211,9 +211,11 @@ def _reduce_selected(
     numerator = selected.sum()
     denominator = mask.sum()
     value = numerator / denominator.to(numerator.dtype) if selected.numel() else numerator
-    per_position = selected.new_zeros(position_shape)
     if selected.numel():
+        per_position = selected.new_zeros(position_shape)
         per_position = per_position.masked_scatter(mask, selected)
+    else:
+        per_position = numerator.expand(position_shape)
     return _Reduction(value, numerator, denominator, per_position)
 
 
@@ -333,6 +335,33 @@ def _guard_reductions(inputs: LossInputs, shape: tuple[int, int]) -> dict[str, _
     }
 
 
+def _guard_group(inputs: LossInputs, reductions: Mapping[str, _Reduction]) -> _Reduction:
+    boundary_penalties = torch.stack(
+        [
+            reductions[name].per_position
+            for name in (
+                "guard_active_margin",
+                "guard_inactive_margin",
+                "guard_time",
+                "guard_race",
+            )
+        ]
+    ).sum(dim=0)
+    final_penalties = reductions["guard_final_dormancy"].per_position
+    boundary_selected = boundary_penalties[inputs.boundary_mask]
+    final_selected = final_penalties[inputs.final_dormancy_mask]
+    numerator = boundary_selected.sum() + final_selected.sum()
+    denominator = inputs.boundary_mask.sum() + inputs.final_dormancy_mask.sum()
+    selected_count = boundary_selected.numel() + final_selected.numel()
+    value = numerator / denominator.to(numerator.dtype) if selected_count else numerator
+    return _Reduction(
+        value=value,
+        numerator=numerator,
+        denominator=denominator,
+        per_position=torch.stack((boundary_penalties, final_penalties), dim=-1),
+    )
+
+
 def _state_reductions(inputs: LossInputs, jump_count: int) -> dict[str, _Reduction]:
     mask = inputs.jump_mask
     pre = inputs.pre_jump_latent[mask]
@@ -446,14 +475,8 @@ def event_flow_loss(inputs: LossInputs, weights: LossWeights) -> LossBreakdown:
         raise NeuralError("abstention positions must target the abstain class")
     reductions.update(_state_reductions(inputs, jump_count))
     reductions["event_cost"] = _event_cost(inputs, shape)
+    reductions["guard"] = _guard_group(inputs, reductions)
 
-    guard_names = (
-        "guard_active_margin",
-        "guard_inactive_margin",
-        "guard_time",
-        "guard_race",
-        "guard_final_dormancy",
-    )
     compose_names = (
         "compose_role",
         "compose_status",
@@ -467,7 +490,7 @@ def event_flow_loss(inputs: LossInputs, weights: LossWeights) -> LossBreakdown:
     else:
         action = positive.value + abstention.value
     terms = {
-        "guard": torch.stack([reductions[name].value for name in guard_names]).sum(),
+        "guard": reductions["guard"].value,
         "retrieval": reductions["retrieval"].value,
         "compose_type": torch.stack([reductions[name].value for name in compose_names]).mean(),
         "focus": reductions["focus"].value,
