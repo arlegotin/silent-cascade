@@ -463,6 +463,15 @@ def test_phase3_corpus_is_not_completion_and_present_gate_cannot_be_unearned(tmp
     )
     with pytest.raises(AssertionError):
         _assert_phase3_delivery_state(tmp_path, index)
+    complete = (
+        f"Complete at component source `{'a' * 40}` with gate artifact "
+        f"`{'b' * 64}` and selected weights `{'c' * 64}`: "
+        "source-bound independent verification and local `make verify` passed with zero "
+        "foundation-model calls. This is untimed neural component engineering evidence, "
+        "not autonomous cascade or benchmark evidence."
+    )
+    with pytest.raises(AssertionError, match="fails independent verification"):
+        _assert_phase3_delivery_state(tmp_path, f"| 3 — Neural components | plan | {complete} |")
 
 
 @pytest.mark.parametrize("mutation", ["recipe", "escape", "symlink", "legacy_conflict"])
