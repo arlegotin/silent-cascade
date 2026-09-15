@@ -654,6 +654,15 @@ The meter must not alter outputs, gradients, RNG, state, or scheduling. It
 syncs MPS before/after wall timing and reports unavailable peak allocation as
 null, never fabricated zero. No energy claim. Repeated contexts remove hooks.
 
+Eligibility/mode counts may be reduced on CPU after the synchronized timer ends,
+but their call-time identity must be protected without adding GPU work inside
+hooks. Capture each observed tensor's mutation version as host metadata and
+reject in-place mutation before publishing a snapshot. Reject metadata whose
+mutation version cannot be tracked; never publish silently stale counts. The
+planned functional context replacements remain supported. On such a failure,
+remove every hook and refuse a valid snapshot; unsafe out-of-band storage writes
+are outside the supported tensor-input contract.
+
 - [ ] **Step 4: Run to GREEN**, demonstrate that separate preview/recall calls
   incur separate scorer work and that observation invokes no retrieval.
 - [ ] **Step 5: Commit** `git commit -m "feat: assemble trainable EventFlow components"`.
