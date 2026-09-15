@@ -46,7 +46,7 @@ from silent_cascade.train.config import Phase3Config
 
 CURRICULUM_VERSION = "ofd-one-hop-v1"
 MAX_PARENT_ATTEMPTS = 1000
-MAX_COMPONENT_MANIFEST_BYTES = 8_000_000
+MAX_COMPONENT_MANIFEST_BYTES = 32 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,6 +23,18 @@ PHASE3_CONFIG_PATHS = (
 )
 
 
+@pytest.fixture(scope="session")
+def debug_component_gate(tmp_path_factory):
+    from silent_cascade.train import evidence  # Require implemented boundary even without MPS.
+
+    from .test_phase3_provenance import build_debug_gate
+
+    assert evidence is not None
+    if not torch.backends.mps.is_available():
+        pytest.skip("native MPS required for real collection")
+    return build_debug_gate(tmp_path_factory.mktemp("phase3-evidence") / "source")
+
+
 @pytest.fixture(scope="module")
 def resolved_neural_config():
     return resolve_config(Phase3Config, PHASE3_CONFIG_PATHS)

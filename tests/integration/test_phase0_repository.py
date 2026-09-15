@@ -357,3 +357,94 @@ def test_phase2_frozen_phase1_baseline_rejects_coherently_rehashed_replacements(
     _assert_phase1_delivery_state(tmp_path, rewritten_index)
     with pytest.raises(AssertionError):
         _assert_phase1_frozen_baseline(tmp_path, rewritten_index)
+
+
+_PHASE2_FROZEN_SOURCE = "33fb8ed105046cb4fdb7be61eac50ed391415b7c"
+_PHASE2_FROZEN_ARTIFACT = "c05b2f78680b14e5b8fd81597489f34ec68a1dc2d1114e62daa95d7428694c42"
+_PHASE3_COMPLETE_GATE = re.compile(
+    r"Complete at component source `(?P<source>[0-9a-f]{40})` with gate artifact "
+    r"`(?P<artifact>[0-9a-f]{64})` and selected weights `(?P<weights>[0-9a-f]{64})`: "
+    r"source-bound independent verification and local `make verify` passed with zero "
+    r"foundation-model calls\. This is untimed neural component engineering evidence, "
+    r"not autonomous cascade or benchmark evidence\."
+)
+
+
+def _assert_phase2_frozen_baseline(root, plan_index):
+    rows = [line for line in plan_index.splitlines() if line.startswith("| 2 —")]
+    assert len(rows) == 1
+    cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+    match = _PHASE2_COMPLETE_GATE.fullmatch(cell)
+    assert match is not None
+    assert match.group("source") == _PHASE2_FROZEN_SOURCE
+    assert match.group("artifact") == _PHASE2_FROZEN_ARTIFACT
+    path = root / "manifests/validation/v1/phase2-engine-gate.json"
+    assert path.is_file() and not path.is_symlink()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == _PHASE2_FROZEN_ARTIFACT
+    _assert_phase2_delivery_state(root, plan_index)
+
+
+def _assert_phase3_delivery_state(root, plan_index):
+    rows = [line for line in plan_index.splitlines() if line.startswith("| 3 —")]
+    assert len(rows) == 1
+    cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+    path = root / "manifests/validation/phase3/component-gate.json"
+    if not path.exists() and not path.is_symlink():
+        assert re.match(r"^(?:Proposed|In progress)(?:[;:.]|$)", cell)
+        return
+    assert path.is_file() and not path.is_symlink()
+    match = _PHASE3_COMPLETE_GATE.fullmatch(cell)
+    assert match is not None, "present Phase 3 gate requires exact completion metadata"
+    from silent_cascade.errors import SilentCascadeError
+
+    verify = run_path(str(ROOT / "scripts/verify_phase3_gate_artifact.py"))[
+        "verify_phase3_gate_artifact"
+    ]
+    try:
+        result = verify(
+            artifact_path=path,
+            manifest_path=root / "manifests/validation/phase3/one-hop-10000.json",
+            repo_root=root,
+            expected_source_commit=match.group("source"),
+        )
+    except SilentCascadeError as error:
+        raise AssertionError("Phase 3 gate fails independent verification") from error
+    assert result.valid and result.passed and result.publication == "production"
+    assert result.artifact_file_sha256 == match.group("artifact")
+    assert result.checkpoint_sha256 == match.group("weights")
+
+
+def test_phase3_repository_delivery_preserves_completed_prior_phases():
+    index = (ROOT / "docs/PLAN.md").read_text()
+    assert "_assert_phase2_frozen_baseline" in globals(), "Phase 2 evidence pin is missing"
+    assert "_assert_phase3_delivery_state" in globals(), "Phase 3 delivery check is missing"
+    _assert_phase2_frozen_baseline(ROOT, index)
+    _assert_phase3_delivery_state(ROOT, index)
+
+
+def test_phase3_corpus_is_not_completion_and_present_gate_cannot_be_unearned(tmp_path):
+    assert "_assert_phase3_delivery_state" in globals(), "Phase 3 delivery check is missing"
+    index = "| 3 — Neural components | plan | In progress; corpus only. |"
+    directory = tmp_path / "manifests/validation/phase3"
+    directory.mkdir(parents=True)
+    (directory / "one-hop-10000.json").write_text("{}")
+    _assert_phase3_delivery_state(tmp_path, index)
+    with pytest.raises(AssertionError):
+        _assert_phase3_delivery_state(
+            tmp_path, index.replace("In progress; corpus only.", "Complete.")
+        )
+    (directory / "component-gate.json").write_text("{}")
+    with pytest.raises(AssertionError):
+        _assert_phase3_delivery_state(tmp_path, index)
+
+
+def test_phase3_pin_rejects_coordinated_phase2_substitution(tmp_path):
+    assert "_assert_phase2_frozen_baseline" in globals(), "Phase 2 evidence pin is missing"
+    index = (ROOT / "docs/PLAN.md").read_text()
+    artifact = tmp_path / "manifests/validation/v1/phase2-engine-gate.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"coordinated":"replacement"}')
+    old_hash = "c05b2f78680b14e5b8fd81597489f34ec68a1dc2d1114e62daa95d7428694c42"
+    rewritten = index.replace(old_hash, hashlib.sha256(artifact.read_bytes()).hexdigest())
+    with pytest.raises(AssertionError):
+        _assert_phase2_frozen_baseline(tmp_path, rewritten)

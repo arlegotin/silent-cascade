@@ -1,7 +1,11 @@
 """Executable numerical evidence; callers inspect measured mismatches, never log text."""
 
+import json
+import os
 import platform
 import random
+import subprocess
+import sys
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
@@ -109,6 +113,11 @@ class ResumeEvidence(StrictModel):
         return all(c.passed for c in (self.parameters, self.optimizer, self.losses)) and (
             self.rng_mismatches == self.batch_hash_mismatches == 0
         )
+
+
+class MPSResumeEvidence(ResumeEvidence):
+    schema_version: Literal["phase3-mps-resume-v1"] = "phase3-mps-resume-v1"
+    device: Literal["mps"] = "mps"
 
 
 def _tensors(value, prefix="") -> dict[str, torch.Tensor]:
@@ -220,7 +229,14 @@ def _parity_step(model, batch, device):
     torch.nn.utils.clip_grad_norm_(current.parameters(), 1.0, error_if_nonfinite=True)
     optimizer.step()
     weights = _tensors(dict(current.named_parameters()))
-    return forward, loss_values, gradients, weights, predictions
+    return (
+        forward,
+        loss_values,
+        gradients,
+        weights,
+        predictions,
+        (~empty.eligibility.any(dim=1)).cpu(),
+    )
 
 
 def measure_device_parity(model: EventFlowModel, batch: TrainingBatch) -> DeviceParityEvidence:
@@ -254,7 +270,7 @@ def measure_device_parity(model: EventFlowModel, batch: TrainingBatch) -> Device
         ),
         active_crossings=sum(int(torch.isfinite(v).sum()) for v in crossings),
         dormant_crossings=sum(int(torch.isposinf(v).sum()) for v in crossings),
-        empty_memory_rows=1,
+        empty_memory_rows=int((cpu[5] & mps[5]).sum()),
     )
 
 
@@ -270,13 +286,30 @@ def _draws():
 
 def measure_cpu_resume(config: ResolvedConfig[Phase3Config], source_commit: str) -> ResumeEvidence:
     """Execute two real batches, save after one, restore and exactly repeat the second."""
-    _device("cpu")
+    return _measure_resume(config, source_commit, "cpu")
+
+
+def measure_mps_resume(
+    config: ResolvedConfig[Phase3Config], source_commit: str
+) -> MPSResumeEvidence:
+    """Measure native two-step continuation, including actual MPS random draws."""
+    return _measure_resume(config, source_commit, "mps")
+
+
+def _measure_resume(config, source_commit, device):
+    _device(device)
     before = snapshot_global_rng()
+    rtol, atol = (0.0, 0.0) if device == "cpu" else (1e-4, 1e-5)
+
+    def draws():
+        values = _draws()
+        return values if device == "cpu" else (*values, torch.rand(5, device="mps").cpu())
+
     try:
         seed_all(config.config.training.model_seed)
-        model = EventFlowModel(config.config.neural)
+        model = EventFlowModel(config.config.neural).to(device)
         optimizer = make_optimizer(model, config.config.training)
-        first = next_training_batch(config.config, stage="one_hop", batch_counter=0)
+        first = next_training_batch(config.config, stage="one_hop", batch_counter=0).to(device)
         train_one_step(model, optimizer, first, config.config)
         progress = TrainProgress(
             optimizer_step=1,
@@ -293,20 +326,22 @@ def measure_cpu_resume(config: ResolvedConfig[Phase3Config], source_commit: str)
             saved = save_training_checkpoint(
                 path, model, optimizer, progress, config=config, source_commit=source_commit
             )
-            expected_draws = _draws()
-            expected_batch = next_training_batch(config.config, stage="one_hop", batch_counter=1)
+            expected_draws = draws()
+            expected_batch = next_training_batch(
+                config.config, stage="one_hop", batch_counter=1
+            ).to(device)
             expected_loss = train_one_step(model, optimizer, expected_batch, config.config)
             restored = load_training_checkpoint(
                 path / saved.relative_path,
                 expected_config_sha256=config.sha256,
                 expected_source_commit=source_commit,
-                device="cpu",
+                device=device,
             )
             restored.restore_rng()
-            actual_draws = _draws()
+            actual_draws = draws()
             actual_batch = next_training_batch(
                 config.config, stage="one_hop", batch_counter=restored.progress.next_batch_counter
-            )
+            ).to(device)
             actual_loss = train_one_step(
                 restored.model, restored.optimizer, actual_batch, config.config
             )
@@ -321,7 +356,8 @@ def measure_cpu_resume(config: ResolvedConfig[Phase3Config], source_commit: str)
                     }.items()
                 }
 
-            return ResumeEvidence(
+            evidence_type = ResumeEvidence if device == "cpu" else MPSResumeEvidence
+            return evidence_type(
                 python_version=platform.python_version(),
                 torch_version=str(torch.__version__),
                 threads=torch.get_num_threads(),
@@ -333,22 +369,25 @@ def measure_cpu_resume(config: ResolvedConfig[Phase3Config], source_commit: str)
                 parameters=_compare(
                     _tensors(dict(model.named_parameters())),
                     _tensors(dict(restored.model.named_parameters())),
-                    rtol=0.0,
-                    atol=0.0,
+                    rtol=rtol,
+                    atol=atol,
                 ),
                 optimizer=_compare(
                     _optimizer_tensors(model, optimizer),
                     _optimizer_tensors(restored.model, restored.optimizer),
-                    rtol=0.0,
-                    atol=0.0,
+                    rtol=rtol,
+                    atol=atol,
                 ),
                 losses=_compare(
-                    loss_tensors(expected_loss), loss_tensors(actual_loss), rtol=0.0, atol=0.0
+                    loss_tensors(expected_loss), loss_tensors(actual_loss), rtol=rtol, atol=atol
                 ),
                 rng_mismatches=sum(
                     a != b for a, b in zip(expected_draws[:2], actual_draws[:2], strict=True)
                 )
-                + int((expected_draws[2] != actual_draws[2]).sum()),
+                + sum(
+                    int((a != b).sum())
+                    for a, b in zip(expected_draws[2:], actual_draws[2:], strict=True)
+                ),
                 batch_hash_mismatches=sum(
                     a != b
                     for a, b in zip(
@@ -358,3 +397,72 @@ def measure_cpu_resume(config: ResolvedConfig[Phase3Config], source_commit: str)
             )
     finally:
         restore_rng_snapshot(before, restore_mps=before.torch_mps_state is not None)
+
+
+def measure_offline_imports():
+    """Fresh interpreter runs one real smoke update and public evaluation with denial hooks."""
+    from silent_cascade.train.evidence_types import OfflineEvidence, decode_json
+
+    root = Path(__file__).resolve().parents[3]
+    program = r"""
+import importlib.abc
+import json
+import socket
+import sys
+from pathlib import Path
+attempts = {'imports': 0, 'network': 0}
+blocked = ('mlx', 'mlx_vlm', 'transformers', 'qwen_vl_utils')
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in blocked or 'qwen' in fullname.lower():
+            attempts['imports'] += 1
+            raise RuntimeError('forbidden optional model import')
+def deny(*args, **kwargs):
+    attempts['network'] += 1
+    raise RuntimeError('network disabled during actual training/evaluation')
+sys.meta_path.insert(0, Blocker())
+socket.socket.connect = deny
+socket.socket.connect_ex = deny
+socket.create_connection = deny
+socket.getaddrinfo = deny
+import torch
+from silent_cascade.config import resolve_config
+from silent_cascade.models.event_flow import EventFlowModel
+from silent_cascade.train.config import Phase3Config
+from silent_cascade.train.batches import next_training_batch
+from silent_cascade.train.trainer import make_optimizer, train_one_step
+from silent_cascade.train.component_eval import predict_components
+paths = ('configs/base.yaml', 'configs/data/primary.yaml', 'configs/model/event_flow.yaml',
+         'configs/model/neural_components.yaml', 'configs/train/smoke.yaml')
+config = resolve_config(Phase3Config, tuple(Path(p) for p in paths))
+torch.manual_seed(11)
+model = EventFlowModel(config.config.neural)
+optimizer = make_optimizer(model, config.config.training)
+batch = next_training_batch(config.config, stage='one_hop', batch_counter=0)
+step = train_one_step(model, optimizer, batch, config.config)
+predictions = predict_components(model, batch.public)
+print(json.dumps(dict(schema_version='phase3-offline-import-probe-v1',
+    config_sha256=config.sha256,
+    training_steps=int(max(s['step'].item() for s in optimizer.state.values())),
+    predicted_rows=len(predictions.rows), backward_macs=step.compute.backward_macs,
+    blocked_import_attempts=attempts['imports'], network_attempts=attempts['network'],
+    forbidden_modules=[n for n in sys.modules if n.split('.')[0] in blocked or 'qwen' in n.lower()],
+    foundation_model_calls=step.compute.foundation_model_calls)))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", program],
+        cwd=root,
+        env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+        capture_output=True,
+        timeout=120,
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise TrainingError(
+            "offline import/training probe failed",
+            context={
+                "exit_code": completed.returncode,
+                "stderr": completed.stderr.decode()[-2000:],
+            },
+        )
+    values = decode_json(completed.stdout)
+    return OfflineEvidence.model_validate_json(json.dumps(values))
