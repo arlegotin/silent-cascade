@@ -1,11 +1,15 @@
 """Validated public tensor containers shared by neural components."""
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
+from typing import TYPE_CHECKING
 
 import torch
 
 from silent_cascade.eventflow.state import ContinuousState
 from silent_cascade.models.errors import NeuralError
+
+if TYPE_CHECKING:
+    from silent_cascade.memory.tensor_store import RecordTensorBatch
 
 _LATENT_CHANNELS = (
     ("z_fast", 256),
@@ -18,6 +22,147 @@ _LATENT_DIM = sum(size for _, size in _LATENT_CHANNELS)
 _MAX_BATCH_SIZE = 128
 _MEMORY_SLOTS = 64
 _RECORD_DIM = 96
+
+
+@dataclass(frozen=True, slots=True)
+class PublicInputBatch:
+    """Public observation storage; use at_observation to expose only delivered data.
+
+    This is an input staging container, never a neural feature vector. IDs and
+    absolute times are host correspondence; models consume current encoded
+    external features or a ModelContext.
+    """
+
+    records: "RecordTensorBatch"
+    observation_kind: torch.Tensor
+    observation_slots: torch.Tensor
+    activation_entities: torch.Tensor
+    observation_mask: torch.Tensor
+    observation_time_features: torch.Tensor
+    observation_times: torch.Tensor
+    initial_times: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        shape = self.observation_kind.shape
+        if len(shape) != 2 or shape[0] != self.records.batch_size or not 1 <= shape[1] <= 65:
+            raise NeuralError("public observations must have shape [B,O] with O <= 65")
+        for name in (
+            "observation_kind",
+            "observation_slots",
+            "activation_entities",
+            "observation_mask",
+            "observation_time_features",
+        ):
+            tensor = getattr(self, name)
+            expected = (*shape, 2) if name == "observation_time_features" else shape
+            dtype = (
+                torch.float32
+                if name == "observation_time_features"
+                else torch.bool
+                if name == "observation_mask"
+                else torch.int64
+            )
+            if (
+                tensor.shape != expected
+                or tensor.dtype != dtype
+                or tensor.device != self.records.device
+            ):
+                raise NeuralError(f"invalid public {name} shape, dtype, or device")
+            object.__setattr__(self, name, tensor.clone())
+        if (
+            self.observation_times.shape != shape
+            or self.observation_times.dtype != torch.float64
+            or self.observation_times.device.type != "cpu"
+        ):
+            raise NeuralError("absolute observation times must remain CPU float64")
+        if len(self.initial_times) != shape[0]:
+            raise NeuralError("initial times must align with public batch rows")
+        object.__setattr__(self, "observation_times", self.observation_times.clone())
+
+    def to(self, device: str) -> "PublicInputBatch":
+        from silent_cascade.memory.tensor_store import RecordTensorBatch, _resolve_device
+
+        target = _resolve_device(device)
+        records = RecordTensorBatch(
+            **{
+                item.name: getattr(self.records, item.name).to(target)
+                if isinstance(getattr(self.records, item.name), torch.Tensor)
+                else getattr(self.records, item.name)
+                for item in fields(self.records)
+            }
+        )
+        return replace(
+            self,
+            records=records,
+            **{
+                name: getattr(self, name).to(target)
+                for name in (
+                    "observation_kind",
+                    "observation_slots",
+                    "activation_entities",
+                    "observation_mask",
+                    "observation_time_features",
+                )
+            },
+        )
+
+    def permute_slots(self, permutations: torch.Tensor) -> "PublicInputBatch":
+        records = self.records.permute_slots(permutations)
+        inverse = torch.argsort(permutations, dim=1)
+        slots = self.observation_slots
+        remapped = inverse.gather(1, slots.clamp_min(0))
+        return replace(
+            self, records=records, observation_slots=torch.where(slots >= 0, remapped, -1)
+        )
+
+    def at_observation(self, index: int) -> "PublicInputBatch":
+        """Current observation and arrived memory, with all future metadata removed."""
+        from silent_cascade.memory.tensor_store import RecordTensorBatch
+
+        if type(index) is not int or not 0 <= index < self.observation_mask.shape[1]:
+            raise NeuralError("observation index is out of bounds")
+        now = self.observation_times[:, index].tolist()
+        arrived = (
+            torch.tensor(
+                [
+                    [time is not None and time <= current for time in row]
+                    for row, current in zip(self.records.observed_at, now, strict=True)
+                ],
+                dtype=torch.bool,
+                device=self.records.device,
+            )
+            & self.records.valid_mask
+        )
+        arrived_host = arrived.cpu().tolist()
+        values = {}
+        for item in fields(self.records):
+            value = getattr(self.records, item.name)
+            if isinstance(value, torch.Tensor):
+                mask = arrived.unsqueeze(-1) if value.ndim == 3 else arrived
+                fill = False if item.name == "valid_mask" else 4 if item.name == "hazard_ids" else 0
+                values[item.name] = torch.where(mask, value, fill)
+            else:
+                fill = () if item.name == "support_ids" else None
+                values[item.name] = tuple(
+                    tuple(v if valid else fill for v, valid in zip(row, flags, strict=True))
+                    for row, flags in zip(value, arrived_host, strict=True)
+                )
+        records = RecordTensorBatch(**values)
+        return replace(
+            self,
+            records=records,
+            **{
+                name: getattr(self, name)[:, index : index + 1]
+                for name in (
+                    "observation_kind",
+                    "observation_slots",
+                    "activation_entities",
+                    "observation_mask",
+                    "observation_time_features",
+                    "observation_times",
+                )
+            },
+        )
 
 
 def _require_supported_device(device: torch.device, name: str) -> None:
