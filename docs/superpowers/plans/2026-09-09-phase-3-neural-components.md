@@ -1896,3 +1896,45 @@ filename denotes acceptance to the repository checker and cannot honestly hold
 this rejected attempt. The cost is a separate historical path that reproduction
 instructions must name explicitly. A corrected run will use distinct config,
 manifest, gate and run identities; never overwrite or relabel these v1 bytes.
+
+### Return B: Predeclare the Fixed Numerical Candidate
+
+**Scope:** A disposable local diagnostic, not another production fit and not
+accepted parity evidence. The prior native-B128 diagnosis reproduced all three
+updated-weight failures and traced them to near-cancelled guard gradients
+amplified by AdamW. It did not demonstrate an incorrect optimizer formula.
+
+Reassess **only epsilon `1e-6`**, previously tested at B8, on the original timed
+objective with the production architecture, seed 11 and original counter-0
+batch of 128. Keep lr `3e-4`, weight decay `1e-4`, betas `(0.9,0.999)`,
+clip norm 1, `foreach=False`, `fused=False`, native float32 and all comparison
+tolerances unchanged. This is one named candidate, not a sweep or a fourth
+epsilon. Its previous 63/64 fixed-set learning failure remains recorded.
+
+**Files:** Only an ignored diagnostic helper/report/result inside this plan's
+SDD workspace. No source/config/test/manifest/checkpoint/run bytes change.
+
+- [ ] **Step 1:** Authenticate the same 68 source files, original model state
+  `5053ec7272f59e0d65c16e14c007c8ddf9c31c40a713269589efcb78f904502d`,
+  and all 128 ordered batch hashes against the retained failed evidence.
+- [ ] **Step 2:** Reuse the exact previously reproduced timed parity operation.
+  Its only controlled experimental change is constructing the actual AdamW
+  optimizer with epsilon `1e-6` on both CPU and MPS. Preserve and restore any
+  narrowly scoped observational wrapper; do not monkeypatch tensor results,
+  tolerance arithmetic, loss, batch or seed. Record that this disposable probe
+  does **not** use the current production config's epsilon `1e-7` and cannot
+  stand in for later source-bound configured training-path parity.
+- [ ] **Step 3:** Execute exactly one fresh CPU/MPS first-step comparison.
+  Retain every raw comparison and process exit, optimizer settings, initial
+  model/batch/source identity and discrepancy coordinates. No long fit,
+  checkpoint selection, historical artifact mutation or network use.
+- [ ] **Step 4:** If any unchanged comparison fails, stop this candidate and
+  return to bounded guard-subterm/backend investigation. Do not pick another
+  epsilon. If all pass, carry this evidence into the reviewed corrected-recipe
+  implementation; actual combined-objective B128/B8 parity and fixed-64
+  learning must still pass before production training.
+
+This ruling revisits the earlier bounded adjustment after independent
+latent-exposure and production-B128 diagnoses. It does not erase either prior
+failure. Cost if wrong: small-gradient learning can slow and the corrected
+objective can introduce new cancellations; both require fresh unchanged gates.
