@@ -1098,7 +1098,9 @@ final source-closure and Git-introduction authentication.
   explicit prediction then scoring; returns raw rows and derived metrics.
 - `train_one_step(model, optimizer, batch, config) -> StepResult`: zero gradients,
   unroll, loss, finite check, backward, finite-gradient check, clip, step.
-- `run_training(config: ResolvedConfig[Phase3Config], *, validation_manifest: Path, run_dir: Path, source_commit: str, resume: Path|None = None) -> TrainingRunResult`.
+- `run_training(config: ResolvedConfig[Phase3Config], *, validation_manifest: Path, run_dir: Path, source_commit: str, resume: Path|None = None, device: str|None = None) -> TrainingRunResult`.
+  Explicit placement validates availability and records the actual device without
+  changing the manifest-bound canonical configuration; `None` uses its preferences.
 - `CurriculumController.next_stage(evidence)` implements ordered promotion and
   rejects unsupported/unevidenced promotions; no validation label enters a model.
 
@@ -1537,16 +1539,24 @@ not final frozen-test data and not a replacement for the Phase 1 manifest.
 - [ ] **Step 3: Train one model seed locally with the declared workload.**
 
 ```bash
-uv run --offline python -m silent_cascade.train fit \
+OMP_NUM_THREADS=1 uv run --offline python -m silent_cascade.train fit \
   --config configs/base.yaml --config configs/data/primary.yaml \
   --config configs/model/event_flow.yaml --config configs/model/neural_components.yaml \
   --config configs/train/one_hop.yaml \
   --validation-manifest manifests/validation/phase3/one-hop-10000.json \
   --expected-source-commit "$phase3_source_commit" \
-  --run-dir runs/phase3-components/event_flow/11/one-hop-v1
+  --run-dir runs/phase3-components/event_flow/11/one-hop-v1 --device cpu
 ```
 
-Prefer available MPS with no fallback; preserve the CPU path. Write a source-
+Use the measured faster CPU placement with one Torch CPU thread, and recheck
+throughput briefly on the final reviewed source before the full run. Independent
+production-model/B128 measurements during Task 10 were approximately 0.25s per
+full CPU optimizer step versus 1.28s on native MPS, excluding generation,
+validation and checkpoint writing. This execution choice overrides the ordinary
+available-MPS preference without changing model/data/optimizer configuration.
+Keep native MPS parity/resume gates mandatory and forbid silent fallback; use
+the same explicit thread setting when resuming the CPU training checkpoint.
+Write a source-
 and config-bound run manifest, train metrics, validation raw metrics, checkpoint
 index, and resume state. Checkpoint identity uses the captured reviewed source
 even when HEAD additionally contains the immutable corpus commit; verify exact
