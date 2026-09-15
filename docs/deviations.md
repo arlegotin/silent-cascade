@@ -4,6 +4,25 @@ This append-only log records necessary, explicitly approved departures from the 
 
 ## Current status
 
+## 2026-09-15 — Phase 3 evidence integration boundaries
+
+Task 12 inspection found that native MPS checkpoint continuation was covered by
+an actual regression test but had no primitive measurement API for the report
+collector. Under standing approval, expose that existing two-update check as
+`measure_mps_resume` and retain its unchanged loss/parameter/AdamW tolerances
+(`rtol=1e-4, atol=1e-5`) and exact RNG/batch checks. CPU continuation remains
+exact and keeps its existing API/schema. This prevents a copied passing-test
+message from substituting for source-bound native measurements. Cost if wrong:
+one additional verification adapter and regression surface; no model, optimizer,
+data, scientific gate or numerical tolerance changes.
+
+The closed report schemas are assigned a small data-only module,
+`train/evidence_types.py`, shared by collector and independent verifier. Metric
+arithmetic, pass decisions and hash-chain implementations remain independent.
+Cost if wrong: one additional module to maintain and authenticate; the separation
+keeps producer execution out of the verifier's schema imports. Both corrections
+are recorded before production corpus creation or training.
+
 ## 2026-09-15 — Pre-freeze Phase 3 AdamW stabilization
 
 Standing approval for reversible configuration and plan corrections is applied

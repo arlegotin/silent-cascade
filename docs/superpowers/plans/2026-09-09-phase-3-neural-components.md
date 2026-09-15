@@ -142,7 +142,7 @@ files not listed as new remain unchanged. New tests may share fixtures in
 | 9 | `train/checkpoints.py` | Safe exact training continuation and weight export |
 | 10 | `train/{component_eval,curriculum,trainer}.py` | Unassisted component gate, optimizer loop, stage policy |
 | 11 | `train/{__main__,cli,verification}.py`; `docs/phase3-neural-components.md` | Working local interface and device/import/package integration |
-| 12 | `train/{provenance,evidence}.py`, `scripts/{check_phase3_components,verify_phase3_gate_artifact}.py` | Source-bound raw evidence and independent verifier |
+| 12 | `train/{provenance,evidence_types,evidence}.py`, `scripts/{check_phase3_components,verify_phase3_gate_artifact}.py` | Source-bound raw evidence and independent verifier |
 | 13 | `manifests/validation/phase3/one-hop-10000.json`, `manifests/validation/phase3/component-gate.json` | Actual fixed corpus, training, evaluation, evidence commit |
 
 Execution is sequential by task number. Component implementations may be handed
@@ -1394,12 +1394,12 @@ the current directory is this checkout. No README benchmark claim is added.
 
 ### Task 12: Source-Bound Component Evidence and Independent Verification
 
-**Files:** Create `train/{provenance,evidence}.py`,
+**Files:** Create `train/{provenance,evidence_types,evidence}.py`,
 `scripts/check_phase3_components.py`, `scripts/verify_phase3_gate_artifact.py`, and
 `tests/neural/{test_phase3_provenance,test_phase3_evidence,test_phase3_verifier}.py`;
 update new `train/verification.py` and `tests/neural/test_device_parity.py` to
-derive empty-memory coverage from actual probe eligibility as part of evidence
-integration;
+derive empty-memory coverage from actual probe eligibility and expose measured
+native MPS resume as part of evidence integration;
 modify `tests/integration/test_phase0_repository.py` for a new Phase 3 delivery
 state check, without altering Phase 1/2 accepted rows or tests.
 
@@ -1420,6 +1420,12 @@ state check, without altering Phase 1/2 accepted rows or tests.
 - `verify_phase3_gate_artifact` independently rederives all metrics and
   authenticates historical inputs without training; its exact keyword-only
   signature is specified below in this task.
+- `measure_mps_resume(config: ResolvedConfig[Phase3Config], source_commit: str)
+  -> MPSResumeEvidence` in `train/verification.py` performs the existing native
+  two-update checkpoint/RNG continuation check and returns primitive measured
+  comparisons under `phase3-mps-resume-v1`. Preserve the existing CPU API/schema
+  and its exact comparisons. Shared report schemas live in the data-only
+  `train/evidence_types.py`, with no producer metric, pass, or hash-chain code.
 
 - [ ] **Step 1: Write RED tests** for debug-size real collection, production/debug
   separation, source closure (including new ancestor initializers), seed/manifest
@@ -1531,6 +1537,19 @@ invoke the producer or model. The separate `evaluate-components` command is the
 actual execution reproduction path. `collect` checks training-run progress,
 source/config, validation selection history, checkpoint identity, real numeric
 test measurements, and exact CPU resume evidence before publication.
+
+Collect actual native MPS resume measurements as well: save after the first
+real optimizer update, compare the uninterrupted and restored second update,
+and require the existing native test's `rtol=1e-4, atol=1e-5` for named losses,
+parameters, and AdamW state. Next-batch hashes and Python/NumPy/Torch CPU/MPS
+random draws must match exactly; restore the caller's RNG afterward. Record
+source/config/archive identity and native device/version/thread metadata.
+Unavailable MPS cannot satisfy production acceptance. The old passing test log
+is not a replacement for these report measurements. Focused tests cover this
+adapter without weakening or removing the existing continuation regression.
+This pre-freeze integration correction adds one data-only schema module and a
+measured adapter for an already-required check; its cost is a slightly larger
+evidence/test surface, not a new scientific requirement or changed tolerance.
 
 The public Python verifier signature is
 `verify_phase3_gate_artifact(*, artifact_path: Path, manifest_path: Path,
