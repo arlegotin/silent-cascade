@@ -68,6 +68,22 @@ Regenerate hashes/evidence and reject both older epsilon configurations. The
 previous failed attempts remain recorded, and all other settings, thresholds
 and canonical specification bytes remain unchanged.
 
+Final-candidate engineering outcome at source
+`f6a52a6b148577e80b1020ad70a2eaf75b0acae0`: `1e-7` passes the unchanged native
+numerical comparisons and exact CPU resume. The fixed-64 content regression
+passes at step 900 with 64/64 chains and 112/112 recalls/compositions. Its
+secondary untimed action accuracy remains 32/64; this is not evidence of timed
+OFD competence. Full local `OMP_NUM_THREADS=1 UV_OFFLINE=1 make verify` exits
+zero with 2472, 93 and 216 passing tests in its three processes, followed by a
+passing doctor and both package builds. Independent task review approves the
+implementation. Production 10,000-example component acceptance remains separate
+and unexecuted at this point.
+
+Final configuration hashes: smoke
+`4a2d2946047216eb5cb209a4e88ed7eff2be962f0496c612d59d906f8bebbba7`;
+one-hop production
+`26b21c1acd79e6c47375f03c4e68da24fadddde9ae150454bbd3db7f50237041`.
+
 ## 2026-09-08 — Final Phase 1 leakage-evidence closure
 
 The terminal science and code audits rejected the five artifacts collected at

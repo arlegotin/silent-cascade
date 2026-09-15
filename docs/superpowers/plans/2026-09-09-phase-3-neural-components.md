@@ -1397,6 +1397,9 @@ the current directory is this checkout. No README benchmark claim is added.
 **Files:** Create `train/{provenance,evidence}.py`,
 `scripts/check_phase3_components.py`, `scripts/verify_phase3_gate_artifact.py`, and
 `tests/neural/{test_phase3_provenance,test_phase3_evidence,test_phase3_verifier}.py`;
+update new `train/verification.py` and `tests/neural/test_device_parity.py` to
+derive empty-memory coverage from actual probe eligibility as part of evidence
+integration;
 modify `tests/integration/test_phase0_repository.py` for a new Phase 3 delivery
 state check, without altering Phase 1/2 accepted rows or tests.
 
@@ -1423,6 +1426,17 @@ state check, without altering Phase 1/2 accepted rows or tests.
   binding, checkpoint mismatch, raw-denominator arithmetic, wrong/extra/missing
   predictions, omitted variants, changed thresholds, source mutation, deep JSON,
   no-clobber publication, and preserved prior-phase evidence.
+
+Include the inherited Task 11 coverage-hardening regression before source
+freeze: a deliberately nonempty replacement for the isolated empty-memory
+probe must not yield positive `empty_memory_rows` or a passing coverage gate.
+Derive the paired-device count from actual probe eligibility, not literal `1`;
+preserve the existing genuine empty fixture, all numerical comparisons and
+the public evidence schema. The current Task 11 probe was independently
+verified genuinely empty, so its recorded result remains valid. This small
+integration correction changes no model/training computation; its cost is one
+additional focused evidence regression. Retain its review history for the final
+whole-phase audit rather than adding a separate Task 11 fix loop.
 
 ```python
 def test_independent_component_verifier_rejects_changed_success_count(
