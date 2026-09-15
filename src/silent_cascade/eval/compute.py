@@ -41,6 +41,13 @@ class NeuralComputeSnapshot:
     mps_peak_allocation_bytes: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _VersionedTensorReference:
+    tensor: torch.Tensor
+    version: int
+    name: str
+
+
 def _linear_macs(module: nn.Linear, inputs: tuple[torch.Tensor, ...]) -> int:
     values = inputs[0]
     rows = values.numel() // module.in_features
@@ -88,17 +95,19 @@ class NeuralComputeMeter:
         self._token: Token[tuple[NeuralComputeMeter, ...]] | None = None
         self._entered = False
         self._finished = False
+        self._snapshot_valid = False
+        self._invalid_reason: str | None = None
         self._module_calls: Counter[str] = Counter()
         self._operation_estimates: Counter[str] = Counter()
         self._row_transitions = 0
         self._records_scored = 0
-        self._eligibility_references: list[torch.Tensor] = []
+        self._eligibility_references: list[_VersionedTensorReference] = []
         self._eligible_records = 0
         self._forward_macs = 0
         self._backward_macs = 0
         self._flow_evaluations = 0
         self._jump_applications = 0
-        self._mode_references: list[torch.Tensor] = []
+        self._mode_references: list[_VersionedTensorReference] = []
         self._opportunities = 0
         self._memory_bytes = 0
         self._elapsed_seconds = 0.0
@@ -112,14 +121,19 @@ class NeuralComputeMeter:
         if self._entered:
             raise NeuralError("a compute meter cannot be entered more than once")
         self._entered = True
-        if self._uses_mps:
-            torch.mps.synchronize()
-        for submodule in self._observed_modules():
-            self._handles.append(submodule.register_forward_hook(self._forward_hook))
-        current = _ACTIVE_METERS.get()
-        self._token = _ACTIVE_METERS.set((*current, self))
-        self._started_at = perf_counter()
-        return self
+        try:
+            if self._uses_mps:
+                torch.mps.synchronize()
+            for submodule in self._observed_modules():
+                self._handles.append(submodule.register_forward_hook(self._forward_hook))
+            current = _ACTIVE_METERS.get()
+            self._token = _ACTIVE_METERS.set((*current, self))
+            self._started_at = perf_counter()
+            return self
+        except BaseException:
+            self._invalid_reason = "compute meter entry did not complete"
+            self._cleanup()
+            raise
 
     def _observed_modules(self) -> tuple[nn.Module, ...]:
         """Include explicit non-owning shared dependencies once by identity."""
@@ -151,31 +165,65 @@ class NeuralComputeMeter:
             if self._uses_mps:
                 torch.mps.synchronize()
             self._elapsed_seconds = perf_counter() - self._started_at
-            self._freeze_public_counts()
+            if self._invalid_reason is None:
+                self._freeze_public_counts()
+                self._snapshot_valid = True
+            elif exc_type is None:
+                raise NeuralError(self._invalid_reason)
         finally:
-            for handle in self._handles:
-                handle.remove()
-            self._handles.clear()
-            for handle in self._tensor_handles:
-                handle.remove()
-            self._tensor_handles.clear()
-            if self._token is not None:
-                _ACTIVE_METERS.reset(self._token)
-                self._token = None
-            self._finished = True
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        """Release every observer resource, including after partial entry."""
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+        for handle in self._tensor_handles:
+            handle.remove()
+        self._tensor_handles.clear()
+        self._eligibility_references.clear()
+        self._mode_references.clear()
+        if self._token is not None:
+            _ACTIVE_METERS.reset(self._token)
+            self._token = None
+        self._finished = True
+
+    def _capture_versioned_tensor(
+        self, tensor: torch.Tensor, name: str
+    ) -> _VersionedTensorReference:
+        """Capture host mutation metadata without executing a tensor operation."""
+        try:
+            version = tensor._version
+        except RuntimeError as error:
+            self._invalid_reason = f"{name} tensor mutation version is unavailable"
+            raise NeuralError(self._invalid_reason) from error
+        return _VersionedTensorReference(tensor=tensor, version=version, name=name)
+
+    def _validate_version(self, reference: _VersionedTensorReference) -> None:
+        try:
+            current = reference.tensor._version
+        except RuntimeError as error:
+            self._invalid_reason = f"{reference.name} tensor mutation version is unavailable"
+            raise NeuralError(self._invalid_reason) from error
+        if current != reference.version:
+            self._invalid_reason = f"{reference.name} tensor was modified in place"
+            raise NeuralError(self._invalid_reason)
 
     def _freeze_public_counts(self) -> None:
         """Copy observed public masks to CPU and reduce after measured timing."""
-        self._eligible_records = sum(
-            int(reference.detach().to(device="cpu", copy=True).sum().item())
+        references = (*self._eligibility_references, *self._mode_references)
+        for reference in references:
+            self._validate_version(reference)
+        eligible_records = sum(
+            int(reference.tensor.detach().to(device="cpu", copy=True).sum().item())
             for reference in self._eligibility_references
         )
-        self._opportunities = sum(
-            int((reference.detach().to(device="cpu", copy=True) != 0).sum().item())
+        opportunities = sum(
+            int((reference.tensor.detach().to(device="cpu", copy=True) != 0).sum().item())
             for reference in self._mode_references
         )
-        self._eligibility_references.clear()
-        self._mode_references.clear()
+        self._eligible_records = eligible_records
+        self._opportunities = opportunities
 
     def _forward_hook(
         self,
@@ -212,7 +260,9 @@ class NeuralComputeMeter:
             self._forward_macs += bilinear_macs
             self._operation_estimates["bilinear_dot_macs"] += bilinear_macs
             self._records_scored += batch_size * slots
-            self._eligibility_references.append(context.eligibility)  # type: ignore[union-attr]
+            self._eligibility_references.append(  # type: ignore[union-attr]
+                self._capture_versioned_tensor(context.eligibility, "eligibility")
+            )
             self._memory_bytes = max(
                 self._memory_bytes,
                 context.memory_embeddings.numel()  # type: ignore[union-attr]
@@ -222,7 +272,9 @@ class NeuralComputeMeter:
         elif name == "FlowGuardController":
             context = inputs[0]
             batch_size = context.batch_size  # type: ignore[union-attr]
-            self._mode_references.append(context.modes)  # type: ignore[union-attr]
+            self._mode_references.append(  # type: ignore[union-attr]
+                self._capture_versioned_tensor(context.modes, "modes")
+            )
             self._row_transitions += batch_size
             self._operation_estimates["tanh_ops"] += batch_size * 456
             self._operation_estimates["sigmoid_ops"] += batch_size * 3
@@ -246,9 +298,8 @@ class NeuralComputeMeter:
 
     def snapshot(self) -> NeuralComputeSnapshot:
         """Return counters frozen independently from future internal mutation."""
-        elapsed = self._elapsed_seconds
-        if self._entered and not self._finished:
-            elapsed = perf_counter() - self._started_at
+        if not self._snapshot_valid:
+            raise NeuralError("compute meter has no valid snapshot")
         return NeuralComputeSnapshot(
             module_calls=MappingProxyType(dict(self._module_calls)),
             row_transitions=self._row_transitions,
@@ -264,7 +315,7 @@ class NeuralComputeMeter:
             parameters=sum(parameter.numel() for parameter in self.module.parameters()),
             memory_bytes=self._memory_bytes,
             foundation_model_calls=0,
-            elapsed_seconds=elapsed,
+            elapsed_seconds=self._elapsed_seconds,
             mps_peak_allocation_bytes=None,
         )
 

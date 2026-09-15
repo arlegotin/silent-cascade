@@ -119,6 +119,128 @@ def test_forward_hooks_add_no_tensor_operations_and_freeze_public_counts(
     assert meter.snapshot().opportunities == 2
 
 
+def _assert_meter_resources_removed(meter, module: torch.nn.Module) -> None:
+    assert not meter._handles
+    assert not meter._tensor_handles
+    assert all(not child._forward_hooks for child in module.modules())
+
+
+def test_inplace_eligibility_mutation_refuses_snapshot_and_cleans_hooks(
+    model_context, neural_config
+) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.memory.retrieval import RetrievalScorer
+    from silent_cascade.models.errors import NeuralError
+
+    scorer = RetrievalScorer(neural_config.neural)
+    meter = NeuralComputeMeter(scorer)
+    with pytest.raises(NeuralError, match=r"eligibility.*modified in place"), meter:
+        scorer(model_context)
+        model_context.eligibility.zero_()
+    _assert_meter_resources_removed(meter, scorer)
+    with pytest.raises(NeuralError, match="valid snapshot"):
+        meter.snapshot()
+
+
+def test_inplace_mode_mutation_refuses_snapshot_and_cleans_hooks(
+    model_context, neural_config
+) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.memory.retrieval import RetrievalPreview
+    from silent_cascade.models.controller import FlowGuardController
+    from silent_cascade.models.errors import NeuralError
+
+    controller = FlowGuardController(neural_config.neural)
+    preview = RetrievalPreview(torch.zeros(2, 100), torch.zeros(2, dtype=torch.bool))
+    meter = NeuralComputeMeter(controller)
+    with pytest.raises(NeuralError, match=r"modes.*modified in place"), meter:
+        controller(model_context, preview)
+        model_context.modes.zero_()
+    _assert_meter_resources_removed(meter, controller)
+    with pytest.raises(NeuralError, match="valid snapshot"):
+        meter.snapshot()
+
+
+def test_same_value_view_mutation_is_still_rejected(model_context, neural_config) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.memory.retrieval import RetrievalScorer
+    from silent_cascade.models.errors import NeuralError
+
+    scorer = RetrievalScorer(neural_config.neural)
+    meter = NeuralComputeMeter(scorer)
+    with pytest.raises(NeuralError, match=r"eligibility.*modified in place"), meter:
+        scorer(model_context)
+        view = model_context.eligibility.view(-1)
+        view.logical_or_(torch.zeros_like(view))
+    _assert_meter_resources_removed(meter, scorer)
+
+
+def test_inference_tensor_metadata_fails_closed_and_cleans_hooks(
+    model_context, neural_config
+) -> None:
+    from dataclasses import replace
+
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.memory.retrieval import RetrievalScorer
+    from silent_cascade.models.errors import NeuralError
+
+    with torch.inference_mode():
+        inference_context = replace(
+            model_context,
+            eligibility=model_context.eligibility.clone(),
+        )
+    scorer = RetrievalScorer(neural_config.neural)
+    meter = NeuralComputeMeter(scorer)
+    with (
+        pytest.raises(NeuralError, match=r"eligibility.*mutation version.*unavailable"),
+        meter,
+        torch.inference_mode(),
+    ):
+        scorer(inference_context)
+    _assert_meter_resources_removed(meter, scorer)
+    with pytest.raises(NeuralError, match="valid snapshot"):
+        meter.snapshot()
+
+
+def test_functional_context_replacement_keeps_versioned_counts_valid(
+    model_context, neural_config
+) -> None:
+    from dataclasses import replace
+
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.memory.retrieval import RetrievalScorer
+
+    scorer = RetrievalScorer(neural_config.neural)
+    replacement = replace(
+        model_context,
+        eligibility=torch.zeros_like(model_context.eligibility),
+    )
+    with NeuralComputeMeter(scorer) as meter:
+        scorer(model_context)
+        scorer(replacement)
+    assert meter.snapshot().eligible_records == int(model_context.eligibility.sum())
+
+
+def test_entry_failure_removes_partially_registered_hooks_and_refuses_snapshot(
+    monkeypatch,
+) -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+    from silent_cascade.models.errors import NeuralError
+
+    module = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+
+    def reject_hook_registration(hook):
+        raise RuntimeError("synthetic registration failure")
+
+    monkeypatch.setattr(module[1], "register_forward_hook", reject_hook_registration)
+    meter = NeuralComputeMeter(module)
+    with pytest.raises(RuntimeError, match="synthetic registration failure"):
+        meter.__enter__()
+    _assert_meter_resources_removed(meter, module)
+    with pytest.raises(NeuralError, match="valid snapshot"):
+        meter.snapshot()
+
+
 def test_meter_preserves_outputs_gradients_and_rng() -> None:
     from silent_cascade.eval.compute import NeuralComputeMeter
 

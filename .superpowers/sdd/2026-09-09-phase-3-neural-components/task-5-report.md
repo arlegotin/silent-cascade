@@ -228,3 +228,80 @@ The assembled native-MPS run produced float32 finite outputs and gradients,
 counted 256 scored records and zero foundation-model calls, retained the exact
 `2,781,042 / 2,048 / 2,778,994` parameter split, and reported peak allocation
 as `None` because the installed PyTorch has no true MPS peak API.
+
+## Fix Round 2 — Versioned Deferred Metadata
+
+### Ruling and Correction
+
+Deferred CPU reduction cannot preserve a call-time value if the observed tensor
+is mutated in place before context exit, while cloning it in a hook would add
+device work to the timed forward path. The approved boundary therefore treats
+the caller's public input tensors as immutable during one meter scope:
+
+- Each scorer/controller hook captures the exact eligibility/modes tensor,
+  field name, and host `_version` integer. Reading `_version` dispatches no
+  tensor operation and launches no GPU work.
+- Exit synchronizes MPS, stops elapsed timing, validates every captured version,
+  copies stable tensors to CPU, reduces there, and publishes a valid snapshot
+  only after all checks succeed.
+- Any in-place mutation—including same-value mutation through a view—raises a
+  typed `NeuralError`; the snapshot remains invalid and is refused.
+- Inference tensors whose mutation counter is unavailable fail closed with a
+  typed field-specific error rather than being treated as version zero.
+- Functional context replacement with a distinct versioned tensor remains
+  valid and counts both observed calls independently.
+- A single cleanup path removes module hooks, tensor backward hooks, deferred
+  references, and the context token after normal exit, mutation failure,
+  forward-hook failure, or partial entry failure.
+
+Unsafe writes that bypass PyTorch storage versioning remain outside the public
+tensor-input contract, as specified in the approved Task 5 brief.
+
+### TDD RED
+
+```text
+uv run pytest -q \
+  tests/neural/test_neural_compute.py::test_inplace_eligibility_mutation_refuses_snapshot_and_cleans_hooks \
+  tests/neural/test_neural_compute.py::test_inplace_mode_mutation_refuses_snapshot_and_cleans_hooks \
+  tests/neural/test_neural_compute.py::test_same_value_view_mutation_is_still_rejected \
+  tests/neural/test_neural_compute.py::test_inference_tensor_metadata_fails_closed_and_cleans_hooks \
+  tests/neural/test_neural_compute.py::test_functional_context_replacement_keeps_versioned_counts_valid \
+  tests/neural/test_neural_compute.py::test_entry_failure_removes_partially_registered_hooks_and_refuses_snapshot
+5 failed, 1 passed in 0.11s
+```
+
+The four mutation/unversioned cases published or attempted stale counts, and a
+synthetic second-module registration failure left two forward-hook handles
+installed. The functional-replacement control passed before implementation.
+
+### GREEN and Verification
+
+```text
+same six focused review tests
+6 passed in 0.08s
+
+uv run pytest -q tests/neural/test_neural_compute.py
+20 passed in 0.57s
+
+uv run pytest -q tests/neural/test_heads.py tests/neural/test_event_flow_model.py tests/neural/test_neural_compute.py
+32 passed in 0.90s
+
+uv run pytest -q tests/neural tests/regression/test_import_boundaries.py tests/unit/test_flow.py tests/unit/test_guards.py tests/unit/test_eventflow_protocols.py tests/unit/test_eventflow_state.py
+344 passed in 8.58s
+
+uv run pytest -q \
+  tests/neural/test_event_flow_model.py::test_assembled_model_executes_complete_native_mps_graph \
+  tests/neural/test_neural_compute.py::test_meter_synchronizes_real_mps_without_fabricating_peak
+2 passed in 0.39s
+
+uv run ruff check src/silent_cascade/eval/compute.py tests/neural/test_neural_compute.py
+All checks passed!
+
+uv run ruff format --check src/silent_cascade/eval/compute.py tests/neural/test_neural_compute.py
+2 files already formatted
+```
+
+The existing Torch-dispatch comparison remains green: measured and unmeasured
+forward paths have identical dispatched tensor operations. The post-exit
+mutation regression also remains green, demonstrating that valid snapshot
+totals are frozen before control returns to the caller.
