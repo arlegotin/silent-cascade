@@ -25,6 +25,68 @@ _RECORD_DIM = 96
 
 
 @dataclass(frozen=True, slots=True)
+class LossInputs:
+    """Neutral tensors for the trace objective; never a prediction-module input.
+
+    Predictions/targets/masks align on [B,T] internal positions, with final
+    dormancy and negative action predictions attached to the last real position.
+    Guard tensors end in 3, retrieval in 64, and logits in their class count.
+    State tensors instead use [B,J,456] for actual external/internal jumps;
+    jump_mask identifies valid positions. No field is copied or detached here.
+    """
+
+    raw_guard_targets: torch.Tensor
+    crossing_offsets: torch.Tensor
+    legal_guard_mask: torch.Tensor
+    boundary_mask: torch.Tensor
+    kind_target: torch.Tensor
+    delta_target: torch.Tensor
+    final_guard_targets: torch.Tensor
+    final_dormancy_mask: torch.Tensor
+    retrieval_logits: torch.Tensor
+    retrieval_eligible_mask: torch.Tensor
+    retrieval_target: torch.Tensor
+    retrieval_mask: torch.Tensor
+    role_logits: torch.Tensor
+    role_target: torch.Tensor
+    role_mask: torch.Tensor
+    status_logits: torch.Tensor
+    status_target: torch.Tensor
+    status_mask: torch.Tensor
+    confidence_logit: torch.Tensor
+    confidence_target: torch.Tensor
+    confidence_mask: torch.Tensor
+    append_support_logit: torch.Tensor
+    append_support_target: torch.Tensor
+    append_support_mask: torch.Tensor
+    continue_search_logit: torch.Tensor
+    continue_search_target: torch.Tensor
+    continue_search_mask: torch.Tensor
+    next_focus_logits: torch.Tensor
+    focus_target: torch.Tensor
+    focus_mask: torch.Tensor
+    hazard_logits: torch.Tensor
+    hazard_target: torch.Tensor
+    hazard_mask: torch.Tensor
+    log_delay: torch.Tensor
+    log_delay_target: torch.Tensor
+    log_delay_mask: torch.Tensor
+    normalized_deadline: torch.Tensor
+    normalized_deadline_target: torch.Tensor
+    normalized_deadline_mask: torch.Tensor
+    action_logits: torch.Tensor
+    action_target: torch.Tensor
+    action_mask: torch.Tensor
+    abstention_mask: torch.Tensor
+    lead_fraction: torch.Tensor
+    lead_target: torch.Tensor
+    lead_mask: torch.Tensor
+    pre_jump_latent: torch.Tensor
+    post_jump_latent: torch.Tensor
+    jump_mask: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
 class PublicInputBatch:
     """Public observation storage; use at_observation to expose only delivered data.
 
@@ -320,6 +382,46 @@ class ModelContext:
     modes: torch.Tensor
     time_features: torch.Tensor
     hypothesis_features: torch.Tensor
+
+    def _updated(self, **updates: object) -> "ModelContext":
+        """Trusted functional replacement for validated neural transitions.
+
+        Internal callers preserve shapes, devices and bounds by construction.
+        This avoids cloning/scanning unchanged memory at every gathered step;
+        public construction still performs the complete strict validation.
+        """
+        names = {item.name for item in fields(self)}
+        if updates.keys() - names:
+            raise TypeError("unknown context fields")
+        result = type(self).__new__(type(self))
+        for name in names:
+            object.__setattr__(result, name, updates.get(name, getattr(self, name)))
+        return result
+
+    def _gather(self, rows: torch.Tensor) -> "ModelContext":
+        return self._updated(
+            workspace=TensorWorkspace._from_functional_update(
+                self.workspace.latent[rows], self.workspace.accumulators[rows]
+            ),
+            **{
+                item.name: getattr(self, item.name)[rows]
+                for item in fields(self)
+                if item.name != "workspace"
+            },
+        )
+
+    def _scatter(self, rows: torch.Tensor, source: "ModelContext") -> "ModelContext":
+        return self._updated(
+            workspace=TensorWorkspace._from_functional_update(
+                self.workspace.latent.index_copy(0, rows, source.workspace.latent),
+                self.workspace.accumulators.index_copy(0, rows, source.workspace.accumulators),
+            ),
+            **{
+                item.name: getattr(self, item.name).index_copy(0, rows, getattr(source, item.name))
+                for item in fields(self)
+                if item.name != "workspace"
+            },
+        )
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace, TensorWorkspace):

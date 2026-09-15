@@ -25,19 +25,7 @@ _SEARCHING = 1
 
 
 def _select_context(context: ModelContext, rows: torch.Tensor) -> ModelContext:
-    workspace = TensorWorkspace._from_functional_update(
-        context.workspace.latent[rows], context.workspace.accumulators[rows]
-    )
-    return ModelContext(
-        workspace=workspace,
-        memory_embeddings=context.memory_embeddings[rows],
-        eligibility=context.eligibility[rows],
-        support_mask=context.support_mask[rows],
-        active_slot_indices=context.active_slot_indices[rows],
-        modes=context.modes[rows],
-        time_features=context.time_features[rows],
-        hypothesis_features=context.hypothesis_features[rows],
-    )
+    return context._gather(rows)
 
 
 class EventFlowModel(nn.Module):
@@ -119,7 +107,7 @@ class EventFlowModel(nn.Module):
             latent = torch.cat((latent[:, :328], focus, latent[:, 392:]), dim=1)
             workspace = TensorWorkspace._from_functional_update(latent, workspace.accumulators)
         modes = torch.where(activation, torch.full_like(context.modes, _SEARCHING), context.modes)
-        return ModelContext(
+        return context._updated(
             workspace=workspace,
             memory_embeddings=context.memory_embeddings,
             eligibility=context.eligibility,
