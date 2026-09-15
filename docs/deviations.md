@@ -39,6 +39,14 @@ resumed under the revision. Preserve the original failure and regenerate all
 affected debug/acceptance evidence. This entry records a correction to verify,
 not a claim that the revised optimizer already passes.
 
+Initial verification outcome: with the original seed/batch and comparisons,
+`1e-6` has zero CPU/MPS mismatches and a maximum updated-weight difference of
+`2.8312206268310547e-6`; exact CPU resume also passes. However, the unchanged
+fixed-64 debug overfit reaches only 63/64 complete chains by step 1000, with
+111/112 required recalls and compositions correct. Thus this candidate does
+not meet the complete engineering gate. These failed learning results remain
+part of the development record; no production acceptance is claimed.
+
 ## 2026-09-08 — Final Phase 1 leakage-evidence closure
 
 The terminal science and code audits rejected the five artifacts collected at
