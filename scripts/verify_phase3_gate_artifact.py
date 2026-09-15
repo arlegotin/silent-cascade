@@ -3,10 +3,12 @@
 import argparse
 import ast
 import hashlib
+import importlib
 import json
 import math
 import struct
 import subprocess
+import sys
 from dataclasses import asdict
 from itertools import pairwise
 from pathlib import Path
@@ -83,7 +85,35 @@ def _blob(root, commit, name):
     return _git(root, "cat-file", "blob", oid.decode())
 
 
+def _executing_checkout(root):
+    """Bind loaded dependencies and package search paths before using reconstruction code."""
+    root = root.resolve()
+    _require(
+        Path(__file__).resolve() == root / "scripts/verify_phase3_gate_artifact.py",
+        "executing verifier differs from the authenticated checkout",
+    )
+    for name, module in tuple(sys.modules.items()):
+        if name != "silent_cascade" and not name.startswith("silent_cascade."):
+            continue
+        expected = root / "src" / Path(*name.split("."))
+        package_paths = getattr(module, "__path__", None)
+        if package_paths is not None:
+            _require(
+                tuple(Path(path).resolve() for path in package_paths) == (expected,),
+                f"executing package search path differs from checkout: {name}",
+            )
+            expected = expected / "__init__.py"
+        else:
+            expected = expected.with_suffix(".py")
+        filename = getattr(module, "__file__", None)
+        _require(
+            filename is not None and Path(filename).resolve() == expected,
+            f"executing dependency differs from authenticated checkout: {name}",
+        )
+
+
 def _trust(report, manifest_raw, root, expected):
+    _executing_checkout(root)
     p = report["provenance"]
     source, plan, intro = p["source_commit"], p["plan_revision"], p["validation_manifest_commit"]
     if expected is not None:
@@ -157,6 +187,12 @@ def _trust(report, manifest_raw, root, expected):
     # Configuration classes and corpus recipes contain no learned computation.
     from silent_cascade.config import resolve_config
     from silent_cascade.train.config import Phase3Config
+
+    # Import the remaining recipe/target helpers now, then authenticate the loaded
+    # paths before any configuration resolution or corpus reconstruction occurs.
+    for name in ("silent_cascade.train.curriculum_data", "silent_cascade.train.traces"):
+        importlib.import_module(name)
+    _executing_checkout(root)
 
     production = report["publication"] == "production"
     paths = [
@@ -598,6 +634,78 @@ def _weights(path, report):
     )
 
 
+def _compute(batch, rows, public_examples, neural):
+    """Reconcile row-attributable work, without inventing per-row mixed-batch MACs."""
+    observations, recalls, previews, eligibility = [], [], [], []
+    for row, public in zip(rows, public_examples, strict=True):
+        prediction = row["prediction"]
+        count = len(prediction["record_ids"])
+        preview_count = count + int(prediction["stop_reason"] == "dormant")
+        observed = len(public.events)
+        calls = 1 + preview_count + count  # Activation, previews, selected recalls.
+        _require(
+            prediction["record_ids"] == [item["record_id"] for item in prediction["content"]]
+            and prediction["atomic_transitions"] == 2 * count <= 4
+            and prediction["observation_events"] == observed
+            and prediction["scorer_calls"] == calls
+            and prediction["records_scored"] == neural.memory_slots * calls,
+            "raw prediction compute counters disagree with its executed sequence",
+        )
+        observations.append(observed)
+        recalls.append(count)
+        previews.append(preview_count)
+        # All public facts precede the single final activation. Each successful
+        # recall removes one eligible slot before a possible second preview.
+        eligibility.append(
+            (observed - 1) * calls
+            - preview_count * (preview_count - 1) // 2
+            - count * (count - 1) // 2
+        )
+    n, observation_rows = len(rows), sum(observations)
+    scorer_rows = sum(row["prediction"]["scorer_calls"] for row in rows)
+    atomic_rows = sum(row["prediction"]["atomic_transitions"] for row in rows)
+    expected = {
+        "records_scored": sum(row["prediction"]["records_scored"] for row in rows),
+        "eligible_records": sum(eligibility),
+        "flow_evaluations": observation_rows - n,
+        "jump_applications": observation_rows + atomic_rows,
+        "opportunities": n + sum(previews),
+        "memory_bytes": n * neural.memory_slots * neural.record_dim * 4,
+    }
+    expected["row_transitions"] = (
+        expected["flow_evaluations"]
+        + expected["jump_applications"]
+        + scorer_rows
+        + observation_rows
+        + sum(previews)
+        + sum(recalls)
+        + n
+    )
+    _require(
+        all(batch[name] == value for name, value in expected.items()),
+        "batch compute counters disagree with attributed raw rows",
+    )
+    _require(
+        batch["estimated_macs"] == batch["forward_macs"]
+        and batch["operation_estimates"].get("bilinear_dot_macs")
+        == expected["records_scored"] * neural.query_dim
+        and batch["forward_macs"] >= expected["records_scored"] * neural.query_dim,
+        "internal compute MAC identities disagree",
+    )
+    module_calls = {
+        "ExternalEncoder": max(observations),
+        "FlowGuardController": max(observations) + max(previews),
+        "RetrievalScorer": len(set(observations)) + max(previews) + max(recalls),
+        "ComposeHeads": max(recalls),
+        "SharedJump": 2 * max(recalls),
+        "ActionHeads": 1,
+    }
+    _require(
+        all(batch["module_calls"].get(name, 0) == value for name, value in module_calls.items()),
+        "module invocation counters disagree with batched row execution",
+    )
+
+
 def verify_phase3_gate_artifact(
     *,
     artifact_path: Path,
@@ -726,6 +834,16 @@ def verify_phase3_gate_artifact(
                     row["compute_batch"] == i and row["prediction"]["atomic_transitions"] <= 4,
                     "row compute attribution or transition cap mismatch",
                 )
+            _compute(
+                batch,
+                raw["rows"][start : start + batch["count"]],
+                corpus.public_examples[start : start + batch["count"]],
+                config.config.neural,
+            )
+            _require(
+                batch["parameters"] == raw["compute"][0]["parameters"],
+                "model parameter count changed between evaluation batches",
+            )
         _require(sum(b["count"] for b in raw["compute"]) == count, "missing compute batches")
         _require(
             raw["repeated_prediction_count"] == count
