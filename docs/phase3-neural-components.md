@@ -19,7 +19,8 @@ retained in the development record. The original B8 `1e-7` candidate passed nati
 parity and reaches 64/64 content chains at step 900 of the unchanged learning
 fixture. Its secondary untimed action accuracy is only 32/64; this does not
 establish timed competence.
-No production acceptance result is claimed.
+The accepted corrected production component result is recorded below. Its
+claim boundary remains untimed component engineering evidence.
 
 ## Rejected one-hop production attempt
 
@@ -86,7 +87,169 @@ preselected failures remained wrong with the untimed latent state and correct
 with the teacher latent state. This supports a latent-context exposure
 hypothesis for those cases, but it does not identify a unique latent channel,
 prove a model-code defect, or establish a repair. The archived artifact remains
-`passed=false`; Phase 3 remains in progress.
+`passed=false`; at that rejection, Phase 3 remained in progress.
+
+## Accepted corrected content-v2 component gate
+
+The corrected production run used the reviewed executable source
+`061fd4079f30956b3f51c706bbb374eb5ae0c2db`, approved plan revision
+`048a612e02f520e1f4c0cb6574b379ea13fe72bf`, and byte-identical 10,000-example
+one-hop corpus rebound to `teacher_timed_plus_content_v2`. The new manifest is
+`manifests/validation/phase3/one-hop-10000-content-v2.json`, SHA-256
+`2d36a77d8ea1a0b361553a321bd4af9405539e310c1bc432d2036ab4c17eb412`,
+introduced at commit `35b83bb9d603c185cb341ec637ab430e5fe6cdfa`. It contains 5,000 positive,
+2,500 safe-negative and 2,500 disconnected-negative examples, with no duplicate
+validation keys or public IDs and no overlap with the corresponding 10,000-index
+training probe. The configuration SHA-256 is
+`cc8f910cff1438fe7ea581b5d58ad964a3823559916fa4a7a6d625208018f85e`.
+
+One CPU run with one OpenMP thread trained naturally for 8,000 updates and
+stopped at `component_gate`, selecting update 8,000 with patience counter zero.
+It executed the combined objective on every update, reached maximum recorded
+gradient norm 31.499881744384766, and made zero foundation-model calls. The
+selected full training archive is
+`5e00b39b86339bf266e8ae988fb91bd6a81ce367448bb5be09a9db88a1a473c7`;
+its model-state SHA-256 is
+`c3661889be31ced19edeb1b89b90c8a1f0f0a5479077acb95bc5e485754b97aa`.
+The portable selected weights have SHA-256
+`1237654c0549fecca7eb9dac6f5ce700c3533a508b91e09511dbcbffa268c5e9`.
+Their descriptor's update zero is the portable-format convention; the model
+state is the selected update-8,000 state. Training result, checkpoint-index and
+journal SHA-256 values are respectively
+`abe3bcf7351f0e44145715e84bf80733386bf01ed7ab9ff7b6bb8d1f94900934`,
+`c7f7965ab08dc8949ccb0923946c04be80a54dffff6a17258458766ccb94eee4`
+and `9ccbc9a3569ab5d127ecab2861aabdafe7b05e90166223852dd9196857feb46c`.
+
+All scheduled validations are retained; only the natural terminal validation
+passed all three strict greater-than-99-percent content gates:
+
+| Update | Recall | Composition | Complete chain | Gate |
+| ---: | ---: | ---: | ---: | :---: |
+| 1,000 | 17,500/17,500 | 15,070/17,500 | 7,570/10,000 | fail |
+| 2,000 | 17,114/17,500 | 14,825/17,500 | 7,711/10,000 | fail |
+| 3,000 | 17,225/17,500 | 15,864/17,500 | 8,639/10,000 | fail |
+| 4,000 | 17,412/17,500 | 16,911/17,500 | 9,499/10,000 | fail |
+| 5,000 | 17,479/17,500 | 17,266/17,500 | 9,787/10,000 | fail |
+| 6,000 | 17,474/17,500 | 17,361/17,500 | 9,887/10,000 | fail |
+| 7,000 | 17,494/17,500 | 17,369/17,500 | 9,875/10,000 | fail |
+| 8,000 | 17,475/17,500 | 17,395/17,500 | 9,920/10,000 | pass |
+
+The final exact rates are 99.85714285714286% recall, 99.4% composition and
+99.2% complete chains. The 80 remaining chain failures are retained. By variant,
+complete chains were positive 4,980/5,000, safe 2,495/2,500, and disconnected
+2,445/2,500. Their recall counts were 9,980/10,000, 4,995/5,000 and 2,500/2,500;
+composition counts were 9,960/10,000, 4,990/5,000 and 2,445/2,500. There were
+no invalid predictions or caps. Secondary untimed action accuracy was only
+6,629/10,000 (66.29%): positive 1,641/5,000, safe 2,500/2,500, disconnected
+2,488/2,500. Action accuracy is not one of the Phase 3 content gates and is not
+evidence of timed action competence.
+
+Two complete CPU evaluations of the exported weights each reproduced all
+10,000 ordered predictions and all metrics exactly. Their artifact SHA-256
+values are
+`fc3170e54fc4b6c18bfa0c418a8d7754f4f5a2cdd003ce6a3c66c20ca9e29928`
+and `46f2062dcf1f6695bc06fa9b1c60fff2846017667cb376a9f0279846d916d3a1`;
+the common ordered-prediction SHA-256 is
+`2777a18254d700a11f6b6d2119fe22ed9e94f9ddbcd44fc5da3a6a0e9645cbe5`.
+After excluding measured compute latency, the complete artifacts match. The
+configured gate repeats all 10,000 predictions with zero mismatches.
+
+The production unassisted collector evaluated 2,781,042 parameters in 79
+batches (78 of 128 examples and one of 16), recording 488,500,694,528 forward
+MACs, 3,145,728 maximum tensor bytes and zero foundation-model calls. Its
+8.680945412488654 measured evaluation seconds are diagnostic only: the Phase 3
+gate is explicitly untimed and is not a speed benchmark.
+
+Native production-batch CPU/MPS parity used float32, one thread and all 128
+examples. Forward comparison covered 44,475,393 elements across 840 named,
+shape-inventoried tensors; loss comparison covered 23,539 elements across 147;
+gradients and updated weights each covered 2,781,042 elements across all 71
+parameters. Every mismatch count was zero. Forward/loss tolerance was
+`rtol=1e-4, atol=1e-5`; gradient/updated-weight tolerance was
+`rtol=1e-3, atol=1e-5`. The largest absolute forward, loss, gradient and update
+differences were 0.00030231475830078125, 0.00006103515625,
+0.000041365623474121094 and 0.000009017996490001678. Discrete recall and action
+mismatches were zero. The evidence exercised 205 active crossings, 1,718 dormant
+crossings and one genuine empty-memory row.
+
+Exact CPU resume compared 2,781,042 parameter, 5,562,155 optimizer and 23,539
+loss elements across complete 71/213/147-name and shape inventories; all numeric,
+RNG and next-batch mismatch counts were zero. Native MPS resume used the same
+complete inventories and tolerances `rtol=1e-4, atol=1e-5`; all mismatch counts
+were zero. Its largest nonzero optimizer difference was
+5.820766091346741e-11 absolute and 0.00010658708164570453 relative. The matching
+same-recipe offline smoke performed one real training update and predicted eight
+public rows while denying optional imports and network access; observed blocked
+imports, network attempts, forbidden modules and foundation-model calls were all
+zero.
+
+The committed production v3 gate is
+`manifests/validation/phase3/component-gate-content-v2.json`, SHA-256
+`4090494bd7b3fc072a4654a3ed5c9eaf6a5d65afe7cf9402394f791f8191a0e0`.
+Its full tensor name, shape and element inventories, raw rows, bounded traces,
+three replay samples, compute records and adverse outcomes are part of the
+artifact. The independent verifier returned `valid=true`, `passed=true`,
+`publication=production`, 10,000 episodes and zero foundation-model calls.
+
+The complete run can be reproduced locally and offline in an isolated checkout
+starting from the reviewed source, with absent manifest/gate output targets and
+a new owner-only run directory. The freeze and collector publishers use
+exclusive no-clobber creation: do not aim them at the committed canonical files
+in a current checkout. To audit the current delivery, reuse the committed
+manifest and gate, authenticate their hashes, and run only the independent
+verifier at the end of this block. These are the historically executed producer
+command forms; set the two local storage variables without committing their
+machine-specific values:
+
+```sh
+phase3_source_commit=061fd4079f30956b3f51c706bbb374eb5ae0c2db
+phase3_plan_revision=048a612e02f520e1f4c0cb6574b379ea13fe72bf
+phase3_run_dir='<new owner-only local run directory>'
+phase3_weights_sha256=1237654c0549fecca7eb9dac6f5ce700c3533a508b91e09511dbcbffa268c5e9
+phase3_weights_path="$phase3_run_dir/weights-$phase3_weights_sha256.safetensors"
+
+OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline python scripts/check_phase3_components.py freeze-validation \
+  --config configs/base.yaml --config configs/data/primary.yaml \
+  --config configs/model/event_flow.yaml --config configs/model/neural_components.yaml \
+  --config configs/train/one_hop_content_v2.yaml \
+  --expected-source-commit "$phase3_source_commit" \
+  --expected-plan-base-revision "$phase3_plan_revision" \
+  --output manifests/validation/phase3/one-hop-10000-content-v2.json
+OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline python -m silent_cascade.train fit \
+  --config configs/base.yaml --config configs/data/primary.yaml \
+  --config configs/model/event_flow.yaml --config configs/model/neural_components.yaml \
+  --config configs/train/one_hop_content_v2.yaml \
+  --validation-manifest manifests/validation/phase3/one-hop-10000-content-v2.json \
+  --run-dir "$phase3_run_dir" --expected-source-commit "$phase3_source_commit" \
+  --device cpu
+OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline python -m silent_cascade.train evaluate-components \
+  --weights "$phase3_weights_path" --expected-checkpoint-sha256 "$phase3_weights_sha256" \
+  --manifest manifests/validation/phase3/one-hop-10000-content-v2.json \
+  --output "$phase3_run_dir/cpu-evaluation-1.json"
+OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline python -m silent_cascade.train evaluate-components \
+  --weights "$phase3_weights_path" --expected-checkpoint-sha256 "$phase3_weights_sha256" \
+  --manifest manifests/validation/phase3/one-hop-10000-content-v2.json \
+  --output "$phase3_run_dir/cpu-evaluation-2.json"
+OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline python scripts/check_phase3_components.py collect \
+  --config configs/base.yaml --config configs/data/primary.yaml \
+  --config configs/model/event_flow.yaml --config configs/model/neural_components.yaml \
+  --config configs/train/one_hop_content_v2.yaml \
+  --manifest manifests/validation/phase3/one-hop-10000-content-v2.json \
+  --weights "$phase3_weights_path" --expected-checkpoint-sha256 "$phase3_weights_sha256" \
+  --training-run "$phase3_run_dir" --expected-source-commit "$phase3_source_commit" \
+  --expected-plan-base-revision "$phase3_plan_revision" \
+  --output manifests/validation/phase3/component-gate-content-v2.json
+OMP_NUM_THREADS=1 UV_OFFLINE=1 uv run --offline python scripts/verify_phase3_gate_artifact.py \
+  --artifact manifests/validation/phase3/component-gate-content-v2.json \
+  --manifest manifests/validation/phase3/one-hop-10000-content-v2.json \
+  --weights "$phase3_weights_path" --expected-source-commit "$phase3_source_commit"
+```
+
+This acceptance establishes teacher-forced training plus unassisted, untimed
+retrieval, composition and stopping on the source-bound one-hop component corpus.
+It does not establish autonomous world-time scheduling, autonomous cascade
+operation, broader held-out generalization, or a comparative benchmark. Those
+claims remain outside Phase 3; Phase 4 still owns autonomous EventFlow work.
 
 ## Training
 
