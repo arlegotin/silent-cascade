@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-30-silent-cascade-design.md`, approved v1.0.2; especially Sections 4–8, 9.4, 12–16, 17 Phase 4 and 18. The canonical specification remains unchanged.
 
-**Status:** Proposed; awaiting explicit approval in the task thread. Writing this plan does not authorize implementation or training. On approval, record the approval date/message here and change this line to `User-approved; completion tracked in docs/PLAN.md` before executing Task 1.
+**Status:** User-approved; completion tracked in docs/PLAN.md. Approved on 2026-09-16 by the user's explicit instruction, "execute with subagents". Execute on the current branch with task-scoped implementation and review agents.
 
 **Repository inspected:** Clean `main` at `ea713cdce4107e709985d9333050a947db6561ab` on 2026-09-16. Keep the current branch. This is a phase-scoped plan, not authorization for Phases 5–7.
 
@@ -1491,5 +1491,5 @@ simultaneously. No subagent execution is started by the act of writing this plan
 **Planning self-review:** Completed against the canonical Phase4 scope and current
 interfaces, including task dependencies, immutable historical evidence, public/
 private boundaries, action decoding, global training budget and unchanged pilot
-gates. Approval is still required in the task thread; no code, corpus, training
-or acceptance result is produced by this planning-only change.
+gates. The user subsequently approved execution in the task thread on 2026-09-16.
+Approval does not establish any implementation, training or acceptance result.
