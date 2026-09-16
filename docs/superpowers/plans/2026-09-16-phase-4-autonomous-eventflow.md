@@ -717,6 +717,9 @@ continuation; preserve same-device restoration and separate MPS tolerances.
 
 - Create: `src/silent_cascade/eval/{runner,metrics,artifacts}.py`, `src/silent_cascade/logging/neural_trace.py`.
 - Modify: `src/silent_cascade/eval/compute.py` only for tested runtime aggregation.
+- Modify: `src/silent_cascade/eventflow/engine.py` only for collector-private
+  operational flow accounting; preserve committed state, trace and checkpoint
+  counter semantics.
 - Create: `tests/pilot/{test_timed_runner,test_timed_metrics,test_neural_accounting,test_pilot_artifacts}.py`.
 
 **Interfaces:**
@@ -820,6 +823,19 @@ then reconcile without double counting: a scalar analytic flow is counted once,
 a preview scorer and later real recall are two scored passes, all memory
 re-encodings are real work. Pauses/checkpoint serialization/replay costs have
 separate counters. No `opportunity` ticks are added to EventFlow.
+
+An invalid callback can fail after causal flow was evaluated but before its
+temporary state is committed. Preserve that performed work without modifying
+the last valid semantic state: add frozen `EngineOperationalCompute` with
+`causal_flow_evaluations: int` and `EventEngine.operational_compute_snapshot()`.
+Increment an engine-private cumulative counter immediately before each nonzero
+causal `state_at` invocation. The collector takes per-event/episode snapshot
+differences and reports performed flow separately from unchanged committed
+engine counters. This observer data never enters callbacks, model inputs,
+semantic traces or runtime checkpoints. Do not infer a missing count from an
+error category. Tests compare actual flow invocations with reported work under
+post-flow callback failure, successful/equal-time events and reused-engine
+episodes, while legacy replay/counter checks remain unchanged.
 
 Validation errors produce error rows/crash bundles and a failing final validation
 status. Numerical training corruption stops training immediately. Model candidate
