@@ -1,0 +1,49 @@
+experiment_version: phase4-pilot-v1
+neural:
+  architecture_profile: debug
+  record_hidden_dim: 96
+  external_hidden_dim: 64
+  query_dim: 64
+  controller_hidden_dim: 128
+  jump_hidden_dim: 128
+  head_hidden_dim: 64
+pilot:
+  profile: phase4_smoke
+  optimizer: adamw
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  epsilon: 1.0e-6
+  foreach: false
+  fused: false
+  scheduler: none
+  batch_size: 8
+  gradient_clip_norm: 1.0
+  max_steps: 4
+  validation_every_steps: 2
+  fixed_validation_episodes: 16
+  early_stop_patience_validations: 15
+  checkpoint_keep_best: 3
+  checkpoint_keep_latest: 1
+  model_seed: 11
+  train_root_seed: 431
+  train_public_id_seed: 433
+  validation_root_seed: 439
+  validation_public_id_seed: 443
+  debug_root_seed: 449
+  debug_public_id_seed: 457
+  data_recipe_version: phase4-data-v1
+  one_hop_transform_version: ofd-one-hop-v1
+  objective_version: teacher_timed_plus_content_v2
+  content_auxiliary_weight: 1.0
+  loss_weights:
+    guard: 1.0
+    retrieval: 1.0
+    compose_type: 1.0
+    focus: 0.5
+    hazard: 1.0
+    deadline: 0.25
+    action: 1.0
+    action_time: 0.25
+    state: 0.05
+    event_cost: 0.001

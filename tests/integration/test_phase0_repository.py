@@ -8,6 +8,9 @@ from runpy import run_path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+_HISTORICAL_VERIFY = run_path(str(ROOT / "scripts/verify_historical_delivery.py"))[
+    "verify_historical_delivery"
+]
 
 _PHASE1_IN_PROGRESS_GATE = (
     "In progress: final Phase 1 evidence correction. The prior artifacts are "
@@ -61,6 +64,51 @@ _PHASE1_FROZEN_COMPLETE_GATE = (
     "not learned-model or benchmark evidence."
 )
 
+
+def test_real_repository_delivery_helpers_use_explicit_historical_scope(monkeypatch):
+    calls = []
+
+    def historical(*, repo_root, phase):
+        assert repo_root == ROOT
+        calls.append(phase)
+        return {
+            "verification_scope": "historical",
+            "phase": phase,
+            "original_result": {
+                "passed": True,
+                "profile": "production",
+                "publication": "production",
+                "artifact_file_sha256": {
+                    2: _PHASE2_FROZEN_ARTIFACT,
+                    3: "5c87928eb70fa5c8fc0b338522fb3ec08a7c216938b701b0887d3f68b2247e4e",
+                }.get(phase),
+                "checkpoint_sha256": (
+                    "ba6f929f1e5bfa9cf00b8c31b948f35582dc6662a23203db02c9e5f17ee93e3c"
+                    if phase == 3
+                    else None
+                ),
+                "source_commit": {
+                    2: _PHASE2_FROZEN_SOURCE,
+                    3: "844a89cd04405139ca670e1b269ce78f2ae9a168",
+                }.get(phase),
+            },
+        }
+
+    monkeypatch.setitem(globals(), "_HISTORICAL_VERIFY", historical)
+    monkeypatch.setitem(
+        globals(),
+        "run_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("live legacy verifier must not run for real-repository delivery")
+        ),
+    )
+    index = (ROOT / "docs/PLAN.md").read_text(encoding="utf-8")
+    _assert_phase1_frozen_baseline(ROOT, index)
+    _assert_phase2_frozen_baseline(ROOT, index)
+    _assert_phase3_delivery_state(ROOT, index)
+    assert calls == [1, 2, 3]
+
+
 _PHASE2_IN_PROGRESS_GATE = (
     "In progress under the approved Phase 2 flow-and-event-engine plan. "
     "No Phase 2 acceptance artifact may exist until Tasks 1\u201313 are committed, "
@@ -87,6 +135,14 @@ def _assert_phase2_delivery_state(root: Path, plan_index: str) -> None:
     assert path.is_file() and not path.is_symlink(), "Phase 2 evidence must be a regular file"
     match = _PHASE2_COMPLETE_GATE.fullmatch(cell)
     assert match is not None, "present Phase 2 evidence requires exact completion metadata"
+    if root.resolve() == ROOT:
+        historical = _HISTORICAL_VERIFY(repo_root=ROOT, phase=2)
+        result = historical["original_result"]
+        assert historical["verification_scope"] == "historical"
+        assert result["passed"] and result["profile"] == "production"
+        assert result["artifact_file_sha256"] == match.group("artifact")
+        assert result["source_commit"] == match.group("source")
+        return
     from silent_cascade.errors import SilentCascadeError
 
     verify = run_path(str(ROOT / "scripts/verify_phase2_gate_artifact.py"))[
@@ -147,6 +203,10 @@ def _assert_phase1_frozen_baseline(root: Path, plan_index: str) -> None:
     row = next(line for line in plan_index.splitlines() if line.startswith("| 1 —"))
     cell = row.rsplit("|", maxsplit=2)[1].strip()
     assert cell == _PHASE1_FROZEN_COMPLETE_GATE, "completed Phase 1 baseline must remain frozen"
+    if root.resolve() == ROOT:
+        historical = _HISTORICAL_VERIFY(repo_root=ROOT, phase=1)
+        assert historical["verification_scope"] == "historical"
+        assert historical["original_result"]["passed"] is True
 
 
 def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
@@ -413,6 +473,15 @@ def _assert_phase3_delivery_state(root, plan_index):
     assert json.loads(path.read_bytes()).get("objective_version") == mapping["recipe"]
     match = _PHASE3_COMPLETE_GATE.fullmatch(cell)
     assert match is not None, "present Phase 3 gate requires exact completion metadata"
+    if root.resolve() == ROOT:
+        historical = _HISTORICAL_VERIFY(repo_root=ROOT, phase=3)
+        result = historical["original_result"]
+        assert historical["verification_scope"] == "historical"
+        assert result["passed"] and result["publication"] == "production"
+        assert result["artifact_file_sha256"] == match.group("artifact")
+        assert result["checkpoint_sha256"] == match.group("weights")
+        assert result["source_commit"] == match.group("source")
+        return
     from silent_cascade.errors import SilentCascadeError
 
     verify = run_path(str(ROOT / "scripts/verify_phase3_gate_artifact.py"))[

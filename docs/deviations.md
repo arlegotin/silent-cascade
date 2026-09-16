@@ -701,3 +701,23 @@ The optional `qwen` dependency range `huggingface-hub>=0.34,<1` was changed to
 `huggingface-hub>=1`. With the corrected range, the universal dependency graph
 resolved successfully and was locked. This packaging correction does not affect
 primary scientific execution, which remains offline and records zero foundation-model calls.
+
+## 2026-09-16 — Closed historical verification for completed deliveries
+
+Phase 1–3 acceptance remains evidence about the exact source closures that
+produced it. Phase 4 necessarily changes current source, so current-source
+verification cannot truthfully stand in for those completed deliveries. The
+historical route first authenticates the unchanged live artifacts, delivery
+map, completion rows, source digests, and original verifier bytes against
+regular Git blobs at fixed checkout
+`ea713cdce4107e709985d9333050a947db6561ab`. It then runs only the pinned
+original verifier in a fresh detached local clone with an isolated package path
+and offline environment. The returned scope is explicitly `historical`; it
+makes no claim that the current Phase 4 source produced an earlier result.
+
+The original verifiers retain their strict current-checkout behavior and gain
+no relaxed-source flag. New Phase 4 results must authenticate the source that
+actually executes them. This routing change preserves every earlier artifact,
+delivery map, completed index row, denominator, scientific threshold, and
+zero-foundation-model-call requirement. It does not weaken or substitute for
+the autonomous Phase 4 pilot gate.
