@@ -163,6 +163,7 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
         "silent_cascade.env.generator",
         "silent_cascade.env.invariants",
         "silent_cascade.env.oracle",
+        "silent_cascade.env.pilot",
         "silent_cascade.env.services",
         "silent_cascade.env.episode",
         "silent_cascade.env.reward",

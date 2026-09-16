@@ -17,7 +17,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from silent_cascade.config import canonical_json_bytes
-from silent_cascade.env.config import OracleTimingConfig, SplitNamespace, SuiteName
+from silent_cascade.env.config import OracleTimingConfig, Phase1Config, SplitNamespace, SuiteName
 from silent_cascade.env.episode import (
     EpisodeRecipe,
     EpisodeVariant,
@@ -181,9 +181,9 @@ class CurriculumExample:
         return self.public.events
 
 
-def make_curriculum_example(config: Phase3Config, key: CurriculumKey) -> CurriculumExample:
-    if not isinstance(config, Phase3Config) or not isinstance(key, CurriculumKey):
-        raise TypeError("expected Phase3Config and CurriculumKey")
+def make_curriculum_example(config: Phase1Config, key: CurriculumKey) -> CurriculumExample:
+    if not isinstance(config, Phase1Config) or not isinstance(key, CurriculumKey):
+        raise TypeError("expected Phase1Config and CurriculumKey")
     root, path, variant = curriculum_allocation(key)
     desired = int(curriculum_rng(key, "subset").integers(0, 5))
     for attempt in range(MAX_PARENT_ATTEMPTS):

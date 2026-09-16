@@ -850,6 +850,21 @@ agent/model calls. Verify reporting can reconstruct scores from persisted rows.
 
 ### Task 6: Build Honest Multi-Stage Pilot Data and Immutable Manifests
 
+**Task 6 clarification (2026-09-16):** Pilot shortcut splitting reuses the
+existing per-(suite, path) `floor(4 * group_count / 5)` kernel with
+`strict_divisible=False`, retaining allocation quartets intact. Report actual
+train/test counts and the split-membership hash; primary yields 8,000/2,000 and
+robustness 7,996/2,004 for the fixed validation keys. Historical strict splitting
+is unchanged. A private copied-feature control route reuses the existing kernels:
+clean and shuffled-label evidence each retain all 27 probes; the predeclared
+`PILOT_PC_BINARY_COUNT_FEATURE` control uses only COUNTS/POSITIVE_BINARY, the
+existing positive-control probe and Holm correction on its explicitly named
+single-detector family. Bind the injected array, config and split hashes; require
+4,999 control permutations, at least 200 held-out examples per class, balanced
+accuracy at least 95% and corrected p < 0.01. This is a Phase 4 diagnostic array
+control, not Phase 1 public-episode mutation evidence. All scientific thresholds
+and workload budgets remain unchanged.
+
 **Files:**
 
 - Create: `src/silent_cascade/env/pilot.py`, `src/silent_cascade/train/pilot_data.py`, `src/silent_cascade/eval/pilot_audit.py`.

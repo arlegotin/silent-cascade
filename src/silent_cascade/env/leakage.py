@@ -32,6 +32,7 @@ from scipy.special import logsumexp
 from silent_cascade.env.config import (
     PHASE1_GATE_LEAKAGE_PROFILE,
     LeakageAuditConfig,
+    LeakageAuditProfileConfig,
     Phase1Config,
     SplitNamespace,
     SuiteName,
@@ -2650,6 +2651,184 @@ def _run_probes(
                 )
             )
     return _holm(probes, config.alpha)
+
+
+def _prepare_public_shortcuts(
+    examples: Sequence[AuditExample],
+    *,
+    config: LeakageAuditConfig,
+    profile: LeakageAuditProfileConfig,
+    corpus_hash: str,
+) -> tuple[np.ndarray, list[_StoredExample], np.ndarray, np.ndarray, str]:
+    """Neutral feature/split preparation; provides no Phase 1 authentication."""
+    if len(examples) != profile.episode_count:
+        raise ValueError("shortcut profile count mismatch")
+    required_bytes = len(examples) * _TOTAL_FEATURE_DIMENSION * 4
+    if required_bytes > config.max_feature_store_bytes:
+        raise MemoryError("shortcut feature store ceiling exceeded")
+    _resource_guard(config)
+    values = np.empty((len(examples), _TOTAL_FEATURE_DIMENSION), dtype=np.float32)
+    rows: list[_StoredExample] = []
+    digest = CorpusHashBuilder(len(examples))
+    groups: dict[int, list[AuditExample]] = defaultdict(list)
+    for index, example in enumerate(examples):
+        if (
+            example.manifest_rank != index
+            or example.episode_position != index
+            or example.generation_mode != "independent"
+        ):
+            raise ValueError("neutral shortcuts require ordered independent coordinates")
+        if (
+            example.randomization_block_index != index // 4
+            or example.quartet_member_index != index % 4
+        ):
+            raise ValueError("shortcut allocation quartet coordinate mismatch")
+        bundle = example.bundle
+        features = extract_shortcut_features(example, len(examples))
+        values[index] = features.vectors[ShortcutFeatureGroup.COMBINED]
+        bundle_hash = episode_sha256(bundle)
+        digest.add(CorpusDigestEntry(bundle.public.init.episode_public_id, bundle_hash))
+        rows.append(
+            _StoredExample(
+                bundle.public.init.episode_public_id,
+                bundle_hash,
+                features.audit_group_id,
+                bundle.truth.key.suite,
+                bundle.truth.recipe.requested_path_length,
+                bundle.truth.recipe.variant,
+                bundle.truth.relevant_hazard_type,
+                example.randomization_block_index,
+                example.episode_position,
+                tuple(
+                    sorted(
+                        e.payload.hazard_type
+                        for e in _fact_events(bundle)
+                        if isinstance(e.payload, HazardFact)
+                    )
+                ),
+                quartet_member_index=example.quartet_member_index,
+            )
+        )
+        groups[example.randomization_block_index].append(example)
+    if digest.finalize() != corpus_hash:
+        raise ValueError("shortcut projected corpus hash mismatch")
+    for group in groups.values():
+        if (
+            len(group) != 4
+            or Counter(e.bundle.truth.recipe.variant for e in group)
+            != {
+                EpisodeVariant.POSITIVE: 2,
+                EpisodeVariant.SAFE_NEGATIVE: 1,
+                EpisodeVariant.DISCONNECTED_NEGATIVE: 1,
+            }
+            or len(
+                {
+                    (e.bundle.truth.key.suite, e.bundle.truth.recipe.requested_path_length)
+                    for e in group
+                }
+            )
+            != 1
+        ):
+            raise ValueError("shortcut allocation quartet is incomplete or crosses strata")
+    train, test, membership = _split_memberships(
+        rows, config.audit_seed, corpus_hash, "independent", strict_divisible=False
+    )
+    return values, rows, train, test, membership
+
+
+def audit_public_shortcuts(
+    examples: Sequence[AuditExample],
+    *,
+    config: LeakageAuditConfig,
+    profile: LeakageAuditProfileConfig,
+    corpus_hash: str,
+) -> tuple[ShortcutProbeResult, ...]:
+    """Run the unchanged 27-probe kernel without issuing any Phase 1 artifact.
+
+    The caller must independently authenticate its data recipe and projections.
+    This neutral wrapper cannot certify the historical Phase 1 generator gate.
+    """
+    values, rows, train, test, _ = _prepare_public_shortcuts(
+        examples, config=config, profile=profile, corpus_hash=corpus_hash
+    )
+    return tuple(_run_probes(values, rows, train, test, config, profile, corpus_hash))
+
+
+class _PublicShortcutControls(StrictModel):
+    control_id: Literal["PILOT_PC_BINARY_COUNT_FEATURE"] = "PILOT_PC_BINARY_COUNT_FEATURE"
+    detector_family: Literal["single:counts/positive_binary"] = "single:counts/positive_binary"
+    config_sha256: str
+    profile_sha256: str
+    clean_feature_sha256: str
+    injected_feature_sha256: str
+    split_membership_sha256: str
+    train_examples: int
+    test_examples: int
+    shuffled_probes: tuple[ShortcutProbeResult, ...]
+    injected_probe: ShortcutProbeResult
+
+    @property
+    def positive_control_passed(self) -> bool:
+        return (
+            self.injected_probe.balanced_accuracy >= 0.95
+            and self.injected_probe.holm_adjusted_p < 0.01
+        )
+
+
+def _audit_public_shortcut_controls(
+    examples: Sequence[AuditExample],
+    *,
+    config: LeakageAuditConfig,
+    profile: LeakageAuditProfileConfig,
+    corpus_hash: str,
+) -> _PublicShortcutControls:
+    """Private Phase 4 diagnostic copies, never changed public/training data."""
+    values, rows, train, test, membership = _prepare_public_shortcuts(
+        examples, config=config, profile=profile, corpus_hash=corpus_hash
+    )
+    shuffled = tuple(
+        _run_probes(values, rows, train, test, config, profile, corpus_hash, label_shuffled=True)
+    )
+    clean_hash = sha256_bytes(values.tobytes())
+    injected = values.copy()
+    labels = _task_labels(rows, ShortcutTask.POSITIVE_BINARY)
+    if (
+        min(int(np.sum(labels[test] == value)) for value in (0, 1))
+        < profile.minimum_test_examples_per_class
+    ):
+        raise ValueError("positive control has insufficient held-out examples")
+    start, _ = _feature_bounds(ShortcutFeatureGroup.COUNTS)
+    injected[:, start] = labels
+    injected_hash = sha256_bytes(injected.tobytes())
+    injector = NamedLeakInjector(
+        "PILOT_PC_BINARY_COUNT_FEATURE",
+        ShortcutTask.POSITIVE_BINARY,
+        "counts/positive_binary",
+        lambda source: source,
+    )
+    probe = _run_positive_control_probe(
+        injected,
+        rows,
+        train,
+        test,
+        injector,
+        ShortcutFeatureGroup.COUNTS,
+        config,
+        profile,
+        injected_hash,
+    )
+    corrected = _holm([probe], config.alpha)[0]
+    return _PublicShortcutControls(
+        config_sha256=sha256_bytes(canonical_json_bytes(config)),
+        profile_sha256=sha256_bytes(canonical_json_bytes(profile)),
+        clean_feature_sha256=clean_hash,
+        injected_feature_sha256=injected_hash,
+        split_membership_sha256=membership,
+        train_examples=len(train),
+        test_examples=len(test),
+        shuffled_probes=shuffled,
+        injected_probe=corrected,
+    )
 
 
 class _CounterfactualResultBuilder:
