@@ -112,6 +112,7 @@ def _runtime_signature(state: RuntimeState) -> tuple:
 def _failure_boundary(function):
     @wraps(function)
     def guarded(self, context, *args, **kwargs):
+        agent = args[0] if args else kwargs.get("agent")
         outer = self._failure_depth == 0
         self._failure_depth += 1
         try:
@@ -121,15 +122,17 @@ def _failure_boundary(function):
                 self._checkpoint_stage = None
                 self._checkpoint_required = False
                 if self.crash_root is not None and isinstance(context, RuntimeSession):
-                    from silent_cascade.eventflow.checkpoint import stage_runtime
-                    from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
+                    self._stage_checkpoint(context, agent)
+                elif self.crash_root is not None and self._is_neural(agent):
+                    from silent_cascade.eventflow.neural_checkpoint import (
+                        validate_experiment_config,
+                    )
 
-                    agent = args[0] if args else kwargs.get("agent")
-                    if type(agent) is ScriptedEventFlowAgent:
-                        self._checkpoint_stage = stage_runtime(context, agent)
-                        self._checkpoint_required = True
+                    validate_experiment_config(
+                        self._experiment_config_canonical_json, self.config, agent.identity
+                    )
             return function(self, context, *args, **kwargs)
-        except (DynamicsError, ProvenanceError, TypeError, ValueError, AttributeError) as caught:
+        except self._failure_errors(agent) as caught:
             error = (
                 caught
                 if isinstance(caught, DynamicsError)
@@ -172,6 +175,7 @@ class EventEngine:
         *,
         crash_root: Path | None = None,
         source_revision: str | None = None,
+        experiment_config_canonical_json: str | None = None,
     ):
         self.config = config
         if source_revision is not None and not re.fullmatch(
@@ -183,9 +187,42 @@ class EventEngine:
             )
         self.crash_root = crash_root
         self.source_revision = source_revision
+        self._experiment_config_canonical_json = experiment_config_canonical_json
+        self._neural_weights_reference = None
         self._failure_depth = 0
         self._checkpoint_stage = None
         self._checkpoint_required = False
+
+    @staticmethod
+    def _is_neural(agent):
+        # Closed dispatch stays lazy: scripted execution loads no neural modules.
+        if type(agent).__module__ != "silent_cascade.eventflow.neural":
+            return False
+        from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+
+        return type(agent) is NeuralEventFlowAgent
+
+    def _failure_errors(self, agent):
+        errors = (DynamicsError, ProvenanceError, TypeError, ValueError, AttributeError)
+        if self._is_neural(agent):
+            from silent_cascade.models.errors import NeuralError
+
+            return (*errors, NeuralError)
+        return errors
+
+    def _stage_checkpoint(self, session, agent):
+        from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
+
+        if type(agent) is ScriptedEventFlowAgent:
+            from silent_cascade.eventflow.checkpoint import stage_runtime
+
+            self._checkpoint_stage = stage_runtime(session, agent)
+            self._checkpoint_required = True
+        elif self._is_neural(agent):
+            from silent_cascade.eventflow.neural_checkpoint import stage_neural_runtime
+
+            self._checkpoint_stage = stage_neural_runtime(session, agent, engine=self)
+            self._checkpoint_required = True
 
     def _publish_failure(
         self, context: RuntimeSession | EpisodeBundle, error: DynamicsError
@@ -222,15 +259,25 @@ class EventEngine:
                         "valid registered crash requires a staged checkpoint and source revision"
                     )
                 try:
-                    artifact = snapshot_staged_runtime(
-                        self._checkpoint_stage,
-                        config=self.config,
-                        source_revision=self.source_revision,
-                        checkpoint_id=bundle_id,
-                    )
                     self.crash_root.mkdir(parents=True, exist_ok=True)
                     checkpoint_ref = f"{bundle_id}.safetensors"
-                    publish_runtime_checkpoint(self.crash_root / checkpoint_ref, artifact)
+                    if (
+                        type(self._checkpoint_stage).__module__
+                        == "silent_cascade.eventflow.neural_checkpoint"
+                    ):
+                        from silent_cascade.eventflow.neural_checkpoint import publish_neural_crash
+
+                        publish_neural_crash(
+                            self.crash_root / checkpoint_ref, self._checkpoint_stage, engine=self
+                        )
+                    else:
+                        artifact = snapshot_staged_runtime(
+                            self._checkpoint_stage,
+                            config=self.config,
+                            source_revision=self.source_revision,
+                            checkpoint_id=bundle_id,
+                        )
+                        publish_runtime_checkpoint(self.crash_root / checkpoint_ref, artifact)
                 except Exception as publication_error:
                     raise CrashBundleError(
                         "runtime crash checkpoint publication failed"
@@ -525,11 +572,9 @@ class EventEngine:
         session.segment_anchor = SegmentSummary.from_segment(session.state.segment)
         session.public_state_anchor = _public_state_anchor(session.state)
         if self._checkpoint_required:
-            from silent_cascade.eventflow.checkpoint import stage_runtime
-
             # run_until can execute many jumps inside one failure boundary.
             # Keep its immediate verified pre-next-event state, not loop entry.
-            self._checkpoint_stage = stage_runtime(session, agent)
+            self._stage_checkpoint(session, agent)
         return session.state.core.mode is Mode.TERMINAL
 
     @_failure_boundary

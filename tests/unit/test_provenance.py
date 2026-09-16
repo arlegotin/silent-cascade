@@ -32,6 +32,109 @@ from silent_cascade.provenance import (
 )
 
 
+def _neural_only_engine_import(relative, node, parents):
+    """Only these exact guarded dispatch sites are absent from scripted execution.
+
+    The executable import blocker separately exercises scripted crash staging,
+    publication, loading and restoration. Eager/moved imports stay in the closure.
+    """
+    if relative != "src/silent_cascade/eventflow/engine.py" or not isinstance(node, ast.ImportFrom):
+        return False
+    chain = []
+    current = node
+    while current in parents:
+        current = parents[current]
+        chain.append(current)
+    scope = ".".join(
+        item.name for item in reversed(chain) if isinstance(item, ast.FunctionDef | ast.ClassDef)
+    )
+    imported = tuple((alias.name, alias.asname) for alias in node.names)
+    if node.level:
+        return False
+    parent = parents[node]
+    key = scope, node.module, imported
+    guarded = {
+        (
+            "_failure_boundary.guarded",
+            "silent_cascade.eventflow.neural_checkpoint",
+            (("validate_experiment_config", None),),
+        ): "self.crash_root is not None and self._is_neural(agent)",
+        (
+            "EventEngine._failure_errors",
+            "silent_cascade.models.errors",
+            (("NeuralError", None),),
+        ): "self._is_neural(agent)",
+        (
+            "EventEngine._stage_checkpoint",
+            "silent_cascade.eventflow.neural_checkpoint",
+            (("stage_neural_runtime", None),),
+        ): "self._is_neural(agent)",
+        (
+            "EventEngine._publish_failure",
+            "silent_cascade.eventflow.neural_checkpoint",
+            (("publish_neural_crash", None),),
+        ): (
+            "type(self._checkpoint_stage).__module__ == "
+            '"silent_cascade.eventflow.neural_checkpoint"'
+        ),
+    }
+    if key in guarded:
+        return (
+            isinstance(parent, ast.If)
+            and node in parent.body
+            and ast.dump(parent.test) == ast.dump(ast.parse(guarded[key], mode="eval").body)
+        )
+    if key != (
+        "EventEngine._is_neural",
+        "silent_cascade.eventflow.neural",
+        (("NeuralEventFlowAgent", None),),
+    ):
+        return False
+    if (
+        not isinstance(parent, ast.FunctionDef)
+        or len(parent.body) != 3
+        or parent.body[1] is not node
+    ):
+        return False
+    expected_guard = ast.parse(
+        'if type(agent).__module__ != "silent_cascade.eventflow.neural":\n    return False'
+    ).body[0]
+    return ast.dump(parent.body[0]) == ast.dump(expected_guard)
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "from silent_cascade.eventflow.neural import NeuralEventFlowAgent",
+        """class EventEngine:
+    def other(self, agent):
+        if self._is_neural(agent):
+            from silent_cascade.models.errors import NeuralError
+""",
+        """class EventEngine:
+    def _failure_errors(self, agent):
+        if True:
+            from silent_cascade.models.errors import NeuralError
+""",
+        """class EventEngine:
+    def _is_neural(agent):
+        from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+        if type(agent).__module__ != 'silent_cascade.eventflow.neural':
+            return False
+        return type(agent) is NeuralEventFlowAgent
+""",
+    ],
+    ids=("eager", "moved", "weakened", "before_guard"),
+)
+def test_neural_import_exemptions_reject_eager_moved_or_weakened_guards(program):
+    tree = ast.parse(program)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    imported = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    assert not _neural_only_engine_import(
+        "src/silent_cascade/eventflow/engine.py", imported, parents
+    )
+
+
 def test_phase2_provenance_scope_closes_over_executed_local_imports() -> None:
     from silent_cascade.eventflow.provenance import PHASE2_ENGINE_SOURCE_PATHS
 
@@ -49,7 +152,12 @@ def test_phase2_provenance_scope_closes_over_executed_local_imports() -> None:
             if initializer.is_file():
                 assert initializer.relative_to(root).as_posix() in declared
         tree = ast.parse(path.read_text())
+        parents = {
+            child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+        }
         for node in ast.walk(tree):
+            if _neural_only_engine_import(relative, node, parents):
+                continue
             names = (
                 [node.module]
                 if isinstance(node, ast.ImportFrom)

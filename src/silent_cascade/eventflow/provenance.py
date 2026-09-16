@@ -55,6 +55,7 @@ PHASE2_ENGINE_SOURCE_PATHS = (
     "src/silent_cascade/eventflow/archive_io.py",
     "src/silent_cascade/eventflow/checkpoint.py",
     "src/silent_cascade/eventflow/checkpoint_rng.py",
+    "src/silent_cascade/eventflow/checkpoint_state.py",
     "src/silent_cascade/eventflow/config.py",
     "src/silent_cascade/eventflow/engine.py",
     "src/silent_cascade/eventflow/evidence.py",

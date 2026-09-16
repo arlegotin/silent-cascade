@@ -305,6 +305,7 @@ def test_collector_refuses_dirty_source_and_uncommitted_plan(debug_gate, tmp_pat
     repo = debug_gate["repo"]
     for relative in (
         "src/silent_cascade/eventflow/flow.py",
+        "src/silent_cascade/eventflow/checkpoint_state.py",
         "docs/superpowers/plans/2026-09-09-phase-2-flow-event-engine.md",
     ):
         path = repo / relative

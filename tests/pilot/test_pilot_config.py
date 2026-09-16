@@ -115,3 +115,20 @@ def test_unknown_phase4_profile_has_no_fallback_overlay():
 
     with pytest.raises(ValueError, match="unsupported Phase4 profile"):
         resolve_pilot_config("phase3_one_hop_content_v2")
+
+
+def test_phase4_canonical_roundtrip_and_strict_rejections():
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.pilot_config import parse_phase4_canonical, resolve_pilot_config
+
+    config = resolve_pilot_config("phase4_smoke").config
+    raw = canonical_json_bytes(config).decode()
+    assert parse_phase4_canonical(raw) == config
+    for invalid in (
+        " " + raw,
+        raw.replace('"2":', '"02":'),
+        "[" * 65 + "]" * 65,
+        "x" * (1024 * 1024 + 1),
+    ):
+        with pytest.raises(ValueError):
+            parse_phase4_canonical(invalid)

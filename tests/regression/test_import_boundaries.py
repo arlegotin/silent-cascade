@@ -101,6 +101,55 @@ def test_generator_and_invariants_do_not_import_oracle() -> None:
     assert "silent_cascade.env.generator" not in invariant_imports
 
 
+def test_scripted_codec_dispatch_keeps_neural_training_modules_unloaded(tmp_path):
+    program = """
+import importlib.abc
+import importlib.util
+import sys
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith(('silent_cascade.train', 'silent_cascade.models',
+                                'silent_cascade.eventflow.neural')):
+            raise AssertionError(fullname)
+sys.meta_path.insert(0, Blocker())
+from pathlib import Path
+from silent_cascade.eventflow.engine import EventEngine
+from silent_cascade.eventflow.scripted import ScriptedEventFlowAgent
+from silent_cascade.eventflow.checkpoint import load_runtime_checkpoint, restore_runtime_session
+from silent_cascade.errors import DynamicsError
+from silent_cascade.config import resolve_config
+from silent_cascade.eventflow.config import Phase2Config
+paths = ('configs/base.yaml', 'configs/data/primary.yaml', 'configs/model/event_flow.yaml')
+config = resolve_config(Phase2Config, [Path(p) for p in paths]).config.event_flow
+engine = EventEngine(config, crash_root=Path(sys.argv[1]), source_revision='a' * 40)
+agent = ScriptedEventFlowAgent()
+spec = importlib.util.spec_from_file_location('scripted_fixtures', 'tests/conftest.py')
+fixtures = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixtures)
+session = engine.start_episode(fixtures.bundle_for(fixtures.CASES[0]), agent)
+def fail(state, event):
+    raise DynamicsError('injected callback failure')
+agent.on_external = fail
+try:
+    engine.step(session, agent)
+except DynamicsError:
+    pass
+else:
+    raise AssertionError('scripted callback did not fail')
+archives = list(Path(sys.argv[1]).glob('*.safetensors'))
+assert len(archives) == 1
+assert len(list(Path(sys.argv[1]).glob('*.json'))) == 1
+artifact = load_runtime_checkpoint(archives[0], config=config, source_revision='a' * 40)
+restored, restored_agent = restore_runtime_session(
+    artifact, config=config, source_revision='a' * 40, restore_rng=False)
+assert engine.step(restored, restored_agent) is False
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program, str(tmp_path)], capture_output=True, text=True
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_oracle_does_not_import_generator_or_invariants() -> None:
     modules = imported_modules(SOURCE_ROOT / "silent_cascade/env/oracle.py")
     assert "silent_cascade.env.generator" not in modules
@@ -137,7 +186,13 @@ def test_agent_facing_modules_cannot_import_private_environment_or_foundations()
                 }
             elif relative_path == "eventflow/scheduling.py":
                 allowed = {"silent_cascade.env.episode"}
-            elif relative_path in {"eventflow/replay.py", "eventflow/checkpoint.py"}:
+            elif relative_path in {
+                "eventflow/replay.py",
+                "eventflow/checkpoint.py",
+                "eventflow/checkpoint_state.py",
+                "eventflow/neural_checkpoint.py",
+                "eventflow/neural_replay.py",
+            }:
                 allowed = {
                     "silent_cascade.env.episode",
                     "silent_cascade.env.reward",

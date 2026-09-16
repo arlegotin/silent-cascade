@@ -219,3 +219,52 @@ class RuntimeCase:
 @pytest.fixture
 def runtime_case(controlled_model, neural_config):
     return RuntimeCase(controlled_model, neural_config.event_flow)
+
+
+@pytest.fixture
+def neural_archive_case():
+    """A real portable model: constant bounded learned logits, no Python policy."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    from silent_cascade.eventflow.engine import EventEngine
+    from silent_cascade.eventflow.neural import NeuralEventFlowAgent, NeuralModelIdentity
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.pilot_config import resolve_pilot_config
+
+    spec = importlib.util.spec_from_file_location(
+        "archive_root_fixtures", Path(__file__).parents[1] / "conftest.py"
+    )
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    config = resolve_pilot_config("phase4_smoke").config
+    model = EventFlowModel(config.neural)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+        model.controller.network[-1].bias[-6:-3].fill_(math.log(3.0))
+        model.controller.network[-1].bias[-3:].fill_(10.0)
+        model.compose_heads.role.bias[1] = 8.0
+        model.compose_heads.deadline.bias[0] = 2.0
+        model.compose_heads.hazard.bias[2] = 8.0
+        model.action_heads.classifier.bias[2] = 8.0
+    identity = NeuralModelIdentity.from_model(model, source_revision="a" * 40)
+    agent = NeuralEventFlowAgent(model, identity=identity, device="cpu")
+    engine = EventEngine(config.event_flow)
+    bundle = fixtures.bundle_for(fixtures.CASES[0])
+    session = engine.start_episode(bundle, agent)
+    while session.state.core.mode.value != "have_memory":
+        assert not engine.step(session, agent)
+    next_event = engine.next_internal_event(session, agent)
+    engine.run_until(session, agent, (session.state.time + next_event.timestamp) / 2)
+    return SimpleNamespace(
+        config=config,
+        canonical=canonical_json_bytes(config).decode(),
+        model=model,
+        identity=identity,
+        agent=agent,
+        engine=engine,
+        bundle=bundle,
+        session=session,
+        revision="b" * 40,
+    )

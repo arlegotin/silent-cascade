@@ -7,7 +7,9 @@ from pydantic import Field, field_validator, model_validator
 
 from silent_cascade.config import ResolvedConfig, resolve_config
 from silent_cascade.eventflow.config import Phase2Config
+from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.models.config import LossWeights, NeuralModelConfig
+from silent_cascade.train.config import _ALLOCATION_NAMES, _require_bounded_json
 from silent_cascade.validation import StrictModel
 
 
@@ -151,3 +153,25 @@ def resolve_pilot_config(profile: str) -> ResolvedConfig[Phase4Config]:
         Path(profile_paths[profile]),
     )
     return resolve_config(Phase4Config, paths)
+
+
+def parse_phase4_canonical(raw: str) -> Phase4Config:
+    """Private bounded full-config parser; never passed to learned callbacks."""
+    values = _require_bounded_json(raw)
+    data = values.get("data")
+    allocation = data.get("phase1_gate") if isinstance(data, dict) else None
+    if not isinstance(allocation, dict) or set(allocation) != _ALLOCATION_NAMES:
+        raise ValueError("full Phase 4 configuration requires known allocation mappings")
+    for name, counts in allocation.items():
+        if not isinstance(counts, dict):
+            raise ValueError("invalid allocation mapping")
+        restored = {}
+        for key, value in counts.items():
+            if not isinstance(key, str) or not key.isdecimal() or str(int(key)) != key:
+                raise ValueError("allocation key must be a canonical integer")
+            restored[int(key)] = value
+        allocation[name] = restored
+    config = Phase4Config.model_validate(values)
+    if canonical_json_bytes(config).decode() != raw:
+        raise ValueError("full Phase 4 configuration must be canonical")
+    return config
