@@ -78,6 +78,7 @@ def test_source_closure_includes_ancestor_initializers_and_execution_consumers()
         "train/content_unroll.py",
         "models/content_loss.py",
         "models/content_types.py",
+        "models/transitions.py",
         "train/evidence_types.py",
         "models/__init__.py",
         "train/__init__.py",
@@ -200,6 +201,26 @@ except ProvenanceError:
     pass
 else:
     raise AssertionError('changed executable authenticated')
+""",
+    )
+
+
+def test_uncommitted_shared_transition_cannot_reuse_reviewed_source(tmp_path):
+    root = checkout(tmp_path / "source")
+    execute(
+        root,
+        SETUP
+        + """
+from silent_cascade.train.provenance import authenticate_source
+from silent_cascade.errors import ProvenanceError
+path = root / 'src/silent_cascade/models/transitions.py'
+path.write_bytes(path.read_bytes() + b'\\n# uncommitted shared transition mutation\\n')
+try:
+    authenticate_source(root, source, source)
+except ProvenanceError:
+    pass
+else:
+    raise AssertionError('uncommitted shared transition authenticated')
 """,
     )
 

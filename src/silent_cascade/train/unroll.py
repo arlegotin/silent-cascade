@@ -8,7 +8,6 @@ from torch.nn import functional as F
 from silent_cascade.eval.compute import (
     NeuralComputeMeter,
     NeuralComputeSnapshot,
-    _record_functional_operations,
 )
 from silent_cascade.eventflow.guards import allowed_mode_mask
 from silent_cascade.memory.retrieval import RetrievalPreview, RetrievalScores
@@ -19,7 +18,12 @@ from silent_cascade.models.dynamics import (
 )
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.models.heads import ActionPredictions, ComposePredictions
-from silent_cascade.models.types import LossInputs, ModelContext, TensorWorkspace
+from silent_cascade.models.transitions import (
+    ComposeTransition,
+    RecallTransition,
+    apply_transition_context,
+)
+from silent_cascade.models.types import LossInputs, ModelContext
 from silent_cascade.schemas import Mode
 from silent_cascade.train.batches import TeacherTargets, TrainingBatch
 from silent_cascade.train.observations import Boundary, _parameters, observe_public
@@ -152,9 +156,7 @@ def _apply_teacher(model, context, batch, col, rows, deadline, activation):
     """Disclosure boundary: called only after every supervised prediction."""
     target = batch.targets
     kind = target.kind[rows, col]
-    recall = kind == 0
     selected = target.selected_slot[rows, col]
-    active = torch.where(recall, selected, context.active_slot_indices)
     hypothesis = context.hypothesis_features
     status_mask = target.validity["status"][rows, col]
     status = target.status[rows, col]
@@ -178,32 +180,18 @@ def _apply_teacher(model, context, batch, col, rows, deadline, activation):
     )
     proposed = target.normalized_deadline[rows, col] * (1 + elapsed)
     deadline = deadline.index_copy(0, rows, torch.where(hazard_mask, proposed, deadline[rows]))
-    updated = context._updated(
-        active_slot_indices=active,
-        support_mask=batch.support_after[rows, col],
-        modes=batch.post_modes[rows, col],
-        hypothesis_features=_hypothesis_time(hypothesis, deadline[rows], elapsed),
-    )
-    workspace = model.jump(updated, kind)
-    focus_rows = target.validity["focus"][rows, col].nonzero(as_tuple=True)[0]
-    if focus_rows.numel():
-        focus = torch.tanh(
-            model.focus_projection(
-                model.record_encoder.encode_entities(target.focus[rows[focus_rows], col])
-            )
-        )
-        _record_functional_operations(tanh_ops=focus.numel())
-        latent = torch.cat(
-            (
-                workspace.latent[:, :328],
-                workspace.latent[:, 328:392].index_copy(0, focus_rows, focus),
-                workspace.latent[:, 392:],
-            ),
-            1,
-        )
-        workspace = TensorWorkspace._from_functional_update(latent, workspace.accumulators)
-    return updated._updated(
-        workspace=workspace, active_slot_indices=torch.where(kind == 1, -1, active)
+    return apply_transition_context(
+        model,
+        context,
+        kind,
+        RecallTransition(selected, batch.post_modes[rows, col]),
+        ComposeTransition(
+            batch.support_after[rows, col],
+            batch.post_modes[rows, col],
+            _hypothesis_time(hypothesis, deadline[rows], elapsed),
+            target.focus[rows, col],
+            target.validity["focus"][rows, col],
+        ),
     ), deadline
 
 

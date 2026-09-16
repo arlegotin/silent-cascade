@@ -721,3 +721,29 @@ actually executes them. This routing change preserves every earlier artifact,
 delivery map, completed index row, denominator, scientific threshold, and
 zero-foundation-model-call requirement. It does not weaken or substitute for
 the autonomous Phase 4 pilot gate.
+
+## 2026-09-16 — Phase 4 shared-transition numerical reference
+
+Task 2 preserves the pre-extraction teacher trajectories against source commit
+`b3debbc20600bba8dc87f57666f1edc9a904ac29`, including mixed one-, two-, and
+four-hop batches. CPU outputs, losses, deterministic compute counters, and
+parameter gradients must match exactly. Native MPS outputs, losses, and those
+counters also match exactly; only native MPS gradient comparisons use
+`rtol=1e-5, atol=1e-6`, stricter than the approved phase-plan gradient limits.
+
+This ruling follows repeated unchanged-old-source versus unchanged-old-source
+native MPS measurements with deterministic algorithms disabled. Differences
+were confined to mode, record-kind, record-hazard, and event embedding
+gradients: maximum observed absolute difference `7.62939453125e-6` and maximum
+relative difference `1.0554008440522011e-6` (denominator floored at `1e-8`).
+Enabling deterministic algorithms instead raises
+`index_put_with_accumulate_mps does not have a deterministic implementation`.
+The native reduction variation is not a claim of bitwise gradient equivalence;
+CPU remains the exact reference. No production arithmetic or scientific gate
+is changed. Wall time and allocator peaks are measurements, not equality
+targets.
+
+Current-source Phase 3 authentication now includes the shared
+`models/transitions.py` dependency. A regression rejects an uncommitted helper
+mutation. Historical closures, accepted artifacts, and delivery maps retain
+their original bytes and identities.

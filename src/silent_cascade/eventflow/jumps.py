@@ -182,24 +182,43 @@ def _finish(core: RuntimeCore, event: ExternalEvent | InternalEvent) -> RuntimeC
     )
 
 
-def apply_fact(state: RuntimeState, event: ExternalEvent) -> RuntimeCore:
+def _require_continuous(state: RuntimeState, continuous: ContinuousState | None) -> None:
+    if continuous is not None:
+        if not isinstance(continuous, ContinuousState):
+            raise DynamicsError("continuous override must be ContinuousState")
+        if continuous.device != state.core.continuous.device:
+            raise DynamicsError("continuous override must use the runtime device")
+        replace(continuous)
+
+
+def apply_fact(
+    state: RuntimeState, event: ExternalEvent, *, continuous: ContinuousState | None = None
+) -> RuntimeCore:
     """Store one perceived FACT and apply deterministic bounded latent impulses."""
     _require_event(state, event, ExternalEventKind.FACT, Mode.OBSERVING)
+    _require_continuous(state, continuous)
     memory = append_perceived_fact(state.core.memory, event)
     record = memory.lookup(event.event_id).record
     kind_code = (RecordKind.LINK, RecordKind.HAZARD, RecordKind.SAFE).index(record.kind)
-    continuous = _inject(state.core.continuous, record.record_id + record.subject_id, kind_code)
+    if continuous is None:
+        continuous = _inject(state.core.continuous, record.record_id + record.subject_id, kind_code)
     return _finish(replace(state.core, memory=memory, continuous=continuous), event)
 
 
-def apply_activate(state: RuntimeState, event: ExternalEvent) -> RuntimeCore:
+def apply_activate(
+    state: RuntimeState, event: ExternalEvent, *, continuous: ContinuousState | None = None
+) -> RuntimeCore:
     """Initialize public focus and the activation clock exactly once."""
     _require_event(state, event, ExternalEventKind.ACTIVATE, Mode.OBSERVING)
+    _require_continuous(state, continuous)
     if not isinstance(event.payload, ActivationPayload):
         raise DynamicsError("ACTIVATE requires an activation payload")
     focus = event.payload.start_node
-    continuous = _inject(state.core.continuous, focus, 3)
-    continuous = replace(continuous, focus_key=torch.tanh(_impulse(continuous.focus_key, focus, 3)))
+    if continuous is None:
+        continuous = _inject(state.core.continuous, focus, 3)
+        continuous = replace(
+            continuous, focus_key=torch.tanh(_impulse(continuous.focus_key, focus, 3))
+        )
     return _finish(
         replace(
             state.core,
@@ -218,9 +237,11 @@ def apply_recall(
     *,
     record_id: int,
     selected_rank: int | None = None,
+    continuous: ContinuousState | None = None,
 ) -> RuntimeCore:
     """Activate an explicitly selected legal record, without imposing relevance."""
     _require_event(state, event, InternalEventKind.RECALL, Mode.SEARCHING)
+    _require_continuous(state, continuous)
     slot = state.core.memory.lookup(record_id)
     if not slot.valid or slot.consumed or slot.refractory_until > state.time:
         raise DynamicsError("selected memory record is invalid, consumed, or refractory")
@@ -232,17 +253,24 @@ def apply_recall(
             memory=memory,
             active_record_id=record_id,
             active_record_rank=selected_rank,
-            continuous=_inject(state.core.continuous, record_id, 4),
+            continuous=_inject(state.core.continuous, record_id, 4)
+            if continuous is None
+            else continuous,
         ),
         event,
     )
 
 
 def apply_compose(
-    state: RuntimeState, event: InternalEvent, decision: ComposeDecision
+    state: RuntimeState,
+    event: InternalEvent,
+    decision: ComposeDecision,
+    *,
+    continuous: ContinuousState | None = None,
 ) -> RuntimeCore:
     """Consume active context and install explicit inferred predictions only."""
     _require_event(state, event, InternalEventKind.COMPOSE, Mode.HAVE_MEMORY)
+    _require_continuous(state, continuous)
     if not isinstance(decision, ComposeDecision):
         raise DynamicsError("COMPOSE requires a typed decision")
     decision = replace(decision)
@@ -259,12 +287,15 @@ def apply_compose(
     mode = Mode.SEARCHING if decision.continue_search else Mode.QUIESCENT
     focus = state.core.focus_node_id
     hypothesis = state.core.hypothesis
-    continuous = _inject(state.core.continuous, record_id, 5)
+    scripted = continuous is None
+    if scripted:
+        continuous = _inject(state.core.continuous, record_id, 5)
     if decision.role is ComposeRole.LINK:
         focus = decision.next_focus_node_id
-        continuous = replace(
-            continuous, focus_key=torch.tanh(_impulse(continuous.focus_key, focus, 3))
-        )
+        if scripted:
+            continuous = replace(
+                continuous, focus_key=torch.tanh(_impulse(continuous.focus_key, focus, 3))
+            )
     elif decision.role in (ComposeRole.HAZARD, ComposeRole.SAFE):
         hypothesis = Hypothesis(
             decision.hazard_type,
@@ -277,13 +308,14 @@ def apply_compose(
         require_support_ledger(state.core.memory, hypothesis.support_ids)
         mode = Mode.QUIESCENT if hypothesis.is_safe else Mode.HOLDING_HAZARD
         predicted_class = 4 if hypothesis.is_safe else decision.hazard_type
-        continuous = replace(
-            continuous,
-            hypothesis_latent=torch.tanh(
-                _impulse(continuous.hypothesis_latent, predicted_class, 6)
-            ),
-        )
-    else:
+        if scripted:
+            continuous = replace(
+                continuous,
+                hypothesis_latent=torch.tanh(
+                    _impulse(continuous.hypothesis_latent, predicted_class, 6)
+                ),
+            )
+    elif scripted:
         continuous = replace(
             continuous,
             drives=torch.tanh(
@@ -307,9 +339,16 @@ def apply_compose(
     )
 
 
-def apply_act(state: RuntimeState, event: InternalEvent, *, hazard_type: int) -> RuntimeCore:
+def apply_act(
+    state: RuntimeState,
+    event: InternalEvent,
+    *,
+    hazard_type: int,
+    continuous: ContinuousState | None = None,
+) -> RuntimeCore:
     """Emit the explicit predicted action class, retaining its causal event ID."""
     _require_event(state, event, InternalEventKind.ACT, Mode.HOLDING_HAZARD)
+    _require_continuous(state, continuous)
     hypothesis = state.core.hypothesis
     if hypothesis is None or hypothesis.is_safe or state.core.actions:
         raise DynamicsError("ACT requires a hazard hypothesis and no previous action")
@@ -323,7 +362,9 @@ def apply_act(state: RuntimeState, event: InternalEvent, *, hazard_type: int) ->
             state.core,
             mode=Mode.QUIESCENT,
             actions=(*state.core.actions, action),
-            continuous=_inject(state.core.continuous, hazard_type, 8),
+            continuous=_inject(state.core.continuous, hazard_type, 8)
+            if continuous is None
+            else continuous,
         ),
         event,
     )

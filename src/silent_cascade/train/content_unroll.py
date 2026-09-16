@@ -8,13 +8,18 @@ from torch.nn import functional as F
 from silent_cascade.eval.compute import (
     NeuralComputeMeter,
     NeuralComputeSnapshot,
-    _record_functional_operations,
 )
 from silent_cascade.memory.retrieval import RetrievalScores
 from silent_cascade.models.content_types import ContentLossInputs
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.models.heads import ComposePredictions
-from silent_cascade.models.types import ModelContext, TensorWorkspace
+from silent_cascade.models.transitions import (
+    ComposeTransition,
+    RecallTransition,
+    apply_compose_context,
+    apply_recall_context,
+)
+from silent_cascade.models.types import ModelContext
 from silent_cascade.train.batches import TeacherTargets, TrainingBatch
 from silent_cascade.train.observations import Boundary, observe_public
 
@@ -104,36 +109,22 @@ def _compose_teacher(model, current, batch, rows, col):
         ),
         1,
     )
-    current = current._updated(
-        support_mask=batch.support_after[rows, col],
-        modes=batch.post_modes[rows, col],
-        hypothesis_features=torch.where(
-            target.validity["status"][rows, col, None], hypothesis, current.hypothesis_features
-        ),
-    )
-    workspace = model.jump(current, torch.ones_like(rows))
-    focus_rows = target.validity["focus"][rows, col].nonzero(as_tuple=True)[0]
-    if focus_rows.numel():
-        focus = torch.tanh(
-            model.focus_projection(
-                model.record_encoder.encode_entities(target.focus[rows[focus_rows], col])
-            )
-        )
-        _record_functional_operations(tanh_ops=focus.numel())
-        latent = torch.cat(
-            (
-                workspace.latent[:, :328],
-                workspace.latent[:, 328:392].index_copy(0, focus_rows, focus),
-                workspace.latent[:, 392:],
-            ),
-            1,
-        )
-        workspace = TensorWorkspace._from_functional_update(latent, workspace.accumulators)
     flat = torch.arange(rows.numel(), device=current.device) * 64 + current.active_slot_indices
     eligible = current.eligibility.flatten().index_fill(0, flat, False).reshape(-1, 64)
-    return current._updated(
-        workspace=workspace, eligibility=eligible, active_slot_indices=torch.full_like(rows, -1)
+    current = apply_compose_context(
+        model,
+        current,
+        ComposeTransition(
+            batch.support_after[rows, col],
+            batch.post_modes[rows, col],
+            torch.where(
+                target.validity["status"][rows, col, None], hypothesis, current.hypothesis_features
+            ),
+            target.focus[rows, col],
+            target.validity["focus"][rows, col],
+        ),
     )
+    return current._updated(eligibility=eligible)
 
 
 def teacher_forced_content_unroll(
@@ -177,12 +168,13 @@ def teacher_forced_content_unroll(
                 raw = raw.index_copy(0, recall_rows, parameters.raw_guard_targets[:, 0])
                 retrieval = _scatter(model.recall_scores(current), recall_rows, size)
                 # First disclosure of the teacher-selected record follows scoring.
-                current = current._updated(
-                    active_slot_indices=batch.targets.selected_slot[recall_rows, col],
-                    modes=torch.full_like(recall_rows, 2),
-                )
-                current = current._updated(
-                    workspace=model.jump(current, torch.zeros_like(recall_rows))
+                current = apply_recall_context(
+                    model,
+                    current,
+                    RecallTransition(
+                        batch.targets.selected_slot[recall_rows, col],
+                        torch.full_like(recall_rows, 2),
+                    ),
                 )
                 context = context._scatter(recall_rows, current)
             if compose_rows.numel():
