@@ -79,6 +79,7 @@ def test_source_closure_includes_ancestor_initializers_and_execution_consumers()
         "models/content_loss.py",
         "models/content_types.py",
         "models/transitions.py",
+        "models/weights.py",
         "train/evidence_types.py",
         "models/__init__.py",
         "train/__init__.py",
@@ -205,15 +206,16 @@ else:
     )
 
 
-def test_uncommitted_shared_transition_cannot_reuse_reviewed_source(tmp_path):
+@pytest.mark.parametrize("module", ["transitions.py", "weights.py"])
+def test_uncommitted_shared_core_cannot_reuse_reviewed_source(tmp_path, module):
     root = checkout(tmp_path / "source")
     execute(
         root,
         SETUP
-        + """
+        + f"""
 from silent_cascade.train.provenance import authenticate_source
 from silent_cascade.errors import ProvenanceError
-path = root / 'src/silent_cascade/models/transitions.py'
+path = root / 'src/silent_cascade/models/{module}'
 path.write_bytes(path.read_bytes() + b'\\n# uncommitted shared transition mutation\\n')
 try:
     authenticate_source(root, source, source)

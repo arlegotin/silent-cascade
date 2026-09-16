@@ -228,13 +228,9 @@ def _device(device: str) -> None:
 
 
 def _layout(model: EventFlowModel):
-    unique = {"parameter/" + k: v for k, v in model.named_parameters(remove_duplicate=True)}
-    unique.update({"buffer/" + k: v for k, v in model.named_buffers(remove_duplicate=True)})
-    identities = {id(value): key for key, value in unique.items()}
-    aliases = {
-        name: identities[id(value)] for name, value in model.state_dict(keep_vars=True).items()
-    }
-    return unique, aliases
+    from silent_cascade.models.weights import model_layout
+
+    return model_layout(model)
 
 
 def _snapshot(model: EventFlowModel):
@@ -255,16 +251,9 @@ def _snapshot(model: EventFlowModel):
 
 
 def _model_hash(tensors: dict[str, torch.Tensor], aliases: dict[str, str]) -> str:
-    digest = hashlib.sha256(canonical_json_bytes(aliases))
-    for name in sorted(k for k in tensors if k.startswith(("parameter/", "buffer/"))):
-        value = tensors[name]
-        digest.update(
-            canonical_json_bytes(
-                {"name": name, "dtype": str(value.dtype), "shape": list(value.shape)}
-            )
-        )
-        digest.update(value.numpy().tobytes())
-    return digest.hexdigest()
+    from silent_cascade.models.weights import model_state_sha256
+
+    return model_state_sha256(tensors, aliases)
 
 
 def _options(options: dict, config: Phase3Config) -> dict:

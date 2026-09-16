@@ -81,6 +81,7 @@ PHASE3_SOURCE_PATHS = (
     "src/silent_cascade/models/losses.py",
     "src/silent_cascade/models/transitions.py",
     "src/silent_cascade/models/types.py",
+    "src/silent_cascade/models/weights.py",
     "src/silent_cascade/rng.py",
     "src/silent_cascade/schemas.py",
     "src/silent_cascade/train/__init__.py",
