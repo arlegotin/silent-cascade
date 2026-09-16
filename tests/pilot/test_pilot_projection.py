@@ -52,6 +52,20 @@ def test_projection_rejects_forged_parent_and_trace_and_accepts_historical_roots
             curriculum_to_bundle(bad, config=config)
 
 
+def test_shared_accepted_parent_regeneration_authenticates_parent_hash():
+    from silent_cascade.env.pilot import _accepted_parent
+
+    config = resolve_pilot_config("phase4_smoke").config
+    example = make_curriculum_example(
+        config, CurriculumKey("ofd-one-hop-v1", "debug", 449, 457, 0, "robustness")
+    )
+    parent = _accepted_parent(example, config=config)
+    assert episode_sha256(parent) == example.parent_hash
+    assert parent.truth.key.coordinate.episode_index == example.accepted_attempt
+    with pytest.raises(EpisodeInvariantError, match="parent identity"):
+        _accepted_parent(replace(example, parent_hash="a" * 64), config=config)
+
+
 @pytest.mark.parametrize("stage", ["one_hop", "two_hop", "primary", "robustness"])
 def test_delay_pairs_change_both_hazards_and_scoring_only(stage):
     from silent_cascade.env.pilot import curriculum_to_bundle, delay_pair

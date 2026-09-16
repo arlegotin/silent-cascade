@@ -32,8 +32,8 @@ from silent_cascade.train.curriculum_data import (
 from silent_cascade.train.pilot_config import Phase4Config
 
 
-def curriculum_to_bundle(example: CurriculumExample, *, config: Phase4Config) -> EpisodeBundle:
-    """Regenerate the parent and transform before constructing private truth."""
+def _accepted_parent(example: CurriculumExample, *, config: Phase4Config) -> EpisodeBundle:
+    """Recover and authenticate the shared original-parent identity."""
     if not isinstance(example, CurriculumExample) or not isinstance(config, Phase4Config):
         raise TypeError("expected CurriculumExample and Phase4Config")
     root, path, variant = curriculum_allocation(example.key)
@@ -50,6 +50,12 @@ def curriculum_to_bundle(example: CurriculumExample, *, config: Phase4Config) ->
     parent = generate_independent_episode(config, request, example.key.public_id_seed)
     if episode_sha256(parent) != example.parent_hash:
         raise EpisodeInvariantError("pilot parent identity mismatch")
+    return parent
+
+
+def curriculum_to_bundle(example: CurriculumExample, *, config: Phase4Config) -> EpisodeBundle:
+    """Regenerate the parent and transform before constructing private truth."""
+    parent = _accepted_parent(example, config=config)
     if make_curriculum_example(config, example.key) != example:
         raise EpisodeInvariantError("pilot curriculum identity/hash mismatch")
     solution = solve_public_episode(example.public)
@@ -67,7 +73,7 @@ def curriculum_to_bundle(example: CurriculumExample, *, config: Phase4Config) ->
         key=parent.truth.key,
         recipe=EpisodeRecipe(
             requested_path_length=len(solution.link_record_ids),
-            variant=variant,
+            variant=parent.truth.recipe.variant,
             distractor_link_count=example.nuisance_link_count,
             evaluation_suite=SuiteName.IID_PRIMARY,
             accepted_attempt=parent.truth.recipe.accepted_attempt,

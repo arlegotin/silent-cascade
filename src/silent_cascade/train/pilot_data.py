@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from silent_cascade.config import ResolvedConfig
-from silent_cascade.env.pilot import curriculum_to_bundle
+from silent_cascade.env.pilot import _accepted_parent, curriculum_to_bundle
 from silent_cascade.eval.artifacts import EpisodeBinding
 from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
@@ -126,28 +126,12 @@ def _entry(example: CurriculumExample, config: Phase4Config) -> PilotManifestEnt
 
 def _parent_public_id(example: CurriculumExample, config: Phase4Config) -> str:
     # The original parent ID cannot be inferred from the transformed public ID.
-    from silent_cascade.env.config import SplitNamespace, SuiteName
-    from silent_cascade.env.generator import IndependentEpisodeRequest, generate_independent_episode
-    from silent_cascade.train.curriculum_data import MAX_PARENT_ATTEMPTS
-
-    root, path, variant = curriculum_allocation(example.key)
-    request = IndependentEpisodeRequest(
-        SplitNamespace(example.key.split),
-        SuiteName.IID_PRIMARY,
-        root,
-        example.key.episode_index * MAX_PARENT_ATTEMPTS + example.accepted_attempt,
-        path,
-        variant,
-        example.key.episode_index // 4,
-        example.key.episode_index % 4,
-    )
-    return generate_independent_episode(
-        config, request, example.key.public_id_seed
-    ).public.init.episode_public_id
+    return _accepted_parent(example, config=config).public.init.episode_public_id
 
 
 def _check_path(path: Path) -> None:
-    if ".." in path.parts or "frozen" in path.parts or "frozen_test" in path.parts:
+    parts = path.absolute().parts
+    if ".." in parts or "frozen" in parts or "frozen_test" in parts:
         raise ValueError("pilot artifacts cannot access the frozen-test namespace")
 
 

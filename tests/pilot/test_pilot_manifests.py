@@ -1,8 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from silent_cascade.hashing import canonical_json_bytes
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.train.pilot_config import resolve_pilot_config
 
 
@@ -40,6 +41,19 @@ def test_manifest_roundtrip_authenticates_ordered_projected_examples(tmp_path, s
     assert {e.key.public_id_seed for e in manifest.entries} == {457}
     assert all(e.projected.transform is None for e in manifest.entries)
     assert all(e.parent_public_id != e.projected.public_id for e in manifest.entries)
+    # Captured from 60f4fd2 before consolidating accepted-parent regeneration.
+    expected_entries = {
+        "one_hop": "860520c3a0871bd5dd4eb0a9ae3abc784cb7a838c7b6030203faeaf8ec5303e5",
+        "two_hop": "e8b8bbf42e312870171fbea21bdcff0c8650e4b362cec91f78e4e27ce7ea5565",
+        "primary": "e38aae2ad29b4738e6851ec25ea8dbd53ea998ae02dbb97cf7ccd3607bcb3265",
+        "robustness": "484b16e5000fa0cb2ffb59da8ea18e2c9a47a349b38292b9638e838ad6e08703",
+    }
+    assert (
+        sha256_bytes(
+            canonical_json_bytes({"entries": [e.model_dump(mode="json") for e in manifest.entries]})
+        )
+        == expected_entries[stage]
+    )
     if stage == "one_hop":
         corpus = pilot_component_corpus(manifest, config=resolved.config)
         assert corpus.public_examples == tuple(e.public for e in examples)
@@ -123,6 +137,33 @@ def test_production_identity_cannot_accept_debug_inventory(tmp_path):
     )
     with pytest.raises(ValueError, match="count"):
         tuple(iter_pilot_examples(forged, config=production.config))
+
+
+@pytest.mark.parametrize("namespace", ["frozen", "frozen_test"])
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_relative_manifest_path_refuses_frozen_working_directory(
+    tmp_path, monkeypatch, namespace, operation
+):
+    from silent_cascade.train.pilot_data import freeze_pilot_manifest, load_pilot_manifest
+
+    resolved = resolve_pilot_config("phase4_smoke")
+    original = tmp_path / "original.json"
+    freeze_pilot_manifest(resolved, stage="one_hop", output_path=original, source_commit="a" * 40)
+    directory = tmp_path / "manifests" / namespace
+    directory.mkdir(parents=True)
+    target = directory / "pilot.json"
+    if operation == "read":
+        target.write_bytes(original.read_bytes())
+    monkeypatch.chdir(directory)
+    with pytest.raises(ValueError, match="frozen-test namespace"):
+        if operation == "read":
+            load_pilot_manifest(Path("pilot.json"), config=resolved)
+        else:
+            freeze_pilot_manifest(
+                resolved, stage="one_hop", output_path=Path("pilot.json"), source_commit="a" * 40
+            )
+    if operation == "write":
+        assert not target.exists()
 
 
 def test_train_validation_debug_keys_generate_disjoint_public_ids():
