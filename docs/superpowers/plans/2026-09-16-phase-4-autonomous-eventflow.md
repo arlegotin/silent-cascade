@@ -729,6 +729,17 @@ continuation; preserve same-device restoration and separate MPS tolerances.
   and evaluation configuration, plus `execution_source_revision`. Raw rows retain
   the actual checkpoint hash and logical model-state hash as distinct fields,
   and preserve both producing and executing source revisions.
+- `EvaluationIdentity.purpose` is one of `pilot_validation`, `debug`,
+  `action_diagnostic`, or `delay_swap`. Preserve actual upstream
+  `manifest_schema`/`manifest_sha256` separately from the ordered projected
+  episode inventory. Accept `phase4-data-v1`; accept the historical
+  `phase3-component-manifest-v1` only for explicitly labeled action diagnostics.
+  Unknown purposes/schemas, frozen-test namespaces and incoherent combinations
+  fail. Neither historical diagnostics nor derived subsets impersonate a full
+  pilot manifest. Delay-swap identities bind the primary parent manifest and each
+  derived episode's parent hash and transform identity/parameters. Separate runs
+  for the two delays may preserve parent public IDs; duplicates remain illegal
+  within an evaluation, and final pairing joins immutable parent identities.
 - `PilotMetrics`: integer outcome/error denominators, derived rates and explicit
   pilot-gate result; `PilotEvaluation`: identity, metrics, output path and artifact
   hashes. These are strict, serializable records, not live models or sessions.
@@ -758,6 +769,9 @@ Construct `scored_rows` with real `EpisodeScore` outcomes and a typed error row.
 Add exact window-left success/right failure, wrong class, zero/two actions,
 negative false action, duplicate/missing/public-ID substitution and unsupported
 manifest tests. No survivor-only metric or average of unequal-sized batches.
+Test that historical diagnostics preserve their actual manifest schema/hash,
+delay swaps preserve parent/transform bindings, and even perfect tiny, diagnostic
+or pair runs cannot certify pilot acceptance.
 
 - [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_timed_runner.py tests/pilot/test_timed_metrics.py tests/pilot/test_neural_accounting.py tests/pilot/test_pilot_artifacts.py`.
 
@@ -777,6 +791,12 @@ keyword, and reject enabled MPS fallback before scientific execution.
 Classify positive misses as no action / wrong class / premature / late / multiple
 actions / dynamics error, retaining all raw facts needed for post-run scoring.
 Never send metric feedback to the agent during an episode.
+Every raw row retains its evaluation purpose. Debug, action-diagnostic and
+delay-swap evaluations are non-acceptance and have `gate_passed=False`, regardless
+of accuracy. A `pilot_validation` timed gate requires the full declared balanced
+validation inventory and unchanged count/error thresholds. Its single-corpus
+result is not the complete multi-suite Phase4 certificate; `DONE` remains only
+an integrity-checked execution-completion marker.
 
 ```python
 episode_count = len(rows)
@@ -963,6 +983,9 @@ fresh load and a changed batch counter changes only the addressed examples.
 - Consume the Task 3 learned agent and Task 5 autonomous evaluator. Private
   teacher contexts stay inside this diagnostic/training module, not agent code.
   Use Task 6's validated private curriculum projection for the autonomous branch.
+  Use `purpose='action_diagnostic'` with the actual original Phase3 manifest
+  schema/hash and separately bound ordered projected hashes; never forge a
+  Phase4 pilot manifest for the historical corpus.
 
 - [ ] **Step 1: Write context-separation and denominator tests.**
 
@@ -1493,6 +1516,9 @@ checkpoint/replay; selected-weight native CPU/MPS checks; offline, compute and
 identity checks. Reuse only byte-verified compatible completed steps. Checkpoint
 selection precedes these final analyses and cannot be changed after a bad delay
 swap or device result.
+Delay-pair evaluations use `purpose='delay_swap'` and preserve primary-parent
+manifest and derivation bindings. The independent final verifier rebuilds their
+paired gate; diagnostic/debug/subset rows cannot stand in for full pilot rows.
 
 If training naturally stops below its gate, collect its failed outcome, losses,
 errors and diagnostic report; commands return a nonzero gate status. Diagnose a
