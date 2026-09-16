@@ -871,6 +871,24 @@ buffer may be reused for injection; public/training examples and buffers owned b
 other calls must remain unchanged. Hash its contiguous bytes without allocating
 a full-sized bytes copy.
 
+**Task 6 resource-lifetime clarification:** Neutral pilot audit wrappers reuse
+the existing bounded feature-store allocation, batch-writing and mapped-reader
+helpers rather than retaining a full dense feature matrix during fitting. Keep
+their public signatures and all feature, split, solver, permutation and threshold
+semantics unchanged. Private preparation may accept an optional feature-store
+path; retain its existing dense default for compatibility and exact comparisons.
+Each wrapper owns a fresh scoped temporary backing store, closes every mapping
+and removes only that owned store on success or error. After shuffled results,
+hash the exact raw feature bytes with bounded file reads, inject only the named
+count column through bounded mappings of the same exclusively owned store, and
+hash those raw bytes again. Reopening a mapping preserves backing-store
+ownership; Python array-object identity is not the ownership contract. Public
+examples and other callers' backing stores remain unchanged. Require exact
+dense/store feature hashes and probe results, cleanup/error regressions, the
+ordered 27-fit full-size resource check, and the actual full-size injected control
+before another complete audit. Do not change the statistical kernels, solver
+batch arithmetic, resource ceilings, imports or frozen historical sources.
+
 **Files:**
 
 - Create: `src/silent_cascade/env/pilot.py`, `src/silent_cascade/train/pilot_data.py`, `src/silent_cascade/eval/pilot_audit.py`.

@@ -109,7 +109,7 @@ def _assert_neutral_kernel_and_report_integrity(tmp_path):
         audit_public_shortcuts,
     )
     from silent_cascade.env.pilot import curriculum_to_bundle
-    from silent_cascade.hashing import sha256_bytes
+    from silent_cascade.hashing import sha256_bytes, sha256_file
     from silent_cascade.train.curriculum_data import CurriculumKey, make_curriculum_example
 
     config = resolve_pilot_config("phase4_smoke").config
@@ -158,6 +158,24 @@ def _assert_neutral_kernel_and_report_integrity(tmp_path):
     assert list(strict_train) == list(train)
     assert list(strict_test) == list(test)
     assert strict_membership == membership
+    # The dense compatibility path and bounded store have identical raw bytes,
+    # row metadata and split coordinates, including a partial final batch.
+    stored_path = tmp_path / "caller-owned-features.bin"
+    stored = _prepare_public_shortcuts(
+        examples,
+        feature_path=stored_path,
+        **{
+            **kwargs,
+            "config": config.data.leakage_audit.model_copy(update={"feature_batch_size": 33}),
+        },
+    )
+    try:
+        assert sha256_file(stored_path) == sha256_bytes(values.tobytes())
+        assert stored[1] == rows and stored[4] == membership
+        np.testing.assert_array_equal(stored[2], train)
+        np.testing.assert_array_equal(stored[3], test)
+    finally:
+        stored[0]._mmap.close()
     clean = audit_public_shortcuts(examples, **kwargs)
     assert clean == tuple(
         _run_probes(values, rows, train, test, config.data.leakage_audit, profile, corpus_hash)
@@ -170,20 +188,25 @@ def _assert_neutral_kernel_and_report_integrity(tmp_path):
     def observe_owned_preparation(*args, **kwargs):
         prepared = original_prepare(*args, **kwargs)
         # Controls own a fresh diagnostic copy, separate from clean features.
+        assert isinstance(prepared[0], np.memmap)
         assert not np.shares_memory(prepared[0], values)
         observed["buffer"] = weakref.ref(prepared[0])
+        observed["path"] = Path(prepared[0].filename)
         return prepared
 
     def observe_injected_kernel(injected, *args, **kwargs):
-        # Once shuffled results and the clean digest are saved, the private
-        # buffer must transfer to injection without a second full-size store.
-        assert injected is observed["buffer"]()
+        # Reopening the same owned store must not retain the old mapping.
+        assert isinstance(injected, np.memmap)
+        assert Path(injected.filename) == observed["path"]
+        old = observed["buffer"]()
+        assert old is None or old._mmap.closed
         return original_control(injected, *args, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(leakage, "_prepare_public_shortcuts", observe_owned_preparation)
         patch.setattr(leakage, "_run_positive_control_probe", observe_injected_kernel)
         controls = _audit_public_shortcut_controls(examples, **kwargs)
+    assert not observed["path"].exists()
     expected_injected = values.copy()
     start, _ = leakage._feature_bounds(leakage.ShortcutFeatureGroup.COUNTS)
     expected_injected[:, start] = leakage._task_labels(rows, leakage.ShortcutTask.POSITIVE_BINARY)
@@ -195,6 +218,78 @@ def _assert_neutral_kernel_and_report_integrity(tmp_path):
     assert controls.injected_probe.holm_adjusted_p < 0.01
     assert controls.positive_control_passed
     assert controls.split_membership_sha256 == membership
+    assert controls.shuffled_probes == tuple(
+        _run_probes(
+            values,
+            rows,
+            train,
+            test,
+            config.data.leakage_audit,
+            profile,
+            corpus_hash,
+            label_shuffled=True,
+        )
+    )
+    injector = leakage.NamedLeakInjector(
+        "PILOT_PC_BINARY_COUNT_FEATURE",
+        leakage.ShortcutTask.POSITIVE_BINARY,
+        "counts/positive_binary",
+        lambda source: source,
+    )
+    dense_probe = original_control(
+        expected_injected,
+        rows,
+        train,
+        test,
+        injector,
+        leakage.ShortcutFeatureGroup.COUNTS,
+        config.data.leakage_audit,
+        profile,
+        controls.injected_feature_sha256,
+    )
+    assert (
+        controls.injected_probe == leakage._holm([dense_probe], config.data.leakage_audit.alpha)[0]
+    )
+
+    # Deliberate downstream failures must close maps and remove only the
+    # wrapper's store, including after control injection reopens its map.
+    original_probes = leakage._run_probes
+    for operation, target in (
+        (audit_public_shortcuts, "_run_probes"),
+        (_audit_public_shortcut_controls, "_run_probes"),
+        (_audit_public_shortcut_controls, "_run_positive_control_probe"),
+    ):
+
+        def fail_after_real_kernel(array, *args, target=target, **kwargs):
+            observed["failed_map"] = weakref.ref(array)
+            kernel = original_probes if target == "_run_probes" else original_control
+            kernel(array, *args, **kwargs)
+            raise RuntimeError("intentional downstream failure")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(leakage, "_prepare_public_shortcuts", observe_owned_preparation)
+            patch.setattr(leakage, target, fail_after_real_kernel)
+            with pytest.raises(RuntimeError, match="intentional downstream failure"):
+                operation(examples, **kwargs)
+        assert not observed["path"].exists()
+        failed_map = observed["failed_map"]()
+        assert failed_map is None or failed_map._mmap.closed
+        assert stored_path.exists()
+
+    # A failure during extraction still cleans the partially written store.
+    original_write = leakage._write_feature_batch
+
+    def fail_after_write(path, *args, **kwargs):
+        observed["partial_path"] = path
+        original_write(path, *args, **kwargs)
+        raise RuntimeError("intentional extraction failure")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(leakage, "_write_feature_batch", fail_after_write)
+        with pytest.raises(RuntimeError, match="intentional extraction failure"):
+            audit_public_shortcuts(examples, **kwargs)
+    assert not observed["partial_path"].exists()
+    assert stored_path.exists()
     assert tuple(episode_sha256(e.bundle) for e in examples) == digests
 
     # Reduced diagnostic statistics must not acquire full-profile authority by

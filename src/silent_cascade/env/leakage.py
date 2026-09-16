@@ -16,11 +16,12 @@ import shutil
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import pairwise, permutations
 from pathlib import Path
-from tempfile import mkdtemp
+from tempfile import TemporaryDirectory, mkdtemp
 from typing import Literal, NoReturn, Protocol
 
 import numpy as np
@@ -57,7 +58,7 @@ from silent_cascade.env.generator import (
 from silent_cascade.env.invariants import validate_cohort_invariants, validate_episode_invariants
 from silent_cascade.env.oracle import solve_public_episode, verify_oracle_truth
 from silent_cascade.env.timing import action_window
-from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.provenance import (
     ConstructionNamespaceBuilder,
     ConstructionNamespaceEvidence,
@@ -2659,6 +2660,7 @@ def _prepare_public_shortcuts(
     config: LeakageAuditConfig,
     profile: LeakageAuditProfileConfig,
     corpus_hash: str,
+    feature_path: Path | None = None,
 ) -> tuple[np.ndarray, list[_StoredExample], np.ndarray, np.ndarray, str]:
     """Neutral feature/split preparation; provides no Phase 1 authentication."""
     if len(examples) != profile.episode_count:
@@ -2667,7 +2669,10 @@ def _prepare_public_shortcuts(
     if required_bytes > config.max_feature_store_bytes:
         raise MemoryError("shortcut feature store ceiling exceeded")
     _resource_guard(config)
-    values = np.empty((len(examples), _TOTAL_FEATURE_DIMENSION), dtype=np.float32)
+    batch_size = len(examples) if feature_path is None else config.feature_batch_size
+    values = np.empty((min(batch_size, len(examples)), _TOTAL_FEATURE_DIMENSION), dtype=np.float32)
+    if feature_path is not None:
+        _allocate_feature_store(feature_path, len(examples))
     rows: list[_StoredExample] = []
     digest = CorpusHashBuilder(len(examples))
     groups: dict[int, list[AuditExample]] = defaultdict(list)
@@ -2685,7 +2690,14 @@ def _prepare_public_shortcuts(
             raise ValueError("shortcut allocation quartet coordinate mismatch")
         bundle = example.bundle
         features = extract_shortcut_features(example, len(examples))
-        values[index] = features.vectors[ShortcutFeatureGroup.COMBINED]
+        values[index % batch_size] = features.vectors[ShortcutFeatureGroup.COMBINED]
+        if feature_path is not None and (
+            (index + 1) % batch_size == 0 or index + 1 == len(examples)
+        ):
+            count = index % batch_size + 1
+            _write_feature_batch(
+                feature_path, len(examples), index + 1 - count, values[:count], config
+            )
         bundle_hash = episode_sha256(bundle)
         digest.add(CorpusDigestEntry(bundle.public.init.episode_public_id, bundle_hash))
         rows.append(
@@ -2733,7 +2745,37 @@ def _prepare_public_shortcuts(
     train, test, membership = _split_memberships(
         rows, config.audit_seed, corpus_hash, "independent", strict_divisible=False
     )
+    if feature_path is not None:
+        values = np.memmap(
+            feature_path,
+            dtype=np.float32,
+            mode="r",
+            shape=(len(examples), _TOTAL_FEATURE_DIMENSION),
+        )
     return values, rows, train, test, membership
+
+
+@contextmanager
+def _prepared_public_shortcuts(
+    examples: Sequence[AuditExample],
+    *,
+    config: LeakageAuditConfig,
+    profile: LeakageAuditProfileConfig,
+    corpus_hash: str,
+) -> Iterator[tuple[np.ndarray, list[_StoredExample], np.ndarray, np.ndarray, str]]:
+    """Own one bounded diagnostic store and close it before scoped cleanup."""
+    with TemporaryDirectory(prefix="silent-cascade-pilot-features-") as directory:
+        prepared = _prepare_public_shortcuts(
+            examples,
+            config=config,
+            profile=profile,
+            corpus_hash=corpus_hash,
+            feature_path=Path(directory) / "features.bin",
+        )
+        try:
+            yield prepared
+        finally:
+            prepared[0]._mmap.close()
 
 
 def audit_public_shortcuts(
@@ -2748,10 +2790,10 @@ def audit_public_shortcuts(
     The caller must independently authenticate its data recipe and projections.
     This neutral wrapper cannot certify the historical Phase 1 generator gate.
     """
-    values, rows, train, test, _ = _prepare_public_shortcuts(
+    with _prepared_public_shortcuts(
         examples, config=config, profile=profile, corpus_hash=corpus_hash
-    )
-    return tuple(_run_probes(values, rows, train, test, config, profile, corpus_hash))
+    ) as (values, rows, train, test, _):
+        return tuple(_run_probes(values, rows, train, test, config, profile, corpus_hash))
 
 
 class _PublicShortcutControls(StrictModel):
@@ -2783,42 +2825,58 @@ def _audit_public_shortcut_controls(
     corpus_hash: str,
 ) -> _PublicShortcutControls:
     """Private Phase 4 diagnostic copies, never changed public/training data."""
-    values, rows, train, test, membership = _prepare_public_shortcuts(
+    with _prepared_public_shortcuts(
         examples, config=config, profile=profile, corpus_hash=corpus_hash
-    )
-    shuffled = tuple(
-        _run_probes(values, rows, train, test, config, profile, corpus_hash, label_shuffled=True)
-    )
-    clean_hash = hashlib.sha256(memoryview(values)).hexdigest()
-    # Extraction owns this private diagnostic copy. Shuffled results and the
-    # clean digest are retained; no public or other caller's buffer is changed.
-    injected = values
-    labels = _task_labels(rows, ShortcutTask.POSITIVE_BINARY)
-    if (
-        min(int(np.sum(labels[test] == value)) for value in (0, 1))
-        < profile.minimum_test_examples_per_class
-    ):
-        raise ValueError("positive control has insufficient held-out examples")
-    start, _ = _feature_bounds(ShortcutFeatureGroup.COUNTS)
-    injected[:, start] = labels
-    injected_hash = hashlib.sha256(memoryview(injected)).hexdigest()
-    injector = NamedLeakInjector(
-        "PILOT_PC_BINARY_COUNT_FEATURE",
-        ShortcutTask.POSITIVE_BINARY,
-        "counts/positive_binary",
-        lambda source: source,
-    )
-    probe = _run_positive_control_probe(
-        injected,
-        rows,
-        train,
-        test,
-        injector,
-        ShortcutFeatureGroup.COUNTS,
-        config,
-        profile,
-        injected_hash,
-    )
+    ) as (values, rows, train, test, membership):
+        shuffled = tuple(
+            _run_probes(
+                values, rows, train, test, config, profile, corpus_hash, label_shuffled=True
+            )
+        )
+        # Reuse only this call's exclusive backing store, not a resident copy.
+        path = Path(values.filename)
+        shape = values.shape
+        values._mmap.close()
+        clean_hash = sha256_file(path)
+        labels = _task_labels(rows, ShortcutTask.POSITIVE_BINARY)
+        if (
+            min(int(np.sum(labels[test] == value)) for value in (0, 1))
+            < profile.minimum_test_examples_per_class
+        ):
+            raise ValueError("positive control has insufficient held-out examples")
+        start, _ = _feature_bounds(ShortcutFeatureGroup.COUNTS)
+        for offset in range(0, len(rows), config.feature_batch_size):
+            _resource_guard(config, "extraction")
+            mapped = np.memmap(path, dtype=np.float32, mode="r+", shape=shape)
+            try:
+                stop = min(offset + config.feature_batch_size, len(rows))
+                mapped[offset:stop, start] = labels[offset:stop]
+                mapped.flush()
+            finally:
+                mapped._mmap.close()
+            _resource_guard(config, "extraction")
+        injected_hash = sha256_file(path)
+        injector = NamedLeakInjector(
+            "PILOT_PC_BINARY_COUNT_FEATURE",
+            ShortcutTask.POSITIVE_BINARY,
+            "counts/positive_binary",
+            lambda source: source,
+        )
+        injected = np.memmap(path, dtype=np.float32, mode="r", shape=shape)
+        try:
+            probe = _run_positive_control_probe(
+                injected,
+                rows,
+                train,
+                test,
+                injector,
+                ShortcutFeatureGroup.COUNTS,
+                config,
+                profile,
+                injected_hash,
+            )
+        finally:
+            injected._mmap.close()
     corrected = _holm([probe], config.alpha)[0]
     return _PublicShortcutControls(
         config_sha256=sha256_bytes(canonical_json_bytes(config)),
