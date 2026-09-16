@@ -10,9 +10,12 @@ from time import perf_counter
 from types import MappingProxyType
 
 import torch
+from pydantic import Field
 from torch import nn
 
+from silent_cascade.eventflow.state import ComputeCounters
 from silent_cascade.models.errors import NeuralError
+from silent_cascade.validation import StrictModel
 
 _ACTIVE_METERS: ContextVar[tuple[NeuralComputeMeter, ...]] = ContextVar(
     "silent_cascade_neural_compute_meters", default=()
@@ -251,7 +254,13 @@ class NeuralComputeMeter:
                 output.numel() * output.element_size()
             )
 
-        if name == "RetrievalScorer":
+        if name == "RecordEncoder":
+            self._operation_estimates["record_rows_encoded"] += inputs[0].subject_ids.numel()
+        elif name == "ExternalEncoder":
+            # Its direct record-network call also encodes the current event row,
+            # even on ACTIVATE where the result is subsequently masked away.
+            self._operation_estimates["record_rows_encoded"] += inputs[0].batch_size
+        elif name == "RetrievalScorer":
             context = inputs[0]
             batch_size = context.batch_size  # type: ignore[union-attr]
             slots = context.memory_embeddings.shape[1]  # type: ignore[union-attr]
@@ -339,3 +348,72 @@ def parameter_counts(model: nn.Module) -> dict[str, int]:
         "entity_table": entity_table,
         "non_entity": total - entity_table,
     }
+
+
+class RuntimeCompute(StrictModel):
+    """Disjoint engine and neural observations; EventFlow has no opportunity ticks."""
+
+    engine: ComputeCounters = Field(default_factory=ComputeCounters)
+    module_calls: dict[str, int] = Field(default_factory=dict)
+    operation_estimates: dict[str, int] = Field(default_factory=dict)
+    parameters: int = Field(default=0, ge=0)
+    entity_parameters: int = Field(default=0, ge=0)
+    forward_macs: int = Field(default=0, ge=0)
+    backward_macs: int = Field(default=0, ge=0)
+    records_scored: int = Field(default=0, ge=0)
+    record_rows_encoded: int = Field(default=0, ge=0)
+    eligible_records: int = Field(default=0, ge=0)
+    neural_flow_evaluations: int = Field(default=0, ge=0)
+    neural_jump_applications: int = Field(default=0, ge=0)
+    neural_active_controller_rows: int = Field(default=0, ge=0)
+    flow_evaluations: int = Field(default=0, ge=0)
+    uncommitted_flow_evaluations: int = Field(default=0, ge=0)
+    jump_applications: int = Field(default=0, ge=0)
+    opportunities: int = Field(default=0, ge=0, le=0)
+    foundation_model_calls: int = Field(default=0, ge=0, le=0)
+    memory_bytes: int = Field(default=0, ge=0)
+    pause_count: int = Field(default=0, ge=0)
+    checkpoint_serializations: int = Field(default=0, ge=0)
+    replay_executions: int = Field(default=0, ge=0)
+
+
+def aggregate_runtime_compute(
+    engine: ComputeCounters,
+    snapshots: tuple[NeuralComputeSnapshot, ...],
+    *,
+    entity_parameters: int,
+    checkpoint_serializations: int = 0,
+    causal_flow_evaluations: int | None = None,
+) -> RuntimeCompute:
+    """Sum disjoint callback scopes, counting scalar analytic flow only in engine."""
+    modules, operations = Counter(), Counter()
+    for snapshot in snapshots:
+        modules.update(snapshot.module_calls)
+        operations.update(snapshot.operation_estimates)
+    if engine.foundation_model_calls or any(s.foundation_model_calls for s in snapshots):
+        raise NeuralError("runtime must have zero foundation-model calls")
+    performed_flow = (
+        engine.flow_evaluations if causal_flow_evaluations is None else causal_flow_evaluations
+    )
+    if performed_flow < engine.flow_evaluations:
+        raise NeuralError("performed flow cannot be below committed flow")
+    return RuntimeCompute(
+        engine=engine,
+        module_calls=dict(modules),
+        operation_estimates=dict(operations),
+        parameters=max((s.parameters for s in snapshots), default=0),
+        entity_parameters=entity_parameters,
+        forward_macs=sum(s.forward_macs for s in snapshots),
+        backward_macs=sum(s.backward_macs for s in snapshots),
+        records_scored=sum(s.records_scored for s in snapshots),
+        record_rows_encoded=operations["record_rows_encoded"],
+        eligible_records=sum(s.eligible_records for s in snapshots),
+        neural_flow_evaluations=sum(s.flow_evaluations for s in snapshots),
+        neural_jump_applications=sum(s.jump_applications for s in snapshots),
+        neural_active_controller_rows=sum(s.opportunities for s in snapshots),
+        flow_evaluations=performed_flow,
+        uncommitted_flow_evaluations=performed_flow - engine.flow_evaluations,
+        jump_applications=engine.jump_applications,
+        memory_bytes=max((s.memory_bytes for s in snapshots), default=0),
+        checkpoint_serializations=checkpoint_serializations,
+    )

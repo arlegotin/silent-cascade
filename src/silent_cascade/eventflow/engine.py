@@ -168,6 +168,13 @@ class EpisodeResult:
     trajectory: Trajectory
 
 
+@dataclass(frozen=True, slots=True)
+class EngineOperationalCompute:
+    """Collector-only performed work, independent of committed/replayed state."""
+
+    causal_flow_evaluations: int
+
+
 class EventEngine:
     def __init__(
         self,
@@ -192,6 +199,11 @@ class EventEngine:
         self._failure_depth = 0
         self._checkpoint_stage = None
         self._checkpoint_required = False
+        self._operational_flow_evaluations = 0
+
+    def operational_compute_snapshot(self) -> EngineOperationalCompute:
+        """Snapshot cumulative causal work, including a subsequent failed callback."""
+        return EngineOperationalCompute(self._operational_flow_evaluations)
 
     @staticmethod
     def _is_neural(agent):
@@ -446,10 +458,14 @@ class EventEngine:
         counters = replace(
             state.core.counters, flow_evaluations=state.core.counters.flow_evaluations + 1
         )
+        # Charge the actual invocation even if flow or a later callback fails.
+        # This ledger never changes the semantic state/trace/checkpoint counters.
+        self._operational_flow_evaluations += 1
+        continuous = state_at(state, target_time)
         return replace(
             state,
             time=target_time,
-            core=replace(state.core, continuous=state_at(state, target_time), counters=counters),
+            core=replace(state.core, continuous=continuous, counters=counters),
         )
 
     @staticmethod
