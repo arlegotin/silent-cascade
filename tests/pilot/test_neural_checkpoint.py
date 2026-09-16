@@ -2,9 +2,11 @@
 
 import json
 import struct
+from dataclasses import fields, is_dataclass
 
 import pytest
 import torch
+from pydantic import BaseModel
 from safetensors.torch import load, save
 
 from silent_cascade.errors import ReplayError
@@ -21,6 +23,84 @@ def snapshot(case):
         source_revision=case.revision,
         experiment_config_canonical_json=case.canonical,
     )
+
+
+def _mutable_metadata_containers(value, path="metadata"):
+    """Inspect every model/dataclass/tuple descendant, not only weights aliases."""
+    if isinstance(value, BaseModel):
+        children = ((name, getattr(value, name)) for name in type(value).model_fields)
+    elif is_dataclass(value):
+        children = ((field.name, getattr(value, field.name)) for field in fields(value))
+    elif isinstance(value, dict):
+        yield path, value
+        children = tuple(value.items())
+    elif isinstance(value, list | tuple):
+        if isinstance(value, list):
+            yield path, value
+        children = enumerate(value)
+    else:
+        return
+    for name, child in children:
+        yield from _mutable_metadata_containers(child, f"{path}.{name}")
+
+
+@pytest.mark.parametrize("access", ["constructor", "returned"])
+@pytest.mark.parametrize("damage", ["tensor", "mapping", "nested_metadata"])
+def test_runtime_archive_owns_immutable_snapshot(neural_archive_case, tmp_path, access, damage):
+    from silent_cascade.eventflow.neural_checkpoint import (
+        NeuralRuntimeCheckpoint,
+        load_neural_runtime_checkpoint,
+        publish_neural_runtime_checkpoint,
+        restore_neural_runtime,
+    )
+
+    case = neural_archive_case
+    original = snapshot(case)
+    metadata, tensors = original.metadata, original.tensors
+    expected_metadata = canonical_json_bytes(metadata)
+    expected_tensor = tensors["state.current.z_fast"].clone()
+    artifact = NeuralRuntimeCheckpoint(metadata, tensors)
+    if access == "returned":
+        metadata, tensors = artifact.metadata, artifact.tensors
+    if damage == "tensor":
+        tensors["state.current.z_fast"][0] += 1
+    elif damage == "mapping":
+        tensors.clear()
+    else:
+        containers = list(_mutable_metadata_containers(metadata))
+        assert {
+            "metadata.weights.aliases",
+            "metadata.tensors",
+            "metadata.rng.python_state",
+            "metadata.rng.python_state.tuple",
+            "metadata.rng.python_state.tuple.1.tuple",
+        } <= {path for path, _ in containers}
+        for _, container in containers:
+            container.clear()
+        assert canonical_json_bytes(metadata) != expected_metadata
+    assert canonical_json_bytes(artifact.metadata) == expected_metadata
+    assert torch.equal(artifact.tensors["state.current.z_fast"], expected_tensor)
+    published = publish_neural_runtime_checkpoint(tmp_path / "isolated.safetensors", artifact)
+    loaded = load_neural_runtime_checkpoint(
+        published.path,
+        expected_sha256=published.sha256,
+        config=case.config.event_flow,
+        source_revision=case.revision,
+        device="cpu",
+    )
+    # Loaded descriptors and live restored sessions must not expose archive storage either.
+    view = loaded.tensors["state.current.z_fast"]
+    view.add_(1)
+    assert not torch.equal(view, expected_tensor)
+    loaded.metadata.weights.aliases.clear()
+    session, agent = restore_neural_runtime(loaded, device="cpu", restore_rng=False)
+    while not case.engine.step(session, agent):
+        pass
+    while not case.engine.step(case.session, case.agent):
+        pass
+    assert session.trace.snapshot().sha256 == case.session.trace.snapshot().sha256
+    assert canonical_json_bytes(loaded.metadata) == expected_metadata
+    assert torch.equal(loaded.tensors["state.current.z_fast"], expected_tensor)
 
 
 def test_midflow_neural_resume_is_exact(neural_archive_case, tmp_path):
@@ -230,10 +310,11 @@ def test_cpu_restore_ignores_unavailable_mps_rng(neural_archive_case, monkeypatc
 def test_invalid_native_mps_rng_is_transactional(neural_archive_case):
     if not torch.backends.mps.is_available():
         pytest.skip("native MPS backend unavailable")
-    from dataclasses import replace
-
     from silent_cascade.eventflow.checkpoint_state import _metadata_hash, _tensor_metadata
-    from silent_cascade.eventflow.neural_checkpoint import restore_neural_runtime
+    from silent_cascade.eventflow.neural_checkpoint import (
+        NeuralRuntimeCheckpoint,
+        restore_neural_runtime,
+    )
 
     artifact = snapshot(neural_archive_case)
     tensors = dict(artifact.tensors)
@@ -244,7 +325,7 @@ def test_invalid_native_mps_rng_is_transactional(neural_archive_case):
     metadata = metadata.model_copy(
         update={"metadata_sha256": _metadata_hash(metadata.model_dump(mode="json"))}
     )
-    invalid = replace(artifact, metadata=metadata, tensors=tensors)
+    invalid = NeuralRuntimeCheckpoint(metadata, tensors)
     before = rng_signature()
     with pytest.raises(ReplayError):
         restore_neural_runtime(invalid, device="cpu")

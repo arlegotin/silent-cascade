@@ -1,7 +1,7 @@
 """Private learned-runtime snapshots, safe restoration and crash staging."""
 
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -58,12 +58,44 @@ class NeuralRuntimeMetadata(RuntimeCheckpointMetadata):
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class NeuralRuntimeCheckpoint:
-    metadata: NeuralRuntimeMetadata
-    tensors: dict[str, torch.Tensor]
+    """Owned immutable archive state, with independent editable public snapshots.
+
+    Construction detaches/clones every tensor and encodes all metadata into
+    immutable canonical bytes. Accessors never return owned mutable storage:
+    editing their results cannot change or invalidate this descriptor. This
+    boundary applies only to archive creation/access, not hot-path crash staging.
+    """
+
+    _metadata_json: bytes = field(repr=False)
+    _tensors: dict[str, torch.Tensor] = field(repr=False)
     path: Path | None = None
     sha256: str | None = None
+
+    def __init__(
+        self,
+        metadata: NeuralRuntimeMetadata,
+        tensors: dict[str, torch.Tensor],
+        path: Path | None = None,
+        sha256: str | None = None,
+    ):
+        object.__setattr__(self, "_metadata_json", canonical_json_bytes(metadata))
+        object.__setattr__(
+            self, "_tensors", {name: tensor.detach().clone() for name, tensor in tensors.items()}
+        )
+        object.__setattr__(self, "path", path)
+        object.__setattr__(self, "sha256", sha256)
+
+    @property
+    def metadata(self) -> NeuralRuntimeMetadata:
+        """A fresh deep view, including inherited models and nested containers."""
+        return NeuralRuntimeMetadata.model_validate_json(self._metadata_json)
+
+    @property
+    def tensors(self) -> dict[str, torch.Tensor]:
+        """A fresh dictionary of detached clones, never aliases to archive data."""
+        return {name: tensor.detach().clone() for name, tensor in self._tensors.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,16 +366,17 @@ def _validate(artifact, *, config, source_revision, device):
 def publish_neural_runtime_checkpoint(
     path: Path, artifact: NeuralRuntimeCheckpoint
 ) -> NeuralRuntimeCheckpoint:
-    candidate = replace(artifact, path=path)
+    metadata, tensors = artifact.metadata, artifact.tensors
+    candidate = NeuralRuntimeCheckpoint(metadata, tensors, path)
     _validate(
         candidate,
-        config=EventFlowConfig.model_validate_json(artifact.metadata.config_canonical_json),
-        source_revision=artifact.metadata.source_revision,
-        device=artifact.metadata.original_device,
+        config=EventFlowConfig.model_validate_json(metadata.config_canonical_json),
+        source_revision=metadata.source_revision,
+        device=metadata.original_device,
     )
-    raw = encode_archive(artifact.tensors, artifact.metadata, "runtime")
+    raw = encode_archive(tensors, metadata, "runtime")
     digest = publish_bytes(path, raw)
-    return replace(candidate, sha256=digest)
+    return NeuralRuntimeCheckpoint(metadata, tensors, path, digest)
 
 
 def load_neural_runtime_checkpoint(
