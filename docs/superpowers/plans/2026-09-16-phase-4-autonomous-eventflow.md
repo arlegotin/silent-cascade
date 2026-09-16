@@ -179,6 +179,9 @@ a failing test. A new loss or architecture is not silently invented by this plan
     training/runtime/replay archives retain their own actual file hashes.
     Bind these identities by authenticating loaded tensors and aliases, not by
     copying unverified metadata or claiming reserialized bytes match an old file.
+    The model identity's source revision describes weight production. Private
+    runtime/evaluation/replay envelopes separately bind the current executing
+    source revision; historical-weight diagnostics must retain both.
 
 ### Explicit deferrals
 
@@ -298,7 +301,7 @@ source writers concurrently. Independent read-only work may overlap verification
 | 1 | `src/silent_cascade/train/pilot_config.py`, `scripts/verify_historical_delivery.py`, `manifests/validation/historical-delivery.json` | delivery tests, new pilot config overlays |
 | 2 | `src/silent_cascade/models/transitions.py`, `src/silent_cascade/eventflow/neural_context.py` | tensor teacher transitions and explicit-continuous jump boundary |
 | 3 | `src/silent_cascade/eventflow/neural.py`, `src/silent_cascade/models/weights.py` | runtime diagnostic boundary, shared logical-state hash and current source closure |
-| 4 | `src/silent_cascade/eventflow/{checkpoint_state,neural_weights,neural_checkpoint,neural_replay}.py` | legacy codec extraction, engine closed crash dispatch |
+| 4 | `src/silent_cascade/eventflow/{checkpoint_state,neural_weights,neural_checkpoint,neural_replay}.py` | legacy codec extraction, current source closure, private config transport/parser, engine closed crash dispatch |
 | 5 | `src/silent_cascade/eval/{runner,metrics,artifacts}.py`, `src/silent_cascade/logging/neural_trace.py` | compute instrumentation |
 | 6 | `src/silent_cascade/env/pilot.py`, `src/silent_cascade/train/pilot_data.py`, `src/silent_cascade/eval/pilot_audit.py` | generalize curriculum config boundary; reuse shortcut-probe mathematics |
 | 7 | `src/silent_cascade/eval/action_diagnostics.py`, `scripts/diagnose_phase4_actions.py` | no model/loss change by default |
@@ -492,7 +495,7 @@ authentication; do not relax any old verifier or reinterpret historical hashes.
 
 **Interfaces:**
 
-- `NeuralModelIdentity`: frozen model-only config canonical JSON, explicitly named `model_state_sha256`, and source revision; no data truth. Actual checkpoint-file SHA belongs in evaluation/archive provenance, not in place of this logical digest.
+- `NeuralModelIdentity`: frozen model-only config canonical JSON, explicitly named `model_state_sha256`, and weight-producing source revision; no data truth. Actual checkpoint-file SHA and current execution-source revision belong in evaluation/archive provenance, not in place of this logical digest or producing revision.
 - `NeuralEventFlowAgent(model: EventFlowModel, *, identity: NeuralModelIdentity, device: str)` implements the existing `AgentCondition`; implementation ID `neural-event-flow-v1`.
 - `diagnostic_snapshot()` returns immutable per-callback module/score/prediction data; it cannot create events or expose private truth.
 
@@ -586,6 +589,8 @@ remain identical until the engine privately ends each run.
 
 - Create: `src/silent_cascade/eventflow/{checkpoint_state,neural_weights,neural_checkpoint,neural_replay}.py`.
 - Modify: `src/silent_cascade/eventflow/{checkpoint,engine}.py` (narrow codec extraction and closed failure-boundary dispatch).
+- Modify: `src/silent_cascade/eventflow/provenance.py` and `tests/integration/test_phase2_gate.py` to authenticate the extracted current-source codec dependency without changing pinned historical artifacts.
+- Modify: `src/silent_cascade/train/pilot_config.py` and `tests/pilot/test_pilot_config.py` for the bounded strict full-configuration parser used only by private artifact infrastructure.
 - Modify: `tests/regression/test_import_boundaries.py` with exact private
   checkpoint/replay-module exceptions; never exempt the learned agent or model.
 - Create: `tests/pilot/{test_neural_checkpoint,test_neural_replay,test_neural_crashes}.py`.
@@ -596,13 +601,16 @@ remain identical until the engine privately ends each run.
   payload described below; `NeuralReplayComparison`: exact reconstructed trace,
   decision/action/score comparison, weights hash and mismatch details.
 - `snapshot_neural_runtime(session: RuntimeSession, agent: NeuralEventFlowAgent,
-  *, config: EventFlowConfig, source_revision: str) -> NeuralRuntimeCheckpoint`.
+  *, config: EventFlowConfig, source_revision: str,
+  experiment_config_canonical_json: str) -> NeuralRuntimeCheckpoint`.
 - `load_neural_runtime_checkpoint(path: Path, *, expected_sha256: str,
   config: EventFlowConfig, source_revision: str,
   device: str) -> NeuralRuntimeCheckpoint`.
 - `restore_neural_runtime(artifact, *, device, restore_rng=True) -> tuple[RuntimeSession, NeuralEventFlowAgent]`.
 - `save_neural_weights(path: Path, *, model, identity) -> str` returns its actual file SHA; `load_neural_weights(path: Path, *, expected_sha256: str, device: str)` returns a descriptor containing restored model/identity and actual file SHA.
-- `write_neural_replay(path, *, bundle, result, identity, config, weights: Path) -> str` and `verify_neural_replay(path, *, weights_path: Path) -> NeuralReplayComparison` consume the closed portable weights format and bind both its file SHA and logical model identity.
+- `write_neural_replay(path, *, bundle, result, identity, config, weights: Path, source_revision: str, experiment_config_canonical_json: str) -> str` and `verify_neural_replay(path, *, weights_path: Path) -> NeuralReplayComparison` consume the closed portable weights format and bind both its file SHA and logical model identity.
+- `parse_phase4_canonical(raw: str) -> Phase4Config` in `train/pilot_config.py` validates bounded JSON/depth, canonical integer allocation-key restoration, strict Phase4 schema and exact canonical byte roundtrip. Preserve legacy Phase3 parser behavior; reuse narrow generic helpers where appropriate, not training checkpoint/objective modules.
+- `EventEngine` adds optional keyword `experiment_config_canonical_json: str | None = None`, used only by private artifact publication. Existing scripted defaults remain unchanged; neural execution with crash publication requires the full canonical configuration before invoking model callbacks.
 - New schemas `phase4-neural-weights-v1`, `phase4-neural-runtime-v1` and `phase4-neural-replay-v1`; keep original scripted schemas/bytes unchanged.
 
 - [ ] **Step 1: Write RED pause/resume and corruption tests.**
@@ -622,6 +630,10 @@ exercise the safe archive API, not serialize a fake result. Add corruption of
 weights, aliases, segment origin/rates, queue, cached prediction, provenance,
 config/source, support, initial public time, counters and tensor shapes. Invalid
 archives must leave caller model/RNG/files unchanged.
+Include missing/malformed/mismatched full experiment configuration, a legitimate
+historical weight-producing revision with a newer executing revision, and rejection
+of the wrong expected executing revision. Never require those two revisions to
+be equal or silently replace one with the other.
 
 - [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_neural_checkpoint.py tests/pilot/test_neural_replay.py tests/pilot/test_neural_crashes.py`.
 
@@ -639,6 +651,23 @@ boundary exception; agent/model/context modules may not import that codec.
 Take engine configuration as `EventFlowConfig`, model configuration from the
 identity, and full experiment canonical bytes from the artifact envelope. Avoid
 making the neural agent import a training configuration or checkpoint module.
+The private collector supplies `experiment_config_canonical_json` explicitly;
+the codec validates it through `parse_phase4_canonical`, stores its exact UTF-8
+bytes and derived SHA, and binds its engine/model sections to the corresponding
+identities. Neither this string nor private data/training configuration enters
+`AgentInit`, `RuntimeCore`, model identity, diagnostics or agent callbacks.
+The engine retains it privately for automatic crash publication, using the same
+validation as standalone snapshots. Runtime/replay `source_revision` names the
+executing code; `NeuralModelIdentity.source_revision` names the weight-producing
+code. Preserve and authenticate both, including when they differ for diagnostics.
+
+Extracting a shared codec introduces a live dependency to scripted checkpoint
+execution. Add it and every genuinely loaded new dependency to the current
+`PHASE2_ENGINE_SOURCE_PATHS`, with a dirty-helper rejection regression. Preserve
+historical closure bytes at their pinned original revisions and artifacts.
+Keep neural/training imports out of the scripted branch of closed failure dispatch
+when they are not needed; do not use the later Phase4 closure as a substitute for
+authenticating current Phase2 execution.
 
 ```python
 artifact = load_neural_runtime_checkpoint(
@@ -697,8 +726,9 @@ continuation; preserve same-device restoration and separate MPS tolerances.
   compute, and `evaluation_mode='autonomous_timed'`.
 - `EvaluationIdentity`: immutable experiment/stage/split, manifest hash, ordered
   episode-hash inventory, actual source `checkpoint_sha256`, `NeuralModelIdentity`
-  and evaluation configuration. Raw rows retain the actual checkpoint hash and
-  logical model-state hash as distinct fields.
+  and evaluation configuration, plus `execution_source_revision`. Raw rows retain
+  the actual checkpoint hash and logical model-state hash as distinct fields,
+  and preserve both producing and executing source revisions.
 - `PilotMetrics`: integer outcome/error denominators, derived rates and explicit
   pilot-gate result; `PilotEvaluation`: identity, metrics, output path and artifact
   hashes. These are strict, serializable records, not live models or sessions.
@@ -735,6 +765,15 @@ manifest tests. No survivor-only metric or average of unequal-sized batches.
 
 The runner owns private episodes; construct the agent with weights/config only
 and call the real engine. Score from actual emitted actions using `score_actions`.
+Construct a dedicated inference model copy/export: `NeuralEventFlowAgent` takes
+ownership of its supplied model and calls `eval()` and `requires_grad_(False)`.
+Evaluation must preserve the caller's model values, mode, device, gradient flags
+and optimizer ownership. Capture architectural parameter counts before freezing
+or use an explicit frozen-aware count; do not publish zero because the evaluator
+has disabled gradients. Add a validation-then-training regression proving the
+caller can compute gradients and make its next update unchanged. Pass the full
+validated Phase4 canonical configuration only to the engine's private artifact
+keyword, and reject enabled MPS fallback before scientific execution.
 Classify positive misses as no action / wrong class / premature / late / multiple
 actions / dynamics error, retaining all raw facts needed for post-run scoring.
 Never send metric feedback to the agent during an episode.
@@ -1572,3 +1611,18 @@ runtime, replay and pilot exports. Sharing the unchanged logical-state hash in a
 core module avoids importing training parsers into an agent or claiming that a
 new archive envelope reproduces an old file hash. Tasks 3–5, 7–8 and 11 now state
 the shared interface explicitly. No model, metric or scientific gate changes.
+
+**Private checkpoint transport clarification (2026-09-16):** The full experiment
+configuration required by Task4 prose was absent from its original signatures.
+An explicit private canonical-configuration keyword now connects snapshots,
+replays and automatic engine crash publication; a strict private parser validates
+it without putting training/data configuration into the agent. Current Phase2
+authentication also covers the newly extracted shared codec. Historical source
+closures and artifacts remain unchanged at their original revisions.
+
+**Execution identity and ownership clarification (2026-09-16):** Historical
+Phase3 weights are diagnosed by newer Phase4 code, so weight-producing and
+runtime-executing source revisions are explicitly distinct. Task5 also preserves
+the caller's trainable model by preparing a dedicated frozen inference copy,
+and counts architectural parameters independently of inference gradient flags.
+These interface clarifications change no scientific threshold or learned rule.
