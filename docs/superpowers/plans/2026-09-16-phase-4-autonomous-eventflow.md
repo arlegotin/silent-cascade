@@ -401,6 +401,7 @@ Expected: exact historical acceptance, explicit scope and no current-source clai
 
 - Create: `src/silent_cascade/models/transitions.py`, `src/silent_cascade/eventflow/neural_context.py`.
 - Modify: `src/silent_cascade/train/{unroll,content_unroll}.py`, `src/silent_cascade/eventflow/jumps.py`.
+- Modify: `src/silent_cascade/train/provenance.py`, `tests/neural/test_phase3_provenance.py` to authenticate the new shared dependency in current-source execution.
 - Create: `tests/pilot/{conftest,test_neural_context,test_transition_equivalence}.py`.
 
 **Interfaces:**
@@ -461,6 +462,13 @@ may explicitly inject a learned focus embedding. Shared functions accept public
 decisions; the teacher adapter constructs them only after prediction, whereas
 runtime constructs them from model outputs. Reset guards after every jump.
 Keep record-level consumed/refractory updates and event counters in typed jumps.
+
+Add `models/transitions.py` to the current `PHASE3_SOURCE_PATHS` literal closure
+when teacher unrolls begin importing it. Authenticate any other newly introduced
+transitive dependency as well. Original closures at their historical commits and
+all accepted artifact/map bytes remain unchanged. Add a regression proving that
+an uncommitted transition-helper mutation is rejected by current-source
+authentication; do not relax any old verifier or reinterpret historical hashes.
 
 - [ ] **Step 4: Run GREEN:** new tests plus `tests/neural/test_unroll.py`, `test_content_unroll.py`, `test_gradients.py`, `tests/unit/test_jumps.py`, and existing scripted fixtures. Include CPU row-equivalence and native MPS when available.
 - [ ] **Step 5: Commit:** `feat: share learned transitions with the event runtime`.
@@ -1512,3 +1520,10 @@ maximum absolute pre-FACT latent was `0.28444260358810425`, versus `0.0` in
 the first public event, matching the existing teacher path. This correction is
 authorized by the standing in-scope plan-adjustment policy; it changes neither
 historical training behavior nor post-activation dynamics or acceptance gates.
+
+**Source-closure clarification (2026-09-16):** Task 2 introduces an executable
+dependency into the legacy teacher path. Current-source authentication must grow
+its literal closure to cover that dependency. Preserving historical closure
+bytes means preserving their original Git revisions and artifacts, not leaving
+new current execution dependencies unauthenticated. This additive correction
+changes no historical result, schema, training arithmetic or acceptance gate.
