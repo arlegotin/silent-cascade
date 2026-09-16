@@ -171,6 +171,14 @@ a failing test. A new loss or architecture is not silently invented by this plan
     auxiliary status head remains supervised and its disagreement is logged,
     not secretly used to repair the role or create a second conflicting state.
     Wrong finite semantic choices are scored failures, not oracle-corrected facts.
+12. **Separate model and file identities.** `NeuralModelIdentity` names its
+    logical digest `model_state_sha256`, using the existing Phase3 hash of aliases,
+    sorted tensor names, dtypes, shapes and bytes. It is not an archive-file hash.
+    Evaluation identities, raw rows and artifact provenance separately retain
+    the actual source `checkpoint_sha256`; portable weight files and outer
+    training/runtime/replay archives retain their own actual file hashes.
+    Bind these identities by authenticating loaded tensors and aliases, not by
+    copying unverified metadata or claiming reserialized bytes match an old file.
 
 ### Explicit deferrals
 
@@ -289,8 +297,8 @@ source writers concurrently. Independent read-only work may overlap verification
 | --- | --- | --- |
 | 1 | `src/silent_cascade/train/pilot_config.py`, `scripts/verify_historical_delivery.py`, `manifests/validation/historical-delivery.json` | delivery tests, new pilot config overlays |
 | 2 | `src/silent_cascade/models/transitions.py`, `src/silent_cascade/eventflow/neural_context.py` | tensor teacher transitions and explicit-continuous jump boundary |
-| 3 | `src/silent_cascade/eventflow/neural.py` | runtime error/diagnostic boundary where needed |
-| 4 | `src/silent_cascade/eventflow/{checkpoint_state,neural_checkpoint,neural_replay}.py` | legacy codec extraction, engine closed crash dispatch |
+| 3 | `src/silent_cascade/eventflow/neural.py`, `src/silent_cascade/models/weights.py` | runtime diagnostic boundary, shared logical-state hash and current source closure |
+| 4 | `src/silent_cascade/eventflow/{checkpoint_state,neural_weights,neural_checkpoint,neural_replay}.py` | legacy codec extraction, engine closed crash dispatch |
 | 5 | `src/silent_cascade/eval/{runner,metrics,artifacts}.py`, `src/silent_cascade/logging/neural_trace.py` | compute instrumentation |
 | 6 | `src/silent_cascade/env/pilot.py`, `src/silent_cascade/train/pilot_data.py`, `src/silent_cascade/eval/pilot_audit.py` | generalize curriculum config boundary; reuse shortcut-probe mathematics |
 | 7 | `src/silent_cascade/eval/action_diagnostics.py`, `scripts/diagnose_phase4_actions.py` | no model/loss change by default |
@@ -477,13 +485,14 @@ authentication; do not relax any old verifier or reinterpret historical hashes.
 
 **Files:**
 
-- Create: `src/silent_cascade/eventflow/neural.py`.
-- Create: `tests/pilot/{test_neural_agent,test_neural_boundaries,test_neural_scheduler}.py`.
+- Create: `src/silent_cascade/eventflow/neural.py`, `src/silent_cascade/models/weights.py`.
+- Create: `tests/pilot/{test_neural_agent,test_neural_boundaries,test_neural_scheduler,test_model_identity}.py`.
+- Modify: `src/silent_cascade/train/{checkpoints,provenance}.py` and the existing provenance tests only to share/authenticate the unchanged alias-layout and logical-state hash primitives.
 - Modify: typed runtime diagnostics only where a new neural failure identity is needed.
 
 **Interfaces:**
 
-- `NeuralModelIdentity`: frozen model config canonical JSON, weight SHA, source SHA; no data truth.
+- `NeuralModelIdentity`: frozen model-only config canonical JSON, explicitly named `model_state_sha256`, and source revision; no data truth. Actual checkpoint-file SHA belongs in evaluation/archive provenance, not in place of this logical digest.
 - `NeuralEventFlowAgent(model: EventFlowModel, *, identity: NeuralModelIdentity, device: str)` implements the existing `AgentCondition`; implementation ID `neural-event-flow-v1`.
 - `diagnostic_snapshot()` returns immutable per-callback module/score/prediction data; it cannot create events or expose private truth.
 
@@ -554,6 +563,15 @@ Structural guards may mask illegal modes/empty slots, never knowledge of the
 answer. Empty learned recall, invalid schema or nonfinite predictions raise typed
 errors; finite wrong predictions remain wrong. Preserve engine-owned counters.
 
+Share the existing Phase3 alias-layout and model-state hash through core-owned
+`models/weights.py`; the agent must not import a training/archive parser. Preserve
+the old digest bytes, wire schema and legacy error behavior, and authenticate the
+new helper in the current source closure. Check config/state/alias identity once
+when preparing a frozen evaluator agent, then detect parameter/buffer storage or
+version mutation. Reusing that agent across episodes must not hash or serialize
+all weights per episode or event. Add identity, alias, nonfinite and mutation
+regressions; keep all original historical artifact hashes unchanged.
+
 - [ ] **Step 4: Run GREEN and spy audits.** Verify no pre-activation deliberation,
 no model/agent import of oracle/training/private env, dormant direct advance,
 external preemption, ties, clamps, same-kind refractory, cap and nonmutating
@@ -566,7 +584,7 @@ remain identical until the engine privately ends each run.
 
 **Files:**
 
-- Create: `src/silent_cascade/eventflow/{checkpoint_state,neural_checkpoint,neural_replay}.py`.
+- Create: `src/silent_cascade/eventflow/{checkpoint_state,neural_weights,neural_checkpoint,neural_replay}.py`.
 - Modify: `src/silent_cascade/eventflow/{checkpoint,engine}.py` (narrow codec extraction and closed failure-boundary dispatch).
 - Modify: `tests/regression/test_import_boundaries.py` with exact private
   checkpoint/replay-module exceptions; never exempt the learned agent or model.
@@ -583,8 +601,9 @@ remain identical until the engine privately ends each run.
   config: EventFlowConfig, source_revision: str,
   device: str) -> NeuralRuntimeCheckpoint`.
 - `restore_neural_runtime(artifact, *, device, restore_rng=True) -> tuple[RuntimeSession, NeuralEventFlowAgent]`.
-- `write_neural_replay(path, *, bundle, result, identity, config, weights) -> str` and `verify_neural_replay(path, *, weights_path: Path) -> NeuralReplayComparison`.
-- New schemas `phase4-neural-runtime-v1` and `phase4-neural-replay-v1`; keep original scripted schemas/bytes unchanged.
+- `save_neural_weights(path: Path, *, model, identity) -> str` returns its actual file SHA; `load_neural_weights(path: Path, *, expected_sha256: str, device: str)` returns a descriptor containing restored model/identity and actual file SHA.
+- `write_neural_replay(path, *, bundle, result, identity, config, weights: Path) -> str` and `verify_neural_replay(path, *, weights_path: Path) -> NeuralReplayComparison` consume the closed portable weights format and bind both its file SHA and logical model identity.
+- New schemas `phase4-neural-weights-v1`, `phase4-neural-runtime-v1` and `phase4-neural-replay-v1`; keep original scripted schemas/bytes unchanged.
 
 - [ ] **Step 1: Write RED pause/resume and corruption tests.**
 
@@ -636,6 +655,12 @@ global RNG. Extract common codec helpers rather than duplicating the full legacy
 checkpoint implementation. Legacy scripted archives and tests must retain exact
 semantics and default schema.
 
+The portable weights codec belongs in `neural_weights.py` and follows the same
+bounded no-follow/atomic archive rules. Include model configuration, source and
+logical identity, unique tensors and exact aliases; preserve caller RNG on an
+invalid load. Standalone runtime archives may embed that logical state without
+claiming their different file bytes reproduce a source checkpoint's hash.
+
 Extend the engine failure boundary to stage neural state before untrusted
 callbacks and attach a neural checkpoint plus the last 20 sanitized events to
 its crash bundle. Catch `NeuralError` at the adapter boundary and convert to a
@@ -671,7 +696,9 @@ continuation; preserve same-device restoration and separate MPS tolerances.
   score fields, event counts/hashes, public predictions, error/crash reference,
   compute, and `evaluation_mode='autonomous_timed'`.
 - `EvaluationIdentity`: immutable experiment/stage/split, manifest hash, ordered
-  episode-hash inventory, `NeuralModelIdentity` and evaluation configuration.
+  episode-hash inventory, actual source `checkpoint_sha256`, `NeuralModelIdentity`
+  and evaluation configuration. Raw rows retain the actual checkpoint hash and
+  logical model-state hash as distinct fields.
 - `PilotMetrics`: integer outcome/error denominators, derived rates and explicit
   pilot-gate result; `PilotEvaluation`: identity, metrics, output path and artifact
   hashes. These are strict, serializable records, not live models or sessions.
@@ -955,6 +982,11 @@ step in this diagnostic. Record whether the evidence supports a context mismatch
 weak classification, guard failure, transition mismatch or an unresolved mixture.
 Different scores alone do not prove a cause.
 
+If converting those weights to the portable runtime format, retain the original
+accepted file SHA and the converted file's distinct SHA. Prove exact tensor and
+alias equivalence through the shared logical-state digest; never relabel a
+converted archive as the original Phase3 artifact.
+
 If a concrete implementation defect is found, use systematic debugging, add the
 smallest failing regression and fix it in its owning task. Preserve all previous
 diagnostic rows. A new loss/head requires a versioned, evidence-backed amendment
@@ -1057,6 +1089,10 @@ schema, config parser and authenticity rules intact. Bind actual tensor inventor
 and shared aliases, optimizer groups, CPU/MPS RNG, full canonical Phase4 config,
 source identity, global progress and promotion hashes. Restore transactionally:
 validation must finish before changing global RNG or a live model.
+
+Export the Task4 portable weights format for autonomous evaluation and replay.
+Retain the separately hashed full training checkpoint and its progress link;
+the exported file's identity and the logical model-state digest are distinct.
 
 Publish durable checkpoints at validation/promotion/final boundaries, with an
 initial checkpoint and append-only metric journal. An unexpected restart resumes
@@ -1314,6 +1350,8 @@ the producer's "passed" flag. Authenticate regular tracked bytes and actual load
 module origins; reject dirty relevant source and symlinks. Require the effective
 approved plan at or before the source commit and immutable manifest introduction
 before the first optimizer update. No accepted-result rehashing at a new source.
+Verify the actual checkpoint/portable-file-to-logical-model identity chain from
+loaded tensors and aliases; self-consistent copied metadata is not that proof.
 
 ```python
 if observed_episode_ids != expected_episode_ids:
@@ -1527,3 +1565,10 @@ its literal closure to cover that dependency. Preserving historical closure
 bytes means preserving their original Git revisions and artifacts, not leaving
 new current execution dependencies unauthenticated. This additive correction
 changes no historical result, schema, training arithmetic or acceptance gate.
+
+**Identity clarification (2026-09-16):** Existing Phase3 descriptors distinguish
+`file_sha256` and `model_state_sha256`. Phase4 retains that distinction across
+runtime, replay and pilot exports. Sharing the unchanged logical-state hash in a
+core module avoids importing training parsers into an agent or claiming that a
+new archive envelope reproduces an old file hash. Tasks 3–5, 7–8 and 11 now state
+the shared interface explicitly. No model, metric or scientific gate changes.
