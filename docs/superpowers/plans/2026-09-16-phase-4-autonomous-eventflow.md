@@ -1034,7 +1034,19 @@ fresh load and a changed batch counter changes only the addressed examples.
   never a timed pilot gate.
 - `diagnose_actions(model: EventFlowModel, *, examples: Sequence[CurriculumExample],
   identity: NeuralModelIdentity, config: Phase4Config,
+  source_weights_path: Path, expected_source_weights_sha256: str,
+  source_manifest_path: Path, expected_source_manifest_sha256: str,
   output_dir: Path) -> ActionDiagnosticReport`.
+- Authenticate those actual original files once before diagnostic execution:
+  load the weight bundle with its expected file SHA, regenerate the original
+  corpus using the bundle's original Phase3 configuration, and compare the
+  supplied live model/identity and ordered examples with those authenticated
+  inputs. Keep the original producer/config separate from the current
+  diagnostic executor/config. Local paths are locators only, not portable
+  report identities. Tiny fixtures supply their own real matching hashes and
+  cannot certify the historical reproduction. Reject wrong weight/manifest
+  hashes, substituted live models and reordered/substituted examples before
+  autonomous execution; a logical tensor hash alone is not file authentication.
 - Consume the Task 3 learned agent and Task 5 autonomous evaluator. Private
   teacher contexts stay inside this diagnostic/training module, not agent code.
   Use Task 6's validated private curriculum projection for the autonomous branch.
