@@ -116,6 +116,12 @@ a failing test. A new loss or architecture is not silently invented by this plan
    the current public `AgentInit`, and diagnostic counters. Reconstruct public
    context from state without replaying the transcript. Initially re-encode the
    bounded memory at each needed callback and count it; no uncheckpointed cache.
+   Before the first public FACT, use a neutral analytic segment whose latent
+   targets equal the initial state and whose guards are dormant. Do not call a
+   learned controller before the first event. The existing teacher observer
+   starts its learned trajectory at that first FACT; preserve this shared
+   initialization contract instead of introducing an untrained runtime-only
+   latent flow. Elapsed time still enters the public FACT time features.
 2. **Shared transition order.** Extract public tensor transition operations from
    teacher unrolls and reuse them at runtime. Prediction happens before applying
    the decoded/teacher decision; mode/support/hypothesis features enter the jump
@@ -502,8 +508,12 @@ are never corrected; changing guard outputs alone changes timestamps.
 
 - [ ] **Step 3: Implement callbacks under `torch.no_grad()`.**
 
-Initialize bounded state and public `AgentInit`. Install controller parameters
-once initially and once after each public/internal jump. During OBSERVING use
+Initialize bounded state and public `AgentInit` with a neutral analytic segment
+(latent targets equal the initial state, valid positive rates, dormant guards).
+Install learned controller parameters once after each public/internal jump,
+starting with the first FACT; no initial neural forward. Add a positive first-
+observation-gap regression proving that the first post-FACT context matches the
+unchanged teacher observer. During OBSERVING use
 the model's zero-preview path; no scorer calls. On FACT, encode/inject the
 delivered record and store identical perceived metadata. ACTIVATE establishes
 focus/activation time through `model.observe`.
@@ -1493,3 +1503,12 @@ interfaces, including task dependencies, immutable historical evidence, public/
 private boundaries, action decoding, global training budget and unchanged pilot
 gates. The user subsequently approved execution in the task thread on 2026-09-16.
 Approval does not establish any implementation, training or acceptance result.
+
+**Execution clarification (2026-09-16):** A read-only fixed-seed reproduction
+confirmed that the originally proposed pre-first-FACT controller call would
+produce a runtime-only latent change: at first gap `0.5731144887975146`, the
+maximum absolute pre-FACT latent was `0.28444260358810425`, versus `0.0` in
+`train/observations.py`. Initialization is therefore explicitly neutral until
+the first public event, matching the existing teacher path. This correction is
+authorized by the standing in-scope plan-adjustment policy; it changes neither
+historical training behavior nor post-activation dynamics or acceptance gates.
