@@ -193,8 +193,12 @@ def _crash_index(root, rows):
 
 
 def _verify_evidence(root, row, *, retain):
-    from silent_cascade.logging.neural_trace import NeuralEventObservation
+    from silent_cascade.logging.neural_trace import (
+        NeuralEventObservation,
+        validate_full_neural_trace,
+    )
 
+    verified_bytes = {}
     for reference, digest in (
         (row.neural_trace_ref, row.neural_trace_sha256),
         (row.full_trace_ref, row.full_trace_sha256),
@@ -204,13 +208,15 @@ def _verify_evidence(root, row, *, retain):
         if reference is not None:
             if Path(reference).is_absolute() or ".." in Path(reference).parts:
                 raise ValueError("unsafe trace reference")
-            if sha256_bytes(read_evaluation_artifact(root / reference)) != digest:
+            if reference not in verified_bytes:
+                verified_bytes[reference] = read_evaluation_artifact(root / reference)
+            if sha256_bytes(verified_bytes[reference]) != digest:
                 raise ValueError("trace integrity mismatch")
     if row.neural_trace_ref is None or (
         (retain or not row.timed_success) and row.full_trace_ref is None
     ):
         raise ValueError("missing required runtime evidence")
-    sidecar = json.loads(read_evaluation_artifact(root / row.neural_trace_ref))
+    sidecar = json.loads(verified_bytes[row.neural_trace_ref])
     if (sidecar["identity_sha256"], sidecar["episode_sha256"], sidecar["schema"]) != (
         row.identity_sha256,
         row.episode_sha256,
@@ -252,6 +258,14 @@ def _verify_evidence(root, row, *, retain):
             raise ValueError("completed episode requires terminal evidence")
     elif row.crash_ref != f"crashes/index.json#{row.public_id}":
         raise ValueError("failed episode requires its crash index reference")
+    if row.full_trace_ref is not None:
+        validate_full_neural_trace(
+            verified_bytes[row.full_trace_ref],
+            identity_sha256=row.identity_sha256,
+            episode_sha256=row.episode_sha256,
+            events=events,
+            initialization_failed=(row.error is not None and row.causal_trace_sha256 is None),
+        )
 
 
 def write_evaluation(

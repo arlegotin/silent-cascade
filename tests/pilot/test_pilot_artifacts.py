@@ -199,3 +199,235 @@ def test_stratified_retention_is_predeclared_and_bounded(neural_archive_case, tm
             counts[key] = counts.get(key, 0) + 1
     assert len(counts) == 9
     assert max(counts.values()) - min(counts.values()) <= 1
+
+
+@pytest.fixture
+def retained_evaluation(neural_archive_case, tmp_path):
+    import shutil
+
+    from silent_cascade.eval.metrics import TimedEpisodeRow
+    from silent_cascade.eval.runner import evaluate_episodes
+
+    case = neural_archive_case
+    identity = make_identity(case, (case.bundle,), tmp_path)
+    original = tmp_path / "original"
+    evaluate_episodes(
+        case.model,
+        identity=identity,
+        config=case.config,
+        episodes=[case.bundle],
+        output_dir=original,
+        device="cpu",
+    )
+    row = TimedEpisodeRow.model_validate_json((original / "rows.jsonl").read_bytes())
+    destination = tmp_path / "republished"
+    shutil.copytree(original / "episodes", destination / "episodes")
+    return case, identity, row, destination
+
+
+@pytest.mark.parametrize("substitution", ["neural_sidecar", "other_episode", "other_evaluation"])
+def test_retained_trajectory_substitution_never_publishes_done(
+    retained_evaluation, tmp_path, substitution
+):
+    from dataclasses import replace
+
+    from silent_cascade.eval.artifacts import EpisodeBinding, EvaluationIdentity, write_evaluation
+    from silent_cascade.eval.metrics import TimedEpisodeRow
+    from silent_cascade.eval.runner import evaluate_episodes
+    from silent_cascade.hashing import sha256_bytes
+
+    case, identity, row, destination = retained_evaluation
+    if substitution == "neural_sidecar":
+        row = row.model_copy(
+            update={
+                "full_trace_ref": row.neural_trace_ref,
+                "full_trace_sha256": row.neural_trace_sha256,
+            }
+        )
+    else:
+        other_bundle = case.bundle
+        if substitution == "other_episode":
+            other_bundle = replace(
+                case.bundle,
+                public=replace(
+                    case.bundle.public,
+                    init=replace(
+                        case.bundle.public.init,
+                        episode_public_id="00000000-0000-4000-8000-000000000002",
+                    ),
+                ),
+            )
+        values = {name: getattr(identity, name) for name in EvaluationIdentity.model_fields}
+        other_identity = EvaluationIdentity.model_validate(
+            values
+            | {
+                "experiment": "other-evaluation",
+                "episodes": (EpisodeBinding.from_bundle(other_bundle),),
+            }
+        )
+        other_output = tmp_path / "other"
+        evaluate_episodes(
+            case.model,
+            identity=other_identity,
+            config=case.config,
+            episodes=[other_bundle],
+            output_dir=other_output,
+            device="cpu",
+        )
+        other_row = TimedEpisodeRow.model_validate_json((other_output / "rows.jsonl").read_bytes())
+        raw = (other_output / other_row.full_trace_ref).read_bytes()
+        (destination / row.full_trace_ref).write_bytes(raw)
+        row = row.model_copy(update={"full_trace_sha256": sha256_bytes(raw)})
+    with pytest.raises(ValueError, match="trajectory"):
+        write_evaluation(identity=identity, rows=[row], output_dir=destination)
+    assert not (destination / "DONE").exists()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "schema",
+        "episode_binding",
+        "evaluation_binding",
+        "missing_anchors",
+        "empty_anchors",
+        "missing_initial",
+        "missing_core",
+        "core_not_object",
+        "missing_segment",
+        "wrong_anchor_type",
+        "tensor_shape",
+        "tensor_values",
+        "tensor_dtype",
+        "anchor_event",
+        "anchor_time",
+        "not_gzip",
+        "truncated_gzip",
+        "trailing_gzip",
+        "invalid_json",
+        "duplicate_key",
+        "oversized",
+    ],
+)
+def test_malformed_retained_trajectory_never_publishes_done(
+    retained_evaluation, monkeypatch, corruption
+):
+    import gzip
+
+    from silent_cascade.eval.artifacts import write_evaluation
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.logging import neural_trace
+
+    _, identity, row, destination = retained_evaluation
+    path = destination / row.full_trace_ref
+    original = path.read_bytes()
+    payload = json.loads(gzip.decompress(original))
+    if corruption == "schema":
+        payload["schema"] = "phase4-neural-observations-v1"
+    elif corruption == "episode_binding":
+        payload["episode_sha256"] = "0" * 64
+    elif corruption == "evaluation_binding":
+        payload["identity_sha256"] = "0" * 64
+    elif corruption == "missing_anchors":
+        del payload["anchors"]
+    elif corruption == "empty_anchors":
+        payload["anchors"] = []
+    elif corruption == "missing_initial":
+        payload["anchors"].pop(0)
+    elif corruption == "missing_core":
+        del payload["anchors"][0]["core"]
+    elif corruption == "core_not_object":
+        payload["anchors"][0]["core"] = list(payload["anchors"][0]["core"].items())
+    elif corruption == "missing_segment":
+        del payload["anchors"][0]["segment"]
+    elif corruption == "wrong_anchor_type":
+        payload["anchors"][0] = 0
+    elif corruption.startswith("tensor_"):
+        tensor = payload["anchors"][0]["core"]["continuous"]["z_fast"]
+        if corruption == "tensor_shape":
+            tensor["shape"] = [255]
+        elif corruption == "tensor_values":
+            tensor["values"] = ["not-a-float"] * 256
+        else:
+            tensor["dtype"] = "torch.float64"
+    elif corruption == "anchor_event":
+        payload["anchors"][1]["core"]["last_event_id"] = 777
+    elif corruption == "anchor_time":
+        payload["anchors"][1]["time"] = 777.0
+    raw = gzip.compress(canonical_json_bytes(payload), mtime=0)
+    if corruption == "not_gzip":
+        raw = canonical_json_bytes(payload)
+    elif corruption == "truncated_gzip":
+        raw = raw[:-3]
+    elif corruption == "trailing_gzip":
+        raw += gzip.compress(b"{}", mtime=0)
+    elif corruption == "invalid_json":
+        raw = gzip.compress(b"{", mtime=0)
+    elif corruption == "duplicate_key":
+        raw = gzip.compress(b'{"schema":"forged",' + canonical_json_bytes(payload)[1:], mtime=0)
+    elif corruption == "oversized":
+        monkeypatch.setattr(neural_trace, "MAX_TRAJECTORY_JSON_BYTES", 1024, raising=False)
+        # Otherwise-valid evidence must fail because of the bound, not JSON syntax.
+        raw = original
+    path.write_bytes(raw)
+    row = row.model_copy(update={"full_trace_sha256": sha256_bytes(raw)})
+    with pytest.raises(ValueError, match="trajectory"):
+        write_evaluation(identity=identity, rows=[row], output_dir=destination)
+    assert not (destination / "DONE").exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["initialize", "first_event"])
+def test_zero_event_failure_requires_its_exact_anchor_structure(
+    neural_archive_case, tmp_path, monkeypatch, failure_stage
+):
+    import gzip
+    import shutil
+
+    from silent_cascade.eval.artifacts import write_evaluation
+    from silent_cascade.eval.metrics import TimedEpisodeRow
+    from silent_cascade.eval.runner import evaluate_episodes
+    from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.models.errors import NeuralError
+
+    case = neural_archive_case
+    identity = make_identity(case, (case.bundle,), tmp_path)
+
+    def fail(self, *args):
+        raise NeuralError("injected callback failure")
+
+    method = "initialize" if failure_stage == "initialize" else "on_external"
+    monkeypatch.setattr(NeuralEventFlowAgent, method, fail)
+    result = evaluate_episodes(
+        case.model,
+        identity=identity,
+        config=case.config,
+        episodes=[case.bundle],
+        output_dir=tmp_path / "eval",
+        device="cpu",
+    )
+    row = json.loads((result.output_path / "rows.jsonl").read_bytes())
+    assert result.metrics.error_count == 1
+    assert row["event_count"] == 0
+    assert (row["causal_trace_sha256"] is None) == (failure_stage == "initialize")
+    trajectory = json.loads(
+        gzip.decompress((result.output_path / row["full_trace_ref"]).read_bytes())
+    )
+    assert len(trajectory["anchors"]) == (0 if failure_stage == "initialize" else 1)
+    assert (result.output_path / "DONE").exists()
+    destination = tmp_path / "bad"
+    shutil.copytree(result.output_path / "episodes", destination / "episodes")
+    shutil.copytree(
+        result.output_path / "crashes",
+        destination / "crashes",
+        ignore=shutil.ignore_patterns("index.json"),
+    )
+    trajectory["anchors"] = [{}] if failure_stage == "initialize" else []
+    raw = gzip.compress(canonical_json_bytes(trajectory), mtime=0)
+    (destination / row["full_trace_ref"]).write_bytes(raw)
+    updated = TimedEpisodeRow.model_validate_json(json.dumps(row)).model_copy(
+        update={"full_trace_sha256": sha256_bytes(raw)}
+    )
+    with pytest.raises(ValueError, match="trajectory"):
+        write_evaluation(identity=identity, rows=[updated], output_dir=destination)
+    assert not (destination / "DONE").exists()

@@ -1,6 +1,9 @@
 """Private observers of committed neural events; no policy callback authority."""
 
 import gzip
+import json
+import math
+import zlib
 from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
 
@@ -11,6 +14,8 @@ from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.io import atomic_create_bytes
 from silent_cascade.logging.trace import SegmentSummary
 from silent_cascade.validation import StrictModel
+
+MAX_TRAJECTORY_JSON_BYTES = 128 * 1024 * 1024
 
 
 class RecallObservation(StrictModel):
@@ -123,3 +128,185 @@ def write_full_neural_trace(path: Path, *, identity_sha256, episode_sha256, traj
     )
     atomic_create_bytes(path, raw)
     return sha256_bytes(raw)
+
+
+def _trajectory_object(value, keys):
+    if not isinstance(value, dict) or set(value) != set(keys):
+        raise ValueError("invalid trajectory object fields")
+    return value
+
+
+def _trajectory_state(anchor):
+    """Adapt the existing JSON wire layout to the shared typed CPU state decoder."""
+    from silent_cascade.eventflow.checkpoint_state import CoreMetadata, StateMetadata, _decode_state
+
+    anchor = _trajectory_object(anchor, ("core", "segment", "time"))
+    core = dict(_trajectory_object(anchor["core"], (*CoreMetadata.model_fields, "continuous")))
+    continuous = core.pop("continuous")
+    segment = _trajectory_object(
+        anchor["segment"],
+        (
+            "started_at",
+            "origin",
+            "parameters",
+            "parent_event_id",
+            "prediction_snapshot_sha256",
+        ),
+    )
+    parameters = _trajectory_object(
+        segment["parameters"],
+        (
+            "flow_targets",
+            "flow_rates",
+            "guard_targets",
+            "guard_rates",
+        ),
+    )
+    tensors = {}
+
+    def vector(value, size):
+        value = _trajectory_object(value, ("dtype", "shape", "values"))
+        if (
+            value["dtype"] != "torch.float32"
+            or value["shape"] != [size]
+            or any(type(dimension) is not int for dimension in value["shape"])
+            or not isinstance(value["values"], list)
+            or len(value["values"]) != size
+            or any(type(item) is not float or not math.isfinite(item) for item in value["values"])
+        ):
+            raise ValueError("invalid trajectory float32 vector")
+        tensor = torch.tensor(value["values"], dtype=torch.float32)
+        if tensor.tolist() != value["values"]:
+            raise ValueError("trajectory values are not exact float32 values")
+        return tensor
+
+    dimensions = {
+        "z_fast": 256,
+        "z_slow": 64,
+        "drives": 8,
+        "focus_key": 64,
+        "hypothesis_latent": 64,
+    }
+    for group, values in (
+        ("current", continuous),
+        ("origin", segment["origin"]),
+        ("targets", parameters["flow_targets"]),
+        ("rates", parameters["flow_rates"]),
+    ):
+        sizes = dimensions | ({"guard_accumulators": 3} if group in {"current", "origin"} else {})
+        _trajectory_object(values, sizes)
+        for name, size in sizes.items():
+            tensors[f"anchor.{group}.{name}"] = vector(values[name], size)
+    for name in ("guard_targets", "guard_rates"):
+        tensors[f"anchor.{name}"] = vector(parameters[name], 3)
+    metadata = StateMetadata.model_validate_json(
+        canonical_json_bytes(
+            {
+                "core": core,
+                "time": anchor["time"],
+                "segment_started_at": segment["started_at"],
+                "segment_parent_event_id": segment["parent_event_id"],
+                "prediction_snapshot_sha256": segment["prediction_snapshot_sha256"],
+            }
+        )
+    )
+    return _decode_state(metadata, "anchor", tensors, "cpu")
+
+
+def validate_full_neural_trace(
+    raw, *, identity_sha256, episode_sha256, events, initialization_failed
+):
+    """Validate one bounded gzip member and its complete committed anchor structure."""
+    from silent_cascade.errors import SilentCascadeError
+    from silent_cascade.logging.trace import _state_summary
+    from silent_cascade.schemas import Mode
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate trajectory JSON key")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError("invalid trajectory JSON constant")
+
+    try:
+        decoder = zlib.decompressobj(wbits=31)
+        decoded = decoder.decompress(raw, MAX_TRAJECTORY_JSON_BYTES + 1)
+        if (
+            len(decoded) > MAX_TRAJECTORY_JSON_BYTES
+            or not decoder.eof
+            or decoder.unused_data
+            or decoder.unconsumed_tail
+        ):
+            raise ValueError("invalid or oversized trajectory gzip member")
+        payload = _trajectory_object(
+            json.loads(decoded, object_pairs_hook=unique_object, parse_constant=reject_constant),
+            ("schema", "identity_sha256", "episode_sha256", "anchors"),
+        )
+        if (payload["schema"], payload["identity_sha256"], payload["episode_sha256"]) != (
+            "phase4-neural-trajectory-v1",
+            identity_sha256,
+            episode_sha256,
+        ):
+            raise ValueError("trajectory identity mismatch")
+        anchors = payload["anchors"]
+        expected_count = 0 if initialization_failed else len(events) + 1
+        if not isinstance(anchors, list) or len(anchors) != expected_count:
+            raise ValueError("trajectory anchor count mismatch")
+        if initialization_failed:
+            if events:
+                raise ValueError("initialization failure cannot have trajectory events")
+            return
+        previous = _trajectory_state(anchors[0])
+        if (
+            previous.core.mode is not Mode.OBSERVING
+            or previous.core.last_event_id is not None
+            or previous.core.last_event_time is not None
+            or previous.core.actions
+            or previous.core.memory.records
+            or previous.core.counters.jump_applications
+            or previous.time != previous.segment.started_at
+        ):
+            raise ValueError("invalid initial trajectory anchor")
+        for anchor, event in zip(anchors[1:], events, strict=True):
+            state = _trajectory_state(anchor)
+            if (
+                previous.core.mode is Mode.TERMINAL
+                or state.time < previous.time
+                or (
+                    state.time,
+                    state.core.last_event_time,
+                    state.core.last_event_id,
+                    state.core.mode.value,
+                    state.core.counters.jump_applications,
+                )
+                != (
+                    event["timestamp"],
+                    event["timestamp"],
+                    event["event_id"],
+                    event["post_mode"],
+                    previous.core.counters.jump_applications + 1,
+                )
+                or _state_summary(state.core.continuous)[1] != event["state_sha256"]
+            ):
+                raise ValueError("trajectory anchor differs from causal event")
+            if state.core.mode is not Mode.TERMINAL and (
+                state.segment.started_at != state.time
+                or canonical_json_bytes(asdict(SegmentSummary.from_segment(state.segment)))
+                != canonical_json_bytes(event["segment"])
+            ):
+                raise ValueError("trajectory segment differs from causal event")
+            previous = state
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        OverflowError,
+        RecursionError,
+        zlib.error,
+        SilentCascadeError,
+    ) as error:
+        raise ValueError("invalid retained trajectory evidence") from error
