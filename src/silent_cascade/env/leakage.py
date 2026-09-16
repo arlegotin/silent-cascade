@@ -2789,8 +2789,10 @@ def _audit_public_shortcut_controls(
     shuffled = tuple(
         _run_probes(values, rows, train, test, config, profile, corpus_hash, label_shuffled=True)
     )
-    clean_hash = sha256_bytes(values.tobytes())
-    injected = values.copy()
+    clean_hash = hashlib.sha256(memoryview(values)).hexdigest()
+    # Extraction owns this private diagnostic copy. Shuffled results and the
+    # clean digest are retained; no public or other caller's buffer is changed.
+    injected = values
     labels = _task_labels(rows, ShortcutTask.POSITIVE_BINARY)
     if (
         min(int(np.sum(labels[test] == value)) for value in (0, 1))
@@ -2799,7 +2801,7 @@ def _audit_public_shortcut_controls(
         raise ValueError("positive control has insufficient held-out examples")
     start, _ = _feature_bounds(ShortcutFeatureGroup.COUNTS)
     injected[:, start] = labels
-    injected_hash = sha256_bytes(injected.tobytes())
+    injected_hash = hashlib.sha256(memoryview(injected)).hexdigest()
     injector = NamedLeakInjector(
         "PILOT_PC_BINARY_COUNT_FEATURE",
         ShortcutTask.POSITIVE_BINARY,

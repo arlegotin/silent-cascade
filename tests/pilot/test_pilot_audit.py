@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import weakref
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,9 @@ module['_assert_neutral_kernel_and_report_integrity'](Path(sys.argv[2]))
 
 
 def _assert_neutral_kernel_and_report_integrity(tmp_path):
+    import numpy as np
+
+    from silent_cascade.env import leakage
     from silent_cascade.env.config import LeakageAuditProfileConfig
     from silent_cascade.env.episode import CorpusDigestEntry, corpus_sha256, episode_sha256
     from silent_cascade.env.leakage import (
@@ -105,6 +109,7 @@ def _assert_neutral_kernel_and_report_integrity(tmp_path):
         audit_public_shortcuts,
     )
     from silent_cascade.env.pilot import curriculum_to_bundle
+    from silent_cascade.hashing import sha256_bytes
     from silent_cascade.train.curriculum_data import CurriculumKey, make_curriculum_example
 
     config = resolve_pilot_config("phase4_smoke").config
@@ -158,7 +163,32 @@ def _assert_neutral_kernel_and_report_integrity(tmp_path):
         _run_probes(values, rows, train, test, config.data.leakage_audit, profile, corpus_hash)
     )
     assert len(clean) == 27
-    controls = _audit_public_shortcut_controls(examples, **kwargs)
+    original_prepare = leakage._prepare_public_shortcuts
+    original_control = leakage._run_positive_control_probe
+    observed = {}
+
+    def observe_owned_preparation(*args, **kwargs):
+        prepared = original_prepare(*args, **kwargs)
+        # Controls own a fresh diagnostic copy, separate from clean features.
+        assert not np.shares_memory(prepared[0], values)
+        observed["buffer"] = weakref.ref(prepared[0])
+        return prepared
+
+    def observe_injected_kernel(injected, *args, **kwargs):
+        # Once shuffled results and the clean digest are saved, the private
+        # buffer must transfer to injection without a second full-size store.
+        assert injected is observed["buffer"]()
+        return original_control(injected, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(leakage, "_prepare_public_shortcuts", observe_owned_preparation)
+        patch.setattr(leakage, "_run_positive_control_probe", observe_injected_kernel)
+        controls = _audit_public_shortcut_controls(examples, **kwargs)
+    expected_injected = values.copy()
+    start, _ = leakage._feature_bounds(leakage.ShortcutFeatureGroup.COUNTS)
+    expected_injected[:, start] = leakage._task_labels(rows, leakage.ShortcutTask.POSITIVE_BINARY)
+    assert controls.clean_feature_sha256 == sha256_bytes(values.tobytes())
+    assert controls.injected_feature_sha256 == sha256_bytes(expected_injected.tobytes())
     assert len(controls.shuffled_probes) == 27
     assert controls.control_id == "PILOT_PC_BINARY_COUNT_FEATURE"
     assert controls.injected_probe.balanced_accuracy >= 0.95

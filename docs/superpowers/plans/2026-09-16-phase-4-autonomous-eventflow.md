@@ -865,6 +865,12 @@ accuracy at least 95% and corrected p < 0.01. This is a Phase 4 diagnostic array
 control, not Phase 1 public-episode mutation evidence. All scientific thresholds
 and workload budgets remain unchanged.
 
+Fresh private feature extraction establishes diagnostic-copy ownership. After
+shuffled results and the clean feature hash are retained, that exclusively owned
+buffer may be reused for injection; public/training examples and buffers owned by
+other calls must remain unchanged. Hash its contiguous bytes without allocating
+a full-sized bytes copy.
+
 **Files:**
 
 - Create: `src/silent_cascade/env/pilot.py`, `src/silent_cascade/train/pilot_data.py`, `src/silent_cascade/eval/pilot_audit.py`.
