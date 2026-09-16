@@ -449,3 +449,67 @@ def test_original_manifest_digest_binds_the_snapshot_used_by_the_loader(
             expected_source_manifest_sha256=args["expected_source_manifest_sha256"],
             device="cpu",
         )
+
+
+@pytest.mark.parametrize("failure_stage", ["prediction_validation", "segment_installation"])
+def test_failure_after_action_head_retains_uncommitted_attempt_and_denominator(
+    diagnostic_case, monkeypatch, failure_stage
+):
+    from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+    from silent_cascade.models.errors import NeuralError
+    from silent_cascade.models.heads import ActionPredictions
+
+    if failure_stage == "prediction_validation":
+        original = NeuralEventFlowAgent._predictions
+
+        def fail_validation(self, output, expected, context):
+            if expected is ActionPredictions:
+                raise NeuralError("controlled failure after actual action-head prediction")
+            return original(self, output, expected, context)
+
+        monkeypatch.setattr(NeuralEventFlowAgent, "_predictions", fail_validation)
+    else:
+        original = NeuralEventFlowAgent._install
+
+        def fail_installation(self, core, time, context, diagnostics):
+            if diagnostics.callback == "act":
+                raise NeuralError("controlled failure after action before segment installation")
+            return original(self, core, time, context, diagnostics)
+
+        monkeypatch.setattr(NeuralEventFlowAgent, "_install", fail_installation)
+
+    report = diagnostic_case.run()
+    assert report.autonomous.episode_count == report.autonomous.positive_count == 1
+    assert report.autonomous.error_count == report.autonomous_raw.error_count == 1
+    assert report.autonomous.action_count == report.autonomous_raw.action_count == 0
+    assert report.autonomous.missing_action_count == report.autonomous_raw.missing_action_count == 1
+    assert report.autonomous.timed_success_count == report.autonomous_raw.correct_count == 0
+    for row in read_rows(report):
+        if row["context_kind"].startswith("autonomous"):
+            assert not row["act_occurred"]
+            assert row["raw_five_way_choice"] is None
+            assert row["legal_act_shield_choice"] is None
+            assert row["logits"] is None
+            assert len(row["failed_action_attempts"]) == 1
+            attempt = row["failed_action_attempts"][0]
+            assert attempt["committed"] is False
+            assert len(attempt["state_sha256"]) == 64
+            assert attempt["context"]
+    assert (report.output_dir / "DONE").exists()
+    assert (report.output_dir / "autonomous/crashes/index.json").exists()
+    assert (report.output_dir / "autonomous/episodes/00000.trajectory.json.gz").exists()
+
+
+def test_successful_act_still_requires_its_observed_context(diagnostic_case, monkeypatch):
+    from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+
+    initialize = NeuralEventFlowAgent.initialize
+
+    def drop_runtime_observer(self, init):
+        # Deliberately damage only diagnostic observation on the inference copy.
+        self.model.action_heads._forward_hooks.clear()
+        return initialize(self, init)
+
+    monkeypatch.setattr(NeuralEventFlowAgent, "initialize", drop_runtime_observer)
+    with pytest.raises(ValueError, match="ACT observation inventory"):
+        diagnostic_case.run()

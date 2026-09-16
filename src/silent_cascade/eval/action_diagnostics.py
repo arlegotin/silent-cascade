@@ -557,7 +557,12 @@ def _autonomous(model, examples, bundles, identity, config, output_dir, detailed
         outcome = json.loads(line)
         sidecar = json.loads((evaluation.output_path / outcome["neural_trace_ref"]).read_text())
         positions = [i for i, e in enumerate(sidecar["events"]) if e["kind"] == "act"]
-        if len(positions) > 1 or len(positions) != len(captures.get(index, [])):
+        observed = captures.get(index, [])
+        # Inference precedes callback validation and commit. A failed callback
+        # may have one real head observation but no committed action; preserve
+        # its context separately without manufacturing an ACT readout or score.
+        failed_attempt = outcome["error"] is not None and not positions and len(observed) == 1
+        if len(positions) > 1 or (len(positions) != len(observed) and not failed_attempt):
             raise ValueError("autonomous ACT observation inventory mismatch")
         metadata = {
             "error": outcome["error"],
@@ -568,6 +573,15 @@ def _autonomous(model, examples, bundles, identity, config, output_dir, detailed
             else None,
             "guard_context": "actual_autonomous_segment" if positions else "no_act",
             "readout_position": "actual_autonomous_act" if positions else "missing_act",
+            "failed_action_attempts": [
+                {
+                    **observed[0],
+                    "committed": False,
+                    "observation_kind": "uncommitted_action_head_invocation",
+                }
+            ]
+            if failed_attempt
+            else [],
         }
         logits = None
         if positions:
