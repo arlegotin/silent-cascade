@@ -207,6 +207,16 @@ or second full-size bundle on disk. Pack/read at bounded buffer sizes. Existing
 compressed trajectories remain byte-identical. Validate spans, totals, order,
 missing tails and integer bounds before allocating/restoring.
 
+Run/corpus catalog generations use bounded content-addressed Merkle nodes. Run
+roots retain both unit references and active file ownership after local payload
+or manifest eviction; control snapshots have separate versioned ownership.
+Cold readers authenticate pages through explicit root hashes, without bucket
+listing. Incremental publication touches only changed trie paths and coalesces
+intermediate node rewrites before writing, keeping metadata working space bounded.
+Exact and ancestor/descendant file ownership collisions remain errors across
+archived and resident units. Becoming unreachable from the newest generation
+does not by itself authorize deletion of historical catalog evidence.
+
 Object keys are content-addressed within a run-specific prefix. Upload using
 create-only conditional writes. An existing object is reusable only after its
 downloaded bytes match the expected size and SHA-256; a collision fails. ETags,

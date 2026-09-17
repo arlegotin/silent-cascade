@@ -219,6 +219,22 @@ unit reference into a fresh destination; active source controls are never evicte
 Allow canonical `logical_root='.'` only to identify the run root; member paths
 still reject empty/dot/traversal components. This supports existing root journals.
 
+Add immutable `CatalogRef` and `publish_run_catalog`/`iter_run_catalog`, plus
+corresponding corpus publish/iterate APIs. Run publication accepts a previous
+generation, a stream of new `UnitRef` values, and bounded cold-object and unit-
+inventory readers. Use persistent content-addressed binary Merkle tries with
+bounded leaves and branch nodes, not an unbounded root list of page descriptors.
+Run roots bind unit references and active logical-file ownership; corpus roots
+bind run references. Updating a generation must read only changed trie paths,
+not download all historic inventories. Keep archived ownership after evicting
+local manifests; reject exact and ancestor/descendant file-path collisions.
+Control snapshots remain outside active ownership. Batch/coalesce changed nodes
+before durable publication so intermediate leaf rewrites do not accumulate on
+disk. Authenticate node hashes, counts, ordering and full traversal closure.
+An explicit catalog root hash is sufficient to locate cold recovery metadata;
+no bucket listing is needed. Old metadata remains subject to verified-remote-
+receipt eviction, even when a newer root no longer references it.
+
 - [ ] **Step 1 — RED: exact bytes and unsafe inventories.** Add this synthetic
   test, then traversal/symlink/hardlink/special-file, duplicate logical member,
   malformed span, missing final shard, nonfinite and overflow cases:
