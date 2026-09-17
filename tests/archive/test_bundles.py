@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -160,14 +159,11 @@ def test_restore_crash_before_atomic_publication_leaves_destination_absent(
 
     run, ref = _seal(tmp_path, tiny_archive_policy, archive_identity, {"unit/a": b"abc"})
     chunks = _chunks(tmp_path, run, ref, tiny_archive_policy)
-    original_rename = os.rename
 
-    def fail_publish(source, destination, *args, **kwargs):
-        if destination == "restored":
-            raise OSError("injected publication crash")
-        return original_rename(source, destination, *args, **kwargs)
+    def fail_publish(*_args, **_kwargs):
+        raise OSError("injected publication crash")
 
-    monkeypatch.setattr(os, "rename", fail_publish)
+    monkeypatch.setattr(bundles, "_rename_directory_noreplace", fail_publish)
     destination = tmp_path / "restored"
     with pytest.raises(OSError, match="publication crash"):
         bundles.restore_unit(
@@ -217,7 +213,7 @@ def test_sparse_episode_restore_requires_one_complete_authenticated_owned_set(
     restore_unit(
         control_dir=tmp_path / "control",
         ref=ref,
-        chunks=chunks,
+        chunks=chunks[:3],
         destination=destination,
         policy=policy,
         selected_paths=episode_a,
@@ -236,7 +232,7 @@ def test_sparse_episode_restore_requires_one_complete_authenticated_owned_set(
             selected_paths=("pack/episodes/00000.neural.json",),
         )
 
-    corrupt = list(chunks)
+    corrupt = list(chunks[:3])
     corrupt[-1].write_bytes(b"xxxx")
     with pytest.raises(ValueError, match="chunk"):
         restore_unit(
@@ -244,6 +240,23 @@ def test_sparse_episode_restore_requires_one_complete_authenticated_owned_set(
             ref=ref,
             chunks=corrupt,
             destination=tmp_path / "corrupt",
+            policy=policy,
+            selected_paths=episode_a,
+        )
+
+    from silent_cascade.archive.types import UnitManifest
+
+    manifest = UnitManifest.model_validate_json(
+        (tmp_path / "control" / ref.manifest_path).read_bytes()
+    )
+    unit_dir = (tmp_path / "control" / ref.manifest_path).parent
+    (unit_dir / manifest.inventory_shards[-1].path).unlink()
+    with pytest.raises(ValueError, match="inventory"):
+        restore_unit(
+            control_dir=tmp_path / "control",
+            ref=ref,
+            chunks=chunks[:3],
+            destination=tmp_path / "missing-inventory-tail",
             policy=policy,
             selected_paths=episode_a,
         )
@@ -379,6 +392,41 @@ def test_restore_does_not_replace_destination_created_during_staging(
         destination.mkdir()
 
     monkeypatch.setattr(bundles, "_restore_records", create_destination_after_restore)
+    with pytest.raises(FileExistsError):
+        bundles.restore_unit(
+            control_dir=tmp_path / "control",
+            ref=ref,
+            chunks=chunks,
+            destination=destination,
+            policy=tiny_archive_policy,
+        )
+    assert destination.is_dir()
+    assert not (destination / "unit").exists()
+
+
+def test_restore_atomically_refuses_destination_created_after_final_check(
+    tmp_path, tiny_archive_policy, archive_identity, monkeypatch
+):
+    from silent_cascade.archive import bundles
+
+    run, ref = _seal(tmp_path, tiny_archive_policy, archive_identity, {"unit/a": b"a"})
+    chunks = _chunks(tmp_path, run, ref, tiny_archive_policy)
+    destination = tmp_path / "restored"
+    original_stat = bundles.os.stat
+    missing_checks = 0
+
+    def create_destination_after_final_check(path, *args, **kwargs):
+        nonlocal missing_checks
+        try:
+            return original_stat(path, *args, **kwargs)
+        except FileNotFoundError:
+            if path == destination.name:
+                missing_checks += 1
+                if missing_checks == 2:
+                    bundles.os.mkdir(path, dir_fd=kwargs["dir_fd"])
+            raise
+
+    monkeypatch.setattr(bundles.os, "stat", create_destination_after_final_check)
     with pytest.raises(FileExistsError):
         bundles.restore_unit(
             control_dir=tmp_path / "control",

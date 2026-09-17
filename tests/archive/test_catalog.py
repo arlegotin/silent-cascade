@@ -154,6 +154,30 @@ def test_inventory_pages_are_bounded_and_missing_final_page_is_rejected(
         tuple(iter_unit_files(tmp_path / "control", ref))
 
 
+def test_seal_rejects_combined_inventory_metadata_above_reservation(
+    tmp_path, tiny_archive_policy, archive_identity
+):
+    from silent_cascade.archive.catalog import seal_unit
+
+    run = tmp_path / "run"
+    for index in range(150):
+        path = run / f"unit/{index:05d}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"")
+    control = tmp_path / "control"
+    with pytest.raises(ValueError, match="metadata"):
+        seal_unit(
+            run_dir=run,
+            control_dir=control,
+            logical_root="unit",
+            paths=tuple(f"unit/{index:05d}" for index in range(150)),
+            kind="partial",
+            identity=archive_identity,
+            policy=tiny_archive_policy,
+        )
+    assert not [path for path in (control / "units").iterdir()]
+
+
 def test_active_ownership_rejects_same_file_but_allows_disjoint_journal_segments(
     tmp_path, tiny_archive_policy, archive_identity
 ):
@@ -644,6 +668,156 @@ def test_catalog_publication_rejects_control_directory_swap(
     assert not (control / "catalog" / "roots").exists()
 
 
+def test_incremental_catalog_insert_splits_above_compressed_prefix(tmp_path, tiny_archive_policy):
+    from silent_cascade.archive.catalog import _CatalogStore, _insert_batch, _iter_tree
+    from silent_cascade.archive.types import UnitCatalogEntry
+
+    policy = tiny_archive_policy.model_copy(update={"page_entries": 1})
+    store = _CatalogStore(
+        control_dir=tmp_path,
+        policy=policy,
+        reader=lambda _path, _limit: (_ for _ in ()).throw(AssertionError("unexpected read")),
+    )
+
+    def record(key):
+        return UnitCatalogEntry(
+            key=key,
+            unit_id=key,
+            kind="partial",
+            logical_root="unit",
+            expanded_bytes=0,
+            file_count=1,
+            manifest_path=f"units/{key}/manifest.json",
+        )
+
+    root = _insert_batch(
+        None,
+        (record("0" * 64), record("4" + "0" * 63)),
+        index="units",
+        store=store,
+    )
+    root = _insert_batch(
+        root,
+        (record("8" + "0" * 63),),
+        index="units",
+        store=store,
+    )
+    assert root is not None
+    assert [entry.key for entry in _iter_tree(store, root, index="units")] == [
+        "0" * 64,
+        "4" + "0" * 63,
+        "8" + "0" * 63,
+    ]
+
+
+def test_catalog_rejects_oversized_node_descriptor_before_cold_read(tmp_path):
+    from silent_cascade.archive.catalog import iter_run_catalog
+    from silent_cascade.archive.types import (
+        ArchivePolicy,
+        CatalogNodeRef,
+        CatalogRef,
+        RunCatalogRoot,
+    )
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    policy = ArchivePolicy()
+    node = CatalogNodeRef(
+        sha256="1" * 64,
+        path=f"catalog/nodes/{'1' * 64}.json",
+        entries=1,
+        decoded_bytes=2**63 - 1,
+        first_key="2" * 64,
+        last_key="2" * 64,
+    )
+    root = RunCatalogRoot(
+        run_id="cold",
+        units=node,
+        ownership=None,
+        unit_count=1,
+        ownership_count=0,
+    )
+    payload = canonical_json_bytes(root)
+    catalog_id = sha256_bytes(payload)
+    root_path = f"catalog/roots/{catalog_id}.json"
+    requests = []
+
+    def reader(path, limit):
+        requests.append((path, limit))
+        if path == root_path:
+            return payload + b"\n"
+        raise AssertionError("oversized node descriptor reached cold reader")
+
+    with pytest.raises(ValueError, match=r"descriptor|page"):
+        tuple(
+            iter_run_catalog(
+                tmp_path,
+                CatalogRef(catalog_id, "run", "cold", 1, root_path),
+                policy=policy,
+                object_reader=reader,
+            )
+        )
+    assert requests == [(root_path, policy.page_bytes)]
+
+
+def test_catalog_rejects_loaded_leaf_above_entry_limit(tmp_path, tiny_archive_policy):
+    from silent_cascade.archive.catalog import iter_run_catalog
+    from silent_cascade.archive.types import (
+        CatalogNode,
+        CatalogNodeRef,
+        CatalogRef,
+        RunCatalogRoot,
+        UnitCatalogEntry,
+    )
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    policy = tiny_archive_policy.model_copy(update={"page_entries": 1, "page_bytes": 4096})
+    records = tuple(
+        UnitCatalogEntry(
+            key=f"{index:064x}",
+            unit_id=f"{index:064x}",
+            kind="partial",
+            logical_root="unit",
+            expanded_bytes=0,
+            file_count=1,
+            manifest_path=f"units/{index:064x}/manifest.json",
+        )
+        for index in range(2)
+    )
+    node = CatalogNode(index="units", depth=0, records=records)
+    node_payload = canonical_json_bytes(node)
+    node_id = sha256_bytes(node_payload)
+    node_path = f"catalog/nodes/{node_id}.json"
+    node_ref = CatalogNodeRef(
+        sha256=node_id,
+        path=node_path,
+        entries=2,
+        decoded_bytes=len(node_payload) + 1,
+        first_key=records[0].key,
+        last_key=records[-1].key,
+    )
+    root = RunCatalogRoot(
+        run_id="cold",
+        units=node_ref,
+        ownership=None,
+        unit_count=2,
+        ownership_count=0,
+    )
+    root_payload = canonical_json_bytes(root)
+    catalog_id = sha256_bytes(root_payload)
+    root_path = f"catalog/roots/{catalog_id}.json"
+    objects = {root_path: root_payload + b"\n", node_path: node_payload + b"\n"}
+
+    with pytest.raises(ValueError, match="entry bound"):
+        tuple(
+            iter_run_catalog(
+                tmp_path,
+                CatalogRef(catalog_id, "run", "cold", 2, root_path),
+                policy=policy,
+                object_reader=lambda path, _limit: objects[path],
+            )
+        )
+
+
 @pytest.mark.parametrize("relation", ["exact", "ancestor", "descendant"])
 def test_run_catalog_rejects_archived_ownership_overlap(
     tmp_path, tiny_archive_policy, archive_identity, relation
@@ -683,6 +857,31 @@ def test_run_catalog_rejects_archived_ownership_overlap(
             run_id="debug-fixture",
             units=(conflicting,),
             previous=generation,
+            policy=tiny_archive_policy,
+        )
+
+
+def test_run_catalog_rejects_nonadjacent_same_generation_ancestor_overlap(
+    tmp_path, tiny_archive_policy, archive_identity
+):
+    from silent_cascade.archive.catalog import publish_run_catalog
+
+    control = tmp_path / "control"
+    units = tuple(
+        _seal_catalog_unit(
+            tmp_path,
+            control,
+            tiny_archive_policy,
+            archive_identity,
+            path,
+        )
+        for path in ("data/a", "data/a-foo", "data/a/b")
+    )
+    with pytest.raises(ValueError, match=r"overlap|ownership|owned"):
+        publish_run_catalog(
+            control_dir=control,
+            run_id="debug-fixture",
+            units=units,
             policy=tiny_archive_policy,
         )
 
@@ -737,6 +936,33 @@ def test_corpus_catalog_pages_run_generations_and_authenticates_missing_tail(
         tuple(iter_corpus_catalog(control, corpus, policy=tiny_archive_policy))
 
 
+def test_run_catalog_traversal_authenticates_ownership_tree_closure(
+    tmp_path, tiny_archive_policy, archive_identity
+):
+    from silent_cascade.archive.catalog import iter_run_catalog, publish_run_catalog
+    from silent_cascade.archive.types import RunCatalogRoot
+
+    control = tmp_path / "control"
+    unit = _seal_catalog_unit(
+        tmp_path,
+        control,
+        tiny_archive_policy,
+        archive_identity,
+        "unit/artifact",
+    )
+    catalog = publish_run_catalog(
+        control_dir=control,
+        run_id="debug-fixture",
+        units=(unit,),
+        policy=tiny_archive_policy,
+    )
+    root = RunCatalogRoot.model_validate_json((control / catalog.root_path).read_bytes())
+    assert root.ownership is not None
+    (control / root.ownership.path).unlink()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        tuple(iter_run_catalog(control, catalog, policy=tiny_archive_policy))
+
+
 def test_million_descriptor_catalog_cursor_keeps_bounded_cache(tmp_path):
     import json
     import tracemalloc
@@ -752,7 +978,7 @@ def test_million_descriptor_catalog_cursor_keeps_bounded_cache(tmp_path):
     from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 
     total = 1_000_001
-    page_entries = 1_000
+    page_entries = 512
     policy = ArchivePolicy()
     leaf_specs = {}
     refs = []
@@ -801,31 +1027,39 @@ def test_million_descriptor_catalog_cursor_keeps_bounded_cache(tmp_path):
         )
 
     objects = {}
-    while len(refs) > 1:
-        combined = []
-        for offset in range(0, len(refs), 2):
-            if offset + 1 == len(refs):
-                combined.append(refs[offset])
-                continue
-            node = CatalogNode(index="units", depth=0, zero=refs[offset], one=refs[offset + 1])
-            payload = canonical_json_bytes(node)
-            digest = sha256_bytes(payload)
-            path = f"catalog/nodes/{digest}.json"
-            objects[path] = payload + b"\n"
-            combined.append(
-                CatalogNodeRef(
-                    sha256=digest,
-                    path=path,
-                    entries=refs[offset].entries + refs[offset + 1].entries,
-                    decoded_bytes=len(payload) + 1,
-                    first_key=refs[offset].first_key,
-                    last_key=refs[offset + 1].last_key,
-                )
-            )
-        refs = combined
+
+    def key_bit(key, depth):
+        return (int(key[depth // 4], 16) >> (3 - depth % 4)) & 1
+
+    def join_trie(nodes):
+        if len(nodes) == 1:
+            return nodes[0]
+        depth = next(
+            bit
+            for bit in range(256)
+            if key_bit(nodes[0].first_key, bit) != key_bit(nodes[-1].last_key, bit)
+        )
+        split = next(index for index, ref in enumerate(nodes) if key_bit(ref.first_key, depth))
+        zero = join_trie(nodes[:split])
+        one = join_trie(nodes[split:])
+        node = CatalogNode(index="units", depth=depth, zero=zero, one=one)
+        payload = canonical_json_bytes(node)
+        digest = sha256_bytes(payload)
+        path = f"catalog/nodes/{digest}.json"
+        objects[path] = payload + b"\n"
+        return CatalogNodeRef(
+            sha256=digest,
+            path=path,
+            entries=zero.entries + one.entries,
+            decoded_bytes=len(payload) + 1,
+            first_key=zero.first_key,
+            last_key=one.last_key,
+        )
+
+    trie = join_trie(tuple(refs))
     root = RunCatalogRoot(
         run_id="million-fixture",
-        units=refs[0],
+        units=trie,
         ownership=None,
         unit_count=total,
         ownership_count=0,

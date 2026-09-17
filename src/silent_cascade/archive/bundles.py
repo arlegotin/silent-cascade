@@ -1,8 +1,11 @@
 """Bounded chunk production and authenticated staged restoration."""
 
+import ctypes
+import errno
 import hashlib
 import os
 import secrets
+import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 
@@ -190,17 +193,62 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _rename_directory_noreplace(
+    source_parent: int,
+    source_name: str,
+    destination_parent: int,
+    destination_name: str,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        function = getattr(libc, "renameatx_np", None)
+        flag = 0x00000004  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        function = getattr(libc, "renameat2", None)
+        flag = 1  # RENAME_NOREPLACE
+    else:
+        function = None
+        flag = 0
+    if function is None:
+        raise OSError(errno.ENOTSUP, "atomic no-replace directory rename is unavailable")
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = function(
+        source_parent,
+        os.fsencode(source_name),
+        destination_parent,
+        os.fsencode(destination_name),
+        flag,
+    )
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(error, os.strerror(error), destination_name)
+    raise OSError(error, os.strerror(error), destination_name)
+
+
 def _restore_records(
     *,
     unit: int,
     manifest: UnitManifest,
     chunks: Iterable[Path],
     selected: set[str] | None,
+    required_chunks: tuple[int, ...],
     stage: int,
 ) -> None:
     chunk_paths = iter(chunks)
     current_payload: bytes | None = None
-    current_index = 0
+    current_index: int | None = None
+    required = iter(required_chunks)
+    next_required = next(required, None)
     for entry in _iter_inventory_records_from_unit(unit, manifest):
         output_parent: int | None = None
         output: int | None = None
@@ -209,30 +257,30 @@ def _restore_records(
         try:
             if selected is None or entry.path in selected:
                 output_parent, output = _open_output(stage, entry.path)
-            for span in entry.spans:
-                if span.chunk_index != current_index:
-                    raise ValueError("chunk stream is out of order")
-                if current_payload is None:
-                    try:
-                        chunk_path = next(chunk_paths)
-                    except StopIteration as error:
-                        raise ValueError("chunk stream is missing a chunk") from error
-                    descriptor = manifest.chunks[current_index]
-                    current_payload = _read_chunk(
-                        chunk_path,
-                        expected_bytes=descriptor.bytes,
-                        expected_sha256=descriptor.sha256,
-                    )
-                block = current_payload[span.offset : span.offset + span.length]
-                if len(block) != span.length:
-                    raise ValueError("chunk span is truncated")
-                if output is not None:
+            if output is not None:
+                for span in entry.spans:
+                    if span.chunk_index != current_index:
+                        if span.chunk_index != next_required:
+                            raise ValueError("selected chunk stream is out of order")
+                        current_index = span.chunk_index
+                        next_required = next(required, None)
+                        try:
+                            chunk_path = next(chunk_paths)
+                        except StopIteration as error:
+                            raise ValueError("chunk stream is missing a chunk") from error
+                        descriptor = manifest.chunks[current_index]
+                        current_payload = _read_chunk(
+                            chunk_path,
+                            expected_bytes=descriptor.bytes,
+                            expected_sha256=descriptor.sha256,
+                        )
+                    assert current_payload is not None
+                    block = current_payload[span.offset : span.offset + span.length]
+                    if len(block) != span.length:
+                        raise ValueError("chunk span is truncated")
                     _write_all(output, block)
                     digest.update(block)
                     written += len(block)
-                if span.offset + span.length == len(current_payload):
-                    current_payload = None
-                    current_index += 1
             if output is not None:
                 if written != entry.bytes or digest.hexdigest() != entry.sha256:
                     raise ValueError("restored file bytes or hash differ")
@@ -243,13 +291,29 @@ def _restore_records(
             if output_parent is not None:
                 os.fsync(output_parent)
                 os.close(output_parent)
-    if current_payload is not None or current_index != len(manifest.chunks):
+    if next_required is not None:
         raise ValueError("chunk stream ended before the authenticated tail")
     try:
         next(chunk_paths)
     except StopIteration:
         return
     raise ValueError("chunk stream contains an unexpected extra chunk")
+
+
+def _required_chunk_indices(
+    unit: int, manifest: UnitManifest, selected: set[str] | None
+) -> tuple[int, ...]:
+    if selected is None:
+        return tuple(range(len(manifest.chunks)))
+    required: set[int] = set()
+    found: set[str] = set()
+    for entry in _iter_inventory_records_from_unit(unit, manifest):
+        if entry.path in selected:
+            found.add(entry.path)
+            required.update(span.chunk_index for span in entry.spans)
+    if found != selected:
+        raise ValueError("selected inventory paths differ from authenticated ownership")
+    return tuple(sorted(required))
 
 
 def restore_unit(
@@ -273,6 +337,7 @@ def restore_unit(
             selected_paths=selected_paths,
             policy=policy,
         )
+        required_chunks = _required_chunk_indices(unit, manifest, selected)
         if restored_bytes + policy.chunk_bytes > policy.cache_bytes:
             raise ValueError("restore exceeds simultaneous cache reservation")
         with _pinned_directory(destination.parent, create=True) as parent:
@@ -291,6 +356,7 @@ def restore_unit(
                     manifest=manifest,
                     chunks=chunks,
                     selected=selected,
+                    required_chunks=required_chunks,
                     stage=stage,
                 )
                 os.fsync(stage)
@@ -303,12 +369,7 @@ def restore_unit(
                     raise FileExistsError(destination)
                 os.close(stage)
                 stage = -1
-                os.rename(
-                    stage_name,
-                    destination.name,
-                    src_dir_fd=parent,
-                    dst_dir_fd=parent,
-                )
+                _rename_directory_noreplace(parent, stage_name, parent, destination.name)
                 os.fsync(parent)
             except BaseException:
                 if stage >= 0:

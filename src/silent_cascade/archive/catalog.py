@@ -301,7 +301,14 @@ def _scan_inventory(
     members: tuple[PurePosixPath, ...],
     stage: int,
     policy: ArchivePolicy,
-) -> tuple[tuple[InventoryShard, ...], tuple[ChunkDescriptor, ...], str, int, dict[str, int]]:
+) -> tuple[
+    tuple[InventoryShard, ...],
+    tuple[ChunkDescriptor, ...],
+    str,
+    int,
+    dict[str, int],
+    int,
+]:
     chunk_digest = hashlib.sha256()
     chunk_size = 0
     chunks: list[ChunkDescriptor] = []
@@ -312,6 +319,7 @@ def _scan_inventory(
     shard_offset = 0
     expanded = 0
     sizes: dict[str, int] = {}
+    metadata_bytes = 0
 
     def finish_chunk() -> None:
         nonlocal chunk_digest, chunk_size
@@ -325,12 +333,15 @@ def _scan_inventory(
             chunk_size = 0
 
     def finish_shard() -> None:
-        nonlocal pending, pending_size, shard_offset
+        nonlocal pending, pending_size, shard_offset, metadata_bytes
         if not pending:
             return
         payload = b"".join(pending)
+        if metadata_bytes + len(payload) > policy.metadata_bytes:
+            raise ValueError("inventory shards exceed metadata reservation")
         name = f"inventory.{shard_offset:05d}.jsonl"
         _create_at(stage, name, payload)
+        metadata_bytes += len(payload)
         shards.append(
             InventoryShard(
                 path=name,
@@ -407,7 +418,14 @@ def _scan_inventory(
         sizes[entry.path] = file_size
     finish_chunk()
     finish_shard()
-    return tuple(shards), tuple(chunks), inventory_digest.hexdigest(), expanded, sizes
+    return (
+        tuple(shards),
+        tuple(chunks),
+        inventory_digest.hexdigest(),
+        expanded,
+        sizes,
+        metadata_bytes,
+    )
 
 
 def _validated_groups(
@@ -648,11 +666,13 @@ def seal_unit(
         os.mkdir(stage_name, mode=0o755, dir_fd=units)
         stage = _open_child_directory(units, stage_name)
         try:
-            shards, chunks, inventory_hash, expanded, sizes = _scan_inventory(
-                run_dir=run_dir,
-                members=members,
-                stage=stage,
-                policy=policy,
+            shards, chunks, inventory_hash, expanded, sizes, inventory_metadata_bytes = (
+                _scan_inventory(
+                    run_dir=run_dir,
+                    members=members,
+                    stage=stage,
+                    policy=policy,
+                )
             )
             groups = _validated_groups(
                 kind=kind,
@@ -679,7 +699,7 @@ def seal_unit(
                 borrowed=borrowed_entries,
             )
             manifest_payload = canonical_json_bytes(manifest)
-            if len(manifest_payload) + 1 > policy.metadata_bytes:
+            if inventory_metadata_bytes + len(manifest_payload) + 1 > policy.metadata_bytes:
                 raise ValueError("unit manifest exceeds metadata admission")
             unit_id = sha256_bytes(manifest_payload)
             candidate_paths = set(sizes)
@@ -821,6 +841,34 @@ def _key_bit(key: str, depth: int) -> int:
     return (value >> (3 - depth % 4)) & 1
 
 
+def _first_differing_bit(left: str, right: str) -> int:
+    for depth in range(256):
+        if _key_bit(left, depth) != _key_bit(right, depth):
+            return depth
+    return 256
+
+
+def _validate_branch_prefix(node: CatalogNode) -> None:
+    if node.records:
+        return
+    assert node.zero is not None and node.one is not None
+    endpoints = (
+        node.zero.first_key,
+        node.zero.last_key,
+        node.one.first_key,
+        node.one.last_key,
+    )
+    if (
+        node.zero.first_key > node.zero.last_key
+        or node.one.first_key > node.one.last_key
+        or node.zero.last_key >= node.one.first_key
+        or _first_differing_bit(node.zero.first_key, node.one.first_key) != node.depth
+        or any(_key_bit(key, node.depth) != 0 for key in endpoints[:2])
+        or any(_key_bit(key, node.depth) != 1 for key in endpoints[2:])
+    ):
+        raise ValueError("catalog branch depth or prefix differs")
+
+
 class _CatalogStore:
     def __init__(
         self,
@@ -872,6 +920,8 @@ class _CatalogStore:
         return ref
 
     def load(self, ref: CatalogNodeRef, *, index: str) -> CatalogNode:
+        if ref.decoded_bytes > self.policy.page_bytes or ref.first_key > ref.last_key:
+            raise ValueError("catalog node descriptor exceeds page bounds")
         node = self.staged_nodes.get(ref.sha256)
         if node is None:
             node = self.cache.get(ref.sha256)
@@ -892,6 +942,9 @@ class _CatalogStore:
             while len(self.cache) > min(8, self.policy.page_entries):
                 self.cache.popitem(last=False)
         payload = canonical_json_bytes(node)
+        if node.records and len(node.records) > self.policy.page_entries:
+            raise ValueError("catalog leaf entry bound exceeded")
+        _validate_branch_prefix(node)
         if self._ref(node, payload) != ref or node.index != index:
             raise ValueError("catalog node descriptor or index differs")
         return node
@@ -957,6 +1010,34 @@ def _insert_batch(
         records = tuple(sorted(merged.values(), key=lambda record: record.key))
         return _build_tree(records, index=index, depth=node.depth, store=store)
     assert node.zero is not None and node.one is not None
+    combined_first = min(ref.first_key, additions[0].key)
+    combined_last = max(ref.last_key, additions[-1].key)
+    split = _first_differing_bit(combined_first, combined_last)
+    if split < node.depth:
+        zero_additions = tuple(r for r in additions if _key_bit(r.key, split) == 0)
+        one_additions = tuple(r for r in additions if _key_bit(r.key, split) == 1)
+        if _key_bit(ref.first_key, split) == 0:
+            zero = _insert_batch(
+                ref,
+                zero_additions,
+                index=index,
+                store=store,
+                depth=split + 1,
+                replace=replace,
+            )
+            one = _build_tree(one_additions, index=index, depth=split + 1, store=store)
+        else:
+            zero = _build_tree(zero_additions, index=index, depth=split + 1, store=store)
+            one = _insert_batch(
+                ref,
+                one_additions,
+                index=index,
+                store=store,
+                depth=split + 1,
+                replace=replace,
+            )
+        assert zero is not None and one is not None
+        return store.stage(CatalogNode(index=index, depth=split, zero=zero, one=one))
     zero_additions = tuple(r for r in additions if _key_bit(r.key, node.depth) == 0)
     one_additions = tuple(r for r in additions if _key_bit(r.key, node.depth) == 1)
     zero = _insert_batch(
@@ -1140,10 +1221,19 @@ def publish_run_catalog(
                     raise ValueError("catalog generation exceeds metadata reservation")
 
     owned.sort()
-    for offset, (path, _unit_id) in enumerate(owned):
-        if offset and (path == owned[offset - 1][0] or path.startswith(owned[offset - 1][0] + "/")):
+    batch_files: set[str] = set()
+    batch_directories: set[str] = set()
+    for path, _unit_id in owned:
+        ancestors = tuple(_path_ancestors(path))
+        if (
+            path in batch_files
+            or path in batch_directories
+            or any(ancestor in batch_files for ancestor in ancestors)
+        ):
             raise ValueError("catalog batch has duplicate or overlapping ownership")
-        for ancestor in _path_ancestors(path):
+        batch_files.add(path)
+        batch_directories.update(ancestors)
+        for ancestor in ancestors:
             if (
                 _lookup(store, ownership_root, _ownership_key("file", ancestor), index="ownership")
                 is not None
@@ -1216,6 +1306,13 @@ def iter_run_catalog(
     root = _load_root(ref, scope="run", reader=reader, policy=policy)
     assert isinstance(root, RunCatalogRoot)
     store = _CatalogStore(control_dir=control_dir, policy=policy, reader=reader)
+    ownership_count = 0
+    for entry in _iter_tree(store, root.ownership, index="ownership"):
+        if not isinstance(entry, OwnershipCatalogEntry):
+            raise ValueError("run catalog yielded a non-ownership entry")
+        ownership_count += 1
+    if ownership_count != root.ownership_count:
+        raise ValueError("run catalog ownership final count differs")
     count = 0
     for entry in _iter_tree(store, root.units, index="units"):
         if not isinstance(entry, UnitCatalogEntry):
