@@ -1,8 +1,8 @@
 # Phase 4 bounded R2 archive design
 
-**Status:** Proposed storage-only amendment; implementation requires approval of
-the companion phase-scoped implementation plan. The user's request to proceed
-authorizes preparing this design, not a claim that archive support already works.
+**Status:** Approved storage-only amendment. The user approved execution of the
+companion plan on 2026-09-17 with “stop asking, you know phase 4 goals – proceed”.
+Implementation/qualification remains work to perform, not an existing capability.
 
 **Scope:** Unblock Task 12 of the approved Phase 4 plan without changing the
 experiment, evidence retention, learning recipe, device checks or acceptance gates.
@@ -11,8 +11,8 @@ experiment, evidence retention, learning recipe, device checks or acceptance gat
 **Parent plan:** [Phase 4](../plans/2026-09-16-phase-4-autonomous-eventflow.md).
 **Revision:** 2, superseding the rejected 64 GiB whole-evaluation proposal.
 The user authorized up to **10 GiB of local disk** on 2026-09-17. This is a ceiling,
-not a reservation. Approval of the resource limit does not approve implementation
-of the revised plan or claim that archive support already works.
+not a reservation. The subsequent proceed instruction approved implementation;
+it does not claim that archive support already works.
 **Inspected checkout:** `2995310` on `main`, 2026-09-17.
 
 ## 1. Problem and evidence

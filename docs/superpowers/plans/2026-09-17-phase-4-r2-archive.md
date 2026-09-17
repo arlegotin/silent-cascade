@@ -18,12 +18,14 @@ No new ML/cloud SDK dependency, filesystem mount, database or hosted automation.
 **Spec:** `docs/superpowers/specs/2026-09-17-phase-4-r2-archive-design.md`, under
 canonical `docs/superpowers/specs/2026-08-30-silent-cascade-design.md` v1.0.2.
 
-**Status:** Proposed; awaiting explicit approval of this plan before source,
-test, build or configuration changes. This document does not mark Task 12 started.
+**Status:** Approved for execution by the user's 2026-09-17 instruction:
+“stop asking, you know phase 4 goals – proceed”. Execute autonomously with
+subagents on the current branch. The production Task 12 pilot remains gated on
+storage qualification and the existing scientific preflight.
 
 **Revision:** 2. The user rejected the 64 GiB proposal and subsequently authorized
 up to 10 GiB local disk. This revision replaces whole-evaluation leases with
-episode streaming; resource authorization is not implementation approval.
+episode streaming; the subsequent proceed instruction approves this plan.
 
 **Inspected baseline:** `main` at `2995310` on 2026-09-17. Stay on the current
 branch, commit reviewed increments locally and do not push.

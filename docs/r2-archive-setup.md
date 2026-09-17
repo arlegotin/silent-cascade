@@ -94,5 +94,5 @@ recovery and verification. Revision 2 replaces the rejected 64 GiB proposal with
 the user's **10 GiB total local disk ceiling**, including protected headroom:
 normal allocation <=6.5 GiB, emergency allocation <=8 GiB, protected headroom 2 GiB.
 It does not require a whole evaluation to be local or an additional 16 GiB reserve.
-The revised plan remains pending explicit approval; these are implementation and
-measurement requirements, not already available or proven archive functionality.
+The user approved the revised plan for autonomous execution on 2026-09-17. These
+remain implementation and measurement requirements, not proven archive functionality.
