@@ -157,6 +157,61 @@ def test_catalog_generation_can_extend_from_cold_authenticated_nodes(
     assert len(receipt) == 64
 
 
+def test_archive_catalog_cleanup_preserves_unrelated_corpus_pages(sealed_unit, transport):
+    from silent_cascade.archive.catalog import (
+        iter_corpus_catalog,
+        publish_corpus_catalog,
+        publish_run_catalog,
+    )
+
+    run_catalog = publish_run_catalog(
+        control_dir=sealed_unit.control,
+        run_id="debug-fixture",
+        units=(sealed_unit.ref,),
+        policy=sealed_unit.policy,
+    )
+    corpus_catalog = publish_corpus_catalog(
+        control_dir=sealed_unit.control,
+        runs=(run_catalog,),
+        policy=sealed_unit.policy,
+    )
+    corpus_root = sealed_unit.control / corpus_catalog.root_path
+    before = corpus_root.read_bytes()
+
+    _archive(sealed_unit, transport)
+
+    assert corpus_root.read_bytes() == before
+    assert tuple(
+        iter_corpus_catalog(
+            sealed_unit.control,
+            corpus_catalog,
+            policy=sealed_unit.policy,
+        )
+    ) == (run_catalog,)
+
+
+def test_catalog_cleanup_requires_exact_bytes_and_unambiguous_ownership(task_scratch):
+    from silent_cascade.archive import transport as module
+
+    control = task_scratch / "cleanup-control"
+    logical = f"catalog/nodes/{'a' * 64}.json"
+    path = control / logical
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"different\n")
+    assert not module._remove_verified_control_object(control, logical, b"verified\n")
+    assert path.read_bytes() == b"different\n"
+
+    path.write_bytes(b"verified\n")
+    alias = task_scratch / "shared-alias"
+    os.link(path, alias)
+    assert not module._remove_verified_control_object(control, logical, b"verified\n")
+    assert path.read_bytes() == b"verified\n"
+    alias.unlink()
+
+    assert module._remove_verified_control_object(control, logical, b"verified\n")
+    assert not path.exists()
+
+
 @pytest.mark.parametrize("transition", ["create", "readback", "catalog"])
 def test_recovery_cut_points_leave_sources_and_no_receipt(sealed_unit, transport, transition):
     before = sealed_unit.original_bytes()

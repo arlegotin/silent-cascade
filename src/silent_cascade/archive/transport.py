@@ -760,6 +760,65 @@ def _remove_control_tree(control_dir: Path, logical: str) -> None:
             os.close(parent)
 
 
+def _remove_verified_control_object(control_dir: Path, logical: str, expected: bytes) -> bool:
+    path = _safe_logical_path(logical, field="verified catalog cleanup path")
+    with _pinned_directory(control_dir) as root:
+        parent = os.dup(root)
+        try:
+            for component in path.parts[:-1]:
+                child = _open_child_directory(parent, component)
+                os.close(parent)
+                parent = child
+            try:
+                descriptor = os.open(
+                    path.name,
+                    os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                    dir_fd=parent,
+                )
+            except FileNotFoundError:
+                return False
+            try:
+                initial = os.fstat(descriptor)
+                if not stat.S_ISREG(initial.st_mode) or initial.st_nlink != 1:
+                    return False
+                raw = bytearray()
+                while len(raw) <= len(expected):
+                    block = os.read(descriptor, min(65_536, len(expected) + 1 - len(raw)))
+                    if not block:
+                        break
+                    raw.extend(block)
+                final = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            identity = (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns)
+            if (
+                bytes(raw) != expected
+                or (
+                    final.st_dev,
+                    final.st_ino,
+                    final.st_size,
+                    final.st_mtime_ns,
+                )
+                != identity
+            ):
+                return False
+            current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+            ) != identity:
+                return False
+            os.unlink(path.name, dir_fd=parent)
+            os.fsync(parent)
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            os.close(parent)
+
+
 def _catalog_proof_prefix(unit_id: str, catalog_id: str) -> str:
     if not _HASH_RE.fullmatch(unit_id) or not _HASH_RE.fullmatch(catalog_id):
         raise ValueError("invalid catalog proof identity")
@@ -1391,7 +1450,8 @@ def archive_unit(
                         policy=policy,
                     )
                 )
-            _remove_control_tree(control_dir, "catalog")
+            for logical, _source, raw in staged:
+                _remove_verified_control_object(control_dir, logical, raw)
             catalog_proof = _capture_catalog_proof(
                 control_dir=control_dir,
                 ref=ref,
