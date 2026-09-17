@@ -307,7 +307,7 @@ source writers concurrently. Independent read-only work may overlap verification
 | 7 | `src/silent_cascade/eval/action_diagnostics.py`, `scripts/diagnose_phase4_actions.py` | no model/loss change by default |
 | 8 | `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,pilot_overfit,archive_tensors}.py` | narrowly extract common archive/optimization contracts; maintain current Phase3 source closure |
 | 9 | `src/silent_cascade/train/pilot_cli.py`, `src/silent_cascade/report/{__init__,pilot}.py`, `scripts/run_pilot.py`, `docs/phase4-autonomous-eventflow.md` | root CLI, Makefile, command/package tests |
-| 10 | `src/silent_cascade/train/pilot_verification.py` | new local numerical/offline/throughput tests |
+| 10 | `src/silent_cascade/train/{pilot_verification,pilot_measurement,pilot_offline}.py` | new local numerical/offline/throughput tests |
 | 11 | `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence}.py`, `scripts/{check_phase4_pilot,verify_phase4_gate_artifact}.py` | finish source inventory, Phase4 delivery guard/tests |
 | 12 | `manifests/validation/phase4/` stage manifests, gate and delivery map; generated pilot report | Phase4 delivery row and measured documentation only |
 
@@ -1425,7 +1425,7 @@ input artifacts exist; missing inputs fail explicitly rather than fabricate data
 
 **Files:**
 
-- Create: `src/silent_cascade/train/pilot_verification.py`.
+- Create: `src/silent_cascade/train/{pilot_verification,pilot_measurement,pilot_offline}.py`.
 - Create: `tests/pilot/{test_pilot_numerics,test_pilot_offline,test_pilot_throughput}.py`.
 - Record measured preflight: `docs/phase4-autonomous-eventflow.md`.
 
@@ -1440,6 +1440,18 @@ input artifacts exist; missing inputs fail explicitly rather than fabricate data
   throughput, synchronized device timing, memory/disk forecast and chosen device.
 - Both strict reports carry `evidence_kind`; throughput/debug measurements cannot
   satisfy training, accuracy or final-checkpoint device gates.
+- Keep public verification/profile APIs and strict report contracts in
+  `pilot_verification.py`; put actual measurement and forecast internals in
+  `pilot_measurement.py`, and the isolated offline-denial execution in
+  `pilot_offline.py`. These are task-local responsibility boundaries, not a
+  second trainer, evaluator, event engine or generalized profiling framework.
+- The optional `checkpoint` input is a full `phase4-pilot-training-v1` archive;
+  explicitly reject portable-only weights because they cannot supply optimizer,
+  progress and RNG continuation. Record its actual file and logical model hashes,
+  and keep any untouched portable inference export distinct from updated
+  diagnostic clones. Task11 independently binds checkpoint-backed numerical
+  evidence to the actual selected archive; a non-null input is not proof of
+  selection or verified data-introduction history.
 
 - [ ] **Step 1: Write inventory completeness and offline tests.**
 
