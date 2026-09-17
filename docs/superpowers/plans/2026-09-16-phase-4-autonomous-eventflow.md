@@ -1557,12 +1557,16 @@ expectations. No concurrent training job should exist when the pilot starts.
 
 - Create: `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence,pilot_checks}.py`.
 - Create: `scripts/check_phase4_pilot.py`, `scripts/verify_phase4_gate_artifact.py`.
+- Create: `scripts/record_phase4_local_verify.py`, the local-only receipt wrapper
+  for the existing fixed `make verify` command; no hosted automation.
 - Modify: `src/silent_cascade/train/{pilot_provenance,pilot_workflow}.py`, `scripts/run_pilot.py`,
   `tests/integration/test_phase0_repository.py` for the actual Phase4 delivery guard.
 - Modify: `tests/pilot/test_pilot_workflow.py` to verify the expanded, explicitly
   named final-evaluation report inventory while retaining interrupted-run checks.
-- Modify: `tests/neural/test_phase3_provenance.py` only to make its shared
-  subprocess helper accept an optional `timeout=180` keyword. Use `timeout=900`
+- Modify: `tests/neural/test_phase3_provenance.py` only to copy the newly
+  authenticated `Makefile` and `.python-version` inputs into its existing isolated
+  checkout and make its shared subprocess helper accept an optional
+  `timeout=180` keyword. Use `timeout=900`
   explicitly only for Task 11's expanded real complete-driver/workflow tests;
   retain historical defaults and actual diagnostics, without duplicating helpers.
 - Create: `tests/pilot/{test_pilot_evidence,test_pilot_gate_verifier,test_pilot_delivery,test_pilot_checks}.py`.
@@ -1613,6 +1617,39 @@ its failed outcome when unmet, and returns nonzero. If training stops naturally
 without a selected checkpoint, preserve a failed result with missing final
 evidence; never substitute latest weights as an acceptance selection. Debug runs
 remain non-acceptance, and execution `DONE` is not a passing scientific gate.
+
+Bind the already-required local software gate through a closed
+`LocalVerificationReceipt` in `pilot_evidence_types.py` and a separate
+`record_local_verification(*, repo_root: Path, output_dir: Path)` execution
+function in `pilot_checks.py`, called only by the new recorder script. It runs
+the actual fixed `make verify` subprocess once, retaining command, exit status,
+stdout/stderr and their hashes, verification commit, and before/after inventories
+of exact tracked package/scripts/tests/config/build inputs and approved plan/spec.
+Include `Makefile`, `pyproject.toml`, `uv.lock` and `.python-version`. Source must
+remain unchanged during execution; retain failed/incomplete attempts rather than
+overwriting them. Do not infer success from a supplied boolean or start this
+subprocess from collection, independent verification or reporting.
+
+The normal receipt location is
+`artifacts/phase4-local-verification/{verification_commit}/receipt.json`, with
+its raw stdout/stderr siblings. The required final full local run produces this
+receipt; do not add a duplicate full run merely to obtain metadata. The evidence
+collector discovers receipts in deterministic Git ancestry order, not filesystem
+mtime, and requires exact matching executable/test/build/config/plan/spec bytes.
+This permits later data-only introduction commits, not changed software. Select
+the newest source-compatible receipt including a failed result: never bypass a
+newer failure to reuse an older pass. Reject corrupt receipts or missing bound
+logs rather than silently falling back. Missing, failed or stale local evidence
+makes production acceptance unmet. Bind the receipt/inventory/log hashes into
+the gate and validate them independently in `pilot_evidence.py`.
+
+Generated acceptance outputs are not inputs to their own verification receipt.
+Independent gate verification occurs after gate publication and explicitly
+reports its proof scope; it is not a self-referential success flag inside that
+gate. Final delivery still validates the actual published data/docs and performs
+the prescribed final local check. Test receipt mutations, command/process result
+binding, changed inputs, ancestry, missing logs, newer failures and no implicit
+execution in the existing `test_pilot_delivery.py` and other Task11 test files.
 
 - [ ] **Step 1: Write adversarial collector/verifier tests.**
 
@@ -1686,8 +1723,12 @@ row, a missing gate or mismatched source/weights/hash. Existing complete rows an
 original artifact bytes stay pinned through Task 1's historical verifier.
 
 - [ ] **Step 4: Run GREEN:** all tamper tests and a complete tiny debug pipeline
-whose gate is correctly labeled non-acceptance. Run full local `make verify` and
-task-scoped spec/quality review. Resolve source changes before production freeze.
+whose gate is correctly labeled non-acceptance. After scoped checks, commit the
+verified source/test milestone and run the required full local `make verify`
+through `uv run python scripts/record_phase4_local_verify.py` so that this same
+run produces its source-bound receipt. The task remains pending until that run
+and task-scoped spec/quality review pass. Resolve source changes before production
+freeze; changed verified inputs invalidate their prior receipt.
 - [ ] **Step 5: Commit:** `feat: authenticate autonomous pilot acceptance evidence`.
 
 ### Task 12: Run the One-Seed Pilot and Publish the Actual Outcome
@@ -1774,10 +1815,13 @@ to strong-baseline training while this phase gate is unsatisfied.
 - [ ] **Step 4: Verify the delivery and run final whole-phase review.**
 
 ```bash
-make verify
+uv run python scripts/record_phase4_local_verify.py
 git diff --check
 uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir runs/phase4-pilot-v1/event_flow/11/pilot
 ```
+
+The recorder executes the unchanged local `make verify` command and preserves its
+source-bound receipt/logs; it is not another test suite or hosted check.
 
 Review the final diff against the canonical spec and this plan. Resolve real review
 findings through TDD and rerun every affected verification; relevant source changes
