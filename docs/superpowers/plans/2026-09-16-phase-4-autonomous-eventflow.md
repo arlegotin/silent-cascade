@@ -307,7 +307,7 @@ source writers concurrently. Independent read-only work may overlap verification
 | 7 | `src/silent_cascade/eval/action_diagnostics.py`, `scripts/diagnose_phase4_actions.py` | no model/loss change by default |
 | 8 | `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,pilot_overfit,archive_tensors}.py` | narrowly extract common archive/optimization contracts; maintain current Phase3 source closure |
 | 9 | `src/silent_cascade/train/pilot_cli.py`, `src/silent_cascade/report/{__init__,pilot}.py`, `scripts/run_pilot.py`, `docs/phase4-autonomous-eventflow.md` | root CLI, Makefile, command/package tests |
-| 10 | `src/silent_cascade/train/{pilot_verification,pilot_measurement,pilot_offline}.py` | new local numerical/offline/throughput tests |
+| 10 | `src/silent_cascade/train/{pilot_verification,pilot_measurement,pilot_offline}.py` | new local numerical/offline/throughput tests; explicit portable MPS trajectory validation |
 | 11 | `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence}.py`, `scripts/{check_phase4_pilot,verify_phase4_gate_artifact}.py` | finish source inventory, Phase4 delivery guard/tests |
 | 12 | `manifests/validation/phase4/` stage manifests, gate and delivery map; generated pilot report | Phase4 delivery row and measured documentation only |
 
@@ -1428,6 +1428,11 @@ input artifacts exist; missing inputs fail explicitly rather than fabricate data
 - Create: `src/silent_cascade/train/{pilot_verification,pilot_measurement,pilot_offline}.py`.
 - Create: `tests/pilot/{test_pilot_numerics,test_pilot_offline,test_pilot_throughput}.py`.
 - Record measured preflight: `docs/phase4-autonomous-eventflow.md`.
+- Maintain the native trajectory artifact boundary:
+  `src/silent_cascade/logging/neural_trace.py`,
+  `src/silent_cascade/eventflow/{checkpoint_state,invariants}.py`, and
+  `tests/pilot/test_pilot_artifacts.py`. Preserve exact live/checkpoint validation;
+  do not change the engine, model, scorer or scientific acceptance thresholds.
 
 **Interfaces:**
 
@@ -1453,6 +1458,28 @@ input artifacts exist; missing inputs fail explicitly rather than fabricate data
   evidence to the actual selected archive; a non-null input is not proof of
   selection or verified data-introduction history.
 
+- New retained trajectories use `phase4-neural-trajectory-v2` with an
+  `origin_device` derived from the actual snapshots before host serialization.
+  Nonempty trajectories require one uniform `cpu` or `mps` origin; `null` is
+  legal only for an empty initialization-failure trajectory. Continue reading
+  legacy v1 with its exact CPU validation; never relabel historical bytes.
+- Keep `_decode_state` and `validate_runtime_state` exact for all existing live
+  and checkpoint callers. Factor private state construction if needed, then use
+  a separately named portable-MPS trajectory validator on CPU. It must retain
+  all structural, provenance, guard, digest, event, decision and timestamp
+  checks. Only the retained terminal anchor's analytic continuous-flow
+  recomputation after positive elapsed time may use the already declared
+  cross-device forward tolerance `rtol=1e-4, atol=1e-5`. CPU origins, zero-time
+  identity, nonterminal post-jump anchors and terminal guard resets stay exact.
+  Do not expose a validation bypass or caller-chosen tolerances, and do not
+  normalize/replace stored tensors or their causal hashes to make them match.
+
+The native integration regression motivating this boundary is a valid MPS
+terminal anchor whose CPU flow recomputation differs in one focus-key float32
+element by `5.960464477539063e-08`; the same saved anchor passes the unchanged
+native MPS invariant exactly. This is a portable artifact-reading distinction,
+not permission to relax runtime dynamics or CPU replay.
+
 - [ ] **Step 1: Write inventory completeness and offline tests.**
 
 ```python
@@ -1468,6 +1495,14 @@ explicit missing evidence, changed tolerance/config/source rejection and behavio
 disagreement even when aggregate accuracy matches. Block sockets/download helpers
 and optional package imports around tiny training, evaluation, replay and report;
 assert their foundation-model call counters are exactly zero.
+
+Add a real native-MPS retained-terminal regression plus CPU-only artifact tests:
+v2 origin-device/empty/mixed-origin validation, legacy v1 exact acceptance,
+rejection of the same discrepancy on a declared CPU origin, rejection beyond
+the fixed MPS tolerance, and unchanged rejection of bad hashes, guards, modes,
+provenance and event identity/timing. Verify ordinary runtime and checkpoint
+decoding still reject non-exact same-device state. Preserve all failed native
+run artifacts and do not substitute synthetic success for the full native test.
 
 - [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_numerics.py tests/pilot/test_pilot_offline.py tests/pilot/test_pilot_throughput.py`. Native MPS evidence is collected locally on this machine.
 
