@@ -415,8 +415,9 @@ entries against authoritative journal/index/DONE hashes, not only each other.
 **Files:** Create `archive/producer.py` and
 `tests/pilot/test_pilot_archive_producer.py`. Modify
 `eval/{artifacts,runner}.py`, `eventflow/engine.py` (publication descriptor only),
-`logging/crash_bundle.py` (descriptor types),
-`train/{pilot_trainer,pilot_workflow,pilot_provenance,pilot_checks}.py`,
+`logging/crash_bundle.py` (descriptor types and scoped publication bound),
+`logging/neural_trace.py` (existing decoded/compressed format bounds),
+`train/{pilot_data,pilot_trainer,pilot_workflow,pilot_provenance,pilot_checks}.py`,
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
@@ -497,6 +498,15 @@ payloads; new controls live outside the scientific artifact inventory.
   Reserve output before neural work; `after_episode` may hand off only after the
   complete seal. Keep current row log, identity, retention and shared weights local.
   Never discover ownership by globbing crash directories.
+  Enforce the existing format-reader limits before each corresponding publication:
+  evaluation sidecars/controls and compressed/decoded trajectories <=128 MiB,
+  neural crash JSON <=128 MiB, pilot/control files including individual journals
+  <=64 MiB. Neural archives already enforce <=128 MiB. Bound telemetry and commit
+  metadata explicitly from their fixed schemas. Use source-derived possible
+  artifact counts, not observed sizes alone, for admission. Keep unrelated legacy
+  crash publication behavior unchanged. Fail before oversized disk writes; no
+  truncation or discard of already-written evidence. Add boundary tests proving
+  refusal occurs before opening a publication destination.
 - [ ] **Step 4 — RED/GREEN: streaming full finalization.** Evict every episode-owned
   file from a real multi-row fixture, then finalize through one-episode leases.
   Revalidate evidence, crash manifest/checkpoint/weights links and row bindings.
@@ -636,7 +646,8 @@ No entire evaluation hydration for finalization, reporting, gate, replay or reco
 
 **Files:** Create `archive/{cli,preflight}.py` and matching tests. Modify
 `src/silent_cascade/cli.py`, `Makefile`, source/local-verification inventories and
-their tests. Update `docs/r2-archive-setup.md`, `docs/phase4-autonomous-eventflow.md`
+their tests, and `train/{pilot_checks,pilot_verification}.py` for counted test
+scratch/log/capture publication. Update `docs/r2-archive-setup.md`, `docs/phase4-autonomous-eventflow.md`
 and `docs/deviations.md` with implemented behavior, not future commands.
 
 **Interfaces produced:**
@@ -659,6 +670,14 @@ arbitrary success dict: bind all bounds, actual free/allocated bytes, policy has
 retention forecast, source, transfer/readback measurements, AWS version and each
 individual pass/fail condition. Keep old `forecast_workload` output unchanged;
 the archive certificate is additional evidence, not an edited historical report.
+Compute exact worst-variant row/control sizes over the actual corpus before
+execution: the 10,000-row `validation.json` must fit its existing 64 MiB reader,
+and evaluation rows/index/DONE must fit their 128 MiB readers. Do not invent a
+smaller per-row acceptance cap or shrink the denominator. For verification, route
+TMPDIR/TMP/TEMP, pytest basetemp, build/cache output and recorder logs into counted
+space; preserve existing receipt-reader limits and all bytes already emitted.
+If safe scratch/log/capture bounds cannot be established, fail preflight or stop
+with retained failure evidence, not a partial passing quality-gate receipt.
 
 - [ ] **Step 1 — RED:** command import/argument/offline tests and resource
   arithmetic tests. Example pure sizing case:
