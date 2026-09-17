@@ -89,6 +89,10 @@ retention, scientific gates, reproducible evidence or CPU replay.
 
 The proposed [storage design](superpowers/specs/2026-09-17-phase-4-r2-archive-design.md)
 and [Phase 4 implementation-plan amendment](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
-now specify the producer, journal, lease, recovery and verification changes. They
-remain pending explicit plan approval; the commands and limits in that plan are
-implementation requirements, not already available archive functionality.
+now specify per-episode publication, streaming readers, paged journals/catalogs,
+recovery and verification. Revision 2 replaces the rejected 64 GiB proposal with
+the user's **10 GiB total local disk ceiling**, including protected headroom:
+normal allocation <=6.5 GiB, emergency allocation <=8 GiB, protected headroom 2 GiB.
+It does not require a whole evaluation to be local or an additional 16 GiB reserve.
+The revised plan remains pending explicit approval; these are implementation and
+measurement requirements, not already available or proven archive functionality.

@@ -5,11 +5,11 @@
 **Goal:** Make the existing seed-11 Phase 4 pilot executable with bounded local
 disk and verified R2 retention, without changing its scientific protocol.
 
-**Architecture:** Keep scientific files byte-identical and archive whole sealed
-evaluation units plus immutable journal segments. An explicit finite local
-supervisor owns R2 transfers; offline scientific workers use authenticated local
-leases. Aggregate readers visit archived units sequentially and retain all current
-semantic, provenance and failure checks.
+**Architecture:** Preserve scientific bytes and archive committed episode evidence
+during evaluation. A finite local supervisor owns R2 transfers; offline workers
+use bounded metadata and single-episode leases. Streaming finalizers/readers and
+paged journal/catalog/index storage retain every semantic and provenance check
+inside a total 10 GiB local disk envelope, including protected headroom.
 
 **Tech Stack:** Existing locked Python 3.12/Pydantic/pytest/Hypothesis, standard
 library streaming I/O and subprocesses, existing AWS CLI v2 administration profile.
@@ -21,7 +21,11 @@ canonical `docs/superpowers/specs/2026-08-30-silent-cascade-design.md` v1.0.2.
 **Status:** Proposed; awaiting explicit approval of this plan before source,
 test, build or configuration changes. This document does not mark Task 12 started.
 
-**Inspected baseline:** `main` at `c09faee` on 2026-09-17. Stay on the current
+**Revision:** 2. The user rejected the 64 GiB proposal and subsequently authorized
+up to 10 GiB local disk. This revision replaces whole-evaluation leases with
+episode streaming; resource authorization is not implementation approval.
+
+**Inspected baseline:** `main` at `2995310` on 2026-09-17. Stay on the current
 branch, commit reviewed increments locally and do not push.
 
 ## Global Constraints
@@ -34,7 +38,8 @@ branch, commit reviewed increments locally and do not push.
 - Keep all raw per-episode metrics, every failure/dynamics-error trace, and the existing selected-success retention policy. Never discard evidence to satisfy a budget.
 - Preserve seed `11`, all four 10,000-entry validation manifests, batch `128`, validation every `1,000` global updates, total ceiling `75,000`, patience `15`, best `3` plus latest `1` checkpoints, objective and selection rules.
 - Preserve all Phase 4 gates: at least 90% pilot IID timed success, at most 10% negative false-action rate, zero dynamics failures across 10,000 validation episodes, legal event sequences, delay-following, exact CPU continuation/replay and declared CPU/MPS checks.
-- Do not change neural models, losses, engine scheduling, simulated times, generator semantics, counters or source-bound historical evidence.
+- Do not change neural models, losses, engine scheduling, simulated times, generator semantics, counters or source-bound historical evidence. An additive engine crash-publication descriptor is allowed for storage ownership only.
+- Total new local allocation plus protected headroom is at most 10 GiB; no uncounted temporary directory, second volume, test output or recovery copy.
 - No frozen tests, new seeds, baseline training, Qwen, Phase 5 work or positive research claims.
 - Credentials, account endpoint and machine-specific paths stay outside Git, scientific configuration, logs and archives.
 
@@ -55,6 +60,9 @@ Approval of this plan authorizes these storage-only changes to the Phase 4 plan:
 3. **Source closure:** include this approved plan, its design, archive package and
    changed entrypoints in source authentication and independent verification.
    Historical source tuples remain historical; regenerate new-source evidence.
+4. **Publication/readers:** add storage-only episode commits and streaming
+   finalization. Original scientific rows/index/DONE formats, full denominators
+   and every semantic check remain unchanged; no whole-evaluation cold hydration.
 
 This plan is not approval to bypass the canonical protocol or copy old passing
 receipts to a changed executable. The production pilot still begins only after
@@ -62,26 +70,31 @@ the existing Task 12 preflight and the new storage gate both pass.
 
 ## 2. Design decisions and limits
 
-- Archive complete `attempt-*/validation-*` directories after `_validation`
-  finishes its autonomous/component/validation outputs. A validation unit is a
-  storage-complete unit even if not yet checkpoint-committed; preserve that
-  distinction in the catalog and later journal/restart bindings.
-- Final evaluation units are `final/eval/<suite>` after `DONE` and `execution.json`.
-  Keep the existing full 10,000-row denominator inside each unit.
+- Archive committed episodes during `attempt-*/validation-*` and
+  `final/eval/<suite>` production. Keep canonical row bytes and the full 10,000-row
+  scientific denominator. Close evaluation metadata only after streaming
+  finalization; later validation/execution records form additional closure units.
+- Episode transport commitment, evaluation DONE and checkpoint commitment are
+  distinct. A receipt never promotes an incomplete evaluation or journal prefix.
 - Journal units contain exact immutable `journal-<sha>.json` files, segmented at
-  record boundaries by actual bytes: at most 1 GiB and 1,000 records. A committed
-  segment binds the checkpoint-authenticated journal head; stopped-owner tails
-  stay explicitly uncommitted/abandoned.
+  record boundaries by actual bytes: at most 128 MiB and 128 records. Seal/upload
+  throughout training, including before durable checkpoint commitment. Bind the
+  committed prefix later via the authenticated checkpoint head; preserve tails.
 - Retain rolling checkpoint/control inputs locally; back them up in immutable
   checkpoint-bound snapshots. A snapshot is a recovery version, not a duplicate
   owner of a logical file in the active catalog.
-- Total workspace limit 64 GiB; one large evaluation unit limit 32 GiB; one
-  journal lease up to 1 GiB; chunk limit 256 MiB; one network operation at a time.
-  Count partial restores, pack/download buffers, control state and logs.
-- Keep at least 16 GiB filesystem reserve plus separately derived in-flight
-  output/checkpoint emergency reservation. Fail before production if this cannot
-  be met on the configured volume. Prefer a durable system-volume run directory;
-  the inspected repository volume has only about 15 GiB free.
+- Use the design's complete 10 GiB ledger: spool 2 GiB, read cache 2 GiB, pinned
+  checkpoint/control data 1 GiB, current metadata/paged indexes 1 GiB, scratch
+  256 MiB, logs 256 MiB, emergency 1.5 GiB and protected free headroom 2 GiB.
+  Normal allocation <=6.5 GiB; emergency allocation <=8 GiB. No extra 16 GiB
+  reserve, preallocation, TMPDIR bypass or spill to another volume.
+- One episode writer/reader each and one network operation; episode owned-output
+  admission bound 1 GiB; chunks <=32 MiB; target packs <=128 MiB or 256 episodes,
+  permitting one larger singleton within the episode bound. Pages <=1,000 entries
+  and 16 MiB decoded. Prove complete artifact/atomic/crash bounds before admission.
+- Archive closed metadata, catalogs, receipts, logs and output figures too. Pin
+  only bounded heads/pages and active controls. Verification/test scratch and
+  stopped attempts share the same new-output ledger. Preserve existing history.
 - Cap new remote bytes for the run prefix at 4,500,000,000,000. This is not a
   provider billing cap, and it does not stop charges for already retained data.
 - A resource cap causes `storage_blocked`, never truncation, automatic pruning,
@@ -101,8 +114,8 @@ numerical execution owner at a time.
 | 1 | `src/silent_cascade/archive/{__init__,types,catalog,bundles}.py`; `tests/archive/{conftest,test_catalog,test_bundles}.py` | existing safe I/O/hash/compact-index utilities, reused without weakening |
 | 2 | `archive/transport.py`; `tests/archive/test_transport.py` | existing local AWS CLI profile only |
 | 3 | `archive/{session,supervisor}.py`; `tests/archive/{test_session,test_supervisor}.py` | `train/pilot_offline.py` denial hooks |
-| 4 | `archive/producer.py`; `tests/pilot/test_pilot_archive_producer.py` | trainer, workflow, runner, final-check driver, provenance inventories |
-| 5 | `archive/readers.py`; `tests/pilot/test_pilot_archive_readers.py` | report/evidence/index/journal/recovery aggregate layers |
+| 4 | `archive/producer.py`; `tests/pilot/test_pilot_archive_producer.py` | row publication, crash ownership descriptor, streaming finalizer, trainer/journals, provenance |
+| 5 | `archive/readers.py`; `tests/pilot/test_pilot_archive_readers.py` | episode scanner, report/evidence/index/journal/recovery readers |
 | 6 | `archive/{cli,preflight}.py`; `tests/archive/{test_cli,test_preflight}.py` | root CLI, Makefile, local verification inventory, setup/status docs |
 | 7 | storage-gate evidence and documentation | local full verification and existing Task 12 handoff only |
 
@@ -121,12 +134,23 @@ never eligible scientific evidence. Reuse the actual tiny pilot fixtures in
 ```python
 class ArchivePolicy(StrictModel):
     schema_version: Literal["phase4-r2-policy-v1"] = "phase4-r2-policy-v1"
-    workspace_bytes: int = 64 * 1024**3
-    evaluation_bytes: int = 32 * 1024**3
-    journal_bytes: int = 1024**3
-    journal_records: int = 1000
-    chunk_bytes: int = 256 * 1024**2
-    reserve_bytes: int = 16 * 1024**3
+    workspace_bytes: int = 10 * 1024**3  # includes protected headroom
+    spool_bytes: int = 2 * 1024**3
+    cache_bytes: int = 2 * 1024**3
+    pinned_bytes: int = 1024**3
+    metadata_bytes: int = 1024**3
+    scratch_bytes: int = 256 * 1024**2
+    logs_bytes: int = 256 * 1024**2
+    emergency_bytes: int = 1536 * 1024**2
+    reserve_bytes: int = 2 * 1024**3
+    episode_bytes: int = 1024**3
+    pack_target_bytes: int = 128 * 1024**2
+    pack_episodes: int = 256
+    journal_bytes: int = 128 * 1024**2
+    journal_records: int = 128
+    chunk_bytes: int = 32 * 1024**2
+    page_bytes: int = 16 * 1024**2
+    page_entries: int = 1000
     remote_bytes: int = 4_500_000_000_000
 
 @dataclass(frozen=True)
@@ -152,11 +176,12 @@ def iter_unit_chunks(*, run_dir: Path, control_dir: Path, ref: UnitRef,
                      scratch_dir: Path, policy: ArchivePolicy) -> Iterator[Path]: ...
 def restore_unit(*, control_dir: Path, ref: UnitRef,
                  chunks: Iterable[Path], destination: Path,
-                 policy: ArchivePolicy) -> Path: ...
+                 policy: ArchivePolicy,
+                 selected_paths: tuple[str, ...] | None = None) -> Path: ...
 ```
 
-`kind` accepts only `validation`, `evaluation`, `journal`, `control_snapshot`,
-`partial`. Identity binds run ID, source/config hashes and the relevant existing
+`kind` accepts only `episode_pack`, `evaluation_metadata`, `journal`,
+`control_snapshot`, `diagnostic`, `partial`. Identity binds run ID, source/config hashes and the relevant existing
 evaluation/checkpoint identity; no bare user-provided label establishes a seal.
 Define a strict `UnitIdentity` with `run_id`, forty-hex `source_commit`, sixty-four-
 hex `config_sha256` and `evidence_identity_sha256`, optional `checkpoint_sha256`,
@@ -164,11 +189,17 @@ and exact booleans `writer_stopped` and `checkpoint_committed`. Reject extra key
 The producer validates those values against its actual source/lock/evidence;
 synthetic codec fixtures never establish a scientific source or acceptance gate.
 Reject booleans/nonpositive values for byte/count limits, require
-`chunk_bytes <= journal_bytes <= evaluation_bytes < workspace_bytes`, and never
-permit an operational override above the production ceilings in Section 2.
+`chunk_bytes <= journal_bytes <= episode_bytes <= spool_bytes`; the eight ledger
+categories must sum to at most `workspace_bytes`. Reject overrides above Section 2
+ceilings. Small test policies must scale all categories coherently, not just the
+top-level number. Validate peak simultaneous publication/restore reservations.
 Use strict manifest/span/shard models in `types.py`. Separate original logical
 paths from snapshot-version paths; reject duplicate active ownership, not merely
 shared parent directories among disjoint journal segments.
+`manifest_path` is a logical control path; Task 3 leases its bounded manifest/page
+before calling codecs. `selected_paths` must be an exact authenticated episode
+owned-file set or an explicit bounded diagnostic selection, never caller-supplied
+unchecked spans. Full-unit restore remains subject to the same admission ledger.
 
 - [ ] **Step 1 — RED: exact bytes and unsafe inventories.** Add this synthetic
   test, then traversal/symlink/hardlink/special-file, duplicate logical member,
@@ -206,16 +237,25 @@ shared parent directories among disjoint journal segments.
   Confirm failure is the missing implementation, not a broken fixture.
 - [ ] **Step 3 — Implement canonical inventory and streaming pack/restore.**
   Use bounded JSONL shards, exact file hashes and ordered `(chunk_sha, offset,
-  length)` spans. Concatenate original bytes into at most 256 MiB chunks; no tar
+  length)` spans. Concatenate original bytes into at most 32 MiB chunks; no tar
   extraction, pickle, recompression or complete second bundle on disk. Two passes
   over sealed files are allowed: compute manifest, then deterministically rebuild
   one chunk at a time. Recheck file identity/hash to reject mutation between passes.
   Validate expanded totals before allocation and during every bounded write.
   Stage restore under an owned absent directory, fsync, then publish atomically.
+  Pack episode commits up to the target byte/count limit; allow one admitted
+  larger singleton, never split scientific evidence ownership between episodes.
+  Use paged run/corpus roots and cold-readable receipt/index pages, not a giant
+  local catalog. Bound decoded pages/counts and authenticate the final stream tail.
+  Support restoring only selected episode file spans from a pack: no need to
+  hydrate unrelated pack members, but authenticate every downloaded chunk in full.
 - [ ] **Step 4 — GREEN and boundary tests:** exact round trip at small injected
   chunk sizes, split-file spans, empty regular files, byte/count limits, symlink
   parent swaps, changed source after sealing, crash before restore publication.
   Test complete inventories larger than one shard without large real allocations.
+  Test missing last page, shared borrowed weights, sparse episode restore from a
+  multi-episode pack, and millions of synthetic descriptors with bounded disk
+  cache/cursor state. No unbounded per-receipt local files after archival.
 - [ ] **Step 5 — Review and commit:** `feat: add bounded immutable artifact units`.
 
 ## Task 2: R2 transfer, readback receipts and safe eviction
@@ -228,7 +268,7 @@ Consumes Task 1 units and safe no-follow file operations.
 ```python
 class ObjectTransport(Protocol):
     def create(self, key: str, source: Path) -> None: ...
-    def download(self, key: str, destination: Path) -> None: ...
+    def download(self, key: str, destination: Path, *, max_bytes: int) -> None: ...
 
 class R2CliTransport:
     def __init__(self, *, profile: str, bucket: str, prefix: str): ...
@@ -269,6 +309,11 @@ zero active leases, exact current file hashes and a committed catalog generation
 - [ ] **Step 3 — Implement closed AWS CLI subprocess calls.** Argument arrays,
   no shell; fixed profile/project bucket; validated prefix and content-addressed
   keys; `s3api put-object --if-none-match '*'`; fresh download files for `get-object`.
+  Downloads are bounded during transfer, not only checked afterward: request a
+  byte range no larger than the reserved cap and validate returned object-total
+  size/range metadata plus the expected exact size/SHA. An oversized/truncated
+  object fails; never issue an unbounded GET after trusting a HEAD size alone.
+  Qualify the actual AWS/R2 range behavior in Task 7 before relying on it.
   Explicit finite timeouts and at most three transient retries, preserving
   ambiguous-write recovery through exact GET verification. Reject auth/collision/
   integrity failures without retrying forever. Never use recursive sync/delete,
@@ -284,7 +329,7 @@ zero active leases, exact current file hashes and a committed catalog generation
   only under the same recorded eviction intent. No automatic remote deletes.
 - [ ] **Step 5 — GREEN:** cover failure at every lifecycle transition, checksum
   mismatch despite successful HTTP, same-content create conflicts, stale receipt,
-  credential expiry, quota refusal, concurrent lease, exact cleanup/recovery and
+  credential expiry, oversized remote responses, quota refusal, concurrent lease, exact cleanup/recovery and
   redaction of stderr. Assert no AWS invocation in fixture tests.
 - [ ] **Step 6 — Review and commit:** `feat: archive verified units to private R2`.
 
@@ -305,6 +350,9 @@ class EvidenceContext(Protocol):
     def entries(self) -> Iterator[FileEntry]: ...
     def evaluation_roots(self) -> tuple[str, ...]: ...
     def lease(self, ref: UnitRef) -> ContextManager[EvidenceLease]: ...
+    def metadata(self, logical_root: str) -> ContextManager[EvidenceLease]: ...
+    def episode(self, logical_root: str, ordinal: int, *,
+                commit_sha256: str) -> ContextManager[EvidenceLease]: ...
     def read_record(self, logical_path: str, *, expected_sha256: str,
                     max_bytes: int) -> bytes: ...
     def verify_inventory(self, entries: Iterable[FileEntry]) -> None: ...
@@ -324,7 +372,7 @@ includes transport/control files in the scientific inventory. Match archive
 entries against authoritative journal/index/DONE hashes, not only each other.
 
 - [ ] **Step 1 — RED:** real local-file request/response tests, including a stale
-  response from another run, response-before-complete-restore, simultaneous large
+  response from another run, response-before-complete-restore, simultaneous episode
   lease requests, writer/reader conflict and parent death. A child fixture attempts
   DNS/socket/cloud-client/AWS-subprocess access and must be denied; the parent
   transport fixture must still service explicit archive requests.
@@ -335,9 +383,11 @@ entries against authoritative journal/index/DONE hashes, not only each other.
   lock inodes; use PID plus process creation time for interrupted-owner detection.
   A lease is never published until all restored files authenticate. No silent
   trust of an acknowledgment: offline code rechecks manifest/local-file identity.
-- [ ] **Step 4 — Implement bounded scheduling.** At most one materialized large
-  evaluation, one journal segment and pinned control data. Account for all stages,
-  not just finished files. Release never evicts a live reader. Use 30-second
+- [ ] **Step 4 — Implement bounded scheduling.** Enforce the shared ledger,
+  one episode lease, bounded metadata/journal pages and pinned controls. Reserve
+  full possible in-flight outputs before work; measure physical allocation and
+  headroom. Include test scratch, logs, stopped attempts, staged atomic copies
+  and outstanding reservations. Release never evicts a live reader. Use 30-second
   health-check waits with status updates. Each AWS operation has a 30-minute
   timeout and at most three transient attempts; a multi-chunk unit renews progress
   only after each verified chunk and may legitimately take longer. Parent death
@@ -347,82 +397,152 @@ entries against authoritative journal/index/DONE hashes, not only each other.
 - [ ] **Step 5 — GREEN:** real subprocess IPC; no `aws`/cloud imports in the
   child; no credential environment forwarding; no new simulated events while
   waiting; all children joined; partial staging quarantined on crash; no global
-  background daemon or hidden arbitrary-command dispatcher.
+  background daemon or hidden arbitrary-command dispatcher. Small-budget tests
+  must stop safely at category/global limits without allocating GiB; prove no
+  whole evaluation materializes and no TMPDIR/second-volume bypass exists.
 - [ ] **Step 6 — Review and commit:** `feat: isolate archive I/O from offline evidence leases`.
 
-## Task 4: Producer handoff, bounded journals and resume-safe pressure
+## Task 4: Durable episode handoff, streaming finalization and rolling journals
 
-**Files:** Create `archive/producer.py` and `tests/pilot/test_pilot_archive_producer.py`.
-Modify `train/{pilot_trainer,pilot_workflow,pilot_provenance}.py`,
-`eval/runner.py`, `train/pilot_checks.py`, and the exact source inventories in
-`train/pilot_evidence.py` plus `tests/pilot/test_pilot_source.py`.
-Do not modify model/loss/engine/generator modules or checkpoint wire format.
+**Files:** Create `archive/producer.py` and
+`tests/pilot/test_pilot_archive_producer.py`. Modify
+`eval/{artifacts,runner}.py`, `eventflow/engine.py` (publication descriptor only),
+`logging/crash_bundle.py` (descriptor types),
+`train/{pilot_trainer,pilot_workflow,pilot_provenance,pilot_checks}.py`,
+the exact source inventory in `train/pilot_evidence.py`, and
+`tests/pilot/test_pilot_source.py`. Extend
+`tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
+Do not change model/loss/generator code, engine scheduling or checkpoint wire formats.
 
 **Interfaces produced:**
 
 ```python
+@dataclass(frozen=True)
+class PublishedCrashFile:
+    path: Path
+    sha256: str
+
+@dataclass(frozen=True)
+class PublishedCrash:
+    manifest: PublishedCrashFile
+    checkpoint: PublishedCrashFile | None
+    shared_weights: PublishedCrashFile | None
+
+@dataclass(frozen=True)
+class EpisodeCommit:
+    schema_version: Literal["phase4-evaluation-episode-commit-v1"]
+    identity_sha256: str
+    ordinal: int
+    episode_public_id: str
+    episode_sha256: str
+    row_offset: int
+    row_bytes: int
+    row_sha256: str
+    owned: tuple[FileEntry, ...]
+    borrowed: tuple[FileEntry, ...]
+
 class ArchiveProducer:
     def before_update(self, global_step: int) -> None: ...
     def before_evaluation(self, logical_root: str) -> None: ...
     def before_episode(self, logical_root: str, ordinal: int) -> None: ...
+    def after_episode(self, logical_root: str, commit: EpisodeCommit) -> None: ...
+    def after_evaluation(self, logical_root: str) -> None: ...
     def after_validation(self, logical_root: str) -> None: ...
+    def after_journal(self, logical_path: str, journal_sha256: str) -> None: ...
     def after_checkpoint(self, descriptor: PilotCheckpointDescriptor,
                          progress: PilotProgress) -> None: ...
 
 def seal_journal_segments(*, run_dir: Path, control_dir: Path,
-                          base_head: str | None, committed_head: str,
-                          checkpoint: PilotCheckpointDescriptor,
+                          base_head: str | None, sealed_head: str,
                           policy: ArchivePolicy) -> tuple[UnitRef, ...]: ...
 ```
 
-Thread optional `archive_producer=None` through `run_pilot_training`, `_workflow`,
-`run_pilot`, `_validation`, `evaluate_episodes`, `_run_pilot_checks_owned` and
-`_evaluate`. Default local behavior stays identical. A producer can perform only
-storage-boundary checks/requests; it never sees or edits agent state, predictions
-or private truth to decide which evidence to keep.
+Define `EpisodeCommit` in `archive/types.py`; validate exact scalar types, sorted
+ownership, row binding and borrowed references. Define `PublishedCrashFile` and
+`PublishedCrash` beside existing crash publication types; convert their safe
+relative paths, verified hashes and measured sizes to `FileEntry` in the producer.
+The engine must not import archive code. Never add hidden truth, storage callbacks
+or secrets to agent state.
+Use the existing `PilotCheckpointDescriptor` and `PilotProgress` from
+`train/pilot_state.py`; do not introduce alternate checkpoint schemas.
 
-- [ ] **Step 1 — RED:** extend the actual four-step debug pilot fixture to record
-  writer callbacks. Require preflight before the first update, handoff after each
-  fully published validation, and checkpoint/journal sealing only after the real
-  durable index publication. Force tiny journal segment limits and verify exact
-  predecessor links, hashes, order and full coverage.
-- [ ] **Step 2 — Run RED:** `uv run pytest -q tests/pilot/test_pilot_archive_producer.py tests/pilot/test_pilot_trainer.py tests/pilot/test_pilot_workflow.py`.
-- [ ] **Step 3 — Implement evaluation boundaries.** Call `before_episode` before
-  neural work, reserving enough space for the full legal in-flight output. The
-  row writer, retention and `DONE` semantics remain unchanged. Handoff only after
-  `_validation` rereads rows and publishes its sibling record. Drain robustness
-  evidence before its paired primary evaluation; preserve artifact hashes in
-  memory/catalog for the later validation journal. Final suite handoff occurs
-  only after `execution.json`, not just `DONE`.
-  Call `before_update` before each optimization step and reserve its bounded
-  journal/checkpoint output; measured journal sizes are not an allocation bound.
-- [ ] **Step 4 — Implement journal segmentation/control snapshots.** Never split
-  a record or rewrite its bytes. Bind predecessor/final heads, ordered records,
-  exact bytes, source/config/run and durable checkpoint. Multiple segments may
-  cover an interval. Classify only the checkpoint prefix as committed. Back up
-  pinned control snapshots before declaring an interval archived; keep active
-  mutable checkpoint/index files local and exclude operational IPC from inventories.
-- [ ] **Step 5 — Preserve interruption behavior.** A pressure/error exit retains
-  failure/partial artifacts. Resume enumerates cold and local journals, not only
-  `glob` results; stale owner recovery uses the context-aware verifier from Task 5.
-  Do not treat `storage_blocked` as `early_stopping` or create a completed result.
-  Tests may use a lease test double until Task 5 supplies the real cold reader.
-- [ ] **Step 6 — GREEN and review:** prove no changed optimizer step, source
-  budget, RNG or event schedule with a recording-only producer; prove all bytes
-  remain when upload/pressure fails. Independently review source closure additions
-  (including this plan/design) and preserve historical verification tuples.
-- [ ] **Step 7 — Commit:** `feat: bound pilot artifact production with safe archive handoff`.
+Thread optional `archive_producer=None` and `evidence_context=None` through
+`run_pilot_training`, `_workflow`, `run_pilot`, `_validation`,
+`evaluate_episodes`, `write_evaluation`, `_run_pilot_checks_owned` and `_evaluate`.
+Only archive mode emits operational commits. Both paths keep original logical
+payloads; new controls live outside the scientific artifact inventory.
 
-## Task 5: Complete cold-evidence verification, reporting and recovery
+- [ ] **Step 1 — RED: episode publication cut points.** Extend real evaluation
+  fixtures with failure injection after artifact writes, after row fsync/before
+  envelope, after envelope/before receipt, and during eviction. Assert row fsync
+  precedes envelope publication. No envelope/verified receipt means no eviction;
+  pending bytes remain retained and no DONE appears prematurely.
+- [ ] **Step 2 — Run RED:** `uv run pytest -q tests/pilot/test_pilot_archive_producer.py`.
+  Add owned-file and crash cases before implementing: success, retained failure,
+  runtime crash with checkpoint, initialization crash without checkpoint, and two
+  crashes borrowing the same weights. First-episode eviction must not remove
+  shared weights. Confirm failures come from missing behavior, not invalid fixtures.
+- [ ] **Step 3 — Implement publication ownership.** Have engine crash publication
+  return/expose its actual immutable descriptor to the runner, without changing
+  runtime decisions or trace fields. In `write_evaluation`, verify episode evidence,
+  append the exact canonical row, flush/fsync and atomically seal its commit.
+  Reserve output before neural work; `after_episode` may hand off only after the
+  complete seal. Keep current row log, identity, retention and shared weights local.
+  Never discover ownership by globbing crash directories.
+- [ ] **Step 4 — RED/GREEN: streaming full finalization.** Evict every episode-owned
+  file from a real multi-row fixture, then finalize through one-episode leases.
+  Revalidate evidence, crash manifest/checkpoint/weights links and row bindings.
+  Build crash index and DONE inventory from authenticated commits plus controls,
+  rejecting duplicate/missing/unclassified files. Compare original rows/index/
+  metrics/crash-index bytes and scientific artifact hashes with the local path.
+  Only after complete coverage may DONE publish. Preserve full 10,000-row
+  production cardinality; fixture size does not authorize smaller validation.
+- [ ] **Step 5 — RED/GREEN: training and final-check integration.** Extend the real
+  four-update debug pilot with recording callbacks and tiny policy limits.
+  Handoff episode evidence during each validation, close metadata after DONE, and
+  seal later validation/execution records separately. Preserve later journal
+  artifact hashes even when payloads are cold. Drain pending packs between paired
+  robustness/primary validations, without requiring the whole first run locally.
+- [ ] **Step 6 — RED/GREEN: rolling journals and controls.** Call `after_journal`
+  after each immutable journal publication, sealing bounded byte/count segments
+  throughout an interval, not only after the next checkpoint. Never split records
+  or rewrite bytes. Segment transport binds predecessor/end heads; subsequent
+  checkpoint snapshots establish which prefix is committed. Archive closed
+  catalog/receipt pages, logs and metadata with exact inventories. Bound the active
+  tail/current controls. Test more than one segment before any durable checkpoint,
+  complete predecessor coverage, and restart before/after checkpoint index commit.
+- [ ] **Step 7 — Preserve interrupted semantics.** Pressure retains failure/partial
+  evidence and stops before more work; it is not scientific early stopping.
+  Authenticate stopped writers before sealing orphan files, including crashes
+  without durable rows. Resume enumerates cold and local journals/partials through
+  the context, preserving last-checkpoint recovery and unknown outcomes. No
+  same-directory per-episode validation resume or silent change of seed.
+- [ ] **Step 8 — GREEN/review/commit:** run
+  `uv run pytest -q tests/pilot/test_pilot_archive_producer.py tests/pilot/test_pilot_trainer.py tests/pilot/test_pilot_workflow.py tests/pilot/test_pilot_source.py`
+  plus `uv run pytest -q tests/pilot/test_neural_crashes.py tests/pilot/test_pilot_artifacts.py tests/pilot/test_timed_runner.py`. Prove unchanged
+  optimizer steps, RNG, CPU outputs, schedules, counters and retention; include
+  corrupted borrowed weights and insufficient admission. Review source closure
+  additions including this plan/design. Commit:
+  `feat: stream durably committed pilot evidence to bounded archive handoff`.
 
-**Files:** Create `archive/readers.py`, `tests/pilot/test_pilot_archive_readers.py`.
-Modify `report/{pilot_artifacts,pilot}.py`,
+## Task 5: Complete single-episode readers, reporting and cold recovery
+
+**Files:** Create `archive/readers.py` and
+`tests/pilot/test_pilot_archive_readers.py`. Modify
+`report/{pilot_artifacts,pilot}.py`, `eval/artifacts.py`,
 `train/{pilot_artifact_index,pilot_trainer,pilot_workflow,pilot_evidence,pilot_checks}.py`.
 Extend `tests/pilot/{test_pilot_artifact_index,test_pilot_checks,test_pilot_report,test_pilot_gate_verifier}.py`.
 
 **Interfaces produced:**
 
 ```python
+def load_evaluation_header(root: Path) -> EvaluationHeader: ...
+def iter_evaluation_rows(root: Path, header: EvaluationHeader
+                         ) -> Iterator[IndexedRow]: ...
+def verify_evaluation_episode(root: Path, *, header: EvaluationHeader,
+                              indexed_row: IndexedRow) -> VerifiedEpisode: ...
+def finish_evaluation_scan(header: EvaluationHeader,
+                           accumulator: EvaluationScanAccumulator) -> None: ...
 def iter_journal_records(run_dir: Path, head: str | None, *,
                          evidence_context: EvidenceContext | None = None
                          ) -> Iterator[dict]: ...
@@ -432,60 +552,77 @@ def verify_training_inventory(*, run_dir: Path,
                               evidence_context: EvidenceContext) -> None: ...
 ```
 
+Header/indexed-row/verified-episode/accumulator types live in
+`report/pilot_artifacts.py` (or a focused adjacent module if necessary).
+`EvaluationHeader` contains authenticated identity, retention, rows index,
+metrics, crash index and original DONE file hashes, within existing file limits.
+`IndexedRow` binds the parsed row and exact ordinal/offset/length/hash.
+`VerifiedEpisode` carries the validated row, already-parsed neural sidecar,
+optional decoded trajectory and checked crash references. The accumulator tracks
+exact ordinal/cardinality, classified paths, metrics and required plot samples.
+Its successful closure requires every expected member and row, not just a prefix.
+`TrainingResultEnvelope` is the existing type in `train/pilot_artifact_index.py`;
+the reader does not replace or silently upgrade its wire schema.
+
 Add optional `evidence_context=None` to aggregate entrypoints `verify_journal`,
 `_collect_artifact_hashes`, `_durable`, `load_training_result`,
 `training_evaluation_status`, `evaluation_directories`, `authenticate_run`,
 `collect_pilot_evidence`, `verify_phase4_gate_artifact`, `build_pilot_report`,
-`run_pilot_checks` and `recover_pilot_checks`. When supplied, it must name the same
-logical run as `run_dir`/`raw_run_dir`; reject conflicting roots rather than
-silently choosing one. Thread through their private callers explicitly.
+`run_pilot_checks` and `recover_pilot_checks`. Validate logical-root agreement and
+thread private callers explicitly. Preserve eager `load_evaluation(Path)` using
+the same scanner internally; archive callers hold metadata and then one episode
+lease. Low replay/Path readers remain local and retain their integrity checks.
 
-Keep `load_evaluation(Path)`, `_verify_evidence` and
-`verify_neural_replay(path, weights_path=...)` Path-based and semantically unchanged.
-Cold aggregate paths use the small envelope/streaming inventory first; retain
-legacy materialization only where the existing public result contract requires
-it. Do not allocate a second serialized giant inventory or claim a lazy public
-API where a dictionary remains materialized.
-Archive-backed training initially requires the existing v2 training-result
-envelope; older envelopes remain supported by the unchanged fully local path.
-Do not silently rewrite an old result into v2 to make it eligible for archival.
+Let `_verify_evidence` return the sidecar it already parsed, while keeping every
+existing validation. `_compact_rows` consumes verified episode data instead of
+reopening files after lease release. Report figures use only already-decoded
+selected positive/negative examples, or reopen an explicit selected episode lease.
+No entire evaluation hydration for finalization, reporting, gate, replay or recovery.
 
-- [ ] **Step 1 — RED:** use actual retained debug-run data, not fake metrics.
-  Archive and evict two evaluation trees and multiple journal segments; compare
-  all-local and cold-reader results while asserting only one large lease at once.
-  Mutate a semantic field and consistently rehash its transport catalog: the
-  unchanged semantic validator must still reject the scientific contradiction.
-- [ ] **Step 2 — Run RED:** `uv run pytest -q tests/pilot/test_pilot_archive_readers.py tests/pilot/test_pilot_artifact_index.py tests/pilot/test_pilot_report.py tests/pilot/test_pilot_gate_verifier.py`.
-- [ ] **Step 3 — Implement complete logical inventory and journal traversal.**
-  Merge catalog entries against original authoritative index/journal/DONE hashes;
-  reject extra, missing, duplicate or cross-run entries and final-shard corruption.
-  Preserve exact update coverage `N..1`, predecessor hashes, committed validation
-  bindings and authenticated abandoned tails. Hold one journal lease while
-  reading its records; release or copy bounded record metadata before leasing
-  referenced evaluations. No hash check is skipped because a file is cold.
-- [ ] **Step 4 — Implement sequential report/gate reads.** Discover completed,
-  failed and partial logical trees from catalog plus local inventory. Make all
-  plot/trace accesses inside the corresponding lease. Recompute every denominator,
-  trajectory check, raw-record digest and available numeric/continuation/offline
-  semantic check. A missing remote object produces exact missing/unavailable
-  evidence, never a passing archived receipt. Keep verifier return semantics
-  including `neural_replay='not_rerun'`; execute replay only through the existing
-  separate replay obligation with restored exact weights.
-- [ ] **Step 5 — Implement opt-in bounded recovery.** Authenticate every indexed
-  input in successive leases before executing any new final check. Create a fresh
-  destination with pinned inputs and a separate immutable catalog binding the
-  verified original units; do not accumulate all restored trees. Bind original
-  gate bytes/hash, catalog root, policy and unchanged source/config in recovery
-  intent. Preserve old eager recovery, nested-destination rejection, TOCTOU gate
-  checks and all original failed artifacts. Missing required archive bytes must
-  fail before neural execution, not refit/reselect or relabel a past result.
-- [ ] **Step 6 — GREEN:** actual all-local/cold resume gives identical CPU next
-  batch, progress, selected model tensors and journal coverage. Semantics and
-  errors match for missing last shard, missing unrelated file with available
-  contradiction, earlier failed continuation plus later success, absent weights,
-  corrupted archive, partial report, transport-success/semantic-failure and two
-  independent readers. Tests tripwire neural execution inside artifact verification.
-- [ ] **Step 7 — Review and commit:** `feat: verify and recover archived pilot evidence in bounded leases`.
+- [ ] **Step 1 — RED:** use actual retained debug-run artifacts, not dummy metrics.
+  Archive/evict episode payloads and multiple catalog/journal pages. Compare eager
+  versus streaming results and assert maximum active episode leases equals one.
+  Include retained failures, crash checkpoints/shared weights and abandoned tails.
+- [ ] **Step 2 — Run RED:**
+  `uv run pytest -q tests/pilot/test_pilot_archive_readers.py tests/pilot/test_pilot_artifact_index.py tests/pilot/test_pilot_report.py tests/pilot/test_pilot_gate_verifier.py`.
+- [ ] **Step 3 — Implement header/row/episode/closure scanning.** Reuse row identity
+  and semantic checks, plus exact offset/hash binding. Classify every DONE member
+  once as metadata, shared input or episode-owned evidence. Check telemetry,
+  optional traces, crash manifests/checkpoints/weights and their identity links.
+  Reject unclassified/duplicate/missing files, reordered rows and malformed final
+  index entries. Verify all original hashes while consuming leased bytes.
+  Publish nothing passing until the scanner is exhausted and closure passes.
+- [ ] **Step 4 — RED/GREEN: adversarial tails and partials.** Corruption in the
+  final episode/page must fail despite every earlier episode succeeding. Rehash
+  a transport catalog around semantically corrupt evidence and confirm rejection.
+  Partial scans retain newline-complete rows and orphan crash bytes, without
+  manufacturing outcomes for unterminated/missing rows. Preserve current missing/
+  unavailable semantic-check reporting, including independent available failures.
+- [ ] **Step 5 — Implement paged inventory and journal validation.** Stream original
+  training-index shards against transport pages, authenticate every raw indexed
+  file, preserve exact journal update coverage `N..1` and committed/abandoned
+  bindings. Do not leave all index/catalog shards or receipts on disk. Keep the
+  v2 training-result wire format; old fully local envelopes remain readable.
+  Session-local scan reuse requires immutable input hashes and verifier-source
+  closure; transport receipts never replace raw/semantic verification. Do not
+  serialize another giant mapping or claim lazy RAM use for legacy dictionary APIs.
+- [ ] **Step 6 — RED/GREEN: reports and artifact-only gates.** Compare compact
+  attachments, metrics, errors and plots to eager fixtures. All figure/trace
+  reads occur within leases or use verified decoded examples. Preserve
+  `neural_replay='not_rerun'`; tripwire neural execution in artifact verification.
+  Separately execute actual CPU replay from an episode lease plus exact weights.
+- [ ] **Step 7 — Implement bounded fresh-destination recovery.** Authenticate every
+  indexed input before new neural work, in episode/page succession. Pin controls
+  and bind immutable originals into the destination catalog; retain no whole
+  evaluation trees. Preserve original gate bytes/source/config, TOCTOU checks,
+  nested-destination rejection, eager local recovery and original failed data.
+  Count source/destination/staging together under the same 10 GiB ledger.
+- [ ] **Step 8 — GREEN/review/commit:** repeat Step 2 tests plus actual debug cold
+  resume and recovery. Assert identical CPU next batch/progress/selected tensors,
+  journal coverage and scientific payloads. Test two competing readers, absent
+  weights, corrupt last shard, earlier failed continuation followed by success,
+  missing remote data and peak disk accounting including metadata. Commit:
+  `feat: verify and recover cold pilot evidence one episode at a time`.
 
 ## Task 6: Explicit local commands and measured storage preflight
 
@@ -498,14 +635,19 @@ and `docs/deviations.md` with implemented behavior, not future commands.
 
 ```python
 def assess_archive_space(*, policy: ArchivePolicy, workspace: Path,
-                         measured_unit_bytes: int, measured_pinned_bytes: int,
-                         emergency_bytes: int, retained_upper_bytes: int,
-                         checkpoint_working_bytes: int) -> dict: ...
+                         bounds: ArtifactOutputBounds,
+                         measurements: ArchiveMeasurements,
+                         retained_upper_bytes: int) -> ArchiveSpaceReport: ...
 def archive_doctor(*, operational_config: Path, output_dir: Path) -> Path: ...
 ```
 
-The returned report is a strict versioned schema, not an arbitrary success dict:
-bind actual volume/free/allocated bytes, probe files, maximum unit, policy hash,
+Define strict `ArtifactOutputBounds`, `ArchiveMeasurements` and
+`ArchiveSpaceReport` in `archive/types.py`. Bounds carry maximum episode/atomic/
+crash/shared-weight/update/checkpoint/control-file bytes derived from serializer
+limits and artifact counts, plus their source hash. Measurements carry observed
+per-category allocations, concurrent reservations, qualification/test output,
+physical volume/free bytes and transfer/readback times. The report is not an
+arbitrary success dict: bind all bounds, actual free/allocated bytes, policy hash,
 retention forecast, source, transfer/readback measurements, AWS version and each
 individual pass/fail condition. Keep old `forecast_workload` output unchanged;
 the archive certificate is additional evidence, not an edited historical report.
@@ -514,27 +656,36 @@ the archive certificate is additional evidence, not an edited historical report.
   arithmetic tests. Example pure sizing case:
 
   ```python
-  def test_archive_budget_does_not_erase_total_retention(tmp_path):
+  def test_archive_budget_does_not_erase_total_retention(
+      tmp_path, permitted_output_bounds, small_archive_measurements
+  ):
       result = assess_archive_space(
           policy=ArchivePolicy(), workspace=tmp_path,
-          measured_unit_bytes=23_600_210_000,
-          measured_pinned_bytes=2_000_000_000,
-          emergency_bytes=2_000_000_000,
-          retained_upper_bytes=3_675_694_793_937,
-          checkpoint_working_bytes=200_741_100)
-      assert result["retained_upper_bytes"] == 3_675_694_793_937
-      assert result["policy_workspace_bytes"] == 64 * 1024**3
-      assert "observed_free_bytes" in result
-      assert "storage_ready" in result
+          bounds=permitted_output_bounds,
+          measurements=small_archive_measurements,
+          retained_upper_bytes=3_675_694_793_937)
+      assert result.retained_upper_bytes == 3_675_694_793_937
+      assert result.policy_workspace_bytes == 10 * 1024**3
+      assert result.normal_allocation_limit_bytes == 6656 * 1024**2
+      assert result.emergency_allocation_limit_bytes == 8 * 1024**3
+      assert result.protected_headroom_bytes == 2 * 1024**3
   ```
+
+  Define both fixtures from explicit toy serializer maxima, file counts and
+  allocation records; they test arithmetic only, never certify production.
 
   Inject disk observations in dedicated tests to exercise insufficient free
   space, emergency reservation, partial-download accounting, underestimated unit
   growth, pinned-data growth and remote-budget refusal without allocating GiB.
+  A whole 23.60 GB evaluation restore, missing output maximum, out-of-ledger
+  test directory, or accumulating catalog/log files must fail admission. A
+  footprint that fits the envelope but leaves insufficient physical free space
+  must also fail; filesystem capacity never enlarges authorization.
 - [ ] **Step 2 — Run RED:** `uv run pytest -q tests/archive/test_cli.py tests/archive/test_preflight.py tests/pilot/test_pilot_cli.py tests/pilot/test_pilot_source.py`.
 - [ ] **Step 3 — Expose only working commands.** Add lazy `silent-cascade archive`
   subcommands `doctor`, `status`, `sync`, `restore`, `run`. `sync` consumes explicit
-  sealed units; `restore` needs a pinned catalog root and explicit destination;
+  sealed units; `restore` needs a pinned catalog root, an explicit episode/segment
+  selector and destination. Reject full evaluation-tree hydration above the bound;
   `run --job {pilot,checks,verify,report,replay}` wraps only known existing package
   entrypoints. Local-only `status` must work without AWS installed. Network is
   explicit in help text. No generic shell runner, credential-print command,
@@ -547,7 +698,7 @@ the archive certificate is additional evidence, not an edited historical report.
   `make verify` never initiate cloud access. Scientific config hash remains based
   on the unchanged experiment config, with operational-policy hash separately bound.
 - [ ] **Step 5 — Implement resource/cost reporting.** Include 1.2 times observed
-  unit and pinned working sizes, chunk/temp/emergency/checkpoint allowances,
+  episode and pinned sizes, proven output bounds, chunk/temp/emergency/checkpoint allowances,
   actual allocated disk and protected free reserve. Remeasure original retained
   fixtures by reading them only; never relocate/delete them. Report upload and
   readback time separately from compute. Show pending/remote bytes and usage-based
@@ -567,28 +718,36 @@ delivery navigation index. Do not mark Phase 4 Complete.
 - [ ] **Step 1 — Review/freeze implementation source.** All task reviews closed,
   clean relevant worktree, no other numerical owner. Run the local source-bound
   verification recorder (`uv run python scripts/record_phase4_local_verify.py`)
-  once after source is stable; it runs the complete unchanged `make verify`.
-  Read actual exit status and receipt/logs; preserve failure evidence.
+  once after source is stable; it runs the complete `make verify` test obligations.
+  First qualify scratch accounting under the same ledger; route local test temps
+  into counted space and stop if bounds cannot be established. Never silently
+  reduce test coverage or discard required failure evidence to fit. Read actual
+  exit status and receipt/logs; preserve failure evidence.
 - [ ] **Step 2 — Real bounded remote qualification.** Use a new isolated test
   prefix in the project bucket, never existing scientific objects. Upload a
-  deterministic 64 MiB probe and one actual copied debug evidence unit through
+  deterministic 64 MiB probe and one actual copied debug episode through
   the new tool; verify readback, create-only collision handling, interrupted
   transfer recovery and exact restore. Limit qualification's total new remote
-  bytes to 512 MiB. Never mutate the original debug evidence. Retain test bytes
-  as labeled diagnostic evidence until the owner chooses removal.
+  bytes to 512 MiB across qualification and the following smoke; reserve catalog
+  overhead too. Count all local copies against the shared 10 GiB ledger. Never
+  mutate original debug evidence. Keep test bytes as labeled diagnostic evidence;
+  local copies may use the same verified-before-eviction protocol, never blind cleanup.
 - [ ] **Step 3 — Actual offline archive-backed smoke.** Run the real tiny
   four-update pilot recipe with forced small transport/journal units and local
   quota pressure, then restored artifact verification, report and CPU replay.
   Demonstrate the operational parent uses R2 while the scientific child has zero
   network/import attempts and zero foundation-model calls. Retain all outputs;
   identify the run as `debug_non_acceptance`, not production evidence.
-- [ ] **Step 4 — Resource proof.** Measure the real largest retained unit and
-  journal/metadata/control sizes; scale the unchanged full workload explicitly.
-  Verify one-large-unit concurrency and actual peak allocation with pressure and
-  restart tests. A 32 GiB fit must be justified by the measured scenario plus
-  safety factor and live refusal/reservation logic, not asserted as universal.
-  Publish total retained forecast, bounded local need, free reserve, remote byte
-  limit, throughput/readback observations and all remaining limitations.
+- [ ] **Step 4 — Resource proof.** Establish maxima from serializer limits/file
+  counts, then measure real episode/crash/checkpoint/metadata/journal sizes and
+  scale the unchanged workload. Verify one-episode concurrency and peak combined
+  allocation under pressure, restart, cold report/replay and fresh-destination
+  recovery. Demonstrate normal <=6.5 GiB, emergency <=8 GiB and 2 GiB protected
+  headroom within the 10 GiB envelope, including retained qualification/log/test
+  data and directory/catalog growth. No whole-run hydration or hidden scratch.
+  The measured 1.2 factor supplements proven admission bounds, not replaces them.
+  Publish total retention, resource proof, remote budget, throughput/readback and
+  limitations. A missing proof is a failed gate, not permission to allocate more.
 - [ ] **Step 5 — Independent integration review and commit.** Review custody of
   every adverse artifact, exact logical inventory, no sole-copy deletion, cold
   journal resume, bounded recovery, offline boundary and compatibility. Commit
@@ -610,6 +769,10 @@ delivery navigation index. Do not mark Phase 4 Complete.
   snapshots are covered; no receipt substitutes for semantic verification.
 - [ ] Completed units and checkpoint-committed units remain distinct.
 - [ ] Local disk is bounded including transient/abandoned data, not only successes.
+- [ ] The complete 10 GiB envelope includes tests/logs/metadata/atomic staging and
+  protected headroom; no path requires an entire evaluation locally.
+- [ ] Row fsync precedes episode commit; shared crash weights have independent
+  ownership, and finalization authenticates all 10,000 rows before DONE.
 - [ ] Network loss, disk pressure and missing remote evidence cannot yield a pass.
 - [ ] Offline scientific child and separate operational parent are tested with
   real work, not only mocked high-level metrics.
@@ -620,7 +783,8 @@ delivery navigation index. Do not mark Phase 4 Complete.
   own evidence actually passes.
 
 **Planning self-review:** All nine sections of the companion storage design map
-to Tasks 1–7. The producer, reader, journal and recovery changes are explicit;
+to Tasks 1–7. Revision 2 replaces the rejected whole-evaluation architecture;
+episode commit, crash ownership, paged metadata, reader and recovery changes are explicit;
 limits are not represented as retention waivers. Commands above are implementation
 instructions, not claims that the archive CLI exists yet. Execution follows the
 user's established subagent-driven, current-branch workflow after plan approval.

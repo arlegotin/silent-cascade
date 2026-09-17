@@ -16,5 +16,8 @@ The canonical requirements live in the [design specification](superpowers/specs/
 
 Phase 4 storage follow-up: [bounded R2 archive design](superpowers/specs/2026-09-17-phase-4-r2-archive-design.md)
 and [implementation-plan amendment](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
-are proposed and await explicit plan approval. R2 provisioning is verified;
-archive integration and the production pilot are not yet complete.
+are proposed and await explicit plan approval. Revision 2 uses per-episode
+streaming under the user-authorized **10 GiB local disk ceiling**, including
+protected headroom; the earlier 64 GiB whole-evaluation proposal is withdrawn.
+R2 provisioning is verified; archive integration, resource qualification and
+the production pilot are not yet complete.
