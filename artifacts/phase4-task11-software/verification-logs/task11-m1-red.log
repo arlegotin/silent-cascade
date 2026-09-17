@@ -1,0 +1,515 @@
+FFFFFFFFF                                                                [100%]
+=================================== FAILURES ===================================
+________________ test_phase4_delivery_refuses_unearned_complete ________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_refuses_u0')
+
+    def test_phase4_delivery_refuses_unearned_complete(tmp_path):
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        assert "_assert_phase4_delivery_state" in namespace
+        check = namespace["_assert_phase4_delivery_state"]
+        check(tmp_path, "| 4 — Autonomous pilot | plan | In progress. |")
+        with pytest.raises(AssertionError):
+            check(tmp_path, "| 4 — Autonomous pilot | plan | Complete. |")
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"unmapped gate")
+>       with pytest.raises(AssertionError):
+E       Failed: DID NOT RAISE <class 'AssertionError'>
+
+tests/pilot/test_pilot_delivery.py:158: Failed
+_______ test_phase4_delivery_map_accepts_only_canonical_gate_path[True] ________
+
+canonical = True
+
+    @pytest.mark.parametrize("canonical", [True, False])
+    def test_phase4_delivery_map_accepts_only_canonical_gate_path(canonical):
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        value = dict(
+            gate=(
+                "manifests/validation/phase4/autonomous-gate-v1.json"
+                if canonical
+                else "manifests/validation/phase4/autonomous-gate.json"
+            ),
+            gate_sha256="a" * 64,
+            source_commit="b" * 40,
+            selected_weights_sha256="c" * 64,
+        )
+        if canonical:
+>           assert Phase4DeliveryMap.model_validate(value).gate == value["gate"]
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           pydantic_core._pydantic_core.ValidationError: 1 validation error for Phase4DeliveryMap
+E           gate
+E             Input should be 'manifests/validation/phase4/autonomous-gate.json' [type=literal_error, input_value='manifests/validation/pha...autonomous-gate-v1.json', input_type=str]
+E               For further information visit https://errors.pydantic.dev/2.13/v/literal_error
+
+tests/pilot/test_pilot_delivery.py:177: ValidationError
+_______ test_phase4_delivery_map_accepts_only_canonical_gate_path[False] _______
+
+canonical = False
+
+    @pytest.mark.parametrize("canonical", [True, False])
+    def test_phase4_delivery_map_accepts_only_canonical_gate_path(canonical):
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        value = dict(
+            gate=(
+                "manifests/validation/phase4/autonomous-gate-v1.json"
+                if canonical
+                else "manifests/validation/phase4/autonomous-gate.json"
+            ),
+            gate_sha256="a" * 64,
+            source_commit="b" * 40,
+            selected_weights_sha256="c" * 64,
+        )
+        if canonical:
+            assert Phase4DeliveryMap.model_validate(value).gate == value["gate"]
+        else:
+>           with pytest.raises(ValueError):
+E           Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/pilot/test_pilot_delivery.py:179: Failed
+___ test_phase4_delivery_binds_independently_verified_identity[missing_gate] ___
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x113bf6ae0>
+damage = 'missing_gate'
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    )
+    def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+        from silent_cascade.train import pilot_evidence
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        check = namespace["_assert_phase4_delivery_state"]
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"fixture gate bytes")
+        mapping = Phase4DeliveryMap(
+            gate_sha256=sha256_bytes(gate.read_bytes()),
+            source_commit="a" * 40,
+            selected_weights_sha256="b" * 64,
+        )
+        (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
+        verified = dict(
+            recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+        )
+        # Only isolate this delivery adapter: real verifier rejection is exercised by
+        # the real gate fixture; these checks must reject even a verified foreign gate.
+        monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
+        row = (
+            "| 4 — Autonomous pilot | plan | Complete "
+            + mapping.source_commit
+            + " "
+            + mapping.selected_weights_sha256
+            + " "
+            + mapping.gate_sha256
+            + " |"
+        )
+>       check(tmp_path, row)
+
+tests/pilot/test_pilot_delivery.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind0')
+plan_index = '| 4 — Autonomous pilot | plan | Complete aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 3ecc7cb4f643a6814f4a29c32428f2f1cae91e1d3e93ba42160ad36f6c85567c |'
+
+    def _assert_phase4_delivery_state(root, plan_index):
+        from silent_cascade.hashing import canonical_json_bytes
+        from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    
+        rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+        assert len(rows) == 1
+        cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+        path = root / "manifests/validation/phase4/delivery.json"
+        gate = root / "manifests/validation/phase4/autonomous-gate.json"
+        for parent in path.parents:
+            assert not parent.is_symlink()
+            if parent == root:
+                break
+        if not path.exists() and not path.is_symlink():
+            assert not gate.exists() and not gate.is_symlink()
+            assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+            return
+        assert path.is_file() and not path.is_symlink()
+        mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+>       assert gate.is_file() and not gate.is_symlink()
+E       AssertionError
+
+tests/integration/test_phase0_repository.py:608: AssertionError
+_____ test_phase4_delivery_binds_independently_verified_identity[old_name] _____
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x113bf5c10>
+damage = 'old_name'
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    )
+    def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+        from silent_cascade.train import pilot_evidence
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        check = namespace["_assert_phase4_delivery_state"]
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"fixture gate bytes")
+        mapping = Phase4DeliveryMap(
+            gate_sha256=sha256_bytes(gate.read_bytes()),
+            source_commit="a" * 40,
+            selected_weights_sha256="b" * 64,
+        )
+        (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
+        verified = dict(
+            recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+        )
+        # Only isolate this delivery adapter: real verifier rejection is exercised by
+        # the real gate fixture; these checks must reject even a verified foreign gate.
+        monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
+        row = (
+            "| 4 — Autonomous pilot | plan | Complete "
+            + mapping.source_commit
+            + " "
+            + mapping.selected_weights_sha256
+            + " "
+            + mapping.gate_sha256
+            + " |"
+        )
+>       check(tmp_path, row)
+
+tests/pilot/test_pilot_delivery.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind1')
+plan_index = '| 4 — Autonomous pilot | plan | Complete aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 3ecc7cb4f643a6814f4a29c32428f2f1cae91e1d3e93ba42160ad36f6c85567c |'
+
+    def _assert_phase4_delivery_state(root, plan_index):
+        from silent_cascade.hashing import canonical_json_bytes
+        from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    
+        rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+        assert len(rows) == 1
+        cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+        path = root / "manifests/validation/phase4/delivery.json"
+        gate = root / "manifests/validation/phase4/autonomous-gate.json"
+        for parent in path.parents:
+            assert not parent.is_symlink()
+            if parent == root:
+                break
+        if not path.exists() and not path.is_symlink():
+            assert not gate.exists() and not gate.is_symlink()
+            assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+            return
+        assert path.is_file() and not path.is_symlink()
+        mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+>       assert gate.is_file() and not gate.is_symlink()
+E       AssertionError
+
+tests/integration/test_phase0_repository.py:608: AssertionError
+_______ test_phase4_delivery_binds_independently_verified_identity[hash] _______
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x113bf72f0>
+damage = 'hash'
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    )
+    def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+        from silent_cascade.train import pilot_evidence
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        check = namespace["_assert_phase4_delivery_state"]
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"fixture gate bytes")
+        mapping = Phase4DeliveryMap(
+            gate_sha256=sha256_bytes(gate.read_bytes()),
+            source_commit="a" * 40,
+            selected_weights_sha256="b" * 64,
+        )
+        (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
+        verified = dict(
+            recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+        )
+        # Only isolate this delivery adapter: real verifier rejection is exercised by
+        # the real gate fixture; these checks must reject even a verified foreign gate.
+        monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
+        row = (
+            "| 4 — Autonomous pilot | plan | Complete "
+            + mapping.source_commit
+            + " "
+            + mapping.selected_weights_sha256
+            + " "
+            + mapping.gate_sha256
+            + " |"
+        )
+>       check(tmp_path, row)
+
+tests/pilot/test_pilot_delivery.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind2')
+plan_index = '| 4 — Autonomous pilot | plan | Complete aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 3ecc7cb4f643a6814f4a29c32428f2f1cae91e1d3e93ba42160ad36f6c85567c |'
+
+    def _assert_phase4_delivery_state(root, plan_index):
+        from silent_cascade.hashing import canonical_json_bytes
+        from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    
+        rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+        assert len(rows) == 1
+        cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+        path = root / "manifests/validation/phase4/delivery.json"
+        gate = root / "manifests/validation/phase4/autonomous-gate.json"
+        for parent in path.parents:
+            assert not parent.is_symlink()
+            if parent == root:
+                break
+        if not path.exists() and not path.is_symlink():
+            assert not gate.exists() and not gate.is_symlink()
+            assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+            return
+        assert path.is_file() and not path.is_symlink()
+        mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+>       assert gate.is_file() and not gate.is_symlink()
+E       AssertionError
+
+tests/integration/test_phase0_repository.py:608: AssertionError
+______ test_phase4_delivery_binds_independently_verified_identity[source] ______
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x113bf6480>
+damage = 'source'
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    )
+    def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+        from silent_cascade.train import pilot_evidence
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        check = namespace["_assert_phase4_delivery_state"]
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"fixture gate bytes")
+        mapping = Phase4DeliveryMap(
+            gate_sha256=sha256_bytes(gate.read_bytes()),
+            source_commit="a" * 40,
+            selected_weights_sha256="b" * 64,
+        )
+        (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
+        verified = dict(
+            recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+        )
+        # Only isolate this delivery adapter: real verifier rejection is exercised by
+        # the real gate fixture; these checks must reject even a verified foreign gate.
+        monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
+        row = (
+            "| 4 — Autonomous pilot | plan | Complete "
+            + mapping.source_commit
+            + " "
+            + mapping.selected_weights_sha256
+            + " "
+            + mapping.gate_sha256
+            + " |"
+        )
+>       check(tmp_path, row)
+
+tests/pilot/test_pilot_delivery.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind3')
+plan_index = '| 4 — Autonomous pilot | plan | Complete aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 3ecc7cb4f643a6814f4a29c32428f2f1cae91e1d3e93ba42160ad36f6c85567c |'
+
+    def _assert_phase4_delivery_state(root, plan_index):
+        from silent_cascade.hashing import canonical_json_bytes
+        from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    
+        rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+        assert len(rows) == 1
+        cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+        path = root / "manifests/validation/phase4/delivery.json"
+        gate = root / "manifests/validation/phase4/autonomous-gate.json"
+        for parent in path.parents:
+            assert not parent.is_symlink()
+            if parent == root:
+                break
+        if not path.exists() and not path.is_symlink():
+            assert not gate.exists() and not gate.is_symlink()
+            assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+            return
+        assert path.is_file() and not path.is_symlink()
+        mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+>       assert gate.is_file() and not gate.is_symlink()
+E       AssertionError
+
+tests/integration/test_phase0_repository.py:608: AssertionError
+_____ test_phase4_delivery_binds_independently_verified_identity[weights] ______
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind4')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x113bf76e0>
+damage = 'weights'
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    )
+    def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+        from silent_cascade.train import pilot_evidence
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        check = namespace["_assert_phase4_delivery_state"]
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"fixture gate bytes")
+        mapping = Phase4DeliveryMap(
+            gate_sha256=sha256_bytes(gate.read_bytes()),
+            source_commit="a" * 40,
+            selected_weights_sha256="b" * 64,
+        )
+        (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
+        verified = dict(
+            recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+        )
+        # Only isolate this delivery adapter: real verifier rejection is exercised by
+        # the real gate fixture; these checks must reject even a verified foreign gate.
+        monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
+        row = (
+            "| 4 — Autonomous pilot | plan | Complete "
+            + mapping.source_commit
+            + " "
+            + mapping.selected_weights_sha256
+            + " "
+            + mapping.gate_sha256
+            + " |"
+        )
+>       check(tmp_path, row)
+
+tests/pilot/test_pilot_delivery.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind4')
+plan_index = '| 4 — Autonomous pilot | plan | Complete aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 3ecc7cb4f643a6814f4a29c32428f2f1cae91e1d3e93ba42160ad36f6c85567c |'
+
+    def _assert_phase4_delivery_state(root, plan_index):
+        from silent_cascade.hashing import canonical_json_bytes
+        from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    
+        rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+        assert len(rows) == 1
+        cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+        path = root / "manifests/validation/phase4/delivery.json"
+        gate = root / "manifests/validation/phase4/autonomous-gate.json"
+        for parent in path.parents:
+            assert not parent.is_symlink()
+            if parent == root:
+                break
+        if not path.exists() and not path.is_symlink():
+            assert not gate.exists() and not gate.is_symlink()
+            assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+            return
+        assert path.is_file() and not path.is_symlink()
+        mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+>       assert gate.is_file() and not gate.is_symlink()
+E       AssertionError
+
+tests/integration/test_phase0_repository.py:608: AssertionError
+______ test_phase4_delivery_binds_independently_verified_identity[failed] ______
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind5')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x113bf6600>
+damage = 'failed'
+
+    @pytest.mark.parametrize(
+        "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    )
+    def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+        from silent_cascade.train import pilot_evidence
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+    
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+        check = namespace["_assert_phase4_delivery_state"]
+        gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+        gate.parent.mkdir(parents=True)
+        gate.write_bytes(b"fixture gate bytes")
+        mapping = Phase4DeliveryMap(
+            gate_sha256=sha256_bytes(gate.read_bytes()),
+            source_commit="a" * 40,
+            selected_weights_sha256="b" * 64,
+        )
+        (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
+        verified = dict(
+            recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+        )
+        # Only isolate this delivery adapter: real verifier rejection is exercised by
+        # the real gate fixture; these checks must reject even a verified foreign gate.
+        monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
+        row = (
+            "| 4 — Autonomous pilot | plan | Complete "
+            + mapping.source_commit
+            + " "
+            + mapping.selected_weights_sha256
+            + " "
+            + mapping.gate_sha256
+            + " |"
+        )
+>       check(tmp_path, row)
+
+tests/pilot/test_pilot_delivery.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1137/test_phase4_delivery_binds_ind5')
+plan_index = '| 4 — Autonomous pilot | plan | Complete aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 3ecc7cb4f643a6814f4a29c32428f2f1cae91e1d3e93ba42160ad36f6c85567c |'
+
+    def _assert_phase4_delivery_state(root, plan_index):
+        from silent_cascade.hashing import canonical_json_bytes
+        from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+        from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    
+        rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+        assert len(rows) == 1
+        cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+        path = root / "manifests/validation/phase4/delivery.json"
+        gate = root / "manifests/validation/phase4/autonomous-gate.json"
+        for parent in path.parents:
+            assert not parent.is_symlink()
+            if parent == root:
+                break
+        if not path.exists() and not path.is_symlink():
+            assert not gate.exists() and not gate.is_symlink()
+            assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+            return
+        assert path.is_file() and not path.is_symlink()
+        mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+>       assert gate.is_file() and not gate.is_symlink()
+E       AssertionError
+
+tests/integration/test_phase0_repository.py:608: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_refuses_unearned_complete
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_map_accepts_only_canonical_gate_path[True]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_map_accepts_only_canonical_gate_path[False]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_binds_independently_verified_identity[missing_gate]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_binds_independently_verified_identity[old_name]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_binds_independently_verified_identity[hash]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_binds_independently_verified_identity[source]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_binds_independently_verified_identity[weights]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_binds_independently_verified_identity[failed]
+9 failed, 11 deselected in 1.00s

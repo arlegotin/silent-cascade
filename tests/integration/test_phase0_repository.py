@@ -594,7 +594,7 @@ def _assert_phase4_delivery_state(root, plan_index):
     assert len(rows) == 1
     cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
     path = root / "manifests/validation/phase4/delivery.json"
-    gate = root / "manifests/validation/phase4/autonomous-gate.json"
+    gate = root / "manifests/validation/phase4/autonomous-gate-v1.json"
     for parent in path.parents:
         assert not parent.is_symlink()
         if parent == root:

@@ -176,8 +176,8 @@ class Phase4GateArtifact(StrictModel):
 
 class Phase4DeliveryMap(StrictModel):
     schema_version: Literal["phase4-delivery-map-v1"] = "phase4-delivery-map-v1"
-    gate: Literal["manifests/validation/phase4/autonomous-gate.json"] = (
-        "manifests/validation/phase4/autonomous-gate.json"
+    gate: Literal["manifests/validation/phase4/autonomous-gate-v1.json"] = (
+        "manifests/validation/phase4/autonomous-gate-v1.json"
     )
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     gate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

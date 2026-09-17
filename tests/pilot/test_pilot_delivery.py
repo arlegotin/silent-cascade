@@ -152,9 +152,37 @@ def test_phase4_delivery_refuses_unearned_complete(tmp_path):
     check(tmp_path, "| 4 — Autonomous pilot | plan | In progress. |")
     with pytest.raises(AssertionError):
         check(tmp_path, "| 4 — Autonomous pilot | plan | Complete. |")
+    gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
+    gate.parent.mkdir(parents=True)
+    gate.write_bytes(b"unmapped gate")
+    with pytest.raises(AssertionError):
+        check(tmp_path, "| 4 — Autonomous pilot | plan | In progress. |")
 
 
-@pytest.mark.parametrize("damage", ["missing_gate", "hash", "source", "weights", "failed"])
+@pytest.mark.parametrize("canonical", [True, False])
+def test_phase4_delivery_map_accepts_only_canonical_gate_path(canonical):
+    from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+
+    value = dict(
+        gate=(
+            "manifests/validation/phase4/autonomous-gate-v1.json"
+            if canonical
+            else "manifests/validation/phase4/autonomous-gate.json"
+        ),
+        gate_sha256="a" * 64,
+        source_commit="b" * 40,
+        selected_weights_sha256="c" * 64,
+    )
+    if canonical:
+        assert Phase4DeliveryMap.model_validate(value).gate == value["gate"]
+    else:
+        with pytest.raises(ValueError):
+            Phase4DeliveryMap.model_validate(value)
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+)
 def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
     from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
     from silent_cascade.train import pilot_evidence
@@ -162,7 +190,7 @@ def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeyp
 
     namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
     check = namespace["_assert_phase4_delivery_state"]
-    gate = tmp_path / "manifests/validation/phase4/autonomous-gate.json"
+    gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
     gate.parent.mkdir(parents=True)
     gate.write_bytes(b"fixture gate bytes")
     mapping = Phase4DeliveryMap(
@@ -189,6 +217,8 @@ def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeyp
     check(tmp_path, row)
     if damage == "missing_gate":
         gate.rename(gate.with_suffix(".retained"))
+    elif damage == "old_name":
+        gate.rename(gate.with_name("autonomous-gate.json"))
     elif damage == "hash":
         gate.write_bytes(b"different gate")
     elif damage == "source":
