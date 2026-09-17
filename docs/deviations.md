@@ -747,3 +747,42 @@ Current-source Phase 3 authentication now includes the shared
 `models/transitions.py` dependency. A regression rejects an uncommitted helper
 mutation. Historical closures, accepted artifacts, and delivery maps retain
 their original bytes and identities.
+
+## 2026-09-17 — Action-diagnostic evidence boundary corrections
+
+Task 7 corrected diagnostic reporting and authentication, not the learned model,
+engine, loss or scientific protocol. Teacher-populated context hypotheses are
+now labeled separately from actual composition-head predictions, with nulls for
+inapplicable predictions. Original manifest digest reads reuse the bounded,
+no-follow artifact reader; the manifest returned by regeneration must match the
+already authenticated bytes. Real oversized, symlink and transient-substitution
+regressions establish these boundaries.
+
+Independent review then found that an action head can run before its callback
+fails validation or segment installation. Such an observation is not a committed
+ACT. Commit `cccbb29f5dbc44ff3c2f666ddd8f241fed60a3ef` preserves that real failed
+attempt separately while retaining the episode's error and denominator, null
+main-action logits/choices, and zero committed actions. Successful execution
+still requires an exact observation/commit inventory. Regressions fail after
+the actual action head runs; no action or score is invented to repair the log.
+
+The earlier run at `5c3f5a8d8ca57960d7c25b0315c39dfde7c80157` was interrupted
+after independent review and is preserved as NON-ACCEPTANCE. Its 10,000 immediate
+rows were not reused. A fresh complete four-context diagnostic ran only after
+the scoped correction review closed, on frozen `cccbb29`, and retained every
+episode. Final native covering verification passed 49 tests. The earlier
+3,225-test full gate remains attached to its pre-correction source inventory,
+not silently promoted to the corrected source.
+
+The completed diagnostic reported 6,629/10,000 historical immediate correctness,
+10,000/10,000 teacher-context correctness and 9,998/10,000 autonomous timed
+successes, with two disconnected-negative false actions and zero runtime errors.
+The raw-at-ACT context has only 5,002 real readouts; 4,998 no-ACT negatives stay
+missing, not correct abstentions. No failed callback attempt occurred in this
+completed run; that correction is covered by the explicit error regressions.
+
+See [the action-context findings](phase4-autonomous-eventflow.md) for original
+versus executing identities, raw artifact hashes, losses, gradients and limits.
+This is diagnostic/non-acceptance evidence from old trained one-hop weights.
+It changes neither the historical five-way score nor any Phase 4 gate and does
+not justify a new loss/head, an action-solved claim or a Phase 4 completion claim.
