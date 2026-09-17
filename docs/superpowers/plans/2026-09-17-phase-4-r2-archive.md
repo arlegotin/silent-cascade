@@ -173,7 +173,8 @@ class UnitRef:
 def seal_unit(*, run_dir: Path, control_dir: Path, logical_root: str,
               paths: tuple[str, ...], kind: str, identity: dict,
               policy: ArchivePolicy,
-              episode_groups: tuple[tuple[str, ...], ...] = ()) -> UnitRef: ...
+              episode_groups: tuple[tuple[str, ...], ...] = (),
+              borrowed: tuple[FileEntry, ...] = ()) -> UnitRef: ...
 def iter_unit_files(control_dir: Path, ref: UnitRef) -> Iterator[FileEntry]: ...
 def iter_unit_chunks(*, run_dir: Path, control_dir: Path, ref: UnitRef,
                      scratch_dir: Path, policy: ArchivePolicy) -> Iterator[Path]: ...
@@ -208,6 +209,15 @@ of owned paths, with nonempty sorted groups and the declared count/episode bound
 Authenticate it in the manifest. Do not infer episode ownership from directories:
 real ordinal payloads are flat files and crash files can live elsewhere. Task 4
 supplies the groups from durable episode commits. Other kinds use no episode groups.
+`borrowed` authenticates unique run-relative size/hash references disjoint from
+owned members; verify them while sealing, but give them no owned spans or expanded
+bytes. Task 3 pins/resolves exact path/hash dependencies before exposing a lease.
+`control_snapshot` ownership is versioned by `(unit_id, original path)`, outside
+the active logical-file collision map; multiple snapshots may preserve different
+versions of a mutable control. Do not rename scientific paths. Restore by explicit
+unit reference into a fresh destination; active source controls are never evicted.
+Allow canonical `logical_root='.'` only to identify the run root; member paths
+still reject empty/dot/traversal components. This supports existing root journals.
 
 - [ ] **Step 1 — RED: exact bytes and unsafe inventories.** Add this synthetic
   test, then traversal/symlink/hardlink/special-file, duplicate logical member,
@@ -292,6 +302,8 @@ manifest and catalog-commit publication. The test transport is a directory-backe
 implementation of the two methods, with counters/fault injection; production has
 only the R2 CLI implementation. `evict_unit` requires the archive/writer locks,
 zero active leases, exact current file hashes and a committed catalog generation.
+Reject eviction of `control_snapshot` source files; snapshots version mutable
+controls for recovery, while the active local controls remain pinned.
 
 - [ ] **Step 1 — RED:** add `test_readback_corruption_never_authorizes_eviction`,
   `test_existing_different_object_is_not_overwritten`, and recovery cut-point tests.
