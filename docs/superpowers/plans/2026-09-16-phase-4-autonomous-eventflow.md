@@ -1300,7 +1300,7 @@ the attempt and diagnose before Task12; never silently restart or extend it.
 
 **Files:**
 
-- Create: `src/silent_cascade/train/pilot_cli.py`, `src/silent_cascade/report/{__init__,pilot}.py`, `scripts/run_pilot.py`.
+- Create: `src/silent_cascade/train/{pilot_cli,pilot_workflow}.py`, `src/silent_cascade/report/{__init__,pilot,pilot_artifacts}.py`, `scripts/run_pilot.py`.
 - Create/update: `docs/phase4-autonomous-eventflow.md`, reader-facing command status in `README.md`.
 - Modify: `src/silent_cascade/cli.py`, `Makefile` and their existing command/package tests.
 - Maintain current CLI source closure: `src/silent_cascade/eventflow/provenance.py`, `tests/unit/test_provenance.py`, `tests/regression/test_import_boundaries.py`.
@@ -1319,6 +1319,12 @@ the attempt and diagnose before Task12; never silently restart or extend it.
   device: str) -> PilotTrainingResult`: preflight identity, immutable validation
   data/oracle/leakage, train/resume, selected-weight evaluation and pilot report.
   Task 11 adds final evidence collection through its implemented API.
+- Keep command registration in `pilot_cli.py` lightweight. `pilot_workflow.py`
+  owns closed input preparation, authenticated evaluation, process ownership and
+  the `run_pilot` orchestration; `scripts/run_pilot.py` delegates to it.
+  `report/pilot_artifacts.py` owns read-only verified artifact loading shared by
+  reporting and compatible reuse; `report/pilot.py` renders the tables/plots.
+  The artifact reader and renderer must not invoke training or evaluation.
 
 - [ ] **Step 1: Write real CLI dispatch, reuse and report fixture tests.**
 
