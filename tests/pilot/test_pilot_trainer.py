@@ -4,6 +4,93 @@ import torch
 from .test_pilot_source import DATA_SETUP, checkout
 
 
+def _sparse_artifact(root, name, size):
+    """Byte-boundary fixture only; deliberately not scientific evaluation rows."""
+    import hashlib
+
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        handle.truncate(size)
+    with path.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    return path, digest
+
+
+def _check_artifact_consumer(root, name, digest, consumer):
+    from silent_cascade.train.pilot_state import PilotProgress
+    from silent_cascade.train.pilot_trainer import _journal, verify_journal
+
+    if consumer == "journal":
+        progress = _journal(
+            root, PilotProgress(), {"kind": "validation", "artifacts": {name: digest}}
+        )
+        assert verify_journal(root, progress) == {progress.journal_sha256}
+    else:
+        from silent_cascade.train.pilot_trainer import _collect_artifact_hashes
+
+        assert _collect_artifact_hashes(root)[name] == digest
+
+
+@pytest.mark.parametrize("consumer", ["journal", "inventory"])
+@pytest.mark.parametrize("leaf", ["rows.jsonl", "traces/example.jsonl"])
+@pytest.mark.parametrize("size", [64 * 1024 * 1024 + 1, 128 * 1024 * 1024])
+def test_autonomous_hash_consumers_accept_larger_than_manifest_limit(
+    tmp_path, consumer, leaf, size
+):
+    name = "attempt-test/validation-0-one_hop/autonomous/" + leaf
+    _, digest = _sparse_artifact(tmp_path, name, size)
+    _check_artifact_consumer(tmp_path, name, digest, consumer)
+
+
+@pytest.mark.parametrize("consumer", ["journal", "inventory"])
+@pytest.mark.parametrize(
+    ("name", "size"),
+    [
+        ("attempt-test/validation-0-one_hop/autonomous/rows.jsonl", 128 * 1024 * 1024 + 1),
+        ("attempt-test/validation-0-one_hop/validation.json", 64 * 1024 * 1024 + 1),
+    ],
+)
+def test_artifact_consumers_keep_domain_byte_limits(tmp_path, consumer, name, size):
+    _, digest = _sparse_artifact(tmp_path, name, size)
+    with pytest.raises(ValueError, match="byte_limit"):
+        _check_artifact_consumer(tmp_path, name, digest, consumer)
+
+
+@pytest.mark.parametrize("consumer", ["journal", "inventory"])
+def test_artifact_consumers_reject_leaf_symlinks(tmp_path, consumer):
+    name = "attempt-test/validation-0-one_hop/autonomous/rows.jsonl"
+    path, digest = _sparse_artifact(tmp_path, name, 1)
+    outside = tmp_path / "unrelated"
+    path.rename(outside)
+    path.symlink_to(outside)
+    with pytest.raises(OSError):
+        _check_artifact_consumer(tmp_path, name, digest, consumer)
+
+
+@pytest.mark.parametrize("kind", ["changed", "parent_symlink", "absolute", "traversal", "frozen"])
+def test_journal_artifact_hash_and_path_guards(tmp_path, kind):
+    from silent_cascade.train.state import TrainingError
+
+    name = "attempt-test/validation-0-one_hop/autonomous/rows.jsonl"
+    path, digest = _sparse_artifact(tmp_path, name, 1)
+    if kind == "changed":
+        path.write_bytes(b"x")
+    elif kind == "parent_symlink":
+        outside = tmp_path / "unrelated"
+        path.parent.rename(outside)
+        path.parent.symlink_to(outside, target_is_directory=True)
+    elif kind == "absolute":
+        name = str(path)
+    elif kind == "traversal":
+        name = "attempt-test/../" + name
+    else:
+        name = "attempt-test/validation-0-one_hop/autonomous/frozen/rows.jsonl"
+        _sparse_artifact(tmp_path, name, 1)
+    with pytest.raises((TrainingError, ValueError, OSError)):
+        _check_artifact_consumer(tmp_path, name, digest, "journal")
+
+
 def test_real_update_changes_weights_and_records_full_losses():
     from silent_cascade.models.event_flow import EventFlowModel
     from silent_cascade.train.pilot_config import resolve_pilot_config

@@ -27,6 +27,7 @@ from silent_cascade.train.objective import training_objective
 from silent_cascade.train.pilot_checkpoints import load_pilot_checkpoint, save_pilot_checkpoint
 from silent_cascade.train.pilot_config import Phase4Config
 from silent_cascade.train.pilot_data import (
+    _check_path,
     _publish_pilot_bytes,
     _read_pilot_bytes,
     iter_pilot_examples,
@@ -154,6 +155,31 @@ def _journal(run_dir, progress, value):
     return progress.model_copy(update={"journal_sha256": digest})
 
 
+def _artifact_sha256(run_dir, name):
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise TrainingError("unsafe journal artifact path")
+    path = run_dir / relative
+    _check_path(path)
+    parts = relative.parts
+    autonomous = (
+        len(parts) >= 4
+        and parts[0].startswith("attempt-")
+        and parts[1].startswith("validation-")
+        and parts[2] == "autonomous"
+    )
+    reader = read_evaluation_artifact if autonomous else _read_pilot_bytes
+    return sha256_bytes(reader(path))
+
+
+def _collect_artifact_hashes(run_dir):
+    return {
+        str(p.relative_to(run_dir)): _artifact_sha256(run_dir, str(p.relative_to(run_dir)))
+        for p in sorted(run_dir.rglob("*"))
+        if p.is_file()
+    }
+
+
 def verify_journal(run_dir, progress):
     cursor, seen, steps = progress.journal_sha256, set(), []
     while cursor is not None:
@@ -167,9 +193,7 @@ def verify_journal(run_dir, progress):
         if record["kind"] == "update":
             steps.append(record["global_step"])
         for name, digest in record.get("artifacts", {}).items():
-            if Path(name).is_absolute() or ".." in Path(name).parts:
-                raise TrainingError("unsafe journal artifact path")
-            if sha256_bytes(_read_pilot_bytes(run_dir / name)) != digest:
+            if _artifact_sha256(run_dir, name) != digest:
                 raise TrainingError("pilot journal artifact mismatch")
         cursor = record["prior"]
     if steps != list(range(progress.global_step, 0, -1)):
@@ -533,11 +557,7 @@ def run_pilot_training(
         stage=progress.stage,
     )
     _publish_selected(run_dir, progress, config)
-    artifacts = {
-        str(p.relative_to(run_dir)): sha256_bytes(_read_pilot_bytes(p))
-        for p in sorted(run_dir.rglob("*"))
-        if p.is_file()
-    }
+    artifacts = _collect_artifact_hashes(run_dir)
     result = PilotTrainingResult(
         progress.status,
         progress,
