@@ -225,12 +225,47 @@ class RunCatalogEntry(StrictModel):
     root_path: str
 
 
-type CatalogEntry = UnitCatalogEntry | OwnershipCatalogEntry | RunCatalogEntry
+class RemoteReservationEntry(StrictModel):
+    record_type: Literal["reservation"] = "reservation"
+    key: Hash
+    object_key: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    bytes: Positive
+    sha256: Hash
+
+
+class ReceiptLocatorEntry(StrictModel):
+    record_type: Literal["receipt"] = "receipt"
+    key: Hash
+    unit_id: Hash
+    receipt_sha256: Hash
+    object_key: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    bytes: Positive
+
+
+class EvictionLocatorEntry(StrictModel):
+    record_type: Literal["eviction"] = "eviction"
+    key: Hash
+    unit_id: Hash
+    receipt_sha256: Hash
+    intent_sha256: Hash
+    object_key: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    bytes: Positive
+    completed: bool
+
+
+type CatalogEntry = (
+    UnitCatalogEntry
+    | OwnershipCatalogEntry
+    | RunCatalogEntry
+    | RemoteReservationEntry
+    | ReceiptLocatorEntry
+    | EvictionLocatorEntry
+)
 
 
 class CatalogNode(StrictModel):
     schema_version: Literal["phase4-r2-catalog-node-v1"] = "phase4-r2-catalog-node-v1"
-    index: Literal["units", "ownership", "runs"]
+    index: Literal["units", "ownership", "runs", "reservations", "receipts", "evictions"]
     depth: Annotated[int, Field(strict=True, ge=0, le=255)]
     records: tuple[CatalogEntry, ...] = ()
     zero: CatalogNodeRef | None = None
@@ -251,6 +286,9 @@ class CatalogNode(StrictModel):
                 "units": {"unit"},
                 "ownership": {"file", "directory"},
                 "runs": {"run"},
+                "reservations": {"reservation"},
+                "receipts": {"receipt"},
+                "evictions": {"eviction"},
             }[self.index]
             if any(record.record_type not in expected for record in self.records):
                 raise ValueError("catalog entry belongs to another index")
@@ -283,6 +321,28 @@ class CorpusCatalogRoot(StrictModel):
     def validate_count(self) -> "CorpusCatalogRoot":
         if self.run_count != (0 if self.runs is None else self.runs.entries):
             raise ValueError("corpus catalog run count differs")
+        return self
+
+
+class OperationalCatalogRoot(StrictModel):
+    schema_version: Literal["phase4-r2-operational-catalog-v1"] = "phase4-r2-operational-catalog-v1"
+    reservations: CatalogNodeRef | None
+    receipts: CatalogNodeRef | None
+    evictions: CatalogNodeRef | None
+    reservation_count: Count
+    receipt_count: Count
+    eviction_count: Count
+    publication_bytes: Count
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "OperationalCatalogRoot":
+        expected = (
+            (self.reservation_count, self.reservations),
+            (self.receipt_count, self.receipts),
+            (self.eviction_count, self.evictions),
+        )
+        if any(count != (0 if ref is None else ref.entries) for count, ref in expected):
+            raise ValueError("operational catalog count differs")
         return self
 
 
