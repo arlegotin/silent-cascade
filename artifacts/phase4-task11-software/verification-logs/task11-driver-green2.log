@@ -1,0 +1,92 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_real_debug_driver_runs_cpu_without_second_fit_and_reuses _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0')
+
+    def test_real_debug_driver_runs_cpu_without_second_fit_and_reuses(tmp_path):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path / "repo")
+>       execute(root, DATA_SETUP + '''
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    before = (run / 'training-result.json').read_bytes()
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    ''')
+
+tests/pilot/test_pilot_checks.py:18: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/eventflow/neural_weights.py", line 91, in publish_bytes
+E           with archive_parent(path, error_factory=archive_error):
+E         File "/Users/artemlegotin/.local/share/uv/python/cpython-3.12-macos-aarch64-none/lib/python3.12/contextlib.py", line 137, in __enter__
+E           return next(self.gen)
+E                  ^^^^^^^^^^^^^^
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/eventflow/archive_io.py", line 21, in archive_parent
+E           next_descriptor = os.open(
+E                             ^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'runtime'
+E       
+E       The above exception was the direct cause of the following exception:
+E       
+E       Traceback (most recent call last):
+E         File "<string>", line 33, in <module>
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/train/pilot_checks.py", line 188, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/train/pilot_checks.py", line 165, in _run_pilot_checks_owned
+E           _continuations(run_dir=run_dir, config=config, source=source, result=result,
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/train/pilot_checks.py", line 124, in _continuations
+E           checkpoint = publish_neural_runtime_checkpoint(
+E                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/eventflow/neural_checkpoint.py", line 378, in publish_neural_runtime_checkpoint
+E           digest = publish_bytes(path, raw)
+E                    ^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1093/test_real_debug_driver_runs_cp0/repo/src/silent_cascade/eventflow/neural_weights.py", line 94, in publish_bytes
+E           raise archive_error("publication") from error
+E       silent_cascade.errors.ReplayError: invalid neural archive: publication
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_checks.py::test_real_debug_driver_runs_cpu_without_second_fit_and_reuses
+1 failed in 58.39s

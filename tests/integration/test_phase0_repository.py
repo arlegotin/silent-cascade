@@ -583,3 +583,40 @@ def test_phase3_pin_rejects_coordinated_phase2_substitution(tmp_path):
     rewritten = index.replace(old_hash, hashlib.sha256(artifact.read_bytes()).hexdigest())
     with pytest.raises(AssertionError):
         _assert_phase2_frozen_baseline(tmp_path, rewritten)
+
+
+def _assert_phase4_delivery_state(root, plan_index):
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+
+    rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
+    assert len(rows) == 1
+    cell = rows[0].rsplit("|", maxsplit=2)[1].strip()
+    path = root / "manifests/validation/phase4/delivery.json"
+    gate = root / "manifests/validation/phase4/autonomous-gate.json"
+    for parent in path.parents:
+        assert not parent.is_symlink()
+        if parent == root:
+            break
+    if not path.exists() and not path.is_symlink():
+        assert not gate.exists() and not gate.is_symlink()
+        assert not cell.startswith("Complete"), "Phase4 completion requires a verified gate"
+        return
+    assert path.is_file() and not path.is_symlink()
+    mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
+    assert gate.is_file() and not gate.is_symlink()
+    assert hashlib.sha256(gate.read_bytes()).hexdigest() == mapping.gate_sha256
+    result = verify_phase4_gate_artifact(gate, repo_root=root)
+    assert result["recorded_outcome"] == "passed"
+    assert result["source_commit"] == mapping.source_commit
+    assert result["selected_weights_sha256"] == mapping.selected_weights_sha256
+    assert cell.startswith("Complete")
+    assert all(
+        value in cell
+        for value in (mapping.source_commit, mapping.gate_sha256, mapping.selected_weights_sha256)
+    )
+
+
+def test_phase4_repository_delivery_requires_actual_gate():
+    _assert_phase4_delivery_state(ROOT, (ROOT / "docs/PLAN.md").read_text())

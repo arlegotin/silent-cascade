@@ -1,0 +1,20 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_gate_publication_refuses_file_limit_before_writing ____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1109/test_gate_publication_refuses_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x111027d70>
+
+    def test_gate_publication_refuses_file_limit_before_writing(tmp_path, monkeypatch):
+        from silent_cascade.train import pilot_evidence_types as evidence
+    
+        monkeypatch.setattr(evidence, "MAX_FILE_BYTES", 50)
+        with pytest.raises(ValueError, match="gate file limit"):
+>           evidence.publish_gate_artifact(tmp_path / "gate.json", {"payload": "x" * 100})
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: module 'silent_cascade.train.pilot_evidence_types' has no attribute 'publish_gate_artifact'
+
+tests/pilot/test_pilot_evidence.py:88: AttributeError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_evidence.py::test_gate_publication_refuses_file_limit_before_writing
+1 failed in 0.38s

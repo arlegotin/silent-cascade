@@ -24,6 +24,7 @@ from silent_cascade.train.archive_tensors import snapshot_optimizer
 from silent_cascade.train.checkpoints import _device, _publish_bytes_at
 from silent_cascade.train.component_eval import evaluate_components
 from silent_cascade.train.objective import training_objective
+from silent_cascade.train.pilot_artifact_index import training_result_payload
 from silent_cascade.train.pilot_checkpoints import load_pilot_checkpoint, save_pilot_checkpoint
 from silent_cascade.train.pilot_config import Phase4Config
 from silent_cascade.train.pilot_data import (
@@ -568,5 +569,5 @@ def run_pilot_training(
         identity,
         config.config.pilot.is_production and progress.status == "robustness_complete",
     )
-    publish_json(attempt_dir / "result.json", _json(result))
+    publish_json(attempt_dir / "result.json", training_result_payload(result, run_dir=run_dir))
     return result

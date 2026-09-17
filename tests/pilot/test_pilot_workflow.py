@@ -72,7 +72,9 @@ completed = subprocess.run([sys.executable, 'scripts/run_pilot.py',
     '--run-dir', 'runs/smoke', '--device', 'cpu'], capture_output=True, text=True)
 assert completed.returncode == 0, completed.stdout + completed.stderr
 assert 'production learning gate=unmet' in completed.stdout
-first = _restore_result(json.loads(Path('runs/smoke/training-result.json').read_bytes()))
+from silent_cascade.report.pilot_artifacts import load_training_result
+first = _restore_result(load_training_result(
+    Path('runs/smoke'), Path('runs/smoke/training-result.json')))
 assert first.progress.global_step == 4 and not first.gate_eligible
 before = {str(p): p.read_bytes() for p in Path('runs/smoke').rglob('*') if p.is_file()}
 second = run_pilot(**args)
@@ -87,6 +89,7 @@ except ValueError as error:
 else:
     raise AssertionError('incompatible directory accepted')
 """,
+        timeout=900,
     )
 
 
@@ -202,6 +205,7 @@ assert len(list(Path('runs/interrupted').glob('attempt-*/failure.json'))) == 1
 assert len(list(Path('runs/interrupted').glob('restart-*.json'))) == 1
 assert Path('runs/interrupted/report/report.md').is_file()
 """,
+        timeout=900,
     )
 
 
@@ -363,7 +367,13 @@ def test_interrupted_validation_finishes_workflow_without_discarding_evidence(tm
 result = run_pilot(**args)
 assert result.progress.global_step == 4 and not result.gate_eligible
 table = json.loads((run / 'report/tables.json').read_bytes())
-assert len(table['evaluations']) == 3
+evaluation_paths = {entry['raw_rows'] for entry in table['evaluations']}
+assert {f'final/eval/{suite}/rows.jsonl' for suite in (
+    'primary', 'two_hop', 'robustness', 'primary_repeat', 'delay_12', 'delay_48'
+)} <= evaluation_paths
+assert 'final/offline/run/eval/primary/rows.jsonl' in evaluation_paths
+assert len([path for path in evaluation_paths if path.startswith('attempt-')]) == 2
+assert len(evaluation_paths) == 9
 partial = table['incomplete_evaluations']
 assert len(partial) == 1
 assert partial[0]['status'] == 'abandoned_incomplete'
@@ -377,4 +387,5 @@ before = {str(p): p.read_bytes() for p in run.rglob('*') if p.is_file()}
 assert run_pilot(**args) == result
 assert before == {str(p): p.read_bytes() for p in run.rglob('*') if p.is_file()}
 """,
+        timeout=900,
     )

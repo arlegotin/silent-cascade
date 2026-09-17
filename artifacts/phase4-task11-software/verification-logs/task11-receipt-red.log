@@ -1,0 +1,127 @@
+FFFFFFFFFF.                                                              [100%]
+=================================== FAILURES ===================================
+_ test_local_receipt_records_actual_fixed_process_and_create_only_attempt[@echo verified-True] _
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_records_act0')
+command = '@echo verified', passed = True
+
+    @pytest.mark.parametrize("command,passed", [("@echo verified", True), ("@echo failed >&2; exit 7", False)])
+    def test_local_receipt_records_actual_fixed_process_and_create_only_attempt(tmp_path, command, passed):
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:45: ImportError
+_ test_local_receipt_records_actual_fixed_process_and_create_only_attempt[@echo failed >&2; exit 7-False] _
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_records_act1')
+command = '@echo failed >&2; exit 7', passed = False
+
+    @pytest.mark.parametrize("command,passed", [("@echo verified", True), ("@echo failed >&2; exit 7", False)])
+    def test_local_receipt_records_actual_fixed_process_and_create_only_attempt(tmp_path, command, passed):
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:45: ImportError
+________________ test_local_receipt_rejects_mutations[command] _________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_rejects_mut0')
+mutation = 'command'
+
+    @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+    def test_local_receipt_rejects_mutations(tmp_path, mutation):
+        import json
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:67: ImportError
+_______________ test_local_receipt_rejects_mutations[returncode] _______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_rejects_mut1')
+mutation = 'returncode'
+
+    @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+    def test_local_receipt_rejects_mutations(tmp_path, mutation):
+        import json
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:67: ImportError
+______________ test_local_receipt_rejects_mutations[missing_log] _______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_rejects_mut2')
+mutation = 'missing_log'
+
+    @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+    def test_local_receipt_rejects_mutations(tmp_path, mutation):
+        import json
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:67: ImportError
+________________ test_local_receipt_rejects_mutations[corrupt] _________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_rejects_mut3')
+mutation = 'corrupt'
+
+    @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+    def test_local_receipt_rejects_mutations(tmp_path, mutation):
+        import json
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:67: ImportError
+______________ test_local_receipt_rejects_mutations[changed_test] ______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_rejects_mut4')
+mutation = 'changed_test'
+
+    @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+    def test_local_receipt_rejects_mutations(tmp_path, mutation):
+        import json
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:67: ImportError
+____________ test_local_receipt_rejects_mutations[changed_makefile] ____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_rejects_mut5')
+mutation = 'changed_makefile'
+
+    @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+    def test_local_receipt_rejects_mutations(tmp_path, mutation):
+        import json
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:67: ImportError
+__ test_local_receipt_data_only_ancestry_newer_failure_and_incomplete_attempt __
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_data_only_a0')
+
+    def test_local_receipt_data_only_ancestry_newer_failure_and_incomplete_attempt(tmp_path):
+        import subprocess
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:92: ImportError
+___ test_local_receipt_source_changes_during_process_are_recorded_not_passed ___
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1098/test_local_receipt_source_chan0')
+
+    def test_local_receipt_source_changes_during_process_are_recorded_not_passed(tmp_path):
+>       from silent_cascade.train.pilot_checks import record_local_verification
+E       ImportError: cannot import name 'record_local_verification' from 'silent_cascade.train.pilot_checks' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_checks.py)
+
+tests/pilot/test_pilot_delivery.py:115: ImportError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_records_actual_fixed_process_and_create_only_attempt[@echo verified-True]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_records_actual_fixed_process_and_create_only_attempt[@echo failed >&2; exit 7-False]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_rejects_mutations[command]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_rejects_mutations[returncode]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_rejects_mutations[missing_log]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_rejects_mutations[corrupt]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_rejects_mutations[changed_test]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_rejects_mutations[changed_makefile]
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_data_only_ancestry_newer_failure_and_incomplete_attempt
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_source_changes_during_process_are_recorded_not_passed
+10 failed, 1 passed in 0.79s

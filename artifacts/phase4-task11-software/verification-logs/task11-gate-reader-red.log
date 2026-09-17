@@ -1,0 +1,124 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_gate_reader_enforces_committed_file_limit ________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1113/test_gate_reader_enforces_comm0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c4e1700>
+
+    def test_gate_reader_enforces_committed_file_limit(tmp_path, monkeypatch):
+        from silent_cascade.train import pilot_evidence
+    
+        monkeypatch.setattr(pilot_evidence, "MAX_FILE_BYTES", 50, raising=False)
+        path = tmp_path / "oversized.json"
+        path.write_text('{"payload":"' + 'x' * 100 + '"}')
+        with pytest.raises(ValueError, match="archive byte limit"):
+>           pilot_evidence.verify_phase4_gate_artifact(path, repo_root=tmp_path)
+
+tests/pilot/test_pilot_evidence.py:111: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+artifact_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1113/test_gate_reader_enforces_comm0/oversized.json')
+
+    def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
+        from silent_cascade.eval.artifacts import EvaluationIdentity
+        from silent_cascade.train.pilot_config import resolve_pilot_config
+    
+>       artifact = Phase4GateArtifact.model_validate_json(
+            canonical_json_bytes(strict_json(artifact_path))
+        )
+E       pydantic_core._pydantic_core.ValidationError: 24 validation errors for Phase4GateArtifact
+E       payload
+E         Extra inputs are not permitted [type=extra_forbidden, input_value='xxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxx', input_type=str]
+E           For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+E       outcome
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       source
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       config_canonical_json
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       selected_checkpoint_sha256
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       selected_weights_sha256
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       model_state_sha256
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       training_result
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       workload
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       suites
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       attachments
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       upstream_artifact_hashes
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       execution_evidence
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       continuation_evidence
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       pair_rows
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       repeat_equal
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       numeric_passed
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       offline_passed
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       numeric_evidence
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       offline_evidence
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       local_verification
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       coverage
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       failures
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       raw_regeneration_command
+E         Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+
+src/silent_cascade/train/pilot_evidence.py:1084: ValidationError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1113/test_gate_reader_enforces_comm0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c4e1700>
+
+    def test_gate_reader_enforces_committed_file_limit(tmp_path, monkeypatch):
+        from silent_cascade.train import pilot_evidence
+    
+        monkeypatch.setattr(pilot_evidence, "MAX_FILE_BYTES", 50, raising=False)
+        path = tmp_path / "oversized.json"
+        path.write_text('{"payload":"' + 'x' * 100 + '"}')
+>       with pytest.raises(ValueError, match="archive byte limit"):
+E       AssertionError: Regex pattern did not match.
+E        Regex: 'archive byte limit'
+E        Input: "24 validation errors for Phase4GateArtifact\npayload\n  Extra inputs are not permitted [type=extra_forbidden, input_value='xxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxx', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\noutcome\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsource\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nconfig_canonical_json\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nselected_checkpoint_sha256\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nselected_weights_sha256\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nmodel_state_sha256\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ntraining_result\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nworkload\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsuites\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nattachments\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nupstream_artifact_hashes\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nexecution_evidence\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ncontinuation_evidence\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\npair_rows\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nrepeat_equal\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nnumeric_passed\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\noffline_passed\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nnumeric_evidence\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\noffline_evidence\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nlocal_verification\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ncoverage\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfailures\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nraw_regeneration_command\n  Field required [type=missing, input_value={'payload': 'xxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxx'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing"
+
+tests/pilot/test_pilot_evidence.py:110: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_evidence.py::test_gate_reader_enforces_committed_file_limit
+1 failed, 11 deselected in 0.39s

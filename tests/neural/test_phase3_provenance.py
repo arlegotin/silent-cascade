@@ -34,7 +34,7 @@ def checkout(path):
             ignore=shutil.ignore_patterns("__pycache__"),
             copy_function=shutil.copy,
         )
-    for name in ("pyproject.toml", "uv.lock", ".gitignore"):
+    for name in ("pyproject.toml", "uv.lock", ".gitignore", "Makefile", ".python-version"):
         shutil.copy(ROOT / name, path / name)
     mapping = Path("manifests/validation/phase3/delivery.json")
     if (ROOT / mapping).exists():
@@ -51,14 +51,14 @@ def checkout(path):
     return path
 
 
-def execute(root, program):
+def execute(root, program, *, timeout=180):
     completed = subprocess.run(
         [sys.executable, "-B", "-c", program],
         cwd=root,
         env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=timeout,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return completed.stdout

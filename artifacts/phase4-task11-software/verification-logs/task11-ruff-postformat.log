@@ -1,0 +1,115 @@
+B905 `zip()` without an explicit `strict=` parameter
+   --> src/silent_cascade/train/pilot_evidence.py:436:32
+    |
+434 |     if paired:
+435 |         parents = [e.projected for e in manifest.entries if e.projected.variant == "positive"]
+436 |         for binding, parent in zip(identity.episodes, parents):
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+437 |             expected = DelayTransform(
+438 |                 parent_public_id=parent.public_id,
+    |
+help: Add explicit value for parameter `strict=`
+
+B905 `zip()` without an explicit `strict=` parameter
+   --> src/silent_cascade/train/pilot_evidence.py:593:57
+    |
+591 |             raise ValueError("causal action/event inventory differs")
+592 |         if len({e["event_id"] for e in events}) != len(events) or any(
+593 |             b["timestamp"] < a["timestamp"] for a, b in zip(events, events[1:])
+    |                                                         ^^^^^^^^^^^^^^^^^^^^^^^
+594 |         ):
+595 |             raise ValueError("illegal event order")
+    |
+help: Add explicit value for parameter `strict=`
+
+RUF007 Prefer `itertools.pairwise()` over `zip()` when iterating over successive pairs
+   --> src/silent_cascade/train/pilot_evidence.py:593:57
+    |
+591 |             raise ValueError("causal action/event inventory differs")
+592 |         if len({e["event_id"] for e in events}) != len(events) or any(
+593 |             b["timestamp"] < a["timestamp"] for a, b in zip(events, events[1:])
+    |                                                         ^^^
+594 |         ):
+595 |             raise ValueError("illegal event order")
+    |
+help: Replace `zip()` with `itertools.pairwise()`
+
+E501 Line too long (110 > 100)
+   --> tests/pilot/test_pilot_checks.py:110:101
+    |
+108 | if mutation == 'source_omission':
+109 |     payload['source']['source_files'].pop('scripts/check_phase4_pilot.py')
+110 |     payload['source']['source_sha256'] = sha256_bytes(canonical_json_bytes(payload['source']['source_files']))
+    |                                                                                                     ^^^^^^^^^^
+111 | elif mutation == 'introduction':
+112 |     payload['source']['data_introductions']['primary/manifest']['introduction'] = 'a'*40
+    |
+
+E501 Line too long (111 > 100)
+   --> tests/pilot/test_pilot_checks.py:278:101
+    |
+276 | try:
+277 |     try:
+278 |         evidence.collect_pilot_evidence(run_dir=run, config=config, output_path=run/'changed-source-gate.json')
+    |                                                                                                     ^^^^^^^^^^^
+279 |     except ValueError as error:
+280 |         assert 'source' in str(error), str(error)
+    |
+
+E501 Line too long (115 > 100)
+   --> tests/pilot/test_pilot_checks.py:303:101
+    |
+301 | spec.loader.exec_module(module)
+302 | # Exercise the CLI status boundary without an unauthorized production fit.
+303 | module.run_pilot = lambda **kwargs: SimpleNamespace(progress=SimpleNamespace(global_step=4000), gate_eligible=True)
+    |                                                                                                     ^^^^^^^^^^^^^^^
+304 | module.resolve_pilot_path = lambda path: SimpleNamespace(config=SimpleNamespace(pilot=SimpleNamespace(is_production=True)))
+305 | cli_run = root/'runs/cli-status-fixture'
+    |
+
+E501 Line too long (123 > 100)
+   --> tests/pilot/test_pilot_checks.py:304:101
+    |
+302 | # Exercise the CLI status boundary without an unauthorized production fit.
+303 | module.run_pilot = lambda **kwargs: SimpleNamespace(progress=SimpleNamespace(global_step=4000), gate_eligible=True)
+304 | module.resolve_pilot_path = lambda path: SimpleNamespace(config=SimpleNamespace(pilot=SimpleNamespace(is_production=True)))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^
+305 | cli_run = root/'runs/cli-status-fixture'
+306 | cli_run.mkdir()
+    |
+
+E501 Line too long (101 > 100)
+   --> tests/pilot/test_pilot_checks.py:347:101
+    |
+345 |     sample = payload['attachments'][name][0]
+346 |     payload['attachments'][name] = [dict(sample, path=f'gate.{name}.{start:05d}.jsonl.gz',
+347 |                                         rows=min(1000,count-start)) for start in range(0,count,1000)]
+    |                                                                                                     ^
+348 | pairs = payload['pair_rows']
+349 | payload['pair_rows'] = [pairs[i % len(pairs)] for i in range(256)]
+    |
+
+E501 Line too long (101 > 100)
+   --> tests/pilot/test_pilot_checks.py:354:101
+    |
+352 | records = payload['continuation_evidence']
+353 | payload['continuation_evidence'] = [records[i % len(records)] for i in range(15)]
+354 | encoded = canonical_json_bytes(Phase4GateArtifact.model_validate_json(canonical_json_bytes(payload)))
+    |                                                                                                     ^
+355 | assert len(encoded) + 2*1024**2 < MAX_FILE_BYTES  # reserve for the source-bound receipt
+356 | (run/'production-cardinality-size.json').write_bytes(canonical_json_bytes(dict(
+    |
+
+E501 Line too long (106 > 100)
+  --> tests/pilot/test_pilot_workflow.py:76:101
+   |
+74 | assert 'production learning gate=unmet' in completed.stdout
+75 | from silent_cascade.report.pilot_artifacts import load_training_result
+76 | first = _restore_result(load_training_result(Path('runs/smoke'), Path('runs/smoke/training-result.json')))
+   |                                                                                                     ^^^^^^
+77 | assert first.progress.global_step == 4 and not first.gate_eligible
+78 | before = {str(p): p.read_bytes() for p in Path('runs/smoke').rglob('*') if p.is_file()}
+   |
+
+Found 10 errors.
+No fixes available (3 hidden fixes can be enabled with the `--unsafe-fixes` option).

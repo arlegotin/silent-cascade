@@ -24,6 +24,12 @@ from silent_cascade.validation import StrictModel
 
 PLAN = "docs/superpowers/plans/2026-09-16-phase-4-autonomous-eventflow.md"
 SPEC = "docs/superpowers/specs/2026-08-30-silent-cascade-design.md"
+PILOT_ENTRYPOINTS = (
+    "scripts/run_pilot.py",
+    "scripts/check_phase4_pilot.py",
+    "scripts/verify_phase4_gate_artifact.py",
+    "scripts/record_phase4_local_verify.py",
+)
 
 
 def _config_paths(root, config):
@@ -127,10 +133,13 @@ def authenticate_pilot_source(
         raise ValueError("pilot config differs from source overlays")
     paths = (
         *package,
+        *PILOT_ENTRYPOINTS,
         *configs,
         "configs/train/pilot.yaml",
         "pyproject.toml",
         "uv.lock",
+        "Makefile",
+        ".python-version",
         PLAN,
         SPEC,
     )

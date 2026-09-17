@@ -1,0 +1,40 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_index_rejects_corruption_through_last_shard[noncanonical] ________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1106/test_index_rejects_corruption_0')
+mutation = 'noncanonical'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate", "noncanonical"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+        from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+    
+        index = write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(entries()), max_rows=3)
+        last = index.shards[-1]
+        path = tmp_path / last.path
+        if mutation == "missing":
+            path.rename(path.with_suffix(".retained"))
+        elif mutation == "hash":
+            path.write_bytes(b"changed")
+        elif mutation == "tail_count":
+            index = index.model_copy(update={"entry_count": index.entry_count - 1})
+        elif mutation == "tail_bytes":
+            index = index.model_copy(update={"shards": (*index.shards[:-1], last.model_copy(update={"decompressed_bytes": last.decompressed_bytes - 1}))})
+        else:
+            values = entries()[6:]
+            if mutation == "truncated":
+                raw = path.read_bytes()[:-6]
+            elif mutation == "noncanonical":
+                raw = gzip.compress(b" " + gzip.decompress(path.read_bytes()), mtime=0)
+            else:
+                values[0] = entries()[0] if mutation == "global_order" else entries()[5]
+                raw = gzip.compress(b"".join(canonical_json_bytes(dict(path=p, sha256=h))+b"\n" for p,h in values), mtime=0)
+            path.write_bytes(raw)
+            index = index.model_copy(update={"shards": (*index.shards[:-1], last.model_copy(update={"sha256": sha256_bytes(raw)}))})
+>       with pytest.raises((ValueError, OSError)):
+E       Failed: DID NOT RAISE any of (<class 'ValueError'>, <class 'OSError'>)
+
+tests/pilot/test_pilot_artifact_index.py:63: Failed
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[noncanonical]
+1 failed, 15 deselected in 0.44s

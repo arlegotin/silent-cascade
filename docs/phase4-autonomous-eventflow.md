@@ -256,6 +256,51 @@ local quality gate and never launches production fitting or pilot statistical
 audits. Device/resource acceptance and the final Phase 4 evidence gate remain
 separate later tasks.
 
+### Final checks and bounded evidence publication
+
+The shared package final-check driver is also available through
+`uv run python scripts/check_phase4_pilot.py --config configs/train/pilot.yaml --run-dir RUN --output GATE`.
+It never repeats fitting. It authenticates the original selected full archive,
+executes the prescribed final CPU corpora/repeat/delay pairs and actual CPU
+continuation/replays, then invokes the existing selected-archive numerical and
+offline diagnostics. Missing selection and adverse final checks stay adverse;
+debug execution remains non-acceptance. A learning-eligible result is not a
+passing final gate, and the full production workflow returns nonzero if either
+condition is unmet.
+
+`uv run python scripts/verify_phase4_gate_artifact.py --artifact GATE --repo-root REPO --raw-run-dir RUN`
+performs artifact-only verification. Without raw attachments it explicitly lists
+missing coverage and proves recorded-evidence integrity, not a fresh neural
+rerun. Collection, verification and reporting do not launch model workloads.
+
+New training results uniformly use `phase4-training-result-v2`, preserving the
+seven non-inventory fields and replacing the flattened artifact map with a
+`phase4-artifact-index-v1` descriptor. Its canonical JSONL path/hash stream is
+globally ordered and hash-bound, with deterministic attempt-local gzip shards.
+Each shard permits at most 50,000 rows and 128 MiB decoded bytes and must remain
+below 100 MiB on disk. All entries are retained, including adverse/abandoned
+evidence; no historical result or archive is rewritten. The exact legacy flat
+result remains readable. Public `PilotTrainingResult.artifact_hashes` and
+`load_training_result` still materialize dictionaries and therefore retain that
+memory cost; only persisted serialization and index validation are streamed.
+The gate copies identical index shards and binds the original result bytes
+instead of embedding a second full training map. Final compact causal rows
+are independently byte-bounded and streamed through every shard.
+
+The required local quality run is recorded once with
+`UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py`.
+This wrapper runs the existing `make verify` command and retains its actual
+exit status, stdout/stderr and source inventories under
+`artifacts/phase4-local-verification/VERIFICATION_COMMIT/`. Failed or incomplete
+attempts are create-only evidence. A source-compatible passing receipt is
+required for final acceptance; discovery uses Git ancestry, never filesystem
+timestamps, and a newer failure cannot fall back to an older pass. Later
+data-only commits may reuse unchanged executable/test/build/config/plan/spec
+inputs. Gate publication and its subsequent independent verification are not
+inputs to their own receipt. Phase4 remains incomplete pending actual Task12
+acceptance and its final delivery checks; the historical storage-headroom and
+native parameter-parity failures are not waived by these software interfaces.
+
 ## Existing fixed64 engineering diagnostic
 
 Task 8's existing seed-11 debug run at source

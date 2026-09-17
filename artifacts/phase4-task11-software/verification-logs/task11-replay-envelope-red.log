@@ -1,0 +1,193 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+__________ test_portable_replay_comparison_binds_actual_trace[trace] ___________
+
+neural_archive_case = namespace(config=Phase4Config(schema_version=1, experiment_version='phase4-pilot-v1', runtime=RuntimeConfig(device_pre...il":[1.110860605299063,0.0,0.0],"support_ids":[]}', failure=None), revision='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+damage = 'trace'
+
+    @pytest.mark.parametrize("damage", ["trace", "event_count", "mismatches"])
+    def test_portable_replay_comparison_binds_actual_trace(neural_archive_case, damage):
+        from copy import deepcopy
+        from types import SimpleNamespace
+    
+        from silent_cascade.env.episode import episode_sha256
+        from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+        from silent_cascade.eventflow.neural_replay import NeuralReplayComparison
+        from silent_cascade.eventflow.replay import CausalTraceArtifact, EpisodeResultArtifact
+        from silent_cascade.train.pilot_evidence import verify_continuation_records
+    
+        case = neural_archive_case
+        result = case.engine.run_episode(
+            case.bundle, NeuralEventFlowAgent(case.model, identity=case.identity, device="cpu")
+        )
+        trace = CausalTraceArtifact.from_trace(result.trace)
+        outcome = EpisodeResultArtifact.from_result(result).model_dump(mode="json")
+        comparison = NeuralReplayComparison(
+            event_count=len(result.trace.events), trace_sha256=result.trace.sha256,
+            weights_sha256="a" * 64, trace=trace,
+            result=EpisodeResultArtifact.from_result(result),
+        ).model_dump(mode="json")
+        row = dict(public_id=result.public_id, episode_sha256=episode_sha256(case.bundle),
+                   model_state_sha256=case.identity.model_state_sha256,
+                   causal_trace_sha256=result.trace.sha256, actions=outcome["actions"],
+                   score=outcome["score"], truth={"recipe": {"variant": "positive"}})
+        events = trace.model_dump(mode="json")["events"]
+        event = events[0]
+        terminal = dict(actions=row["actions"], score=row["score"],
+                        trace_sha256=row["causal_trace_sha256"])
+        record = dict(public_id=row["public_id"], episode_sha256=row["episode_sha256"],
+                      weights_sha256="a" * 64, model_state_sha256=row["model_state_sha256"],
+                      source_commit=case.revision, device="cpu", boundary=event["kind"],
+                      pause_time=event["timestamp"], event_index=0, mode=event["post_mode"],
+                      variant="positive", checkpoint_path="runtime.safetensors",
+                      checkpoint_sha256="b" * 64, replay_path="replay.json", replay_sha256="c" * 64,
+                      original=terminal, restored=terminal,
+                      replay_comparisons=[deepcopy(comparison), deepcopy(comparison)],
+                      coverage=["boundary:fact", "mode:observing", "variant:positive"], matched=True)
+        arguments = dict(rows=[dict(row=row, causal_events=events)], config=None,
+                         source=SimpleNamespace(source_commit=case.revision), weights_sha="a" * 64)
+        assert verify_continuation_records([record], **arguments) == (
+            "boundary:fact", "mode:observing", "variant:positive"
+        )
+        for value in record["replay_comparisons"]:
+            if damage == "trace":
+                value["trace"] = CausalTraceArtifact.from_trace(
+                    case.session.trace.snapshot()
+                ).model_dump(mode="json")
+            elif damage == "event_count":
+                value["event_count"] += 1
+            else:
+                value["mismatches"] = ["actual replay differed"]
+>       with pytest.raises(ValueError, match="continuation replay"):
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/pilot/test_pilot_gate_verifier.py:134: Failed
+_______ test_portable_replay_comparison_binds_actual_trace[event_count] ________
+
+neural_archive_case = namespace(config=Phase4Config(schema_version=1, experiment_version='phase4-pilot-v1', runtime=RuntimeConfig(device_pre...il":[1.110860605299063,0.0,0.0],"support_ids":[]}', failure=None), revision='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+damage = 'event_count'
+
+    @pytest.mark.parametrize("damage", ["trace", "event_count", "mismatches"])
+    def test_portable_replay_comparison_binds_actual_trace(neural_archive_case, damage):
+        from copy import deepcopy
+        from types import SimpleNamespace
+    
+        from silent_cascade.env.episode import episode_sha256
+        from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+        from silent_cascade.eventflow.neural_replay import NeuralReplayComparison
+        from silent_cascade.eventflow.replay import CausalTraceArtifact, EpisodeResultArtifact
+        from silent_cascade.train.pilot_evidence import verify_continuation_records
+    
+        case = neural_archive_case
+        result = case.engine.run_episode(
+            case.bundle, NeuralEventFlowAgent(case.model, identity=case.identity, device="cpu")
+        )
+        trace = CausalTraceArtifact.from_trace(result.trace)
+        outcome = EpisodeResultArtifact.from_result(result).model_dump(mode="json")
+        comparison = NeuralReplayComparison(
+            event_count=len(result.trace.events), trace_sha256=result.trace.sha256,
+            weights_sha256="a" * 64, trace=trace,
+            result=EpisodeResultArtifact.from_result(result),
+        ).model_dump(mode="json")
+        row = dict(public_id=result.public_id, episode_sha256=episode_sha256(case.bundle),
+                   model_state_sha256=case.identity.model_state_sha256,
+                   causal_trace_sha256=result.trace.sha256, actions=outcome["actions"],
+                   score=outcome["score"], truth={"recipe": {"variant": "positive"}})
+        events = trace.model_dump(mode="json")["events"]
+        event = events[0]
+        terminal = dict(actions=row["actions"], score=row["score"],
+                        trace_sha256=row["causal_trace_sha256"])
+        record = dict(public_id=row["public_id"], episode_sha256=row["episode_sha256"],
+                      weights_sha256="a" * 64, model_state_sha256=row["model_state_sha256"],
+                      source_commit=case.revision, device="cpu", boundary=event["kind"],
+                      pause_time=event["timestamp"], event_index=0, mode=event["post_mode"],
+                      variant="positive", checkpoint_path="runtime.safetensors",
+                      checkpoint_sha256="b" * 64, replay_path="replay.json", replay_sha256="c" * 64,
+                      original=terminal, restored=terminal,
+                      replay_comparisons=[deepcopy(comparison), deepcopy(comparison)],
+                      coverage=["boundary:fact", "mode:observing", "variant:positive"], matched=True)
+        arguments = dict(rows=[dict(row=row, causal_events=events)], config=None,
+                         source=SimpleNamespace(source_commit=case.revision), weights_sha="a" * 64)
+        assert verify_continuation_records([record], **arguments) == (
+            "boundary:fact", "mode:observing", "variant:positive"
+        )
+        for value in record["replay_comparisons"]:
+            if damage == "trace":
+                value["trace"] = CausalTraceArtifact.from_trace(
+                    case.session.trace.snapshot()
+                ).model_dump(mode="json")
+            elif damage == "event_count":
+                value["event_count"] += 1
+            else:
+                value["mismatches"] = ["actual replay differed"]
+>       with pytest.raises(ValueError, match="continuation replay"):
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/pilot/test_pilot_gate_verifier.py:134: Failed
+________ test_portable_replay_comparison_binds_actual_trace[mismatches] ________
+
+neural_archive_case = namespace(config=Phase4Config(schema_version=1, experiment_version='phase4-pilot-v1', runtime=RuntimeConfig(device_pre...il":[1.110860605299063,0.0,0.0],"support_ids":[]}', failure=None), revision='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+damage = 'mismatches'
+
+    @pytest.mark.parametrize("damage", ["trace", "event_count", "mismatches"])
+    def test_portable_replay_comparison_binds_actual_trace(neural_archive_case, damage):
+        from copy import deepcopy
+        from types import SimpleNamespace
+    
+        from silent_cascade.env.episode import episode_sha256
+        from silent_cascade.eventflow.neural import NeuralEventFlowAgent
+        from silent_cascade.eventflow.neural_replay import NeuralReplayComparison
+        from silent_cascade.eventflow.replay import CausalTraceArtifact, EpisodeResultArtifact
+        from silent_cascade.train.pilot_evidence import verify_continuation_records
+    
+        case = neural_archive_case
+        result = case.engine.run_episode(
+            case.bundle, NeuralEventFlowAgent(case.model, identity=case.identity, device="cpu")
+        )
+        trace = CausalTraceArtifact.from_trace(result.trace)
+        outcome = EpisodeResultArtifact.from_result(result).model_dump(mode="json")
+        comparison = NeuralReplayComparison(
+            event_count=len(result.trace.events), trace_sha256=result.trace.sha256,
+            weights_sha256="a" * 64, trace=trace,
+            result=EpisodeResultArtifact.from_result(result),
+        ).model_dump(mode="json")
+        row = dict(public_id=result.public_id, episode_sha256=episode_sha256(case.bundle),
+                   model_state_sha256=case.identity.model_state_sha256,
+                   causal_trace_sha256=result.trace.sha256, actions=outcome["actions"],
+                   score=outcome["score"], truth={"recipe": {"variant": "positive"}})
+        events = trace.model_dump(mode="json")["events"]
+        event = events[0]
+        terminal = dict(actions=row["actions"], score=row["score"],
+                        trace_sha256=row["causal_trace_sha256"])
+        record = dict(public_id=row["public_id"], episode_sha256=row["episode_sha256"],
+                      weights_sha256="a" * 64, model_state_sha256=row["model_state_sha256"],
+                      source_commit=case.revision, device="cpu", boundary=event["kind"],
+                      pause_time=event["timestamp"], event_index=0, mode=event["post_mode"],
+                      variant="positive", checkpoint_path="runtime.safetensors",
+                      checkpoint_sha256="b" * 64, replay_path="replay.json", replay_sha256="c" * 64,
+                      original=terminal, restored=terminal,
+                      replay_comparisons=[deepcopy(comparison), deepcopy(comparison)],
+                      coverage=["boundary:fact", "mode:observing", "variant:positive"], matched=True)
+        arguments = dict(rows=[dict(row=row, causal_events=events)], config=None,
+                         source=SimpleNamespace(source_commit=case.revision), weights_sha="a" * 64)
+        assert verify_continuation_records([record], **arguments) == (
+            "boundary:fact", "mode:observing", "variant:positive"
+        )
+        for value in record["replay_comparisons"]:
+            if damage == "trace":
+                value["trace"] = CausalTraceArtifact.from_trace(
+                    case.session.trace.snapshot()
+                ).model_dump(mode="json")
+            elif damage == "event_count":
+                value["event_count"] += 1
+            else:
+                value["mismatches"] = ["actual replay differed"]
+>       with pytest.raises(ValueError, match="continuation replay"):
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/pilot/test_pilot_gate_verifier.py:134: Failed
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_portable_replay_comparison_binds_actual_trace[trace]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_portable_replay_comparison_binds_actual_trace[event_count]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_portable_replay_comparison_binds_actual_trace[mismatches]
+3 failed, 9 deselected in 1.07s

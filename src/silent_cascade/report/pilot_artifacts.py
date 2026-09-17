@@ -352,10 +352,23 @@ def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned)
 
 def load_training_result(run_dir: Path, path: Path):
     """Verify the complete trainer inventory without importing its executor."""
+    from silent_cascade.train.pilot_artifact_index import expand_training_result
+
+    result = expand_training_result(run_dir, read_json(path))
+    validate_training_result(result)
+    verify_hashes(run_dir, result["artifact_hashes"])
+    for key in ("latest_weights", "selected_weights", "selected_checkpoint"):
+        if result[key] is not None:
+            descriptor = result[key]
+            verify_hashes(run_dir, {descriptor["path"]: descriptor["sha256"]})
+    return result
+
+
+def validate_training_result(result):
+    """Structural/selection checks shared with portable evidence authentication."""
     from silent_cascade.eventflow.neural import NeuralModelIdentity
     from silent_cascade.train.pilot_state import PilotCheckpointDescriptor, PilotProgress
 
-    result = read_json(path)
     if set(result) != {
         "status",
         "progress",
@@ -367,16 +380,12 @@ def load_training_result(run_dir: Path, path: Path):
         "gate_eligible",
     }:
         raise ValueError("invalid training result artifact")
-    verify_hashes(run_dir, result["artifact_hashes"])
     progress = PilotProgress.model_validate_json(canonical_json_bytes(result["progress"]))
     if result["status"] != progress.status or progress.status == "running":
         raise ValueError("incomplete training result artifact")
     for key in ("latest_weights", "selected_weights", "selected_checkpoint"):
         if result[key] is not None:
-            descriptor = PilotCheckpointDescriptor.model_validate_json(
-                canonical_json_bytes(result[key])
-            )
-            verify_hashes(run_dir, {descriptor.path: descriptor.sha256})
+            PilotCheckpointDescriptor.model_validate_json(canonical_json_bytes(result[key]))
     NeuralModelIdentity(**result["model_identity"])
     if (
         result["selected_weights"] != progress.model_dump(mode="json")["selected"]

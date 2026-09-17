@@ -196,7 +196,9 @@ def test_abandoned_classification_never_excuses_corrupt_committed_evidence(
 
     run = tmp_path / "run"
     shutil.copytree(recovered_validation_run, run)
-    result = json.loads((run / "training-result.json").read_bytes())
+    from silent_cascade.report.pilot_artifacts import load_training_result
+
+    result = load_training_result(run, run / "training-result.json")
     hashes = result["artifact_hashes"]
     restart = next(run.glob("restart-*.json"))
     payload = json.loads(restart.read_bytes())
@@ -244,7 +246,9 @@ def test_abandoned_error_row_requires_its_actual_crash_bundle(tmp_path, missing)
         reference = json.loads(crash.read_bytes())["context"]["checkpoint_ref"]
         assert reference is not None
         crash = partial / "crashes" / reference
-    result = json.loads((run / "training-result.json").read_bytes())
+    from silent_cascade.report.pilot_artifacts import load_training_result
+
+    result = load_training_result(run, run / "training-result.json")
     result["artifact_hashes"].pop(str(crash.relative_to(run)))
     crash.unlink()
     (run / "training-result.json").write_bytes(canonical_json_bytes(result))
@@ -274,7 +278,9 @@ def test_abandoned_attempt_cannot_excuse_its_previously_committed_validation(tmp
     partial = run / incomplete[0]["corpus"]
     committed = partial.parents[1] / "validation-2-one_hop/autonomous/DONE"
     assert committed.is_file(), "same abandoned attempt must retain its durable validation2"
-    result = json.loads((run / "training-result.json").read_bytes())
+    from silent_cascade.report.pilot_artifacts import load_training_result
+
+    result = load_training_result(run, run / "training-result.json")
     result["artifact_hashes"].pop(str(committed.relative_to(run)))
     committed.unlink()
     (run / "training-result.json").write_bytes(canonical_json_bytes(result))

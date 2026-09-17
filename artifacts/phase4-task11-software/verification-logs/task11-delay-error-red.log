@@ -1,0 +1,136 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+____ test_acceptance_requires_every_independent_obligation[delay_12_error] _____
+
+change = 'delay_12_error'
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "wrong_denominator",
+            "conditional_only",
+            "hidden_error",
+            "hidden_pair",
+            "missing_replay",
+            "missing_mps",
+            "delay_12_error",
+            "delay_48_error",
+            "debug",
+        ],
+    )
+    def test_acceptance_requires_every_independent_obligation(change):
+        from silent_cascade.train.pilot_evidence import acceptance_failures
+        from silent_cascade.train.pilot_evidence_types import REQUIRED_COVERAGE
+    
+        suite = dict(
+            episode_count=10000,
+            timed_success_count=9000,
+            positive_count=5000,
+            safe_count=2500,
+            disconnected_count=2500,
+            false_action_count=500,
+            error_count=0,
+            foundation_model_calls=0,
+        )
+        arguments = dict(
+            production=True,
+            selected=True,
+            suites={name: dict(suite) for name in ("primary", "two_hop", "robustness")},
+            repeat=True,
+            pair_successes=231,
+            coverage=REQUIRED_COVERAGE,
+            numeric=True,
+            offline=True,
+            local_verified=True,
+        )
+        assert acceptance_failures(**arguments) == ()
+        if change == "wrong_denominator":
+            arguments["suites"]["primary"]["safe_count"] = 2499
+        elif change == "conditional_only":
+            arguments["suites"]["primary"]["timed_success_count"] = 5000
+        elif change == "hidden_error":
+            arguments["suites"]["two_hop"]["error_count"] = 1
+        elif change == "hidden_pair":
+            arguments["pair_successes"] = 230
+        elif change == "missing_replay":
+            arguments["coverage"] = ()
+        elif change == "missing_mps":
+            arguments["numeric"] = False
+        elif change in {"delay_12_error", "delay_48_error"}:
+            arguments["suites"][change.removesuffix("_error")] = dict(suite, error_count=1)
+        else:
+            arguments["production"] = False
+>       assert acceptance_failures(**arguments)
+E       AssertionError: assert ()
+E        +  where () = <function acceptance_failures at 0x110d4c5e0>(**{'coverage': ('boundary:mid_flow', 'boundary:fact', 'boundary:activate', 'boundary:recall', 'boundary:compose', 'boundary:act', ...), 'local_verified': True, 'numeric': True, 'offline': True, ...})
+
+tests/pilot/test_pilot_gate_verifier.py:62: AssertionError
+____ test_acceptance_requires_every_independent_obligation[delay_48_error] _____
+
+change = 'delay_48_error'
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "wrong_denominator",
+            "conditional_only",
+            "hidden_error",
+            "hidden_pair",
+            "missing_replay",
+            "missing_mps",
+            "delay_12_error",
+            "delay_48_error",
+            "debug",
+        ],
+    )
+    def test_acceptance_requires_every_independent_obligation(change):
+        from silent_cascade.train.pilot_evidence import acceptance_failures
+        from silent_cascade.train.pilot_evidence_types import REQUIRED_COVERAGE
+    
+        suite = dict(
+            episode_count=10000,
+            timed_success_count=9000,
+            positive_count=5000,
+            safe_count=2500,
+            disconnected_count=2500,
+            false_action_count=500,
+            error_count=0,
+            foundation_model_calls=0,
+        )
+        arguments = dict(
+            production=True,
+            selected=True,
+            suites={name: dict(suite) for name in ("primary", "two_hop", "robustness")},
+            repeat=True,
+            pair_successes=231,
+            coverage=REQUIRED_COVERAGE,
+            numeric=True,
+            offline=True,
+            local_verified=True,
+        )
+        assert acceptance_failures(**arguments) == ()
+        if change == "wrong_denominator":
+            arguments["suites"]["primary"]["safe_count"] = 2499
+        elif change == "conditional_only":
+            arguments["suites"]["primary"]["timed_success_count"] = 5000
+        elif change == "hidden_error":
+            arguments["suites"]["two_hop"]["error_count"] = 1
+        elif change == "hidden_pair":
+            arguments["pair_successes"] = 230
+        elif change == "missing_replay":
+            arguments["coverage"] = ()
+        elif change == "missing_mps":
+            arguments["numeric"] = False
+        elif change in {"delay_12_error", "delay_48_error"}:
+            arguments["suites"][change.removesuffix("_error")] = dict(suite, error_count=1)
+        else:
+            arguments["production"] = False
+>       assert acceptance_failures(**arguments)
+E       AssertionError: assert ()
+E        +  where () = <function acceptance_failures at 0x110d4c5e0>(**{'coverage': ('boundary:mid_flow', 'boundary:fact', 'boundary:activate', 'boundary:recall', 'boundary:compose', 'boundary:act', ...), 'local_verified': True, 'numeric': True, 'offline': True, ...})
+
+tests/pilot/test_pilot_gate_verifier.py:62: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[delay_12_error]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[delay_48_error]
+2 failed, 12 deselected in 0.40s

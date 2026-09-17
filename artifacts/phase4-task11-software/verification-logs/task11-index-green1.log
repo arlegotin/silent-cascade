@@ -1,0 +1,30 @@
+F..............                                                          [100%]
+=================================== FAILURES ===================================
+________ test_index_roundtrip_is_streamed_byte_bounded_and_create_only _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1105/test_index_roundtrip_is_stream0')
+
+    def test_index_roundtrip_is_streamed_byte_bounded_and_create_only(tmp_path):
+        from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+    
+        values = entries()
+        index = write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(values),
+                                     max_rows=3, max_bytes=250)
+        assert index.entry_count == 9 and len(index.shards) >= 5
+        stream = iter_artifact_index(tmp_path, index)
+        assert iter(stream) is stream
+        assert list(stream) == values
+        expected = b"".join(canonical_json_bytes(dict(path=p, sha256=h)) + b"\n" for p, h in values)
+        assert index.entries_sha256 == sha256_bytes(expected)
+        assert sum(part.decompressed_bytes for part in index.shards) == len(expected)
+        for shard in index.shards:
+            assert len(gzip.decompress((tmp_path / shard.path).read_bytes())) == shard.decompressed_bytes <= 250
+        assert write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(values),
+                                    max_rows=3, max_bytes=250) == index
+>       with pytest.raises(ValueError, match="duplicate"):
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/pilot/test_pilot_artifact_index.py:32: Failed
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_roundtrip_is_streamed_byte_bounded_and_create_only
+1 failed, 14 passed in 0.56s

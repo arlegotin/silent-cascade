@@ -1,0 +1,131 @@
+...............F.F                                                       [100%]
+=================================== FAILURES ===================================
+______ test_actual_gate_rejects_changed_execution_closure[foreign_module] ______
+
+gate_artifact_case = (PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo'), <function execute at 0x110c6ea20>)
+target = 'foreign_module'
+
+    @pytest.mark.parametrize("target", ["plan", "source", "foreign_module"])
+    def test_actual_gate_rejects_changed_execution_closure(gate_artifact_case, target):
+        root, execute = gate_artifact_case
+>       execute(root, CASE_HEADER + f"target = {target!r}\n" + '''
+    import sys
+    import types
+    path = None
+    original = None
+    if target == 'foreign_module':
+        foreign = types.ModuleType('silent_cascade.foreign')
+        foreign.__file__ = '/private/tmp/foreign-package.py'
+        sys.modules[foreign.__name__] = foreign
+    else:
+        path = root / ('docs/superpowers/plans/2026-09-16-phase-4-autonomous-eventflow.md'
+                       if target == 'plan' else 'src/silent_cascade/models/event_flow.py')
+        original = path.read_bytes()
+        path.write_bytes(original + b'\\n# changed during execution\\n')
+    try:
+        try:
+            verify_phase4_gate_artifact(run/'gate.json', repo_root=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('changed source accepted')
+    finally:
+        if path is not None:
+            path.write_bytes(original)
+    ''')
+
+tests/pilot/test_pilot_checks.py:139: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo')
+program = "\nimport json\nfrom pathlib import Path\nfrom silent_cascade.hashing import canonical_json_bytes, sha256_bytes\nfrom ...se AssertionError('changed source accepted')\nfinally:\n    if path is not None:\n        path.write_bytes(original)\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo/src/silent_cascade/train/provenance.py", line 127, in relative
+E           value = path.absolute().relative_to(root.absolute()).as_posix()
+E                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/Users/artemlegotin/.local/share/uv/python/cpython-3.12-macos-aarch64-none/lib/python3.12/pathlib.py", line 682, in relative_to
+E           raise ValueError(f"{str(self)!r} is not in the subpath of {str(other)!r}")
+E       ValueError: '/private/tmp/foreign-package.py' is not in the subpath of '/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo'
+E       
+E       The above exception was the direct cause of the following exception:
+E       
+E       Traceback (most recent call last):
+E         File "<string>", line 29, in <module>
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 721, in verify_phase4_gate_artifact
+E           source = authenticate_pilot_source(repo_root=repo_root, source_commit=artifact.source.source_commit, config=config)
+E                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo/src/silent_cascade/train/pilot_provenance.py", line 156, in authenticate_pilot_source
+E           if path.resolve() != path.absolute() or relative(root, path) not in package:
+E                                                   ^^^^^^^^^^^^^^^^^^^^
+E         File "/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo/src/silent_cascade/train/provenance.py", line 132, in relative
+E           raise ProvenanceError("artifact must be inside the named repository") from error
+E       silent_cascade.errors.ProvenanceError: artifact must be inside the named repository
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+___________ test_standalone_refuses_live_owner_and_missing_raw_reuse ___________
+
+gate_artifact_case = (PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo'), <function execute at 0x110c6ea20>)
+
+    def test_standalone_refuses_live_owner_and_missing_raw_reuse(gate_artifact_case):
+        root, execute = gate_artifact_case
+>       execute(root, CASE_HEADER + '''
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_workflow import pilot_ownership
+    owner = json.loads((run.parent / ('.' + run.name + '.owner.json')).read_bytes())
+    with pilot_ownership(run, run_identity=owner['run_identity']):
+        try:
+            run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+        except ValueError as error:
+            assert 'live' in str(error)
+        else:
+            raise AssertionError('competing checker accepted')
+    path = run/payload['continuation_evidence'][0]['checkpoint_path']
+    retained = path.with_suffix('.retained-for-test')
+    path.rename(retained)
+    try:
+        try:
+            run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+        except ValueError as error:
+            assert 'missing raw' in str(error), str(error)
+        else:
+            raise AssertionError('missing raw evidence reused')
+    finally:
+        retained.rename(path)
+    ''', timeout=900)
+
+tests/pilot/test_pilot_checks.py:190: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1100/task11-fixture-only0/repo')
+program = "\nimport json\nfrom pathlib import Path\nfrom silent_cascade.hashing import canonical_json_bytes, sha256_bytes\nfrom ...(error)\n    else:\n        raise AssertionError('missing raw evidence reused')\nfinally:\n    retained.rename(path)\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 32, in <module>
+E       AssertionError: missing raw evidence reused
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_checks.py::test_actual_gate_rejects_changed_execution_closure[foreign_module]
+FAILED tests/pilot/test_pilot_checks.py::test_standalone_refuses_live_owner_and_missing_raw_reuse
+2 failed, 16 passed in 353.74s (0:05:53)

@@ -1,0 +1,77 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_________________ test_shared_driver_is_installed_package_code _________________
+
+    def test_shared_driver_is_installed_package_code():
+>       assert importlib.util.find_spec("silent_cascade.train.pilot_checks") is not None
+E       AssertionError: assert None is not None
+E        +  where None = <function find_spec at 0x101d62de0>('silent_cascade.train.pilot_checks')
+E        +    where <function find_spec at 0x101d62de0> = <module 'importlib.util' (frozen)>.find_spec
+E        +      where <module 'importlib.util' (frozen)> = importlib.util
+
+tests/pilot/test_pilot_checks.py:8: AssertionError
+________ test_real_debug_driver_runs_cpu_without_second_fit_and_reuses _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1091/test_real_debug_driver_runs_cp0')
+
+    def test_real_debug_driver_runs_cpu_without_second_fit_and_reuses(tmp_path):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path / "repo")
+>       execute(root, DATA_SETUP + '''
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    before = (run / 'training-result.json').read_bytes()
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    ''')
+
+tests/pilot/test_pilot_checks.py:18: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1091/test_real_debug_driver_runs_cp0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 26, in <module>
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_checks'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_checks.py::test_shared_driver_is_installed_package_code
+FAILED tests/pilot/test_pilot_checks.py::test_real_debug_driver_runs_cpu_without_second_fit_and_reuses
+2 failed in 2.98s

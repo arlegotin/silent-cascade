@@ -1,0 +1,1450 @@
+E501 Line too long (119 > 100)
+  --> scripts/run_pilot.py:34:101
+   |
+32 |     from silent_cascade.train.pilot_evidence_types import Phase4GateArtifact, strict_json
+33 |
+34 |     gate = Phase4GateArtifact.model_validate_json(canonical_json_bytes(strict_json(args.run_dir / "phase4-gate.json")))
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^
+35 |     print(
+36 |         f"Pilot execution completed: {result.progress.global_step} updates; "
+   |
+
+E501 Line too long (111 > 100)
+  --> scripts/verify_phase4_gate_artifact.py:16:101
+   |
+14 |     parser.add_argument("--raw-run-dir", type=Path)
+15 |     args = parser.parse_args()
+16 |     result = verify_phase4_gate_artifact(args.artifact, repo_root=args.repo_root, raw_run_dir=args.raw_run_dir)
+   |                                                                                                     ^^^^^^^^^^^
+17 |     print(json.dumps(result, sort_keys=True))
+18 |     return int(not result["passed"])
+   |
+
+E501 Line too long (105 > 100)
+  --> src/silent_cascade/train/pilot_artifact_index.py:98:101
+   |
+96 |         shards.append(IndexShard(path=path.relative_to(root).as_posix(), sha256=part.sha256,
+97 |                                  rows=part.rows, decompressed_bytes=size))
+98 |     return PilotArtifactIndex(entry_count=count, entries_sha256=digest.hexdigest(), shards=tuple(shards))
+   |                                                                                                     ^^^^^
+
+E501 Line too long (113 > 100)
+   --> src/silent_cascade/train/pilot_artifact_index.py:126:101
+    |
+124 |                     if size > MAX_BYTES or rows > MAX_ROWS:
+125 |                         raise ValueError("artifact index shard limit exceeded")
+126 |                     row = IndexEntry.model_validate_json(canonical_json_bytes(decode_json(raw, limit=MAX_BYTES)))
+    |                                                                                                     ^^^^^^^^^^^^^
+127 |                     if raw != canonical_json_bytes(row) + b"\n":
+128 |                         raise ValueError("artifact index entry is not canonical JSONL")
+    |
+
+E501 Line too long (111 > 100)
+   --> src/silent_cascade/train/pilot_artifact_index.py:160:101
+    |
+158 |         raise ValueError("training index requires attempt-local latest weights")
+159 |     prefix = (relative.parent / "artifact-index").as_posix()
+160 |     index = write_artifact_index(root=run_dir, prefix=prefix, entries=((p, hashes[p]) for p in sorted(hashes)))
+    |                                                                                                     ^^^^^^^^^^^
+161 |     return TrainingResultEnvelope.model_validate_json(canonical_json_bytes(
+162 |         values | {"artifact_index": index.model_dump(mode="json")})).model_dump(mode="json")
+    |
+
+E501 Line too long (103 > 100)
+  --> src/silent_cascade/train/pilot_checks.py:56:101
+   |
+54 |         raise ValueError("local verification attempt already exists")
+55 |     output_dir.mkdir(parents=True, exist_ok=False)
+56 |     _publish(output_dir / "intent.json", dict(command=["make", "verify"], verification_commit=revision,
+   |                                                                                                     ^^^
+57 |                                              before_inventory=before))
+58 |     environment = {key: value for key, value in os.environ.items()
+   |
+
+E501 Line too long (103 > 100)
+  --> src/silent_cascade/train/pilot_checks.py:59:101
+   |
+57 |                                              before_inventory=before))
+58 |     environment = {key: value for key, value in os.environ.items()
+59 |                    if key not in {"MAKEFLAGS", "MFLAGS", "MAKEFILES", "MAKEOVERRIDES", "GNUMAKEFLAGS"}}
+   |                                                                                                     ^^^
+60 |     environment.update(OMP_NUM_THREADS="1", UV_OFFLINE="1", UV_FROZEN="1")
+61 |     with (output_dir / "stdout.log").open("xb") as stdout, (output_dir / "stderr.log").open("xb") as stderr:
+   |
+
+E501 Line too long (108 > 100)
+  --> src/silent_cascade/train/pilot_checks.py:61:101
+   |
+59 |                    if key not in {"MAKEFLAGS", "MFLAGS", "MAKEFILES", "MAKEOVERRIDES", "GNUMAKEFLAGS"}}
+60 |     environment.update(OMP_NUM_THREADS="1", UV_OFFLINE="1", UV_FROZEN="1")
+61 |     with (output_dir / "stdout.log").open("xb") as stdout, (output_dir / "stderr.log").open("xb") as stderr:
+   |                                                                                                     ^^^^^^^^
+62 |         completed = subprocess.run(["make", "verify"], cwd=root, stdout=stdout, stderr=stderr,
+63 |             env=environment, check=False)
+   |
+
+E501 Line too long (118 > 100)
+  --> src/silent_cascade/train/pilot_checks.py:72:101
+   |
+70 |     _publish(output_dir / "process-result.json", process)
+71 |     receipt = LocalVerificationReceipt(verification_commit=revision, after_commit=after_commit,
+72 |         before_inventory=before, after_inventory=after, source_unchanged=before == after and revision == after_commit,
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^
+73 |         returncode=completed.returncode, stdout_sha256=stdout_sha, stderr_sha256=stderr_sha,
+74 |         process_result_sha256=sha256_bytes(canonical_json_bytes(process)))
+   |
+
+E501 Line too long (113 > 100)
+  --> src/silent_cascade/train/pilot_checks.py:95:101
+   |
+93 |         parent_episode_sha256=parents[index].projected.episode_sha256,
+94 |         version="phase4-delay-pair-v1",
+95 |         parameters_canonical_json=canonical_json_bytes({"delay": 12.0 if name == "delay_12" else 48.0}).decode(),
+   |                                                                                                     ^^^^^^^^^^^^^
+96 |     ) if paired else None) for index, bundle in enumerate(bundles))
+97 |     identity = EvaluationIdentity(experiment="phase4-pilot-v1", stage=stage,
+   |
+
+E501 Line too long (116 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:144:101
+    |
+142 |     records, covered = [], set()
+143 |     _, evaluation_rows, _, _ = load_evaluation(run_dir / "final/eval/primary")
+144 |     for bundle, row in zip(expected_bundles(manifests["primary"], config, "primary"), evaluation_rows, strict=True):
+    |                                                                                                     ^^^^^^^^^^^^^^^^
+145 |         if row.error is not None:
+146 |             continue
+    |
+
+E501 Line too long (108 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:148:101
+    |
+146 |             continue
+147 |         variant = "variant:" + bundle.truth.recipe.variant.value
+148 |         observed = strict_json(child(run_dir / "final/eval/primary", row.neural_trace_ref))["causal_events"]
+    |                                                                                                     ^^^^^^^^
+149 |         possible = {variant, "boundary:mid_flow"}
+150 |         possible.update("boundary:" + event["kind"] for event in observed)
+    |
+
+E501 Line too long (102 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:164:101
+    |
+162 |         for event in events:
+163 |             if event.timestamp > prior_time:
+164 |                 candidates.append((None, "mid_flow", (event.timestamp + prior_time) / 2., prior_mode))
+    |                                                                                                     ^^
+165 |                 break
+166 |             prior_time, prior_mode = event.timestamp, event.post_mode.value
+    |
+
+E501 Line too long (122 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:184:101
+    |
+182 |                         engine.step(session, agent)
+183 |                 snapshot = snapshot_neural_runtime(session, agent, config=config.config.event_flow,
+184 |                     source_revision=source.source_commit, experiment_config_canonical_json=config.canonical_json.decode())
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^
+185 |                 checkpoint = publish_neural_runtime_checkpoint(
+186 |                     run_dir / "final/runtime" / (str(len(records)) + ".safetensors"), snapshot)
+    |
+
+E501 Line too long (107 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:187:101
+    |
+185 |                 checkpoint = publish_neural_runtime_checkpoint(
+186 |                     run_dir / "final/runtime" / (str(len(records)) + ".safetensors"), snapshot)
+187 |                 loaded = load_neural_runtime_checkpoint(checkpoint.path, expected_sha256=checkpoint.sha256,
+    |                                                                                                     ^^^^^^^
+188 |                     config=config.config.event_flow, source_revision=source.source_commit, device="cpu")
+189 |                 restored, restored_agent = restore_neural_runtime(loaded, device="cpu", restore_rng=False)
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:188:101
+    |
+186 |                     run_dir / "final/runtime" / (str(len(records)) + ".safetensors"), snapshot)
+187 |                 loaded = load_neural_runtime_checkpoint(checkpoint.path, expected_sha256=checkpoint.sha256,
+188 |                     config=config.config.event_flow, source_revision=source.source_commit, device="cpu")
+    |                                                                                                     ^^^^
+189 |                 restored, restored_agent = restore_neural_runtime(loaded, device="cpu", restore_rng=False)
+190 |                 while not engine.step(session, agent):
+    |
+
+E501 Line too long (106 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:189:101
+    |
+187 |                 loaded = load_neural_runtime_checkpoint(checkpoint.path, expected_sha256=checkpoint.sha256,
+188 |                     config=config.config.event_flow, source_revision=source.source_commit, device="cpu")
+189 |                 restored, restored_agent = restore_neural_runtime(loaded, device="cpu", restore_rng=False)
+    |                                                                                                     ^^^^^^
+190 |                 while not engine.step(session, agent):
+191 |                     pass
+    |
+
+E501 Line too long (101 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:197:101
+    |
+195 |             if replay_pair is None:
+196 |                 write_neural_replay(replay_path, bundle=bundle, result=uninterrupted,
+197 |                     identity=weights.identity, config=config.config.event_flow, weights=weights_path,
+    |                                                                                                     ^
+198 |                     source_revision=source.source_commit, experiment_config_canonical_json=config.canonical_json.decode())
+199 |                 replay_pair = [verify_neural_replay(replay_path, weights_path=weights_path).model_dump(mode="json") for _ in range(2)]
+    |
+
+E501 Line too long (122 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:198:101
+    |
+196 | …         write_neural_replay(replay_path, bundle=bundle, result=uninterrupted,
+197 | …             identity=weights.identity, config=config.config.event_flow, weights=weights_path,
+198 | …             source_revision=source.source_commit, experiment_config_canonical_json=config.canonical_json.decode())
+    |                                                                                               ^^^^^^^^^^^^^^^^^^^^^^
+199 | …         replay_pair = [verify_neural_replay(replay_path, weights_path=weights_path).model_dump(mode="json") for _ in range(2)]
+200 | …     matched = canonical_json_bytes(original) == canonical_json_bytes(resumed) and original["trace_sha256"] == uninterrupted.trace.s…
+    |
+
+E501 Line too long (134 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:199:101
+    |
+197 | …             identity=weights.identity, config=config.config.event_flow, weights=weights_path,
+198 | …             source_revision=source.source_commit, experiment_config_canonical_json=config.canonical_json.decode())
+199 | …         replay_pair = [verify_neural_replay(replay_path, weights_path=weights_path).model_dump(mode="json") for _ in range(2)]
+    |                                                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+200 | …     matched = canonical_json_bytes(original) == canonical_json_bytes(resumed) and original["trace_sha256"] == uninterrupted.trace.s…
+201 | …     records.append(dict(public_id=row.public_id, episode_sha256=episode_sha256(bundle),
+    |
+
+E501 Line too long (181 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:200:101
+    |
+198 | …_canonical_json=config.canonical_json.decode())
+199 | …th=weights_path).model_dump(mode="json") for _ in range(2)]
+200 | …s(resumed) and original["trace_sha256"] == uninterrupted.trace.sha256 and replay_pair[0] == replay_pair[1]
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+201 | …sode_sha256(bundle),
+202 | …s.identity.model_state_sha256,
+    |
+
+E501 Line too long (105 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:202:101
+    |
+200 | …     matched = canonical_json_bytes(original) == canonical_json_bytes(resumed) and original["trace_sha256"] == uninterrupted.trace.s…
+201 | …     records.append(dict(public_id=row.public_id, episode_sha256=episode_sha256(bundle),
+202 | …         weights_sha256=descriptor.sha256, model_state_sha256=weights.identity.model_state_sha256,
+    |                                                                                               ^^^^^
+203 | …         source_commit=source.source_commit, device="cpu", boundary=boundary, pause_time=pause_time,
+204 | …         event_index=index, mode=mode, variant=bundle.truth.recipe.variant.value,
+    |
+
+E501 Line too long (107 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:203:101
+    |
+201 |             records.append(dict(public_id=row.public_id, episode_sha256=episode_sha256(bundle),
+202 |                 weights_sha256=descriptor.sha256, model_state_sha256=weights.identity.model_state_sha256,
+203 |                 source_commit=source.source_commit, device="cpu", boundary=boundary, pause_time=pause_time,
+    |                                                                                                     ^^^^^^^
+204 |                 event_index=index, mode=mode, variant=bundle.truth.recipe.variant.value,
+205 |                 checkpoint_path=checkpoint.path.relative_to(run_dir).as_posix(), checkpoint_sha256=checkpoint.sha256,
+    |
+
+E501 Line too long (117 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:205:101
+    |
+203 |                 source_commit=source.source_commit, device="cpu", boundary=boundary, pause_time=pause_time,
+204 |                 event_index=index, mode=mode, variant=bundle.truth.recipe.variant.value,
+205 |                 checkpoint_path=checkpoint.path.relative_to(run_dir).as_posix(), checkpoint_sha256=checkpoint.sha256,
+    |                                                                                                     ^^^^^^^^^^^^^^^^^
+206 |                 replay_path=replay_path.relative_to(run_dir).as_posix(), replay_sha256=sha256_bytes(read_bytes(replay_path)),
+207 |                 original=original, restored=resumed, replay_comparisons=replay_pair,
+    |
+
+E501 Line too long (125 > 100)
+   --> src/silent_cascade/train/pilot_checks.py:206:101
+    |
+204 |                 event_index=index, mode=mode, variant=bundle.truth.recipe.variant.value,
+205 |                 checkpoint_path=checkpoint.path.relative_to(run_dir).as_posix(), checkpoint_sha256=checkpoint.sha256,
+206 |                 replay_path=replay_path.relative_to(run_dir).as_posix(), replay_sha256=sha256_bytes(read_bytes(replay_path)),
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+207 |                 original=original, restored=resumed, replay_comparisons=replay_pair,
+208 |                 coverage=sorted(coverage), matched=matched))
+    |
+
+E501 Line too long (103 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:45:101
+   |
+43 |     required = {"Makefile", ".python-version", "pyproject.toml", "uv.lock", PLAN, SPEC}
+44 |     tracked = git(repo_root, "ls-tree", "-r", "--name-only", revision).decode().splitlines()
+45 |     paths = required | {p for p in tracked if p.startswith(("src/", "scripts/", "tests/", "configs/"))}
+   |                                                                                                     ^^^
+46 |     blobs = _blobs(repo_root, revision, paths)
+47 |     if working:
+   |
+
+E501 Line too long (105 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:51:101
+   |
+49 |         # New tracked inputs during the process change the after inventory too.
+50 |         current = set(git(repo_root, "ls-files").decode().splitlines())
+51 |         extras = {p for p in current if p.startswith(("src/", "scripts/", "tests/", "configs/"))} - paths
+   |                                                                                                     ^^^^^
+52 |         blobs.update({p: read_bytes(child(repo_root, p), limit=64 * 1024**2) for p in extras})
+53 |     return {p: sha256_bytes(raw) for p, raw in sorted(blobs.items())}
+   |
+
+E501 Line too long (125 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:75:101
+   |
+73 |         if not (directory / "receipt.json").exists():
+74 |             raise ValueError("incomplete local verification attempt")
+75 |         receipt = LocalVerificationReceipt.model_validate_json(canonical_json_bytes(strict_json(directory / "receipt.json")))
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+76 |         committed = local_verification_inventory(repo_root, revision)
+77 |         if receipt.verification_commit != revision or receipt.before_inventory != committed:
+   |
+
+E501 Line too long (106 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:79:101
+   |
+77 |         if receipt.verification_commit != revision or receipt.before_inventory != committed:
+78 |             raise ValueError("local verification commit/inventory differs")
+79 |         for name, digest in (("stdout.log", receipt.stdout_sha256), ("stderr.log", receipt.stderr_sha256),
+   |                                                                                                     ^^^^^^
+80 |                              ("process-result.json", receipt.process_result_sha256)):
+81 |             if not (directory / name).exists() or sha256_bytes(read_bytes(directory / name)) != digest:
+   |
+
+E501 Line too long (103 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:81:101
+   |
+79 |         for name, digest in (("stdout.log", receipt.stdout_sha256), ("stderr.log", receipt.stderr_sha256),
+80 |                              ("process-result.json", receipt.process_result_sha256)):
+81 |             if not (directory / name).exists() or sha256_bytes(read_bytes(directory / name)) != digest:
+   |                                                                                                     ^^^
+82 |                 raise ValueError("local verification bound log/result missing or changed")
+83 |         process = strict_json(directory / "process-result.json")
+   |
+
+E501 Line too long (101 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:85:101
+   |
+83 |         process = strict_json(directory / "process-result.json")
+84 |         if process != dict(command=list(receipt.command), returncode=receipt.returncode,
+85 |                            stdout_sha256=receipt.stdout_sha256, stderr_sha256=receipt.stderr_sha256):
+   |                                                                                                     ^
+86 |             raise ValueError("local verification process result differs")
+87 |         unchanged = receipt.before_inventory == receipt.after_inventory and receipt.verification_commit == receipt.after_commit
+   |
+
+E501 Line too long (127 > 100)
+  --> src/silent_cascade/train/pilot_evidence.py:87:101
+   |
+85 |                            stdout_sha256=receipt.stdout_sha256, stderr_sha256=receipt.stderr_sha256):
+86 |             raise ValueError("local verification process result differs")
+87 |         unchanged = receipt.before_inventory == receipt.after_inventory and receipt.verification_commit == receipt.after_commit
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+88 |         if receipt.source_unchanged != unchanged:
+89 |             raise ValueError("local verification source change claim differs")
+   |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:298:101
+    |
+296 |     finally:
+297 |         restore_rng_snapshot(before, restore_mps=False)
+298 |     model_identity = NeuralModelIdentity.from_model(session.model, source_revision=source.source_commit)
+    |                                                                                                     ^^^^
+299 |     if model_identity.model_state_sha256 != descriptor.model_state_sha256:
+300 |         raise ValueError("full archive logical model differs")
+    |
+
+E501 Line too long (120 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:307:101
+    |
+305 |         weights = load_neural_weights(child(run_dir, weights_descriptor.path),
+306 |                                       expected_sha256=weights_descriptor.sha256, device="cpu")
+307 |         if weights.identity != model_identity or weights_descriptor.model_state_sha256 != descriptor.model_state_sha256:
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+308 |             raise ValueError("selected archive/portable tensor identity differs")
+309 |     if config.config.pilot.is_production and result.selected_checkpoint is not None and (
+    |
+
+E501 Line too long (101 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:333:101
+    |
+333 | def verify_evaluation_identity(identity, *, manifest, config, suite, weights_sha, model_sha, source):
+    |                                                                                                     ^
+334 |     from silent_cascade.eval.artifacts import DelayTransform
+    |
+
+E501 Line too long (112 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:338:101
+    |
+336 |     paired = suite.startswith("delay_")
+337 |     digest = sha256_bytes(canonical_json_bytes(manifest))
+338 |     purpose = "delay_swap" if paired else ("pilot_validation" if config.config.pilot.is_production else "debug")
+    |                                                                                                     ^^^^^^^^^^^^
+339 |     if (identity.experiment != "phase4-pilot-v1" or identity.stage != manifest.stage
+340 |         or identity.split != manifest.split or identity.purpose != purpose
+    |
+
+E501 Line too long (112 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:341:101
+    |
+339 |     if (identity.experiment != "phase4-pilot-v1" or identity.stage != manifest.stage
+340 |         or identity.split != manifest.split or identity.purpose != purpose
+341 |         or identity.manifest_sha256 != digest or identity.parent_manifest_sha256 != (digest if paired else None)
+    |                                                                                                     ^^^^^^^^^^^^
+342 |         or identity.checkpoint_sha256 != weights_sha or identity.model_identity.model_state_sha256 != model_sha
+343 |         or identity.model_identity.source_revision != source or identity.execution_source_revision != source
+    |
+
+E501 Line too long (111 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:342:101
+    |
+340 |         or identity.split != manifest.split or identity.purpose != purpose
+341 |         or identity.manifest_sha256 != digest or identity.parent_manifest_sha256 != (digest if paired else None)
+342 |         or identity.checkpoint_sha256 != weights_sha or identity.model_identity.model_state_sha256 != model_sha
+    |                                                                                                     ^^^^^^^^^^^
+343 |         or identity.model_identity.source_revision != source or identity.execution_source_revision != source
+344 |         or identity.evaluation_config_canonical_json != config.canonical_json.decode()):
+    |
+
+E501 Line too long (108 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:343:101
+    |
+341 |         or identity.manifest_sha256 != digest or identity.parent_manifest_sha256 != (digest if paired else None)
+342 |         or identity.checkpoint_sha256 != weights_sha or identity.model_identity.model_state_sha256 != model_sha
+343 |         or identity.model_identity.source_revision != source or identity.execution_source_revision != source
+    |                                                                                                     ^^^^^^^^
+344 |         or identity.evaluation_config_canonical_json != config.canonical_json.decode()):
+345 |         raise ValueError("final evaluation identity differs from selected workload")
+    |
+
+B905 `zip()` without an explicit `strict=` parameter
+   --> src/silent_cascade/train/pilot_evidence.py:348:32
+    |
+346 |     if paired:
+347 |         parents = [e.projected for e in manifest.entries if e.projected.variant == "positive"]
+348 |         for binding, parent in zip(identity.episodes, parents):
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+349 |             expected = DelayTransform(parent_public_id=parent.public_id,
+350 |                 parent_episode_sha256=parent.episode_sha256, version="phase4-delay-pair-v1",
+    |
+help: Add explicit value for parameter `strict=`
+
+E501 Line too long (122 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:351:101
+    |
+349 |             expected = DelayTransform(parent_public_id=parent.public_id,
+350 |                 parent_episode_sha256=parent.episode_sha256, version="phase4-delay-pair-v1",
+351 |                 parameters_canonical_json=canonical_json_bytes({"delay": 12.0 if suite == "delay_12" else 48.0}).decode())
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^
+352 |             if binding.transform != expected:
+353 |                 raise ValueError("delay parent/transform inventory differs")
+    |
+
+E501 Line too long (121 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:376:101
+    |
+374 |         yield {"row": row.model_dump(mode="json"),
+375 |                         "causal_events": sidecar["causal_events"],
+376 |                         "compute_observations": [sidecar["initial_compute"]] + [e["compute"] for e in sidecar["events"]],
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^
+377 |                "semantic_sha256": sha256_bytes(canonical_json_bytes({"events": semantic}))}
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:408:101
+    |
+406 |     from silent_cascade.eval.compute import RuntimeCompute
+407 |
+408 |     parsed = [RuntimeCompute.model_validate_json(canonical_json_bytes(value)) for value in observations]
+    |                                                                                                     ^^^^
+409 |     if not parsed:
+410 |         raise ValueError("missing compute observations")
+    |
+
+E501 Line too long (116 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:460:101
+    |
+458 |             event_source = "external" if event["kind"] in {"fact", "activate"} else (
+459 |                 "terminal" if event["kind"] == "terminal" else "internal")
+460 |             parsed = CausalEventArtifact.model_validate_json(canonical_json_bytes(event | {"source": event_source}))
+    |                                                                                                     ^^^^^^^^^^^^^^^^
+461 |             summaries.append(CausalEventSummary(**{f.name: getattr(parsed, f.name) for f in fields(CausalEventSummary)}))
+462 |         CausalTrace(tuple(summaries))
+    |
+
+E501 Line too long (121 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:461:101
+    |
+459 |                 "terminal" if event["kind"] == "terminal" else "internal")
+460 |             parsed = CausalEventArtifact.model_validate_json(canonical_json_bytes(event | {"source": event_source}))
+461 |             summaries.append(CausalEventSummary(**{f.name: getattr(parsed, f.name) for f in fields(CausalEventSummary)}))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^
+462 |         CausalTrace(tuple(summaries))
+463 |         digest = sha256_bytes(canonical_json_bytes({"schema_version": 1, "events": events}))
+    |
+
+B905 `zip()` without an explicit `strict=` parameter
+   --> src/silent_cascade/train/pilot_evidence.py:471:57
+    |
+469 |             raise ValueError("causal action/event inventory differs")
+470 |         if len({e["event_id"] for e in events}) != len(events) or any(
+471 |             b["timestamp"] < a["timestamp"] for a, b in zip(events, events[1:])
+    |                                                         ^^^^^^^^^^^^^^^^^^^^^^^
+472 |         ):
+473 |             raise ValueError("illegal event order")
+    |
+help: Add explicit value for parameter `strict=`
+
+RUF007 Prefer `itertools.pairwise()` over `zip()` when iterating over successive pairs
+   --> src/silent_cascade/train/pilot_evidence.py:471:57
+    |
+469 |             raise ValueError("causal action/event inventory differs")
+470 |         if len({e["event_id"] for e in events}) != len(events) or any(
+471 |             b["timestamp"] < a["timestamp"] for a, b in zip(events, events[1:])
+    |                                                         ^^^
+472 |         ):
+473 |             raise ValueError("illegal event order")
+    |
+help: Replace `zip()` with `itertools.pairwise()`
+
+E501 Line too long (112 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:490:101
+    |
+488 |                   positive_count=sum(r.is_positive for r in rows),
+489 |                   safe_count=sum(r.truth.recipe.variant.value == "safe_negative" for r in rows),
+490 |                   disconnected_count=sum(r.truth.recipe.variant.value == "disconnected_negative" for r in rows),
+    |                                                                                                     ^^^^^^^^^^^^
+491 |                   false_action_count=sum(not r.is_positive and bool(r.actions) for r in rows),
+492 |                   error_count=sum(r.error is not None for r in rows),
+    |
+
+E501 Line too long (106 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:517:101
+    |
+515 |         times = [r.actions[0].timestamp if len(r.actions) == 1 else None for r in (a, b)]
+516 |         # Positive normalized action windows are [0.75, 0.90).
+517 |         starts = [r.truth.action_window_start - 0.75 * d for r, d in zip((a, b), (12., 48.), strict=True)]
+    |                                                                                                     ^^^^^^
+518 |         result.append(dict(public_id=a.public_id, passed=a.timed_success and b.timed_success,
+519 |                            action_times=times,
+    |
+
+E501 Line too long (106 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:522:101
+    |
+520 |                            delta=None if None in times else times[1] - times[0],
+521 |                            normalized_times=[None if t is None else (t-s)/d
+522 |                                              for t, s, d in zip(times, starts, (12., 48.), strict=True)]))
+    |                                                                                                     ^^^^^^
+523 |     return tuple(result)
+    |
+
+E501 Line too long (113 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:578:101
+    |
+576 |         for comparison in comparisons:
+577 |             _trace_from_metadata(comparison.trace)
+578 |             if (comparison.weights_sha256 != weights_sha or comparison.trace_sha256 != row["causal_trace_sha256"]
+    |                                                                                                     ^^^^^^^^^^^^^
+579 |                 or comparison.result.public_id != row["public_id"]
+580 |                 or comparison.result.model_dump(mode="json")["actions"] != row["actions"]
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:594:101
+    |
+592 |             if (metadata.public_id != row["public_id"] or metadata.original_device != "cpu"
+593 |                 or metadata.weights.identity.model_state_sha256 != row["model_state_sha256"]
+594 |                 or metadata.state.time != record["pause_time"] or metadata.state.core.mode.value != mode
+    |                                                                                                     ^^^^
+595 |                 or len(metadata.trace.events) != prefix
+596 |                 or metadata.experiment_config_canonical_json != config.canonical_json.decode()):
+    |
+
+E501 Line too long (105 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:603:101
+    |
+601 |             replay, bundle, _ = _parse(replay_raw)
+602 |             if (episode_sha256(bundle) != row["episode_sha256"] or replay.original_device != "cpu"
+603 |                 or replay.source_revision != source.source_commit or replay.weights_sha256 != weights_sha
+    |                                                                                                     ^^^^^
+604 |                 or replay.trace != comparisons[0].trace or replay.expected_result != comparisons[0].result):
+605 |                 raise ValueError("continuation replay archive differs")
+    |
+
+E501 Line too long (108 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:604:101
+    |
+602 |             if (episode_sha256(bundle) != row["episode_sha256"] or replay.original_device != "cpu"
+603 |                 or replay.source_revision != source.source_commit or replay.weights_sha256 != weights_sha
+604 |                 or replay.trace != comparisons[0].trace or replay.expected_result != comparisons[0].result):
+    |                                                                                                     ^^^^^^^^
+605 |                 raise ValueError("continuation replay archive differs")
+606 |         if matched:
+    |
+
+E501 Line too long (115 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:623:101
+    |
+621 |         raise ValueError("numeric selected full archive differs")
+622 |     if run_dir is not None:
+623 |         actual = read_numeric_report(run_dir / "final/numerics", config=config, source_commit=source.source_commit)
+    |                                                                                                     ^^^^^^^^^^^^^^^
+624 |         if actual != report:
+625 |             raise ValueError("numeric evidence differs from raw tensor comparisons")
+    |
+
+E501 Line too long (113 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:641:101
+    |
+639 |         executed = strict_json(root / "executed-source.json")
+640 |         expected = {p: h for p, h in source.source_files.items() if p.startswith("src/")}
+641 |         if executed != expected or report.executed_source_sha256 != sha256_bytes(canonical_json_bytes(executed)):
+    |                                                                                                     ^^^^^^^^^^^^^
+642 |             raise ValueError("offline executing source differs")
+643 |         identity, rows, metrics, _ = load_evaluation(root / "run/eval/primary")
+    |
+
+E501 Line too long (112 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:691:101
+    |
+689 |                 weights_sha=(result.selected_weights or result.latest_weights).sha256,
+690 |                 model_sha=weights.identity.model_state_sha256, source=source.source_commit)
+691 |             attachments[name] = write_compact_shards(output_path.parent / f"{output_path.stem}.{name}", records)
+    |                                                                                                     ^^^^^^^^^^^^
+692 |             projections[name] = []
+693 |             observed_records = _observe_records(compact_attachment_records(output_path.parent, attachments[name]),
+    |
+
+E501 Line too long (114 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:693:101
+    |
+691 |             attachments[name] = write_compact_shards(output_path.parent / f"{output_path.stem}.{name}", records)
+692 |             projections[name] = []
+693 |             observed_records = _observe_records(compact_attachment_records(output_path.parent, attachments[name]),
+    |                                                                                                     ^^^^^^^^^^^^^^
+694 |                 digests=[], projections=projections[name], retained=primary_records,
+695 |                 continuation_ids=continuation_ids if name == "primary" else set())
+    |
+
+E501 Line too long (109 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:696:101
+    |
+694 |                 digests=[], projections=projections[name], retained=primary_records,
+695 |                 continuation_ids=continuation_ids if name == "primary" else set())
+696 |             rows = verify_rows(observed_records, expected_bundles(manifest, config, name), identity=identity,
+    |                                                                                                     ^^^^^^^^^
+697 |                                weights_sha=identity.checkpoint_sha256,
+698 |                                model_sha=weights.identity.model_state_sha256,
+    |
+
+E501 Line too long (103 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:700:101
+    |
+698 |                                model_sha=weights.identity.model_state_sha256,
+699 |                                source=source.source_commit, config=config)
+700 |             if identity.checkpoint_sha256 != (result.selected_weights or result.latest_weights).sha256:
+    |                                                                                                     ^^^
+701 |                 raise ValueError("stale selected weights")
+702 |             rows_by_suite[name] = rows
+    |
+
+E501 Line too long (108 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:708:101
+    |
+706 |                 upstream[f"final/eval/{name}/{p}"] = sha256_bytes(read_bytes(directory / p))
+707 |     coverage = verify_continuation_records(continuation, rows=primary_records,
+708 |         config=config, source=source, weights_sha=(result.selected_weights or result.latest_weights).sha256,
+    |                                                                                                     ^^^^^^^^
+709 |         run_dir=run_dir)
+710 |     for record in continuation:
+    |
+
+E501 Line too long (133 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:714:101
+    |
+712 |             upstream[record[kind + "_path"]] = record[kind + "_sha256"]
+713 |     pair_rows = pair_results(rows_by_suite.get("delay_12", ()), rows_by_suite.get("delay_48", ()))
+714 |     repeat = "primary" in projections and "primary_repeat" in projections and projections["primary"] == projections["primary_repeat"]
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+715 |     numeric, numeric_evidence = False, None
+716 |     if (run_dir / "final/numerics/DONE").exists():
+    |
+
+E501 Line too long (115 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:718:101
+    |
+716 |     if (run_dir / "final/numerics/DONE").exists():
+717 |         from silent_cascade.train.pilot_verification import read_numeric_report
+718 |         report = read_numeric_report(run_dir / "final/numerics", config=config, source_commit=source.source_commit)
+    |                                                                                                     ^^^^^^^^^^^^^^^
+719 |         if result.selected_checkpoint is not None and (
+720 |             report.original_checkpoint_sha256 != result.selected_checkpoint.sha256
+    |
+
+E501 Line too long (102 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:726:101
+    |
+724 |         numeric_evidence = report.model_dump(mode="json")
+725 |         numeric = verify_numeric_evidence(numeric_evidence, config=config, source=source,
+726 |             checkpoint=(result.selected_checkpoint or result.progress.latest).model_dump(mode="json"))
+    |                                                                                                     ^^
+727 |         upstream.update({"final/numerics/" + p: h for p, h in report.artifact_hashes.items()})
+728 |         upstream["final/numerics/numeric-report.json"] = sha256_bytes(read_bytes(run_dir / "final/numerics/numeric-report.json"))
+    |
+
+E501 Line too long (129 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:728:101
+    |
+726 |             checkpoint=(result.selected_checkpoint or result.progress.latest).model_dump(mode="json"))
+727 |         upstream.update({"final/numerics/" + p: h for p, h in report.artifact_hashes.items()})
+728 |         upstream["final/numerics/numeric-report.json"] = sha256_bytes(read_bytes(run_dir / "final/numerics/numeric-report.json"))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+729 |         upstream["final/numerics/DONE"] = sha256_bytes(read_bytes(run_dir / "final/numerics/DONE"))
+730 |     offline, offline_evidence = False, None
+    |
+
+E501 Line too long (130 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:733:101
+    |
+731 |     if (run_dir / "final/offline/offline.json").exists():
+732 |         from silent_cascade.train.pilot_offline import PilotOfflineReport
+733 |         report = PilotOfflineReport.model_validate_json(canonical_json_bytes(strict_json(run_dir / "final/offline/offline.json")))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+734 |         executed = strict_json(run_dir / "final/offline/executed-source.json")
+735 |         expected = {p: h for p, h in source.source_files.items() if p.startswith("src/")}
+    |
+
+E501 Line too long (161 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:736:101
+    |
+734 | …source.json")
+735 | …if p.startswith("src/")}
+736 | …!= sha256_bytes(canonical_json_bytes(executed)) or report.source_commit != source.source_commit:
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+737 | …
+738 | …
+    |
+
+E501 Line too long (110 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:742:101
+    |
+740 |         for path in (run_dir / "final/offline").rglob("*"):
+741 |             if path.is_file():
+742 |                 upstream[path.relative_to(run_dir).as_posix()] = sha256_bytes(read_bytes(path, limit=1024**3))
+    |                                                                                                     ^^^^^^^^^^
+743 |     suites = {name: suite_counts(rows) for name, rows in rows_by_suite.items()}
+744 |     local_verification = discover_local_verification(repo_root=root, source_commit=source.source_commit)
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:744:101
+    |
+742 |                 upstream[path.relative_to(run_dir).as_posix()] = sha256_bytes(read_bytes(path, limit=1024**3))
+743 |     suites = {name: suite_counts(rows) for name, rows in rows_by_suite.items()}
+744 |     local_verification = discover_local_verification(repo_root=root, source_commit=source.source_commit)
+    |                                                                                                     ^^^^
+745 |     failures = acceptance_failures(production=config.config.pilot.is_production,
+746 |         selected=result.selected_checkpoint is not None, suites=suites, repeat=repeat,
+    |
+
+E501 Line too long (116 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:747:101
+    |
+745 |     failures = acceptance_failures(production=config.config.pilot.is_production,
+746 |         selected=result.selected_checkpoint is not None, suites=suites, repeat=repeat,
+747 |         pair_successes=sum(row["passed"] for row in pair_rows), coverage=coverage, numeric=numeric, offline=offline,
+    |                                                                                                     ^^^^^^^^^^^^^^^^
+748 |         local_verified=local_verification is not None and local_verification["passed"])
+749 |     for descriptor in (result.selected_checkpoint, result.selected_weights, result.progress.latest):
+    |
+
+E501 Line too long (102 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:764:101
+    |
+762 |         _publish_pilot_bytes(child(output_path.parent, part.path), raw)
+763 |         upstream[part.path] = part.sha256
+764 |     artifact = Phase4GateArtifact(source=source, config_canonical_json=config.canonical_json.decode(),
+    |                                                                                                     ^^
+765 |         outcome="debug_non_acceptance" if not config.config.pilot.is_production else ("failed" if failures else "passed"),
+766 |         selected_checkpoint_sha256=result.selected_checkpoint.sha256 if result.selected_checkpoint else None,
+    |
+
+E501 Line too long (122 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:765:101
+    |
+763 |         upstream[part.path] = part.sha256
+764 |     artifact = Phase4GateArtifact(source=source, config_canonical_json=config.canonical_json.decode(),
+765 |         outcome="debug_non_acceptance" if not config.config.pilot.is_production else ("failed" if failures else "passed"),
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^
+766 |         selected_checkpoint_sha256=result.selected_checkpoint.sha256 if result.selected_checkpoint else None,
+767 |         selected_weights_sha256=result.selected_weights.sha256 if result.selected_weights else None,
+    |
+
+E501 Line too long (109 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:766:101
+    |
+764 |     artifact = Phase4GateArtifact(source=source, config_canonical_json=config.canonical_json.decode(),
+765 |         outcome="debug_non_acceptance" if not config.config.pilot.is_production else ("failed" if failures else "passed"),
+766 |         selected_checkpoint_sha256=result.selected_checkpoint.sha256 if result.selected_checkpoint else None,
+    |                                                                                                     ^^^^^^^^^
+767 |         selected_weights_sha256=result.selected_weights.sha256 if result.selected_weights else None,
+768 |         model_state_sha256=weights.identity.model_state_sha256 if weights else None,
+    |
+
+E501 Line too long (136 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:779:101
+    |
+777 | …s_production else "pilot_smoke.yaml")
+778 | …" --output " + quote(str(output_path))))
+779 | …rce_commit=source.source_commit, config=config).source_files != source.source_files:
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+780 | …ection")
+781 | …
+    |
+
+E501 Line too long (103 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:789:101
+    |
+787 |     from silent_cascade.train.pilot_config import resolve_pilot_config
+788 |
+789 |     artifact = Phase4GateArtifact.model_validate_json(canonical_json_bytes(strict_json(artifact_path)))
+    |                                                                                                     ^^^
+790 |     config = resolve_pilot_config("phase4_pilot" if '"profile":"phase4_pilot"' in artifact.config_canonical_json else "phase4_smoke")
+791 |     source = authenticate_pilot_source(repo_root=repo_root, source_commit=artifact.source.source_commit, config=config)
+    |
+
+E501 Line too long (133 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:790:101
+    |
+789 |     artifact = Phase4GateArtifact.model_validate_json(canonical_json_bytes(strict_json(artifact_path)))
+790 |     config = resolve_pilot_config("phase4_pilot" if '"profile":"phase4_pilot"' in artifact.config_canonical_json else "phase4_smoke")
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+791 |     source = authenticate_pilot_source(repo_root=repo_root, source_commit=artifact.source.source_commit, config=config)
+792 |     if {name for name in source.source_files if name.startswith("src/")} != set(REQUIRED_PACKAGE_FILES):
+    |
+
+E501 Line too long (119 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:791:101
+    |
+789 |     artifact = Phase4GateArtifact.model_validate_json(canonical_json_bytes(strict_json(artifact_path)))
+790 |     config = resolve_pilot_config("phase4_pilot" if '"profile":"phase4_pilot"' in artifact.config_canonical_json else "phase4_smoke")
+791 |     source = authenticate_pilot_source(repo_root=repo_root, source_commit=artifact.source.source_commit, config=config)
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^
+792 |     if {name for name in source.source_files if name.startswith("src/")} != set(REQUIRED_PACKAGE_FILES):
+793 |         raise ValueError("required independent source inventory differs")
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:792:101
+    |
+790 |     config = resolve_pilot_config("phase4_pilot" if '"profile":"phase4_pilot"' in artifact.config_canonical_json else "phase4_smoke")
+791 |     source = authenticate_pilot_source(repo_root=repo_root, source_commit=artifact.source.source_commit, config=config)
+792 |     if {name for name in source.source_files if name.startswith("src/")} != set(REQUIRED_PACKAGE_FILES):
+    |                                                                                                     ^^^^
+793 |         raise ValueError("required independent source inventory differs")
+794 |     required_nonpackage = {
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:796:101
+    |
+794 |     required_nonpackage = {
+795 |         "configs/base.yaml", "configs/data/primary.yaml", "configs/model/event_flow.yaml",
+796 |         "configs/model/neural_components.yaml", "configs/train/pilot.yaml", "pyproject.toml", "uv.lock",
+    |                                                                                                     ^^^^
+797 |         "docs/superpowers/plans/2026-09-16-phase-4-autonomous-eventflow.md",
+798 |         "docs/superpowers/specs/2026-08-30-silent-cascade-design.md",
+    |
+
+E501 Line too long (106 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:799:101
+    |
+797 |         "docs/superpowers/plans/2026-09-16-phase-4-autonomous-eventflow.md",
+798 |         "docs/superpowers/specs/2026-08-30-silent-cascade-design.md",
+799 |         "scripts/run_pilot.py", "scripts/check_phase4_pilot.py", "scripts/verify_phase4_gate_artifact.py",
+    |                                                                                                     ^^^^^^
+800 |         "scripts/record_phase4_local_verify.py", "Makefile", ".python-version",
+801 |     }
+    |
+
+E501 Line too long (160 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:806:101
+    |
+804 | … required_nonpackage:
+805 | … inventory differs")
+806 | …nfig.canonical_json.decode() != artifact.config_canonical_json or artifact.workload != WORKLOAD:
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+807 | …
+808 | …troductions[stage + "/manifest"]["path"])
+    |
+
+E501 Line too long (105 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:808:101
+    |
+806 |     if source.source_files != artifact.source.source_files or config.canonical_json.decode() != artifact.config_canonical_json or art…
+807 |         raise ValueError("gate source/config/workload differs")
+808 |     manifests = {stage: child(repo_root, artifact.source.data_introductions[stage + "/manifest"]["path"])
+    |                                                                                                     ^^^^^
+809 |                  for stage in ("one_hop", "two_hop", "primary", "robustness")}
+810 |     loaded, introductions = verify_pilot_data(repo_root=repo_root, source_commit=source.source_commit, config=config, manifests=manif…
+    |
+
+E501 Line too long (138 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:810:101
+    |
+808 | …rce.data_introductions[stage + "/manifest"]["path"])
+809 | …"primary", "robustness")}
+810 | …ot=repo_root, source_commit=source.source_commit, config=config, manifests=manifests)
+    |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+811 | …: introductions}) != artifact.source:
+812 | …iffers")
+    |
+
+E501 Line too long (111 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:816:101
+    |
+814 |     selected_checkpoint = artifact.training_result["selected_checkpoint"]
+815 |     selected_weights = artifact.training_result["selected_weights"]
+816 |     if (artifact.selected_checkpoint_sha256 != (selected_checkpoint["sha256"] if selected_checkpoint else None)
+    |                                                                                                     ^^^^^^^^^^^
+817 |         or artifact.selected_weights_sha256 != (selected_weights["sha256"] if selected_weights else None)):
+818 |         raise ValueError("gate selected descriptor differs")
+    |
+
+E501 Line too long (107 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:817:101
+    |
+815 |     selected_weights = artifact.training_result["selected_weights"]
+816 |     if (artifact.selected_checkpoint_sha256 != (selected_checkpoint["sha256"] if selected_checkpoint else None)
+817 |         or artifact.selected_weights_sha256 != (selected_weights["sha256"] if selected_weights else None)):
+    |                                                                                                     ^^^^^^^
+818 |         raise ValueError("gate selected descriptor differs")
+819 |     record_hashes, projections, suites, rows_by_suite = {}, {}, {}, {}
+    |
+
+E501 Line too long (126 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:831:101
+    |
+829 |             digests=record_hashes[name], projections=projections[name], retained=primary_records,
+830 |             continuation_ids=continuation_ids if name == "primary" else set())
+831 |         identity = EvaluationIdentity.model_validate_json(canonical_json_bytes(artifact.execution_evidence[name]["identity"]))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+832 |         execution = artifact.execution_evidence[name]["execution"]
+833 |         expected_execution = dict(schema_version="phase4-cpu-execution-v1", device="cpu",
+    |
+
+E501 Line too long (102 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:836:101
+    |
+834 |             purpose=name, identity_sha256=identity.sha256,
+835 |             done_sha256=artifact.upstream_artifact_hashes[f"final/eval/{name}/DONE"],
+836 |             weights_sha256=identity.checkpoint_sha256, model_state_sha256=artifact.model_state_sha256,
+    |                                                                                                     ^^
+837 |             source_commit=source.source_commit)
+838 |         if execution != expected_execution:
+    |
+
+E501 Line too long (109 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:840:101
+    |
+838 |         if execution != expected_execution:
+839 |             raise ValueError("CPU execution identity/purpose mismatch")
+840 |         selected = artifact.training_result["selected_weights"] or artifact.training_result["latest_weights"]
+    |                                                                                                     ^^^^^^^^^
+841 |         if config.config.pilot.is_production and artifact.training_result["selected_weights"] is None:
+842 |             raise ValueError("production evidence without selection")
+    |
+
+E501 Line too long (102 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:841:101
+    |
+839 |             raise ValueError("CPU execution identity/purpose mismatch")
+840 |         selected = artifact.training_result["selected_weights"] or artifact.training_result["latest_weights"]
+841 |         if config.config.pilot.is_production and artifact.training_result["selected_weights"] is None:
+    |                                                                                                     ^^
+842 |             raise ValueError("production evidence without selection")
+843 |         stage = name if name in {"two_hop", "robustness"} else "primary"
+    |
+
+E501 Line too long (111 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:845:101
+    |
+843 |         stage = name if name in {"two_hop", "robustness"} else "primary"
+844 |         verify_evaluation_identity(identity, manifest=loaded[stage], config=config, suite=name,
+845 |             weights_sha=selected["sha256"], model_sha=artifact.model_state_sha256, source=source.source_commit)
+    |                                                                                                     ^^^^^^^^^^^
+846 |         expected_manifest_sha = sha256_bytes(canonical_json_bytes(loaded[stage]))
+847 |         expected_purpose = "delay_swap" if name.startswith("delay_") else (
+    |
+
+E501 Line too long (104 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:850:101
+    |
+848 |             "pilot_validation" if config.config.pilot.is_production else "debug")
+849 |         if (identity.stage != stage or identity.split != loaded[stage].split
+850 |             or identity.purpose != expected_purpose or identity.manifest_sha256 != expected_manifest_sha
+    |                                                                                                     ^^^^
+851 |             or identity.parent_manifest_sha256 != (expected_manifest_sha if name.startswith("delay_") else None)):
+852 |             raise ValueError("final evaluation manifest/purpose differs")
+    |
+
+E501 Line too long (114 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:851:101
+    |
+849 |         if (identity.stage != stage or identity.split != loaded[stage].split
+850 |             or identity.purpose != expected_purpose or identity.manifest_sha256 != expected_manifest_sha
+851 |             or identity.parent_manifest_sha256 != (expected_manifest_sha if name.startswith("delay_") else None)):
+    |                                                                                                     ^^^^^^^^^^^^^^
+852 |             raise ValueError("final evaluation manifest/purpose differs")
+853 |         rows = verify_rows(records, expected_bundles(loaded[stage], config, name), identity=identity,
+    |
+
+E501 Line too long (101 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:853:101
+    |
+851 |             or identity.parent_manifest_sha256 != (expected_manifest_sha if name.startswith("delay_") else None)):
+852 |             raise ValueError("final evaluation manifest/purpose differs")
+853 |         rows = verify_rows(records, expected_bundles(loaded[stage], config, name), identity=identity,
+    |                                                                                                     ^
+854 |                            weights_sha=selected["sha256"], model_sha=artifact.model_state_sha256,
+855 |                            source=source.source_commit, config=config)
+    |
+
+E501 Line too long (133 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:859:101
+    |
+857 | …
+858 | …h")
+859 | …repeat" in projections and projections["primary"] == projections["primary_repeat"]
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+860 | …2", ()), rows_by_suite.get("delay_48", ()))
+861 | …nonical_json_bytes({"pairs": artifact.pair_rows}) or repeat != artifact.repeat_equal:
+    |
+
+E501 Line too long (136 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:861:101
+    |
+859 | …epeat" in projections and projections["primary"] == projections["primary_repeat"]
+860 | …", ()), rows_by_suite.get("delay_48", ()))
+861 | …onical_json_bytes({"pairs": artifact.pair_rows}) or repeat != artifact.repeat_equal:
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+862 | …tch")
+863 | …
+    |
+
+E501 Line too long (134 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:865:101
+    |
+863 |     missing = []
+864 |     envelope = parse_training_envelope(artifact.training_result)
+865 |     validate_training_result(envelope.model_dump(mode="json", exclude={"schema_version", "artifact_index"}) | {"artifact_hashes": {}})
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+866 |     if not envelope.artifact_index.entry_count:
+867 |         raise ValueError("missing training artifact inventory")
+    |
+
+E501 Line too long (108 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:869:101
+    |
+867 |         raise ValueError("missing training artifact inventory")
+868 |     required_upstream = {part.path: part.sha256 for part in envelope.artifact_index.shards}
+869 |     required_upstream["training-result.json"] = sha256_bytes(canonical_json_bytes(artifact.training_result))
+    |                                                                                                     ^^^^^^^^
+870 |     for descriptor in (selected_checkpoint, selected_weights, artifact.training_result["progress"]["latest"]):
+871 |         if descriptor is not None:
+    |
+
+E501 Line too long (110 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:870:101
+    |
+868 |     required_upstream = {part.path: part.sha256 for part in envelope.artifact_index.shards}
+869 |     required_upstream["training-result.json"] = sha256_bytes(canonical_json_bytes(artifact.training_result))
+870 |     for descriptor in (selected_checkpoint, selected_weights, artifact.training_result["progress"]["latest"]):
+    |                                                                                                     ^^^^^^^^^^
+871 |         if descriptor is not None:
+872 |             required_upstream[descriptor["path"]] = descriptor["sha256"]
+    |
+
+E501 Line too long (107 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:878:101
+    |
+876 |     if artifact.numeric_evidence is not None:
+877 |         required_upstream.update({"final/numerics/" + name: digest
+878 |                                  for name, digest in artifact.numeric_evidence["artifact_hashes"].items()})
+    |                                                                                                     ^^^^^^^
+879 |         required_upstream["final/numerics/numeric-report.json"] = sha256_bytes(canonical_json_bytes(artifact.numeric_evidence))
+880 |     if any(artifact.upstream_artifact_hashes.get(name) != digest for name, digest in required_upstream.items()):
+    |
+
+E501 Line too long (127 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:879:101
+    |
+877 |         required_upstream.update({"final/numerics/" + name: digest
+878 |                                  for name, digest in artifact.numeric_evidence["artifact_hashes"].items()})
+879 |         required_upstream["final/numerics/numeric-report.json"] = sha256_bytes(canonical_json_bytes(artifact.numeric_evidence))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+880 |     if any(artifact.upstream_artifact_hashes.get(name) != digest for name, digest in required_upstream.items()):
+881 |         raise ValueError("upstream artifact inventory differs")
+    |
+
+E501 Line too long (112 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:880:101
+    |
+878 |                                  for name, digest in artifact.numeric_evidence["artifact_hashes"].items()})
+879 |         required_upstream["final/numerics/numeric-report.json"] = sha256_bytes(canonical_json_bytes(artifact.numeric_evidence))
+880 |     if any(artifact.upstream_artifact_hashes.get(name) != digest for name, digest in required_upstream.items()):
+    |                                                                                                     ^^^^^^^^^^^^
+881 |         raise ValueError("upstream artifact inventory differs")
+882 |     def verify_raw(name, digest):
+    |
+
+E501 Line too long (109 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:905:101
+    |
+903 |                 continue
+904 |             _, raw_records, _ = compact_evaluation(raw_run_dir / "final/eval" / name)
+905 |             if record_hashes[name] != [sha256_bytes(canonical_json_bytes(record)) for record in raw_records]:
+    |                                                                                                     ^^^^^^^^^
+906 |                 raise ValueError("raw episode inventory differs")
+907 |     weights = selected_weights or artifact.training_result["latest_weights"]
+    |
+
+E501 Line too long (136 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:913:101
+    |
+911 | …and verify_numeric_evidence(
+912 | …urce=source,
+913 | …raining_result["progress"]["latest"], run_dir=raw_run_dir if raw_complete else None)
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+914 | …and verify_offline_evidence(
+915 | …n_dir=raw_run_dir if raw_complete else None)
+    |
+
+E501 Line too long (115 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:916:101
+    |
+914 |     offline = artifact.offline_evidence is not None and verify_offline_evidence(
+915 |         artifact.offline_evidence, source=source, run_dir=raw_run_dir if raw_complete else None)
+916 |     if (coverage != artifact.coverage or numeric != artifact.numeric_passed or offline != artifact.offline_passed):
+    |                                                                                                     ^^^^^^^^^^^^^^^
+917 |         raise ValueError("gate execution evidence differs from recorded comparisons")
+918 |     local_verification = discover_local_verification(repo_root=repo_root, source_commit=source.source_commit)
+    |
+
+E501 Line too long (109 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:918:101
+    |
+916 |     if (coverage != artifact.coverage or numeric != artifact.numeric_passed or offline != artifact.offline_passed):
+917 |         raise ValueError("gate execution evidence differs from recorded comparisons")
+918 |     local_verification = discover_local_verification(repo_root=repo_root, source_commit=source.source_commit)
+    |                                                                                                     ^^^^^^^^^
+919 |     if local_verification != artifact.local_verification:
+920 |         raise ValueError("local verification receipt differs from published gate")
+    |
+
+E501 Line too long (119 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:926:101
+    |
+924 |         numeric=numeric, offline=offline,
+925 |         local_verified=local_verification is not None and local_verification["passed"])
+926 |     outcome = "debug_non_acceptance" if not config.config.pilot.is_production else ("failed" if failures else "passed")
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^
+927 |     if failures != artifact.failures or outcome != artifact.outcome:
+928 |         raise ValueError("gate outcome differs from recomputed conditions")
+    |
+
+E501 Line too long (109 > 100)
+   --> src/silent_cascade/train/pilot_evidence.py:932:101
+    |
+930 |                 recorded_outcome=outcome, missing_raw_attachments=missing,
+931 |                 verification_scope="recorded_evidence_integrity", neural_replay="not_rerun",
+932 |                 source_commit=source.source_commit, selected_weights_sha256=artifact.selected_weights_sha256,
+    |                                                                                                     ^^^^^^^^^
+933 |                 artifact_sha256=sha256_bytes(read_bytes(artifact_path, limit=MAX_BYTES)))
+    |
+
+E501 Line too long (110 > 100)
+   --> src/silent_cascade/train/pilot_evidence_types.py:115:101
+    |
+113 |     def publish():
+114 |         path = prefix.parent / f"{prefix.name}.{start:05d}.jsonl.gz"
+115 |         result.append(Attachment(path=path.name, sha256=write_compact_rows(path, pending), rows=len(pending)))
+    |                                                                                                     ^^^^^^^^^^
+116 |
+117 |     for row in rows:
+    |
+
+E501 Line too long (130 > 100)
+   --> src/silent_cascade/train/pilot_workflow.py:290:101
+    |
+288 |             config, manifests=manifests, run_dir=run_dir, device=device, source_commit=source_commit
+289 |         )
+290 |     _publish_pilot_bytes(run_dir / "training-result.json", canonical_json_bytes(training_result_payload(result, run_dir=run_dir)))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+291 |     return result
+    |
+
+E501 Line too long (120 > 100)
+   --> tests/integration/test_phase0_repository.py:615:101
+    |
+613 |     assert result["selected_weights_sha256"] == mapping.selected_weights_sha256
+614 |     assert cell.startswith("Complete")
+615 |     assert all(value in cell for value in (mapping.source_commit, mapping.gate_sha256, mapping.selected_weights_sha256))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+
+E501 Line too long (101 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:19:101
+   |
+18 |     values = entries()
+19 |     index = write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(values),
+   |                                                                                                     ^
+20 |                                  max_rows=3, max_bytes=250)
+21 |     assert index.entry_count == 9 and len(index.shards) >= 5
+   |
+
+E501 Line too long (108 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:29:101
+   |
+27 |     assert sum(part.decompressed_bytes for part in index.shards) == len(expected)
+28 |     for shard in index.shards:
+29 |         assert len(gzip.decompress((tmp_path / shard.path).read_bytes())) == shard.decompressed_bytes <= 250
+   |                                                                                                     ^^^^^^^^
+30 |     assert write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(values),
+31 |                                 max_rows=3, max_bytes=250) == index
+   |
+
+E501 Line too long (101 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:33:101
+   |
+31 |                                 max_rows=3, max_bytes=250) == index
+32 |     with pytest.raises(ValueError, match="duplicate"):
+33 |         write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(entries(8)),
+   |                                                                                                     ^
+34 |                              max_rows=3, max_bytes=250)
+   |
+
+E501 Line too long (143 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:37:101
+   |
+37 | …, "truncated", "tail_count", "tail_bytes", "global_order", "duplicate", "noncanonical"])
+   |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+38 | …p_path, mutation):
+39 | …rt iter_artifact_index, write_artifact_index
+   |
+
+E501 Line too long (116 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:41:101
+   |
+39 |     from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+40 |
+41 |     index = write_artifact_index(root=tmp_path, prefix="attempt-fixture/index", entries=iter(entries()), max_rows=3)
+   |                                                                                                     ^^^^^^^^^^^^^^^^
+42 |     last = index.shards[-1]
+43 |     path = tmp_path / last.path
+   |
+
+E501 Line too long (150 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:51:101
+   |
+49 | …ex.entry_count - 1})
+50 | …
+51 | …shards[:-1], last.model_copy(update={"decompressed_bytes": last.decompressed_bytes - 1}))})
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+52 | …
+53 | …
+   |
+
+E501 Line too long (120 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:60:101
+   |
+58 |         else:
+59 |             values[0] = entries()[0] if mutation == "global_order" else entries()[5]
+60 |             raw = gzip.compress(b"".join(canonical_json_bytes(dict(path=p, sha256=h))+b"\n" for p,h in values), mtime=0)
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+61 |         path.write_bytes(raw)
+62 |         index = index.model_copy(update={"shards": (*index.shards[:-1], last.model_copy(update={"sha256": sha256_bytes(raw)}))})
+   |
+
+E501 Line too long (128 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:62:101
+   |
+60 |             raw = gzip.compress(b"".join(canonical_json_bytes(dict(path=p, sha256=h))+b"\n" for p,h in values), mtime=0)
+61 |         path.write_bytes(raw)
+62 |         index = index.model_copy(update={"shards": (*index.shards[:-1], last.model_copy(update={"sha256": sha256_bytes(raw)}))})
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+63 |     with pytest.raises((ValueError, OSError)):
+64 |         list(iter_artifact_index(tmp_path, index))
+   |
+
+E501 Line too long (103 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:67:101
+   |
+67 | @pytest.mark.parametrize("path", ["../escape", "/absolute", "safe/../escape", "frozen/data", "./file"])
+   |                                                                                                     ^^^
+68 | def test_index_refuses_unsafe_entry_paths(tmp_path, path):
+69 |     from silent_cascade.train.pilot_artifact_index import write_artifact_index
+   |
+
+E501 Line too long (103 > 100)
+  --> tests/pilot/test_pilot_artifact_index.py:78:101
+   |
+76 |     from silent_cascade.train.pilot_artifact_index import write_artifact_index
+77 |
+78 |     path = "attempt-" + "a" * 32 + "/validation-75000-robustness/autonomous/episodes/00000.neural.json"
+   |                                                                                                     ^^^
+79 |     row_bytes = len(canonical_json_bytes({"path": path, "sha256": "b" * 64})) + 1
+80 |     flat_entry_bytes = len(canonical_json_bytes({path: "b" * 64})) - 1
+   |
+
+E501 Line too long (102 > 100)
+   --> tests/pilot/test_pilot_artifact_index.py:106:101
+    |
+104 |     descriptor = PilotCheckpointDescriptor(path=path.relative_to(tmp_path).as_posix(),
+105 |         sha256=sha256_bytes(raw), model_state_sha256="a" * 64, global_step=1, stage="one_hop")
+106 |     progress = PilotProgress(global_step=1, batch_counter=1, latest=descriptor, status="step_ceiling")
+    |                                                                                                     ^^
+107 |     payload = dict(status=progress.status, progress=progress.model_dump(mode="json"),
+108 |         selected_checkpoint=None, selected_weights=None, latest_weights=descriptor.model_dump(mode="json"),
+    |
+
+E501 Line too long (107 > 100)
+   --> tests/pilot/test_pilot_artifact_index.py:108:101
+    |
+106 |     progress = PilotProgress(global_step=1, batch_counter=1, latest=descriptor, status="step_ceiling")
+107 |     payload = dict(status=progress.status, progress=progress.model_dump(mode="json"),
+108 |         selected_checkpoint=None, selected_weights=None, latest_weights=descriptor.model_dump(mode="json"),
+    |                                                                                                     ^^^^^^^
+109 |         model_identity=dict(model_config_json=canonical_json_bytes(resolve_pilot_config("phase4_smoke").config.neural).decode(),
+110 |                             model_state_sha256="a" * 64, source_revision="b" * 40),
+    |
+
+E501 Line too long (110 > 100)
+  --> tests/pilot/test_pilot_checks.py:89:101
+   |
+87 | if mutation == 'source_omission':
+88 |     payload['source']['source_files'].pop('scripts/check_phase4_pilot.py')
+89 |     payload['source']['source_sha256'] = sha256_bytes(canonical_json_bytes(payload['source']['source_files']))
+   |                                                                                                     ^^^^^^^^^^
+90 | elif mutation == 'introduction':
+91 |     payload['source']['data_introductions']['primary/manifest']['introduction'] = 'a'*40
+   |
+
+E501 Line too long (111 > 100)
+   --> tests/pilot/test_pilot_checks.py:236:101
+    |
+234 | try:
+235 |     try:
+236 |         evidence.collect_pilot_evidence(run_dir=run, config=config, output_path=run/'changed-source-gate.json')
+    |                                                                                                     ^^^^^^^^^^^
+237 |     except ValueError as error:
+238 |         assert 'source' in str(error), str(error)
+    |
+
+E501 Line too long (115 > 100)
+   --> tests/pilot/test_pilot_checks.py:257:101
+    |
+255 | spec.loader.exec_module(module)
+256 | # Exercise the CLI status boundary without an unauthorized production fit.
+257 | module.run_pilot = lambda **kwargs: SimpleNamespace(progress=SimpleNamespace(global_step=4000), gate_eligible=True)
+    |                                                                                                     ^^^^^^^^^^^^^^^
+258 | module.resolve_pilot_path = lambda path: SimpleNamespace(config=SimpleNamespace(pilot=SimpleNamespace(is_production=True)))
+259 | cli_run = root/'runs/cli-status-fixture'
+    |
+
+E501 Line too long (123 > 100)
+   --> tests/pilot/test_pilot_checks.py:258:101
+    |
+256 | # Exercise the CLI status boundary without an unauthorized production fit.
+257 | module.run_pilot = lambda **kwargs: SimpleNamespace(progress=SimpleNamespace(global_step=4000), gate_eligible=True)
+258 | module.resolve_pilot_path = lambda path: SimpleNamespace(config=SimpleNamespace(pilot=SimpleNamespace(is_production=True)))
+    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^
+259 | cli_run = root/'runs/cli-status-fixture'
+260 | cli_run.mkdir()
+    |
+
+E501 Line too long (101 > 100)
+   --> tests/pilot/test_pilot_checks.py:297:101
+    |
+295 |     sample = payload['attachments'][name][0]
+296 |     payload['attachments'][name] = [dict(sample, path=f'gate.{name}.{start:05d}.jsonl.gz',
+297 |                                         rows=min(1000,count-start)) for start in range(0,count,1000)]
+    |                                                                                                     ^
+298 | pairs = payload['pair_rows']
+299 | payload['pair_rows'] = [pairs[i % len(pairs)] for i in range(256)]
+    |
+
+E501 Line too long (101 > 100)
+   --> tests/pilot/test_pilot_checks.py:304:101
+    |
+302 | records = payload['continuation_evidence']
+303 | payload['continuation_evidence'] = [records[i % len(records)] for i in range(15)]
+304 | encoded = canonical_json_bytes(Phase4GateArtifact.model_validate_json(canonical_json_bytes(payload)))
+    |                                                                                                     ^
+305 | assert len(encoded) + 2*1024**2 < MAX_FILE_BYTES  # reserve for the source-bound receipt
+306 | (run/'production-cardinality-size.json').write_bytes(canonical_json_bytes(dict(
+    |
+
+E501 Line too long (107 > 100)
+  --> tests/pilot/test_pilot_delivery.py:43:101
+   |
+43 | @pytest.mark.parametrize("command,passed", [("@echo verified", True), ("@echo failed >&2; exit 7", False)])
+   |                                                                                                     ^^^^^^^
+44 | def test_local_receipt_records_actual_fixed_process_and_create_only_attempt(tmp_path, command, passed):
+45 |     from silent_cascade.train.pilot_checks import record_local_verification
+   |
+
+E501 Line too long (103 > 100)
+  --> tests/pilot/test_pilot_delivery.py:44:101
+   |
+43 | @pytest.mark.parametrize("command,passed", [("@echo verified", True), ("@echo failed >&2; exit 7", False)])
+44 | def test_local_receipt_records_actual_fixed_process_and_create_only_attempt(tmp_path, command, passed):
+   |                                                                                                     ^^^
+45 |     from silent_cascade.train.pilot_checks import record_local_verification
+46 |     from silent_cascade.train.pilot_evidence import discover_local_verification
+   |
+
+E501 Line too long (125 > 100)
+  --> tests/pilot/test_pilot_delivery.py:64:101
+   |
+64 | @pytest.mark.parametrize("mutation", ["command", "returncode", "missing_log", "corrupt", "changed_test", "changed_makefile"])
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+65 | def test_local_receipt_rejects_mutations(tmp_path, mutation):
+66 |     import json
+   |
+
+E501 Line too long (115 > 100)
+  --> tests/pilot/test_pilot_evidence.py:8:101
+   |
+ 8 | @pytest.mark.parametrize("payload", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'[]\n', b'{broken}\n'])
+   |                                                                                                     ^^^^^^^^^^^^^^^
+ 9 | def test_compact_rows_reject_ambiguous_json(tmp_path, payload):
+10 |     from silent_cascade.train.pilot_evidence_types import read_compact_rows
+   |
+
+E501 Line too long (150 > 100)
+ --> tests/pilot/test_pilot_gate_verifier.py:6:101
+  |
+6 | …conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+  |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+7 | …change):
+8 | …ance_failures
+  |
+
+E501 Line too long (106 > 100)
+  --> tests/pilot/test_pilot_workflow.py:76:101
+   |
+74 | assert 'production learning gate=unmet' in completed.stdout
+75 | from silent_cascade.report.pilot_artifacts import load_training_result
+76 | first = _restore_result(load_training_result(Path('runs/smoke'), Path('runs/smoke/training-result.json')))
+   |                                                                                                     ^^^^^^
+77 | assert first.progress.global_step == 4 and not first.gate_eligible
+78 | before = {str(p): p.read_bytes() for p in Path('runs/smoke').rglob('*') if p.is_file()}
+   |
+
+Found 148 errors (14 fixed, 134 remaining).
+No fixes available (3 hidden fixes can be enabled with the `--unsafe-fixes` option).

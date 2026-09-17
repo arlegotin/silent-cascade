@@ -1,0 +1,23 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+__________ test_compact_shards_enforce_actual_bytes_preserving_order ___________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1096/test_compact_shards_enforce_ac0')
+
+    def test_compact_shards_enforce_actual_bytes_preserving_order(tmp_path):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows, write_compact_shards
+E       ImportError: cannot import name 'write_compact_shards' from 'silent_cascade.train.pilot_evidence_types' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_evidence_types.py)
+
+tests/pilot/test_pilot_evidence.py:42: ImportError
+____ test_runtime_compute_cannot_be_rehashed_independently_of_observations _____
+
+    def test_runtime_compute_cannot_be_rehashed_independently_of_observations():
+        from silent_cascade.eval.compute import RuntimeCompute
+>       from silent_cascade.train.pilot_evidence import verify_compute_observations
+E       ImportError: cannot import name 'verify_compute_observations' from 'silent_cascade.train.pilot_evidence' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_evidence.py)
+
+tests/pilot/test_pilot_evidence.py:56: ImportError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_shards_enforce_actual_bytes_preserving_order
+FAILED tests/pilot/test_pilot_evidence.py::test_runtime_compute_cannot_be_rehashed_independently_of_observations
+2 failed, 7 deselected in 0.51s

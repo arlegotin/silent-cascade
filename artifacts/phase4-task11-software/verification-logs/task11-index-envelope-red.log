@@ -1,0 +1,15 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_v2_and_unchanged_legacy_results_decode_to_same_public_map ________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1104/test_v2_and_unchanged_legacy_r0')
+
+    def test_v2_and_unchanged_legacy_results_decode_to_same_public_map(tmp_path):
+        from silent_cascade.report.pilot_artifacts import load_training_result
+>       from silent_cascade.train.pilot_artifact_index import training_result_payload
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:94: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_artifact_index.py::test_v2_and_unchanged_legacy_results_decode_to_same_public_map
+1 failed in 0.12s

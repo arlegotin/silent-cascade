@@ -1,0 +1,76 @@
+..................F                                                      [100%]
+=================================== FAILURES ===================================
+________ test_real_debug_driver_runs_cpu_without_second_fit_and_reuses _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1094/test_real_debug_driver_runs_cp0')
+
+    def test_real_debug_driver_runs_cpu_without_second_fit_and_reuses(tmp_path):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path / "repo")
+>       execute(root, DATA_SETUP + '''
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    before = (run / 'training-result.json').read_bytes()
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    ''')
+
+tests/pilot/test_pilot_checks.py:18: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/neural/test_phase3_provenance.py:55: in execute
+    completed = subprocess.run(
+/Users/artemlegotin/.local/share/uv/python/cpython-3.12-macos-aarch64-none/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/artemlegotin/.local/share/uv/python/cpython-3.12-macos-aarch64-none/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/artemlegotin/.local/share/uv/python/cpython-3.12-macos-aarch64-none/lib/python3.12/subprocess.py:2109: in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: -9 args: ['/Volumes/git/legotin/silent-cascade/.venv/bin...>
+endtime = 880085.909026291, orig_timeout = 180, stdout_seq = [], stderr_seq = []
+skip_check_and_raise = False
+
+    def _check_timeout(self, endtime, orig_timeout, stdout_seq, stderr_seq,
+                       skip_check_and_raise=False):
+        """Convenience for checking if a timeout has expired."""
+        if endtime is None:
+            return
+        if skip_check_and_raise or _time() > endtime:
+>           raise TimeoutExpired(
+                    self.args, orig_timeout,
+                    output=b''.join(stdout_seq) if stdout_seq else None,
+                    stderr=b''.join(stderr_seq) if stderr_seq else None)
+E           subprocess.TimeoutExpired: Command '['/Volumes/git/legotin/silent-cascade/.venv/bin/python3', '-B', '-c', "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfrom silent_cascade.train.pilot_data import freeze_pilot_manifest\nfrom silent_cascade.eval.pilot_audit import audit_pilot_manifest\nfrom silent_cascade.train.pilot_provenance import authenticate_pilot_source, verify_pilot_data\nroot = Path.cwd()\nconfig = resolve_pilot_config('phase4_smoke')\nproducer = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()\nauthenticate_pilot_source(repo_root=root, source_commit=producer, config=config)\nmanifests = {}\nfor stage in ('one_hop','two_hop','primary','robustness'):\n    path = root / 'pilot-data' / (stage + '.json')\n    manifest = freeze_pilot_manifest(config, stage=stage, output_path=path, source_commit=producer)\n    audit_pilot_manifest(manifest, config=config.config, output_dir=path.parent / 'audits' / stage)\n    manifests[stage] = path\nsubprocess.run(['git','add','pilot-data'], check=True)\nsubprocess.run(['git','commit','-qm','introduce immutable debug data'], check=True)\nsubprocess.run(['git','commit','--allow-empty','-qm','training attempt'], check=True)\nsource = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()\n\nimport json\nimport sys\nfrom silent_cascade.train.pilot_workflow import train_pilot\nfrom silent_cascade.train.pilot_checks import run_pilot_checks\nfrom silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact\nrun = Path('runs/checks')\ntrained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),\n                      manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')\nassert trained.progress.global_step == 4\nbefore = (run / 'training-result.json').read_bytes()\nartifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')\nassert artifact.outcome == 'debug_non_acceptance'\nassert artifact.suites['primary']['episode_count'] == 16\nassert artifact.suites['primary_repeat']['episode_count'] == 16\nassert artifact.repeat_equal\nassert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()\n           if isinstance(e, dict) and 'execution' in e)\nassert artifact.continuation_evidence\nassert (run / 'training-result.json').read_bytes() == before\nagain = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')\nassert again == artifact\nchecked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)\nassert checked['valid'] and not checked['passed']\nassert checked['neural_replay'] == 'not_rerun'\ncompleted = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',\n    '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),\n    '--output', str(run/'gate.json')], capture_output=True, text=True)\nassert completed.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"]' timed out after 180 seconds
+
+/Users/artemlegotin/.local/share/uv/python/cpython-3.12-macos-aarch64-none/lib/python3.12/subprocess.py:1253: TimeoutExpired
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_checks.py::test_real_debug_driver_runs_cpu_without_second_fit_and_reuses
+1 failed, 18 passed in 180.76s (0:03:00)

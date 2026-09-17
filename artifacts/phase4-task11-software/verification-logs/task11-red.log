@@ -1,0 +1,181 @@
+FFFFFFFFFFFFFFFF                                                         [100%]
+=================================== FAILURES ===================================
+___________ test_compact_rows_reject_ambiguous_json[{"x":1,"x":2}\n] ___________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_compact_rows_reject_ambig0')
+payload = b'{"x":1,"x":2}\n'
+
+    @pytest.mark.parametrize("payload", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'[]\n', b'{broken}\n'])
+    def test_compact_rows_reject_ambiguous_json(tmp_path, payload):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence_types'
+
+tests/pilot/test_pilot_evidence.py:10: ModuleNotFoundError
+_____________ test_compact_rows_reject_ambiguous_json[{"x":NaN}\n] _____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_compact_rows_reject_ambig1')
+payload = b'{"x":NaN}\n'
+
+    @pytest.mark.parametrize("payload", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'[]\n', b'{broken}\n'])
+    def test_compact_rows_reject_ambiguous_json(tmp_path, payload):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence_types'
+
+tests/pilot/test_pilot_evidence.py:10: ModuleNotFoundError
+____________ test_compact_rows_reject_ambiguous_json[{"x":1e999}\n] ____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_compact_rows_reject_ambig2')
+payload = b'{"x":1e999}\n'
+
+    @pytest.mark.parametrize("payload", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'[]\n', b'{broken}\n'])
+    def test_compact_rows_reject_ambiguous_json(tmp_path, payload):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence_types'
+
+tests/pilot/test_pilot_evidence.py:10: ModuleNotFoundError
+________________ test_compact_rows_reject_ambiguous_json[[]\n] _________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_compact_rows_reject_ambig3')
+payload = b'[]\n'
+
+    @pytest.mark.parametrize("payload", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'[]\n', b'{broken}\n'])
+    def test_compact_rows_reject_ambiguous_json(tmp_path, payload):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence_types'
+
+tests/pilot/test_pilot_evidence.py:10: ModuleNotFoundError
+_____________ test_compact_rows_reject_ambiguous_json[{broken}\n] ______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_compact_rows_reject_ambig4')
+payload = b'{broken}\n'
+
+    @pytest.mark.parametrize("payload", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n', b'[]\n', b'{broken}\n'])
+    def test_compact_rows_reject_ambiguous_json(tmp_path, payload):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence_types'
+
+tests/pilot/test_pilot_evidence.py:10: ModuleNotFoundError
+_________ test_compact_rows_stream_limits_and_deterministic_roundtrip __________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_compact_rows_stream_limit0')
+
+    def test_compact_rows_stream_limits_and_deterministic_roundtrip(tmp_path):
+>       from silent_cascade.train.pilot_evidence_types import read_compact_rows, write_compact_rows
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence_types'
+
+tests/pilot/test_pilot_evidence.py:19: ModuleNotFoundError
+___________ test_no_selected_checkpoint_is_not_replaced_with_latest ____________
+
+    def test_no_selected_checkpoint_is_not_replaced_with_latest():
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_evidence.py:33: ModuleNotFoundError
+___ test_acceptance_requires_every_independent_obligation[wrong_denominator] ___
+
+change = 'wrong_denominator'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+___ test_acceptance_requires_every_independent_obligation[conditional_only] ____
+
+change = 'conditional_only'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+_____ test_acceptance_requires_every_independent_obligation[hidden_error] ______
+
+change = 'hidden_error'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+______ test_acceptance_requires_every_independent_obligation[hidden_pair] ______
+
+change = 'hidden_pair'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+____ test_acceptance_requires_every_independent_obligation[missing_replay] _____
+
+change = 'missing_replay'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+______ test_acceptance_requires_every_independent_obligation[missing_mps] ______
+
+change = 'missing_mps'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+_________ test_acceptance_requires_every_independent_obligation[debug] _________
+
+change = 'debug'
+
+    @pytest.mark.parametrize("change", ["wrong_denominator", "conditional_only", "hidden_error", "hidden_pair", "missing_replay", "missing_mps", "debug"])
+    def test_acceptance_requires_every_independent_obligation(change):
+>       from silent_cascade.train.pilot_evidence import acceptance_failures
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_evidence'
+
+tests/pilot/test_pilot_gate_verifier.py:8: ModuleNotFoundError
+________________ test_phase4_delivery_refuses_unearned_complete ________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1090/test_phase4_delivery_refuses_u0')
+
+    def test_phase4_delivery_refuses_unearned_complete(tmp_path):
+        namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
+>       assert "_assert_phase4_delivery_state" in namespace
+E       AssertionError: assert '_assert_phase4_delivery_state' in {'Path': <class 'pathlib.Path'>, 'ROOT': PosixPath('/Volumes/git/legotin/silent-cascade'), '_HISTORICAL_VERIFY': <func...b9aae1bdc7d1ab00f8a6e6e', '4aa6eca5d25e3c6dac879850b2a0557bbe84b54e', 'bee142bd08a8b7b5621ae65551280ebdeed6c1b6'}, ...}
+
+tests/pilot/test_pilot_delivery.py:11: AssertionError
+_________________ test_shared_driver_is_installed_package_code _________________
+
+    def test_shared_driver_is_installed_package_code():
+>       assert importlib.util.find_spec("silent_cascade.train.pilot_checks") is not None
+E       AssertionError: assert None is not None
+E        +  where None = <function find_spec at 0x1012fade0>('silent_cascade.train.pilot_checks')
+E        +    where <function find_spec at 0x1012fade0> = <module 'importlib.util' (frozen)>.find_spec
+E        +      where <module 'importlib.util' (frozen)> = importlib.util
+
+tests/pilot/test_pilot_checks.py:8: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_rows_reject_ambiguous_json[{"x":1,"x":2}\n]
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_rows_reject_ambiguous_json[{"x":NaN}\n]
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_rows_reject_ambiguous_json[{"x":1e999}\n]
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_rows_reject_ambiguous_json[[]\n]
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_rows_reject_ambiguous_json[{broken}\n]
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_rows_stream_limits_and_deterministic_roundtrip
+FAILED tests/pilot/test_pilot_evidence.py::test_no_selected_checkpoint_is_not_replaced_with_latest
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[wrong_denominator]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[conditional_only]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[hidden_error]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[hidden_pair]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[missing_replay]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[missing_mps]
+FAILED tests/pilot/test_pilot_gate_verifier.py::test_acceptance_requires_every_independent_obligation[debug]
+FAILED tests/pilot/test_pilot_delivery.py::test_phase4_delivery_refuses_unearned_complete
+FAILED tests/pilot/test_pilot_checks.py::test_shared_driver_is_installed_package_code
+16 failed in 0.11s

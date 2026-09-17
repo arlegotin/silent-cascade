@@ -26,6 +26,7 @@ from silent_cascade.report.pilot_artifacts import (
     load_training_result,
     read_json,
 )
+from silent_cascade.train.pilot_artifact_index import training_result_payload
 from silent_cascade.train.pilot_checkpoints import load_pilot_checkpoint
 from silent_cascade.train.pilot_config import resolve_pilot_config
 from silent_cascade.train.pilot_data import (
@@ -44,7 +45,6 @@ from silent_cascade.train.pilot_trainer import (
     verify_journal,
 )
 from silent_cascade.train.provenance import git
-from silent_cascade.train.trainer import _json
 
 
 def resolve_pilot_path(path: Path):
@@ -287,7 +287,10 @@ def _train(config, manifests, run_dir, device, source_commit, source, resume):
         result = run_pilot_training(
             config, manifests=manifests, run_dir=run_dir, device=device, source_commit=source_commit
         )
-    _publish_pilot_bytes(run_dir / "training-result.json", canonical_json_bytes(_json(result)))
+    _publish_pilot_bytes(
+        run_dir / "training-result.json",
+        canonical_json_bytes(training_result_payload(result, run_dir=run_dir)),
+    )
     return result
 
 
@@ -343,19 +346,11 @@ def _workflow(config, manifest_dir, run_dir, device, *, resume=None, complete):
         _publish_pilot_bytes(run_dir / "workflow.json", canonical_json_bytes(metadata))
         if complete:
             from silent_cascade.report.pilot import build_pilot_report
+            from silent_cascade.train.pilot_checks import _run_pilot_checks_owned
 
-            if result.selected_weights is not None or not config.config.pilot.is_production:
-                chosen = result.selected_weights or result.latest_weights
-                descriptor = run_dir / (
-                    "selected.json" if result.selected_weights else "latest.json"
-                )
-                _publish_pilot_bytes(descriptor, canonical_json_bytes(chosen))
-                evaluate_pilot(
-                    checkpoint=descriptor,
-                    manifest=manifests["primary"],
-                    output=run_dir / "eval/primary",
-                    device=device,
-                )
+            _run_pilot_checks_owned(
+                run_dir=run_dir, config=config, output_path=run_dir / "phase4-gate.json"
+            )
             build_pilot_report(run_dir=run_dir, output_dir=run_dir / "report")
         return result
 

@@ -1,0 +1,168 @@
+FFFFFFFFFFFFFF                                                           [100%]
+=================================== FAILURES ===================================
+________ test_index_roundtrip_is_streamed_byte_bounded_and_create_only _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_roundtrip_is_stream0')
+
+    def test_index_roundtrip_is_streamed_byte_bounded_and_create_only(tmp_path):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:16: ModuleNotFoundError
+__________ test_index_rejects_corruption_through_last_shard[missing] ___________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_0')
+mutation = 'missing'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+____________ test_index_rejects_corruption_through_last_shard[hash] ____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_1')
+mutation = 'hash'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+_________ test_index_rejects_corruption_through_last_shard[truncated] __________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_2')
+mutation = 'truncated'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+_________ test_index_rejects_corruption_through_last_shard[tail_count] _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_3')
+mutation = 'tail_count'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+_________ test_index_rejects_corruption_through_last_shard[tail_bytes] _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_4')
+mutation = 'tail_bytes'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+________ test_index_rejects_corruption_through_last_shard[global_order] ________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_5')
+mutation = 'global_order'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+_________ test_index_rejects_corruption_through_last_shard[duplicate] __________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_rejects_corruption_6')
+mutation = 'duplicate'
+
+    @pytest.mark.parametrize("mutation", ["missing", "hash", "truncated", "tail_count", "tail_bytes", "global_order", "duplicate"])
+    def test_index_rejects_corruption_through_last_shard(tmp_path, mutation):
+>       from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:39: ModuleNotFoundError
+_______________ test_index_refuses_unsafe_entry_paths[../escape] _______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_refuses_unsafe_entr0')
+path = '../escape'
+
+    @pytest.mark.parametrize("path", ["../escape", "/absolute", "safe/../escape", "frozen/data", "./file"])
+    def test_index_refuses_unsafe_entry_paths(tmp_path, path):
+>       from silent_cascade.train.pilot_artifact_index import write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:67: ModuleNotFoundError
+_______________ test_index_refuses_unsafe_entry_paths[/absolute] _______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_refuses_unsafe_entr1')
+path = '/absolute'
+
+    @pytest.mark.parametrize("path", ["../escape", "/absolute", "safe/../escape", "frozen/data", "./file"])
+    def test_index_refuses_unsafe_entry_paths(tmp_path, path):
+>       from silent_cascade.train.pilot_artifact_index import write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:67: ModuleNotFoundError
+____________ test_index_refuses_unsafe_entry_paths[safe/../escape] _____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_refuses_unsafe_entr2')
+path = 'safe/../escape'
+
+    @pytest.mark.parametrize("path", ["../escape", "/absolute", "safe/../escape", "frozen/data", "./file"])
+    def test_index_refuses_unsafe_entry_paths(tmp_path, path):
+>       from silent_cascade.train.pilot_artifact_index import write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:67: ModuleNotFoundError
+______________ test_index_refuses_unsafe_entry_paths[frozen/data] ______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_refuses_unsafe_entr3')
+path = 'frozen/data'
+
+    @pytest.mark.parametrize("path", ["../escape", "/absolute", "safe/../escape", "frozen/data", "./file"])
+    def test_index_refuses_unsafe_entry_paths(tmp_path, path):
+>       from silent_cascade.train.pilot_artifact_index import write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:67: ModuleNotFoundError
+________________ test_index_refuses_unsafe_entry_paths[./file] _________________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_index_refuses_unsafe_entr4')
+path = './file'
+
+    @pytest.mark.parametrize("path", ["../escape", "/absolute", "safe/../escape", "frozen/data", "./file"])
+    def test_index_refuses_unsafe_entry_paths(tmp_path, path):
+>       from silent_cascade.train.pilot_artifact_index import write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:67: ModuleNotFoundError
+_________ test_three_million_entries_fit_bounded_index_not_flat_result _________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1103/test_three_million_entries_fit0')
+
+    def test_three_million_entries_fit_bounded_index_not_flat_result(tmp_path):
+>       from silent_cascade.train.pilot_artifact_index import write_artifact_index
+E       ModuleNotFoundError: No module named 'silent_cascade.train.pilot_artifact_index'
+
+tests/pilot/test_pilot_artifact_index.py:74: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_roundtrip_is_streamed_byte_bounded_and_create_only
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[missing]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[hash]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[truncated]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[tail_count]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[tail_bytes]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[global_order]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_rejects_corruption_through_last_shard[duplicate]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_refuses_unsafe_entry_paths[../escape]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_refuses_unsafe_entry_paths[/absolute]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_refuses_unsafe_entry_paths[safe/../escape]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_refuses_unsafe_entry_paths[frozen/data]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_index_refuses_unsafe_entry_paths[./file]
+FAILED tests/pilot/test_pilot_artifact_index.py::test_three_million_entries_fit_bounded_index_not_flat_result
+14 failed in 0.11s

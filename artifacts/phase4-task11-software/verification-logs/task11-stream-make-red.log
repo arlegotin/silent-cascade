@@ -1,0 +1,33 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_local_receipt_ignores_inherited_make_dry_run_flags ____________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1101/test_local_receipt_ignores_inh0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x110978aa0>
+
+    def test_local_receipt_ignores_inherited_make_dry_run_flags(tmp_path, monkeypatch):
+        from silent_cascade.train.pilot_checks import record_local_verification
+    
+        root = receipt_repository(tmp_path, command="@exit 7")
+        monkeypatch.setenv("MAKEFLAGS", "--just-print")
+        output = root / "artifacts/phase4-local-verification" / receipt_head(root)
+        receipt = record_local_verification(repo_root=root, output_dir=output)
+>       assert receipt.returncode != 0
+E       AssertionError: assert 0 != 0
+E        +  where 0 = LocalVerificationReceipt(schema_version='phase4-local-verification-v1', command=('make', 'verify'), verification_commi...1e4649b934ca495991b7852b855', process_result_sha256='add8a0141203fa024a688b067ddf1d93f7daeaeef5af4700600a7a03512a1800').returncode
+
+tests/pilot/test_pilot_delivery.py:132: AssertionError
+_____ test_compact_shard_reader_consumes_order_counts_and_late_corruption ______
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1101/test_compact_shard_reader_cons0')
+
+    def test_compact_shard_reader_consumes_order_counts_and_late_corruption(tmp_path):
+        from silent_cascade.hashing import sha256_bytes
+>       from silent_cascade.train.pilot_evidence import compact_attachment_records
+E       ImportError: cannot import name 'compact_attachment_records' from 'silent_cascade.train.pilot_evidence' (/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_evidence.py)
+
+tests/pilot/test_pilot_evidence.py:67: ImportError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_delivery.py::test_local_receipt_ignores_inherited_make_dry_run_flags
+FAILED tests/pilot/test_pilot_evidence.py::test_compact_shard_reader_consumes_order_counts_and_late_corruption
+2 failed in 1.16s

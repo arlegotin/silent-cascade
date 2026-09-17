@@ -28,11 +28,18 @@ def main():
             "For incompatible directories, choose a new-run-path and preserve prior evidence.\n",
         )
     production = resolve_pilot_path(args.config).config.pilot.is_production
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.pilot_evidence_types import Phase4GateArtifact, strict_json
+
+    gate = Phase4GateArtifact.model_validate_json(
+        canonical_json_bytes(strict_json(args.run_dir / "phase4-gate.json"))
+    )
     print(
         f"Pilot execution completed: {result.progress.global_step} updates; "
-        f"production learning gate={'passed' if result.gate_eligible else 'unmet'}"
+        f"production learning gate={'passed' if result.gate_eligible else 'unmet'}; "
+        f"final gate={gate.outcome}"
     )
-    return 1 if production and not result.gate_eligible else 0
+    return int(production and (not result.gate_eligible or gate.outcome != "passed"))
 
 
 if __name__ == "__main__":
