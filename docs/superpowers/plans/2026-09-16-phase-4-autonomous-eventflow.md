@@ -308,7 +308,7 @@ source writers concurrently. Independent read-only work may overlap verification
 | 8 | `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,pilot_overfit,archive_tensors}.py` | narrowly extract common archive/optimization contracts; maintain current Phase3 source closure |
 | 9 | `src/silent_cascade/train/pilot_cli.py`, `src/silent_cascade/report/{__init__,pilot}.py`, `scripts/run_pilot.py`, `docs/phase4-autonomous-eventflow.md` | root CLI, Makefile, command/package tests |
 | 10 | `src/silent_cascade/train/{pilot_verification,pilot_measurement,pilot_offline}.py` | new local numerical/offline/throughput tests; explicit portable MPS trajectory validation |
-| 11 | `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence}.py`, `scripts/{check_phase4_pilot,verify_phase4_gate_artifact}.py` | finish source inventory, Phase4 delivery guard/tests |
+| 11 | `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence,pilot_checks,pilot_artifact_index}.py`, `scripts/{check_phase4_pilot,verify_phase4_gate_artifact,record_phase4_local_verify}.py` | finish source inventory, bounded training-result persistence/readers, Phase4 delivery guard/tests, current command documentation |
 | 12 | `manifests/validation/phase4/` stage manifests, gate and delivery map; generated pilot report | Phase4 delivery row and measured documentation only |
 
 Tests live under new `tests/pilot/`, with integration coverage in the existing
@@ -1556,6 +1556,17 @@ expectations. No concurrent training job should exist when the pilot starts.
 **Files:**
 
 - Create: `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence,pilot_checks}.py`.
+- Create: `src/silent_cascade/train/pilot_artifact_index.py`, the bounded
+  training-result inventory codec shared by the trainer, workflow and readers.
+- Modify: `src/silent_cascade/train/pilot_trainer.py` and
+  `src/silent_cascade/report/pilot_artifacts.py` for that codec, preserving the
+  public materialized dictionary interfaces and legacy-flat reading.
+- Create: `tests/pilot/test_pilot_artifact_index.py`.
+- Modify: `tests/pilot/test_pilot_report.py` only where existing negative cases
+  decode the serialized training result; retain their original mutations and
+  rejection assertions after decoding through the real reader.
+- Modify: `docs/phase4-autonomous-eventflow.md` to document actual local command
+  surfaces and the index schema/memory tradeoff, without claiming Phase4 complete.
 - Create: `scripts/check_phase4_pilot.py`, `scripts/verify_phase4_gate_artifact.py`.
 - Create: `scripts/record_phase4_local_verify.py`, the local-only receipt wrapper
   for the existing fixed `make verify` command; no hosted automation.
@@ -1651,6 +1662,52 @@ the prescribed final local check. Test receipt mutations, command/process result
 binding, changed inputs, ancestry, missing logs, newer failures and no implicit
 execution in the existing `test_pilot_delivery.py` and other Task11 test files.
 
+Bound the persisted training inventory without losing any artifact reference.
+At the declared maximum workload, the current neural/telemetry path-hash entries
+alone would occupy 511,500,001 bytes for 1.5 million validation episodes, beyond
+the existing 128 MiB artifact reader limit; embedding that flat map twice also
+overflows the gate. This is a full-budget feasibility defect, not evidence that
+the actual seed reaches the ceiling. Do not enlarge reader limits, omit hashes,
+rewrite historical artifacts, or introduce threshold-dependent writer formats.
+
+Always write the closed `phase4-training-result-v2` envelope: retain `status`,
+`progress`, `selected_checkpoint`, `selected_weights`, `latest_weights`,
+`model_identity` and `gate_eligible`, replace `artifact_hashes` with
+`artifact_index`, and add `schema_version`. The closed
+`phase4-artifact-index-v1` descriptor binds `entry_count`, SHA-256 of the canonical
+newline-delimited entry stream, and deterministically ordered shard descriptors
+containing path, hash, rows and decompressed bytes. Preserve every `{path, sha256}`
+entry. Each shard must contain at most 50,000 rows and 128 MiB decoded bytes and
+must be smaller than 100 MiB on disk. Validate global ordering, duplicates, safe
+paths, hashes, exact counts/bytes, missing shards and truncation through the end
+of the stream. No omitted tail validation or silently overwritten shard.
+
+Use one shared writer and streaming iterator in `pilot_artifact_index.py`.
+Trainer attempt results and workflow root publication use the same envelope
+writer and deterministic attempt-local shard location, derived from the latest
+weights descriptor; identical publication may reuse only authenticated identical
+shards. Keep the exact eight-field legacy-flat result readable unchanged.
+`PilotTrainingResult.artifact_hashes` and `load_training_result` still expose
+materialized dictionaries for compatibility: document that memory cost rather
+than claiming a lazy public API. Persisted serialization and index validation
+stream; this is a focused codec, not a generic storage framework.
+
+The gate embeds the compact v2 result and copies its index shards byte-for-byte,
+preserving original serialized-result identity and descriptor-root bindings. Do
+not duplicate the flattened inventory in upstream hashes or silently rewrite
+accepted bytes. Verify every indexed raw artifact hash when raw files are
+available and explicitly report missing raw coverage. Learning, optimization,
+archive semantics, retention and scientific budgets remain unchanged.
+
+Test multi-shard and encoded-byte boundaries, global ordering/duplicates,
+missing/tampered/truncated shards, legacy/v2 round trips and result recovery,
+an actual tiny producer execution, and the three-million-entry size arithmetic
+without allocating three million files. Existing report negative tests decode
+through the real reader before applying their original mutations; a deliberately
+mutated legacy envelope remains a valid historical-reader rejection test. Update
+workflow recovery tests to use `load_training_result` before `_restore_result`.
+Every tiny producer run must exercise v2, not only an oversized synthetic case.
+
 - [ ] **Step 1: Write adversarial collector/verifier tests.**
 
 ```python
@@ -1674,7 +1731,7 @@ when eligible training is followed by a failed final gate. Check that the
 installed package imports without source-only scripts. Compact evidence parsing
 must reject malformed, duplicate-key, nonfinite and over-limit attachments.
 
-- [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_evidence.py tests/pilot/test_pilot_gate_verifier.py tests/pilot/test_pilot_delivery.py tests/pilot/test_pilot_checks.py`. Preserve historical Phase1/2/3 rejection tests, not only their passing pinned-checkout path.
+- [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_evidence.py tests/pilot/test_pilot_gate_verifier.py tests/pilot/test_pilot_delivery.py tests/pilot/test_pilot_checks.py tests/pilot/test_pilot_artifact_index.py`. Preserve historical Phase1/2/3 rejection tests, not only their passing pinned-checkout path.
 
 - [ ] **Step 3: Implement a complete source and artifact chain.**
 
