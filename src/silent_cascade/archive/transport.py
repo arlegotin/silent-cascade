@@ -31,8 +31,8 @@ from silent_cascade.archive.catalog import (
     _remove_tree_at,
     _safe_logical_path,
     _source_file,
-    iter_run_catalog,
     publish_run_catalog,
+    verify_run_catalog_unit,
 )
 from silent_cascade.archive.operational import (
     eviction_key,
@@ -479,8 +479,24 @@ def _read_regular(path: Path, *, max_bytes: int) -> bytes:
         return _read_at(parent, path.name, max_bytes=max_bytes)
 
 
-def _remove_fresh(path: Path) -> None:
+def _regular_identity(path: Path) -> tuple[int, int, int, int]:
+    with _pinned_directory(path.parent) as parent:
+        current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+        raise ValueError("fresh transfer object is not an owned regular file")
+    return current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns
+
+
+def _remove_fresh(path: Path, *, expected_identity: tuple[int, int, int, int]) -> None:
     with suppress(FileNotFoundError), _pinned_directory(path.parent) as parent:
+        current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        if (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        ) != expected_identity:
+            return
         os.unlink(path.name, dir_fd=parent)
         os.fsync(parent)
 
@@ -532,8 +548,10 @@ def _transfer_verified(
     except BaseException:
         raise
     destination = _fresh_download(control_dir)
+    destination_identity = None
     try:
         transport.download(key, destination, max_bytes=expected_bytes)
+        destination_identity = _regular_identity(destination)
         raw = _read_regular(destination, max_bytes=expected_bytes)
         if len(raw) != expected_bytes or sha256_bytes(raw) != expected_sha256:
             reason = "collision" if isinstance(create_error, FileExistsError) else "readback"
@@ -543,7 +561,8 @@ def _transfer_verified(
             raise
         raise ValueError(f"remote readback failed: {error}") from error
     finally:
-        _remove_fresh(destination)
+        if destination_identity is not None:
+            _remove_fresh(destination, expected_identity=destination_identity)
     return {"key": key, "bytes": expected_bytes, "sha256": expected_sha256}
 
 
@@ -607,15 +626,18 @@ def _cold_reader(*, control_dir: Path, transport: ObjectTransport, run_id: str):
         if local is not None:
             return local
         destination = _fresh_download(control_dir)
+        destination_identity = None
         try:
             transport.download(
                 _object_key(run_id, path),
                 destination,
                 max_bytes=max_bytes,
             )
+            destination_identity = _regular_identity(destination)
             return _read_regular(destination, max_bytes=max_bytes)
         finally:
-            _remove_fresh(destination)
+            if destination_identity is not None:
+                _remove_fresh(destination, expected_identity=destination_identity)
 
     return read
 
@@ -623,15 +645,18 @@ def _cold_reader(*, control_dir: Path, transport: ObjectTransport, run_id: str):
 def _operational_cold_reader(*, control_dir: Path, transport: ObjectTransport):
     def read(path: str, max_bytes: int) -> bytes:
         destination = _fresh_download(control_dir)
+        destination_identity = None
         try:
             transport.download(
                 _operational_object_key(path),
                 destination,
                 max_bytes=max_bytes,
             )
+            destination_identity = _regular_identity(destination)
             return _read_regular(destination, max_bytes=max_bytes)
         finally:
-            _remove_fresh(destination)
+            if destination_identity is not None:
+                _remove_fresh(destination, expected_identity=destination_identity)
 
     return read
 
@@ -717,6 +742,119 @@ def _cleanup_catalog_stage(stage: Path) -> None:
         os.fsync(parent)
 
 
+def _remove_control_tree(control_dir: Path, logical: str) -> None:
+    path = _safe_logical_path(logical, field="control tree path")
+    with _pinned_directory(control_dir) as root:
+        parent = os.dup(root)
+        try:
+            for component in path.parts[:-1]:
+                child = _open_child_directory(parent, component)
+                os.close(parent)
+                parent = child
+            with suppress(FileNotFoundError):
+                _remove_tree_at(parent, path.name)
+                os.fsync(parent)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(parent)
+
+
+def _catalog_proof_prefix(unit_id: str, catalog_id: str) -> str:
+    if not _HASH_RE.fullmatch(unit_id) or not _HASH_RE.fullmatch(catalog_id):
+        raise ValueError("invalid catalog proof identity")
+    return f"catalog-proofs/{unit_id}/{catalog_id}"
+
+
+def _capture_catalog_proof(
+    *,
+    control_dir: Path,
+    ref: UnitRef,
+    catalog_ref: CatalogRef,
+    transport: ObjectTransport,
+    run_id: str,
+    policy: ArchivePolicy,
+) -> dict[str, bytes]:
+    captured: dict[str, bytes] = {}
+    remote_reader = _cold_reader(
+        control_dir=control_dir,
+        transport=transport,
+        run_id=run_id,
+    )
+
+    def recording_reader(path: str, max_bytes: int) -> bytes:
+        raw = remote_reader(path, max_bytes)
+        captured[path] = raw
+        return raw
+
+    verify_run_catalog_unit(
+        control_dir,
+        catalog_ref,
+        ref,
+        policy=policy,
+        object_reader=recording_reader,
+        unit_reader=_control_reader(control_dir),
+    )
+    return captured
+
+
+def _store_catalog_proof(
+    *, control_dir: Path, ref: UnitRef, catalog_ref: CatalogRef, proof: dict[str, bytes]
+) -> list[dict]:
+    prefix = _catalog_proof_prefix(ref.unit_id, catalog_ref.catalog_id)
+    descriptors = []
+    for path, raw in sorted(proof.items()):
+        _create_control_object(control_dir, f"{prefix}/{path}", raw)
+        descriptors.append({"path": path, "bytes": len(raw), "sha256": sha256_bytes(raw)})
+    if not any(record["path"] == catalog_ref.root_path for record in descriptors):
+        raise ValueError("catalog proof lacks its authenticated root")
+    return descriptors
+
+
+def _verify_receipt_catalog(
+    *, control_dir: Path, ref: UnitRef, receipt: dict, policy: ArchivePolicy
+) -> CatalogRef:
+    catalog_ref = _catalog_ref_from_payload(receipt.get("catalog"))
+    records = receipt.get("catalog_proof")
+    if not isinstance(records, list) or not records:
+        raise ValueError("receipt catalog proof differs")
+    descriptors: dict[str, tuple[int, str]] = {}
+    for record in records:
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"path", "bytes", "sha256"}
+            or not isinstance(record["path"], str)
+            or type(record["bytes"]) is not int
+            or record["bytes"] <= 0
+            or record["bytes"] > policy.page_bytes
+            or not isinstance(record["sha256"], str)
+            or not _HASH_RE.fullmatch(record["sha256"])
+            or record["path"] in descriptors
+        ):
+            raise ValueError("receipt catalog proof differs")
+        descriptors[record["path"]] = (record["bytes"], record["sha256"])
+    prefix = _catalog_proof_prefix(ref.unit_id, catalog_ref.catalog_id)
+
+    def proof_reader(path: str, max_bytes: int) -> bytes:
+        descriptor = descriptors.get(path)
+        if descriptor is None or descriptor[0] > max_bytes:
+            raise ValueError("receipt catalog proof is incomplete")
+        raw = _control_reader(control_dir)(f"{prefix}/{path}", descriptor[0])
+        if len(raw) != descriptor[0] or sha256_bytes(raw) != descriptor[1]:
+            raise ValueError("receipt catalog proof object differs")
+        return raw
+
+    verify_run_catalog_unit(
+        control_dir,
+        catalog_ref,
+        ref,
+        policy=policy,
+        object_reader=proof_reader,
+        unit_reader=_control_reader(control_dir),
+    )
+    return catalog_ref
+
+
 def _publish_head(control_dir: Path, run_id: str, ref: CatalogRef) -> None:
     logical = _safe_logical_path(_catalog_head_path(run_id), field="catalog head path")
     payload = canonical_json_bytes(_catalog_ref_payload(ref)) + b"\n"
@@ -752,21 +890,6 @@ def _existing_receipt(
         return None
     digest = sha256_bytes(raw)
     receipt, _ = _read_receipt(control_dir, ref, digest, policy.metadata_bytes)
-    authorization_raw = _read_control_optional(
-        control_dir,
-        f"active-receipts/{ref.unit_id}.json",
-        max_bytes=16_384,
-    )
-    if authorization_raw is None or not authorization_raw.endswith(b"\n"):
-        raise ValueError("existing transfer receipt lacks operational authorization")
-    authorization = decode_json(authorization_raw[:-1], limit=16_384)
-    if (
-        authorization_raw != canonical_json_bytes(authorization) + b"\n"
-        or authorization.get("schema_version") != "phase4-r2-active-receipt-v1"
-        or authorization.get("unit_id") != ref.unit_id
-        or authorization.get("receipt_sha256") != digest
-    ):
-        raise ValueError("existing transfer receipt authorization differs")
     if (
         receipt.get("transport_id") != _transport_identity(transport)
         or receipt.get("run_id") != run_id
@@ -793,27 +916,27 @@ def _existing_receipt(
         ):
             raise ValueError("existing transfer receipt object inventory differs")
         destination = _fresh_download(control_dir)
+        destination_identity = None
         try:
             transport.download(record["key"], destination, max_bytes=record["bytes"])
+            destination_identity = _regular_identity(destination)
             downloaded = _read_regular(destination, max_bytes=record["bytes"])
             if len(downloaded) != record["bytes"] or sha256_bytes(downloaded) != record["sha256"]:
                 raise ValueError("existing transfer receipt readback differs")
         finally:
-            _remove_fresh(destination)
-    catalog_ref = _catalog_ref_from_payload(receipt.get("catalog"))
-    if _load_head(control_dir, run_id) != catalog_ref or ref not in tuple(
-        iter_run_catalog(
-            control_dir,
-            catalog_ref,
+            if destination_identity is not None:
+                _remove_fresh(destination, expected_identity=destination_identity)
+    _verify_receipt_catalog(control_dir=control_dir, ref=ref, receipt=receipt, policy=policy)
+    if not _active_receipt_authorized(control_dir=control_dir, ref=ref, receipt_sha256=digest):
+        _publish_operational_batch(
+            control_dir=control_dir,
+            transport=transport,
             policy=policy,
-            object_reader=_cold_reader(
-                control_dir=control_dir,
-                transport=transport,
-                run_id=run_id,
-            ),
+            receipt_unit_id=ref.unit_id,
+            receipt_sha256=digest,
         )
-    ):
-        raise ValueError("existing transfer receipt catalog is not committed")
+        if not _active_receipt_authorized(control_dir=control_dir, ref=ref, receipt_sha256=digest):
+            raise ValueError("existing transfer receipt lacks operational authorization")
     return digest
 
 
@@ -942,6 +1065,8 @@ def _finalize_operational_pending(
         )
     for logical in pending["cleanup"]:
         _remove_control_object(control_dir, logical)
+    for logical in pending.get("cleanup_trees", ()):
+        _remove_control_tree(control_dir, logical)
     stage = control_dir / pending["stage"]
     if stage.exists():
         _cleanup_catalog_stage(stage)
@@ -1108,8 +1233,10 @@ def _publish_operational_batch(
     if after > policy.remote_bytes:
         raise ValueError("remote byte budget refuses operational publication")
     cleanup = [f"remote-reservations/objects/{record.key}.json" for record in reservations]
+    cleanup_trees = []
     for _entry, intent_path, _raw, receipt_cleanup in completed:
         cleanup.extend((intent_path, receipt_cleanup, f"active-receipts/{_entry.unit_id}.json"))
+        cleanup_trees.append(f"catalog-proofs/{_entry.unit_id}")
     authorization = {
         "schema_version": "phase4-r2-active-receipt-v1",
         "unit_id": receipt_unit_id,
@@ -1126,6 +1253,7 @@ def _publish_operational_batch(
         "stage": stage.relative_to(control_dir).as_posix(),
         "objects": descriptors,
         "cleanup": cleanup,
+        "cleanup_trees": cleanup_trees,
         "authorization": authorization,
         "committed": False,
     }
@@ -1222,9 +1350,11 @@ def archive_unit(
             )
         for logical, raw in metadata:
             source = _fresh_download(control_dir)
+            source_identity = None
             try:
                 with _pinned_directory(source.parent) as parent:
                     _create_at(parent, source.name, raw)
+                source_identity = _regular_identity(source)
                 objects.append(
                     _put_verified(
                         control_dir=control_dir,
@@ -1237,7 +1367,8 @@ def archive_unit(
                     )
                 )
             finally:
-                _remove_fresh(source)
+                if source_identity is not None:
+                    _remove_fresh(source, expected_identity=source_identity)
         stage, catalog_ref = _stage_catalog(
             control_dir=control_dir,
             ref=ref,
@@ -1245,6 +1376,7 @@ def archive_unit(
             transport=transport,
             policy=policy,
         )
+        catalog_proof = None
         try:
             staged = _catalog_stage_objects(stage)
             for logical, source, raw in staged:
@@ -1259,17 +1391,32 @@ def archive_unit(
                         policy=policy,
                     )
                 )
-            for logical, _source, raw in staged:
-                _create_control_object(control_dir, logical, raw)
+            _remove_control_tree(control_dir, "catalog")
+            catalog_proof = _capture_catalog_proof(
+                control_dir=control_dir,
+                ref=ref,
+                catalog_ref=catalog_ref,
+                transport=transport,
+                run_id=run_id,
+                policy=policy,
+            )
             _publish_head(control_dir, run_id, catalog_ref)
         finally:
             _cleanup_catalog_stage(stage)
+        assert catalog_proof is not None
+        catalog_proof_descriptors = _store_catalog_proof(
+            control_dir=control_dir,
+            ref=ref,
+            catalog_ref=catalog_ref,
+            proof=catalog_proof,
+        )
         receipt = {
             "schema_version": "phase4-r2-receipt-v1",
             "transport_id": transport_id,
             "unit_id": ref.unit_id,
             "run_id": run_id,
             "catalog": _catalog_ref_payload(catalog_ref),
+            "catalog_proof": catalog_proof_descriptors,
             "policy": policy.model_dump(mode="json"),
             "objects": objects,
         }
@@ -1307,6 +1454,27 @@ def _read_receipt(
     ):
         raise ValueError("transfer receipt differs from unit")
     return decoded, raw
+
+
+def _active_receipt_authorized(*, control_dir: Path, ref: UnitRef, receipt_sha256: str) -> bool:
+    authorization_raw = _read_control_optional(
+        control_dir,
+        f"active-receipts/{ref.unit_id}.json",
+        max_bytes=16_384,
+    )
+    if authorization_raw is None:
+        return False
+    if not authorization_raw.endswith(b"\n"):
+        raise ValueError("receipt operational authorization differs")
+    authorization = decode_json(authorization_raw[:-1], limit=16_384)
+    if (
+        authorization_raw != canonical_json_bytes(authorization) + b"\n"
+        or authorization.get("schema_version") != "phase4-r2-active-receipt-v1"
+        or authorization.get("unit_id") != ref.unit_id
+        or authorization.get("receipt_sha256") != receipt_sha256
+    ):
+        raise ValueError("receipt operational authorization differs")
+    return True
 
 
 def _inventory_snapshot(run_dir: Path, entries: tuple) -> tuple[dict, ...]:
@@ -1443,31 +1611,22 @@ def evict_unit(*, run_dir: Path, control_dir: Path, ref: UnitRef, receipt_sha256
         raise ValueError("invalid transfer receipt hash")
     with archive_operation_lock(control_dir), _unit_writer_lock(control_dir=control_dir, ref=ref):
         receipt, _ = _read_receipt(control_dir, ref, receipt_sha256, 16 * 1024**2)
-        authorization_raw = _read_control_optional(
-            control_dir,
-            f"active-receipts/{ref.unit_id}.json",
-            max_bytes=16_384,
-        )
-        if authorization_raw is None or not authorization_raw.endswith(b"\n"):
-            raise ValueError("receipt lacks operational authorization")
-        authorization = decode_json(authorization_raw[:-1], limit=16_384)
-        if (
-            authorization_raw != canonical_json_bytes(authorization) + b"\n"
-            or authorization.get("schema_version") != "phase4-r2-active-receipt-v1"
-            or authorization.get("unit_id") != ref.unit_id
-            or authorization.get("receipt_sha256") != receipt_sha256
+        if not _active_receipt_authorized(
+            control_dir=control_dir,
+            ref=ref,
+            receipt_sha256=receipt_sha256,
         ):
-            raise ValueError("receipt operational authorization differs")
-        catalog_ref = _catalog_ref_from_payload(receipt.get("catalog"))
+            raise ValueError("receipt lacks operational authorization")
         try:
             policy = ArchivePolicy.model_validate(receipt.get("policy"))
         except Exception as error:
             raise ValueError("receipt archive policy differs") from error
-        head = _load_head(control_dir, receipt.get("run_id"))
-        if head != catalog_ref or ref not in tuple(
-            iter_run_catalog(control_dir, catalog_ref, policy=policy)
-        ):
-            raise ValueError("receipt catalog generation is not committed")
+        _verify_receipt_catalog(
+            control_dir=control_dir,
+            ref=ref,
+            receipt=receipt,
+            policy=policy,
+        )
         intent_raw = _read_control_optional(control_dir, _intent_path(ref), max_bytes=16 * 1024**2)
         with _opened_unit(control_dir, ref) as (unit, manifest):
             entries = tuple(_iter_inventory_records_from_unit(unit, manifest))
@@ -1561,12 +1720,18 @@ def _bounded_process(
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     captured = {"stdout": bytearray(), "stderr": bytearray()}
     deadline = time.monotonic() + _AWS_TIMEOUT_SECONDS
+
+    def kill_and_reap() -> None:
+        if process.poll() is None:
+            process.kill()
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1.0)
+
     try:
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                process.kill()
-                process.wait()
+                kill_and_reap()
                 raise _ProcessTimeout("AWS operation exceeded finite timeout")
             events = selector.select(min(remaining, 1.0))
             if not events and process.poll() is not None:
@@ -1579,15 +1744,25 @@ def _bounded_process(
                 target = captured[key.data]
                 target.extend(block)
                 if len(target) > _AWS_OUTPUT_BYTES:
-                    process.kill()
-                    process.wait()
+                    kill_and_reap()
                     raise ValueError("AWS metadata output exceeds byte bound")
-        return process.wait(), bytes(captured["stdout"]), bytes(captured["stderr"])
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            kill_and_reap()
+            raise _ProcessTimeout("AWS operation exceeded finite timeout")
+        try:
+            return (
+                process.wait(timeout=remaining),
+                bytes(captured["stdout"]),
+                bytes(captured["stderr"]),
+            )
+        except subprocess.TimeoutExpired:
+            kill_and_reap()
+            raise _ProcessTimeout("AWS operation exceeded finite timeout") from None
     finally:
         selector.close()
         if process.poll() is None:
-            process.kill()
-            process.wait()
+            kill_and_reap()
 
 
 def _failure_kind(returncode: int, stderr: bytes) -> str:
@@ -1717,7 +1892,7 @@ class R2CliTransport:
                     "--range",
                     f"bytes=0-{max_bytes - 1}",
                     "--no-cli-pager",
-                    str(destination.absolute()),
+                    f"/dev/fd/{descriptor}",
                 ]
                 metadata = None
                 for attempt in range(_AWS_MAX_ATTEMPTS):

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,27 @@ def test_operational_pending_before_counter_update_recovers(sealed_unit, transpo
     monkeypatch.setattr(module, "_replace_at", original)
     receipt_sha256 = _archive(sealed_unit, transport)
     assert len(receipt_sha256) == 64
+
+
+def test_receipt_cut_before_operational_staging_resumes_on_retry(
+    sealed_unit, transport, monkeypatch
+):
+    from silent_cascade.archive import transport as module
+
+    original = module._publish_operational_batch
+
+    def interrupt_before_staging(**_kwargs):
+        raise OSError("injected post-receipt interruption")
+
+    monkeypatch.setattr(module, "_publish_operational_batch", interrupt_before_staging)
+    with pytest.raises(OSError, match="post-receipt interruption"):
+        _archive(sealed_unit, transport)
+    assert tuple(sealed_unit.control.glob("receipts/*.json"))
+    assert not (sealed_unit.control / "remote-reservations/operational-pending.json").exists()
+
+    monkeypatch.setattr(module, "_publish_operational_batch", original)
+    assert len(_archive(sealed_unit, transport)) == 64
+    assert (sealed_unit.control / f"active-receipts/{sealed_unit.ref.unit_id}.json").exists()
 
 
 def test_catalog_generation_can_extend_from_cold_authenticated_nodes(
@@ -245,6 +267,88 @@ def test_verified_receipt_catalog_and_eviction_order(sealed_unit, transport):
     assert json.loads(intents[0].read_bytes())["completed"] is True
 
 
+def test_later_catalog_generation_does_not_block_earlier_unit_eviction(
+    sealed_unit, transport, archive_identity
+):
+    from silent_cascade.archive.catalog import seal_unit
+    from silent_cascade.archive.transport import archive_unit, evict_unit
+
+    first_receipt = _archive(sealed_unit, transport)
+    second_path = sealed_unit.root / "later/evidence.json"
+    second_path.parent.mkdir()
+    second_path.write_bytes(b"later")
+    second = seal_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        logical_root="later",
+        paths=("later/evidence.json",),
+        kind="diagnostic",
+        identity=archive_identity,
+        policy=sealed_unit.policy,
+    )
+    archive_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        ref=second,
+        transport=transport,
+        policy=sealed_unit.policy,
+    )
+
+    evict_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        ref=sealed_unit.ref,
+        receipt_sha256=first_receipt,
+    )
+    assert all(not (sealed_unit.root / path).exists() for path in sealed_unit.paths)
+    assert second_path.read_bytes() == b"later"
+
+
+def test_catalog_history_is_cold_and_earlier_eviction_uses_bounded_proof(
+    sealed_unit, transport, archive_identity
+):
+    from silent_cascade.archive.catalog import seal_unit
+    from silent_cascade.archive.transport import archive_unit, evict_unit
+
+    first_receipt = _archive(sealed_unit, transport)
+    for index in range(1):
+        logical_root = f"later-{index}"
+        logical_path = f"{logical_root}/evidence.json"
+        path = sealed_unit.root / logical_path
+        path.parent.mkdir()
+        path.write_bytes(f"later-{index}".encode())
+        ref = seal_unit(
+            run_dir=sealed_unit.root,
+            control_dir=sealed_unit.control,
+            logical_root=logical_root,
+            paths=(logical_path,),
+            kind="diagnostic",
+            identity=archive_identity,
+            policy=sealed_unit.policy,
+        )
+        archive_unit(
+            run_dir=sealed_unit.root,
+            control_dir=sealed_unit.control,
+            ref=ref,
+            transport=transport,
+            policy=sealed_unit.policy,
+        )
+
+    assert not tuple((sealed_unit.control / "catalog").rglob("*.json"))
+    proof_files = tuple(
+        (sealed_unit.control / f"catalog-proofs/{sealed_unit.ref.unit_id}").rglob("*.json")
+    )
+    assert 1 <= len(proof_files) <= 32
+    downloads = transport.download_calls
+    evict_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        ref=sealed_unit.ref,
+        receipt_sha256=first_receipt,
+    )
+    assert transport.download_calls == downloads
+
+
 def test_stale_receipt_never_authorizes_eviction(sealed_unit, transport):
     from silent_cascade.archive.transport import evict_unit
 
@@ -259,6 +363,24 @@ def test_stale_receipt_never_authorizes_eviction(sealed_unit, transport):
             receipt_sha256=receipt_sha256,
         )
     assert changed.read_bytes() == b"other"
+
+
+def test_catalog_proof_corruption_never_authorizes_eviction(sealed_unit, transport):
+    from silent_cascade.archive.transport import evict_unit
+
+    receipt_sha256 = _archive(sealed_unit, transport)
+    proof = next(
+        (sealed_unit.control / f"catalog-proofs/{sealed_unit.ref.unit_id}").rglob("*.json")
+    )
+    proof.write_bytes(b"{}\n")
+    with pytest.raises(ValueError, match="catalog proof"):
+        evict_unit(
+            run_dir=sealed_unit.root,
+            control_dir=sealed_unit.control,
+            ref=sealed_unit.ref,
+            receipt_sha256=receipt_sha256,
+        )
+    assert sealed_unit.original_bytes()
 
 
 def test_missing_operational_authorization_blocks_eviction(sealed_unit, transport):
@@ -310,6 +432,7 @@ def test_next_archive_colds_completed_receipt_intent_and_reservations(
     assert not (sealed_unit.control / f"receipts/{sealed_unit.ref.unit_id}.json").exists()
     assert not (sealed_unit.control / f"evictions/{sealed_unit.ref.unit_id}.json").exists()
     assert not (sealed_unit.control / f"active-receipts/{sealed_unit.ref.unit_id}.json").exists()
+    assert not (sealed_unit.control / f"catalog-proofs/{sealed_unit.ref.unit_id}").exists()
     assert not tuple((sealed_unit.control / "remote-reservations/objects").glob("*.json"))
 
 
@@ -467,8 +590,8 @@ def test_r2_download_enforces_child_write_limit_when_range_is_ignored(task_scrat
     _write_fake_aws(
         script,
         "output = sys.argv[-1]\n"
-        "with open(output, 'wb', buffering=0) as handle:\n"
-        "    handle.write(b'x' * 4096)\n"
+        "descriptor = int(output.rsplit('/', 1)[1])\n"
+        "os.write(descriptor, b'x' * 4096)\n"
         "print('{\"ContentLength\":4096}')\n",
     )
     monkeypatch.setattr(module, "_AWS_COMMAND", (sys.executable, str(script)))
@@ -488,17 +611,103 @@ def test_r2_download_rejects_destination_inode_replacement(task_scratch, monkeyp
     _write_fake_aws(
         script,
         "output = sys.argv[-1]\n"
-        "os.unlink(output)\n"
-        "open(output, 'wb').write(b'abc')\n"
+        "os.unlink(os.environ['DESTINATION_PATH'])\n"
+        "open(os.environ['DESTINATION_PATH'], 'wb').write(b'replacement')\n"
+        "os.write(int(output.rsplit('/', 1)[1]), b'abc')\n"
         'print(\'{"ContentLength":3,"ContentRange":"bytes 0-2/3"}\')\n',
     )
     monkeypatch.setattr(module, "_AWS_COMMAND", (sys.executable, str(script)))
     destination = task_scratch / "replaced.download"
+    monkeypatch.setenv("DESTINATION_PATH", str(destination))
     client = module.R2CliTransport(
         profile="silent-cascade-r2", bucket="silent-cascade", prefix="runs/archive"
     )
     with pytest.raises(ValueError, match="ownership"):
         client.download("objects/" + "4" * 64 + ".bin", destination, max_bytes=8)
+
+
+def test_r2_download_replacement_symlink_cannot_modify_victim(task_scratch, monkeypatch):
+    from silent_cascade.archive import transport as module
+
+    victim = task_scratch / "victim"
+    victim.write_bytes(b"untouched")
+    script = task_scratch / "symlink_swap_aws.py"
+    _write_fake_aws(
+        script,
+        "output = sys.argv[-1]\n"
+        "os.unlink(os.environ['DESTINATION_PATH'])\n"
+        "os.symlink(os.environ['VICTIM_PATH'], os.environ['DESTINATION_PATH'])\n"
+        "open(output, 'wb').write(b'BAD')\n"
+        'print(\'{"ContentLength":3,"ContentRange":"bytes 0-2/3"}\')\n',
+    )
+    monkeypatch.setattr(module, "_AWS_COMMAND", (sys.executable, str(script)))
+    monkeypatch.setenv("VICTIM_PATH", str(victim))
+    destination = task_scratch / "symlink-replaced.download"
+    monkeypatch.setenv("DESTINATION_PATH", str(destination))
+    client = module.R2CliTransport(
+        profile="silent-cascade-r2", bucket="silent-cascade", prefix="runs/archive"
+    )
+    with pytest.raises((OSError, ValueError)):
+        client.download("objects/" + "5" * 64 + ".bin", destination, max_bytes=8)
+    assert victim.read_bytes() == b"untouched"
+
+
+def test_r2_download_native_dev_fd_open_stays_on_displaced_inode(task_scratch, monkeypatch):
+    from silent_cascade.archive import transport as module
+
+    victim = task_scratch / "native-victim"
+    victim.write_bytes(b"untouched")
+    marker = task_scratch / "dev-fd-opened"
+    script = task_scratch / "native_fd_aws.py"
+    _write_fake_aws(
+        script,
+        "output = sys.argv[-1]\n"
+        "os.unlink(os.environ['DESTINATION_PATH'])\n"
+        "os.symlink(os.environ['VICTIM_PATH'], os.environ['DESTINATION_PATH'])\n"
+        "open(output, 'wb').write(b'PINNED')\n"
+        "open(os.environ['OPENED_MARKER'], 'xb').close()\n"
+        'print(\'{"ContentLength":6,"ContentRange":"bytes 0-5/6"}\')\n',
+    )
+    monkeypatch.setattr(module, "_AWS_COMMAND", (sys.executable, str(script)))
+    monkeypatch.setenv("VICTIM_PATH", str(victim))
+    monkeypatch.setenv("OPENED_MARKER", str(marker))
+    destination = task_scratch / "native-fd.download"
+    monkeypatch.setenv("DESTINATION_PATH", str(destination))
+    client = module.R2CliTransport(
+        profile="silent-cascade-r2", bucket="silent-cascade", prefix="runs/archive"
+    )
+    with pytest.raises((OSError, ValueError)):
+        client.download("objects/" + "6" * 64 + ".bin", destination, max_bytes=8)
+    if not marker.exists():
+        pytest.skip("managed sandbox denies child /dev/fd reopen")
+    assert victim.read_bytes() == b"untouched"
+
+
+def test_fresh_cleanup_does_not_unlink_replacement_occupant(task_scratch):
+    from silent_cascade.archive import transport as module
+
+    path = task_scratch / "fresh"
+    path.write_bytes(b"owned")
+    identity = module._regular_identity(path)
+    path.unlink()
+    path.write_bytes(b"replacement")
+    module._remove_fresh(path, expected_identity=identity)
+    assert path.read_bytes() == b"replacement"
+
+
+def test_bounded_process_timeout_survives_early_pipe_close(task_scratch, monkeypatch):
+    from silent_cascade.archive import transport as module
+
+    script = task_scratch / "closed_pipes.py"
+    _write_fake_aws(
+        script,
+        "os.close(1)\nos.close(2)\nimport time\ntime.sleep(0.3)\n",
+    )
+    monkeypatch.setattr(module, "_AWS_TIMEOUT_SECONDS", 0.05)
+    started = time.monotonic()
+    with pytest.raises(module._ProcessTimeout, match="finite timeout"):
+        module._bounded_process([sys.executable, str(script)])
+    assert time.monotonic() - started < 0.2
 
 
 def test_r2_errors_redact_stderr_and_do_not_retry_credentials(task_scratch, monkeypatch):

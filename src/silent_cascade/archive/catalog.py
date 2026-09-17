@@ -1330,6 +1330,56 @@ def iter_run_catalog(
         raise ValueError("run catalog final count differs")
 
 
+def verify_run_catalog_unit(
+    control_dir: Path,
+    ref: CatalogRef,
+    unit: UnitRef,
+    *,
+    policy: ArchivePolicy,
+    object_reader: ObjectReader | None = None,
+    unit_reader: ObjectReader | None = None,
+) -> None:
+    """Verify one unit and its ownership paths without traversing the run catalog."""
+    policy = _canonical_policy(policy)
+    reader = object_reader or _control_reader(control_dir)
+    root = _load_root(ref, scope="run", reader=reader, policy=policy)
+    assert isinstance(root, RunCatalogRoot)
+    store = _CatalogStore(control_dir=control_dir, policy=policy, reader=reader)
+    manifest, read_shard = _external_unit(control_dir, unit, unit_reader)
+    expected = UnitCatalogEntry(
+        key=unit.unit_id,
+        unit_id=unit.unit_id,
+        kind=manifest.kind,
+        logical_root=manifest.logical_root,
+        expanded_bytes=manifest.expanded_bytes,
+        file_count=manifest.file_count,
+        manifest_path=unit.manifest_path,
+    )
+    if (
+        manifest.identity.run_id != root.run_id
+        or _lookup(store, root.units, unit.unit_id, index="units") != expected
+    ):
+        raise ValueError("unit is not authenticated by run catalog")
+    for entry in _iter_inventory_records(manifest, read_shard):
+        owner = OwnershipCatalogEntry(
+            record_type="file",
+            key=_ownership_key("file", entry.path),
+            path=entry.path,
+            unit_id=unit.unit_id,
+        )
+        if _lookup(store, root.ownership, owner.key, index="ownership") != owner:
+            raise ValueError("unit path ownership is not authenticated by run catalog")
+        for ancestor in _path_ancestors(entry.path):
+            directory = OwnershipCatalogEntry(
+                record_type="directory",
+                key=_ownership_key("directory", ancestor),
+                path=ancestor,
+                unit_id=None,
+            )
+            if _lookup(store, root.ownership, directory.key, index="ownership") != directory:
+                raise ValueError("unit directory ownership is not authenticated by run catalog")
+
+
 def publish_corpus_catalog(
     *,
     control_dir: Path,

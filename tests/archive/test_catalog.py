@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pytest
 from pydantic import ValidationError
@@ -627,6 +628,83 @@ def test_run_catalog_accepts_authenticated_cold_unit_inventory(
     assert tuple(iter_run_catalog(catalog_control, generation, policy=tiny_archive_policy)) == (
         unit,
     )
+
+
+def test_targeted_run_catalog_verification_reads_sublinear_cold_proof(
+    tmp_path, tiny_archive_policy, archive_identity
+):
+    from silent_cascade.archive.catalog import (
+        iter_run_catalog,
+        publish_run_catalog,
+        verify_run_catalog_unit,
+    )
+
+    control = tmp_path / "control"
+    objects = {}
+    units = []
+    generation = None
+
+    def cold_reader(path, limit):
+        payload = objects[path]
+        if len(payload) > limit:
+            raise ValueError("cold object exceeds request limit")
+        return payload
+
+    for index in range(12):
+        unit = _seal_catalog_unit(
+            tmp_path,
+            control,
+            tiny_archive_policy,
+            archive_identity,
+            f"unit-{index:02d}/artifact",
+            payload=f"payload-{index}".encode(),
+        )
+        units.append(unit)
+        generation = publish_run_catalog(
+            control_dir=control,
+            run_id="debug-fixture",
+            units=(unit,),
+            previous=generation,
+            policy=tiny_archive_policy,
+            object_reader=cold_reader if generation is not None else None,
+        )
+        objects.update(
+            {
+                path.relative_to(control).as_posix(): path.read_bytes()
+                for path in (control / "catalog").rglob("*.json")
+            }
+        )
+        shutil.rmtree(control / "catalog")
+
+    assert generation is not None
+    targeted_requests = []
+
+    def targeted_reader(path, limit):
+        targeted_requests.append(path)
+        return cold_reader(path, limit)
+
+    verify_run_catalog_unit(
+        control,
+        generation,
+        units[0],
+        policy=tiny_archive_policy,
+        object_reader=targeted_reader,
+    )
+    full_requests = []
+
+    def full_reader(path, limit):
+        full_requests.append(path)
+        return cold_reader(path, limit)
+
+    assert len(
+        tuple(
+            iter_run_catalog(
+                control, generation, policy=tiny_archive_policy, object_reader=full_reader
+            )
+        )
+    ) == len(units)
+    assert len(set(targeted_requests)) < len(set(full_requests))
+    assert not (control / "catalog").exists()
 
 
 def test_catalog_publication_rejects_control_directory_swap(
