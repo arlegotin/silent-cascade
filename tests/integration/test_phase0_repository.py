@@ -212,7 +212,7 @@ def _assert_phase1_frozen_baseline(root: Path, plan_index: str) -> None:
 def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     targets = set(re.findall(r"^([A-Za-z0-9][A-Za-z0-9_-]*):(?:\s|$)", makefile, re.MULTILINE))
-    assert targets == {"setup", "doctor", "lint", "test", "smoke", "verify"}
+    assert targets == {"setup", "doctor", "lint", "test", "smoke", "verify", "pilot", "pilot-smoke"}
 
     dry_run = subprocess.run(
         ["make", "-n", "verify"],

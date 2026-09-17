@@ -10,9 +10,11 @@ from silent_cascade.eval.artifacts import read_evaluation_artifact
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.report.pilot_artifacts import (
     evaluation_directories,
+    load_abandoned_evaluation,
     load_evaluation,
     load_training_result,
     read_json,
+    training_evaluation_status,
 )
 from silent_cascade.train.pilot_data import _check_path, _publish_pilot_bytes
 
@@ -93,6 +95,12 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
     result_path = run_dir / "training-result.json"
     if result_path.exists():
         training = load_training_result(run_dir, result_path)
+    required, abandoned = (
+        training_evaluation_status(run_dir, training) if training is not None else (set(), set())
+    )
+    if not required <= set(evaluations):
+        raise ValueError("missing committed evaluation corpus")
+    incomplete = []
     tables, plots, identities = [], {}, {}
     lines = [
         "# Autonomous timed pilot",
@@ -127,6 +135,25 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
             ]
         )
     for number, root in enumerate(evaluations):
+        if not (root / "DONE").exists() and training is not None and root not in required:
+            partial = load_abandoned_evaluation(
+                root, run_dir=run_dir, training=training, abandoned=abandoned
+            )
+            incomplete.append(partial)
+            lines.extend(
+                [
+                    f"## {partial['corpus']} — abandoned incomplete",
+                    "",
+                    f"Retained rows: {partial['retained_rows']} / "
+                    f"{partial['planned_episodes']}; retained errors: "
+                    f"{partial['retained_errors']}; unknown episodes: "
+                    f"{partial['unknown_episodes']}.",
+                    "Partial evidence is excluded from completed-corpus metrics; "
+                    "unknown episodes have no inferred outcome. All raw files remain retained.",
+                    "",
+                ]
+            )
+            continue
         identity, rows, metrics, hashes = load_evaluation(root)
         identities[str(root.relative_to(run_dir))] = identity.sha256
         variants, classes, events, misses, action_diagnostics = (
@@ -227,7 +254,9 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
         name = f"trajectories-{number}.svg"
         plots[name] = _figures(root, rows)
         lines.extend([f"![Retained trajectories and timing diagnostics]({name})", ""])
-    table_bytes = canonical_json_bytes({"evaluations": tables})
+    table_bytes = canonical_json_bytes(
+        {"evaluations": tables, "incomplete_evaluations": incomplete}
+    )
     report_bytes = ("\n".join(lines) + "\n").encode()
     outputs = {**plots, "tables.json": table_bytes, "report.md": report_bytes}
     for name, raw in outputs.items():

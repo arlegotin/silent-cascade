@@ -261,3 +261,120 @@ with workflow.pilot_ownership(run, run_identity='a' * 64):
 assert not Path('pilot-data').exists()
 """,
     )
+
+
+def test_recovered_attempt_result_must_match_durable_checkpoint(tmp_path):
+    from .test_pilot_source import DATA_SETUP, checkout
+
+    root, execute = checkout(tmp_path / "repo")
+    execute(
+        root,
+        DATA_SETUP
+        + """
+import json
+from silent_cascade.train.pilot_workflow import train_pilot
+args = dict(config_path=Path('configs/train/pilot_smoke.yaml'), manifest_dir=Path('pilot-data'),
+            run_dir=Path('runs/recovery'), device='cpu')
+first = train_pilot(**args)
+wrapper = Path('runs/recovery/training-result.json')
+original = wrapper.read_bytes()
+wrapper.unlink()  # trainer result durable, wrapper publication interrupted
+attempt = next(Path('runs/recovery').glob('attempt-*/result.json'))
+raw = attempt.read_bytes()
+payload = json.loads(raw)
+payload['status'] = payload['progress']['status'] = 'robustness_complete'
+payload['gate_eligible'] = True
+attempt.write_text(json.dumps(payload))
+try:
+    train_pilot(**args)
+except ValueError as error:
+    assert 'last durable checkpoint' in str(error), str(error)
+else:
+    raise AssertionError('checkpoint-inconsistent recovered result accepted')
+assert not wrapper.exists(), 'unverified result was republished'
+attempt.write_bytes(raw)
+assert train_pilot(**args) == first
+assert wrapper.read_bytes() == original
+""",
+    )
+
+
+INTERRUPTED_VALIDATION_SETUP = """
+import json
+from silent_cascade.train.pilot_workflow import run_pilot, train_pilot
+from silent_cascade.hashing import sha256_bytes
+import silent_cascade.eval.runner as runner
+original = runner._run_one
+calls = 0
+interruption_call = globals().get('validation_interruption_call', 2)
+def interrupted(*args, **kwargs):
+    global calls
+    calls += 1
+    if calls == interruption_call:
+        raise RuntimeError('injected interruption during validation')
+    if globals().get('fail_first_row', False):
+        from silent_cascade.models.event_flow import EventFlowModel
+        from silent_cascade.models.errors import NeuralError
+        compose = EventFlowModel.compose
+        def failed_compose(self, context):
+            raise NeuralError('injected retained partial dynamics error')
+        EventFlowModel.compose = failed_compose
+        try:
+            return original(*args, **kwargs)
+        finally:
+            EventFlowModel.compose = compose
+    return original(*args, **kwargs)
+runner._run_one = interrupted
+args = dict(config_path=Path('configs/train/pilot_smoke.yaml'), manifest_dir=Path('pilot-data'),
+            run_dir=Path('runs/interrupted-validation'), device='cpu')
+try:
+    run_pilot(**args)
+except RuntimeError as error:
+    assert 'injected interruption during validation' in str(error)
+else:
+    raise AssertionError('interruption not observed')
+runner._run_one = original
+run = args['run_dir']
+partial = next(p for p in run.glob('attempt-*/validation-*/autonomous')
+               if not (p / 'DONE').exists())
+assert (partial / 'identity.json').is_file() and not (partial / 'DONE').exists()
+assert json.loads((run / 'checkpoint-index.json').read_bytes())['latest']['global_step'] == (
+    2 if interruption_call == 18 else 0)
+assert len((partial / '.rows.pending.jsonl').read_bytes().splitlines()) == 1
+retained = {str(p.relative_to(run)): sha256_bytes(p.read_bytes())
+            for p in partial.rglob('*') if p.is_file()}
+assert any(name.endswith('.trajectory.json.gz') for name in retained)
+Path('partial-evidence.json').write_text(json.dumps(retained))
+result = train_pilot(**args)
+assert result.progress.global_step == 4
+assert len(list(run.glob('restart-*.json'))) == 1
+"""
+
+
+def test_interrupted_validation_finishes_workflow_without_discarding_evidence(tmp_path):
+    from .test_pilot_source import DATA_SETUP, checkout
+
+    root, execute = checkout(tmp_path / "repo")
+    execute(
+        root,
+        DATA_SETUP
+        + INTERRUPTED_VALIDATION_SETUP
+        + """
+result = run_pilot(**args)
+assert result.progress.global_step == 4 and not result.gate_eligible
+table = json.loads((run / 'report/tables.json').read_bytes())
+assert len(table['evaluations']) == 3
+partial = table['incomplete_evaluations']
+assert len(partial) == 1
+assert partial[0]['status'] == 'abandoned_incomplete'
+assert partial[0]['planned_episodes'] == 16
+assert partial[0]['retained_rows'] == 1
+assert partial[0]['unknown_episodes'] == 15
+assert 'timed_success_count' not in partial[0]
+for name, digest in retained.items():
+    assert sha256_bytes((run / name).read_bytes()) == digest
+before = {str(p): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+assert run_pilot(**args) == result
+assert before == {str(p): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+""",
+    )

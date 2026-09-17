@@ -11,6 +11,7 @@ from silent_cascade.eval.artifacts import (
 )
 from silent_cascade.eval.metrics import PilotMetrics, TimedEpisodeRow, summarize_timed_rows
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.logging.crash_bundle import CrashBundleManifest
 
 
 def child(root: Path, name: str) -> Path:
@@ -22,6 +23,10 @@ def child(root: Path, name: str) -> Path:
 
 
 def read_json(path: Path):
+    return _decode_json(read_evaluation_artifact(path))
+
+
+def _decode_json(raw):
     def unique(pairs):
         value = {}
         for key, item in pairs:
@@ -31,7 +36,7 @@ def read_json(path: Path):
         return value
 
     return json.loads(
-        read_evaluation_artifact(path),
+        raw,
         object_pairs_hook=unique,
         parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
     )
@@ -51,6 +56,42 @@ def verify_hashes(root: Path, hashes: dict, *, retain=()) -> dict[str, bytes]:
         if name in retain:
             verified[name] = raw
     return verified
+
+
+def _verify_row_identity(row, binding, identity):
+    if (
+        row.public_id,
+        row.episode_sha256,
+        row.identity_sha256,
+        row.manifest_sha256,
+        row.checkpoint_sha256,
+        row.model_state_sha256,
+        row.producing_source_revision,
+        row.execution_source_revision,
+        row.config_sha256,
+        row.purpose,
+        row.gate_eligible,
+    ) != (
+        binding.public_id,
+        binding.episode_sha256,
+        identity.sha256,
+        identity.manifest_sha256,
+        identity.checkpoint_sha256,
+        identity.model_identity.model_state_sha256,
+        identity.model_identity.source_revision,
+        identity.execution_source_revision,
+        sha256_bytes(identity.evaluation_config_canonical_json.encode()),
+        identity.purpose,
+        identity.gate_eligible,
+    ):
+        raise ValueError("row artifact identity mismatch")
+    if (
+        sha256_bytes(canonical_json_bytes(row.model_dump(mode="json")["truth"]))
+        != binding.scoring_truth_sha256
+        or row.truth.recipe.variant.value != binding.variant
+        or row.truth.recipe.requested_path_length != binding.path_length
+    ):
+        raise ValueError("row artifact scoring truth mismatch")
 
 
 def load_evaluation(root: Path):
@@ -90,39 +131,7 @@ def load_evaluation(root: Path):
     for row, binding, line in zip(
         rows, identity.episodes, verified["rows.jsonl"].splitlines(keepends=True), strict=True
     ):
-        if (
-            row.public_id,
-            row.episode_sha256,
-            row.identity_sha256,
-            row.manifest_sha256,
-            row.checkpoint_sha256,
-            row.model_state_sha256,
-            row.producing_source_revision,
-            row.execution_source_revision,
-            row.config_sha256,
-            row.purpose,
-            row.gate_eligible,
-        ) != (
-            binding.public_id,
-            binding.episode_sha256,
-            identity.sha256,
-            identity.manifest_sha256,
-            identity.checkpoint_sha256,
-            identity.model_identity.model_state_sha256,
-            identity.model_identity.source_revision,
-            identity.execution_source_revision,
-            sha256_bytes(identity.evaluation_config_canonical_json.encode()),
-            identity.purpose,
-            identity.gate_eligible,
-        ):
-            raise ValueError("row artifact identity mismatch")
-        if (
-            sha256_bytes(canonical_json_bytes(row.model_dump(mode="json")["truth"]))
-            != binding.scoring_truth_sha256
-            or row.truth.recipe.variant.value != binding.variant
-            or row.truth.recipe.requested_path_length != binding.path_length
-        ):
-            raise ValueError("row artifact scoring truth mismatch")
+        _verify_row_identity(row, binding, identity)
         for reference in (row.neural_trace_ref, row.full_trace_ref):
             if reference is not None and reference not in done["artifact_hashes"]:
                 raise ValueError("unbound runtime artifact")
@@ -158,7 +167,7 @@ def load_evaluation(root: Path):
 
 
 def evaluation_directories(run_dir: Path) -> tuple[Path, ...]:
-    """Also notice partial evaluations, whose missing DONE must fail reporting."""
+    """Notice partial or damaged corpora too; never silently omit missing evidence."""
     if run_dir.is_symlink():
         raise ValueError("symbolic pilot artifact path")
     roots = set()
@@ -172,6 +181,173 @@ def evaluation_directories(run_dir: Path) -> tuple[Path, ...]:
     if not roots:
         raise ValueError("missing pilot evaluation artifacts")
     return tuple(sorted(roots))
+
+
+def training_evaluation_status(run_dir: Path, training):
+    """Authenticate committed roots and abandoned attempts from retained journals."""
+    hashes = training["artifact_hashes"]
+
+    def bound(name):
+        if name not in hashes:
+            raise ValueError("unbound recovery artifact")
+        return _decode_json(verify_hashes(run_dir, {name: hashes[name]}, retain={name})[name])
+
+    def journal(name):
+        match = re.fullmatch(r"journal-([0-9a-f]{64})\.json", name)
+        if match is None or hashes.get(name) != match[1]:
+            raise ValueError("recovery journal hash mismatch")
+        record = bound(name)
+        if (
+            record.get("kind") not in {"update", "validation"}
+            or not re.fullmatch(r"attempt-[0-9a-f]{32}", record.get("attempt", ""))
+            or type(record.get("global_step")) is not int
+            or record["global_step"] <= 0
+            or (
+                record.get("prior") is not None
+                and not re.fullmatch(r"[0-9a-f]{64}", record["prior"])
+            )
+        ):
+            raise ValueError("invalid recovery journal")
+        return record
+
+    cursor = training["progress"]["journal_sha256"]
+    committed, required, steps = set(), set(), []
+    while cursor is not None:
+        name = f"journal-{cursor}.json"
+        if name in committed:
+            raise ValueError("cyclic recovery journal")
+        committed.add(name)
+        record = journal(name)
+        if record["kind"] == "update":
+            steps.append(record["global_step"])
+        else:
+            artifacts = record.get("artifacts")
+            if not isinstance(artifacts, dict) or not artifacts:
+                raise ValueError("missing committed validation artifacts")
+            for path, digest in artifacts.items():
+                parts = child(run_dir, path).relative_to(run_dir).parts
+                if parts[0] != record["attempt"] or hashes.get(path) != digest:
+                    raise ValueError("committed validation artifact mismatch")
+                if len(parts) >= 4 and parts[2] == "autonomous":
+                    required.add(run_dir.joinpath(*parts[:3]))
+        cursor = record["prior"]
+    if steps != list(range(training["progress"]["global_step"], 0, -1)):
+        raise ValueError("missing or duplicate committed recovery updates")
+    abandoned = set()
+    for path in sorted(run_dir.glob("restart-*.json")):
+        restart = bound(path.name)
+        if (
+            set(restart) != {"last_durable_step", "uncommitted_journal_tail"}
+            or type(restart["last_durable_step"]) is not int
+            or not 0 <= restart["last_durable_step"] <= training["progress"]["global_step"]
+            or not isinstance(restart["uncommitted_journal_tail"], list)
+        ):
+            raise ValueError("invalid restart artifact")
+        tail = restart["uncommitted_journal_tail"]
+        if any(not isinstance(name, str) for name in tail) or len(set(tail)) != len(tail):
+            raise ValueError("invalid restart journal inventory")
+        for name in tail:
+            if name in committed:
+                raise ValueError("restart labels committed journal abandoned")
+            record = journal(name)
+            prior = record["prior"]
+            if prior is not None and f"journal-{prior}.json" not in committed | set(tail):
+                raise ValueError("missing abandoned journal predecessor")
+            abandoned.add(record["attempt"])
+    return required, abandoned
+
+
+def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned):
+    """Describe retained partial evidence, never infer outcomes for unwritten rows."""
+    relative = root.relative_to(run_dir)
+    if (
+        len(relative.parts) != 3
+        or relative.parts[0] not in abandoned
+        or not relative.parts[1].startswith("validation-")
+        or relative.parts[2] != "autonomous"
+    ):
+        raise ValueError("incomplete evaluation is not authenticated abandoned evidence")
+    hashes = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            name = str(path.relative_to(run_dir))
+            if name not in training["artifact_hashes"]:
+                raise ValueError("unbound abandoned evaluation artifact")
+            hashes[str(path.relative_to(root))] = training["artifact_hashes"][name]
+    raw = verify_hashes(root, hashes, retain={"identity.json", "rows.jsonl", ".rows.pending.jsonl"})
+    if "identity.json" not in raw:
+        raise ValueError("missing abandoned evaluation identity")
+    identity = EvaluationIdentity.model_validate_json(raw["identity.json"])
+    if (
+        "rows.jsonl" in raw
+        and ".rows.pending.jsonl" in raw
+        and raw["rows.jsonl"] != raw[".rows.pending.jsonl"]
+    ):
+        raise ValueError("conflicting abandoned row publications")
+    rows_name = "rows.jsonl" if "rows.jsonl" in raw else ".rows.pending.jsonl"
+    lines = raw.get(rows_name, b"").splitlines(keepends=True)
+    trailing = 0
+    if lines and not lines[-1].endswith(b"\n"):
+        trailing = len(lines.pop())
+    if len(lines) > len(identity.episodes):
+        raise ValueError("extra abandoned evaluation rows")
+    errors, completed = set(), set()
+    for line, binding in zip(lines, identity.episodes, strict=False):
+        row = TimedEpisodeRow.model_validate_json(line)
+        _verify_row_identity(row, binding, identity)
+        for reference in (row.neural_trace_ref, row.full_trace_ref):
+            if reference is not None and reference not in hashes:
+                raise ValueError("unbound abandoned runtime artifact")
+        _verify_evidence(
+            root,
+            row,
+            retain=(
+                row.public_id in identity.retained_public_ids()
+                or row.public_id in identity.report_example_public_ids
+                or identity.purpose == "delay_swap"
+            ),
+        )
+        (errors if row.error is not None else completed).add(row.public_id)
+    crashes = {}
+    episode_ids = {binding.public_id for binding in identity.episodes}
+    for name in hashes:
+        if (
+            not name.startswith("crashes/")
+            or not name.endswith(".json")
+            or name == "crashes/index.json"
+        ):
+            continue
+        manifest = CrashBundleManifest.model_validate_json(read_evaluation_artifact(root / name))
+        public_id = manifest.context.episode_public_id
+        if (
+            public_id not in episode_ids
+            or public_id in crashes
+            or public_id in completed
+            or manifest.context.source_revision != identity.execution_source_revision
+        ):
+            raise ValueError("inconsistent abandoned crash evidence")
+        reference = manifest.context.checkpoint_ref
+        if reference is not None:
+            checkpoint = child(Path("crashes"), reference).as_posix()
+            if checkpoint not in hashes:
+                raise ValueError("missing abandoned crash evidence checkpoint")
+        crashes[public_id] = {"path": name, "sha256": hashes[name]}
+    if not errors <= crashes.keys():
+        raise ValueError("missing abandoned crash evidence")
+    if "crashes/index.json" in hashes and read_json(root / "crashes/index.json") != crashes:
+        raise ValueError("abandoned crash evidence index mismatch")
+    return dict(
+        corpus=str(relative),
+        status="abandoned_incomplete",
+        identity_sha256=identity.sha256,
+        planned_episodes=len(identity.episodes),
+        retained_rows=len(lines),
+        retained_errors=len(errors),
+        unknown_episodes=len(identity.episodes) - len(lines),
+        unparsed_trailing_bytes=trailing,
+        raw_rows=str(relative / rows_name) if rows_name in raw else None,
+        artifact_hashes=hashes,
+    )
 
 
 def load_training_result(run_dir: Path, path: Path):

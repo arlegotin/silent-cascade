@@ -270,6 +270,7 @@ def _train(config, manifests, run_dir, device, source_commit, source, resume):
         if candidates:
             results = [(p, load_training_result(run_dir, p)) for p in candidates]
             payload = max(results, key=lambda item: item[1]["progress"]["global_step"])[1]
+            _durable(run_dir, config, source, device, result=payload)
             result = _restore_result(payload)
         else:
             result = run_pilot_training(
