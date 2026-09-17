@@ -10,7 +10,7 @@ import os
 import time
 from collections import Counter
 from copy import deepcopy
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Literal
 
@@ -448,7 +448,7 @@ def _rng_observation(snapshot):
     }
 
 
-def _observed_rng_hash(value):
+def _decode_observed_rng(value):
     from silent_cascade.eventflow.checkpoint_rng import RngMetadata, decode_rng
 
     if set(value) != {"metadata", "tensors"}:
@@ -458,11 +458,18 @@ def _observed_rng_hash(value):
         if any(type(v) is not int or not 0 <= v <= 255 for v in values):
             raise ValueError("raw RNG bytes differ")
         tensors[name] = torch.tensor(values, dtype=torch.uint8)
-    return _rng_hash(
-        decode_rng(
-            RngMetadata.model_validate_json(canonical_json_bytes(value["metadata"])), tensors
-        )
+    return decode_rng(
+        RngMetadata.model_validate_json(canonical_json_bytes(value["metadata"])), tensors
     )
+
+
+def _observed_rng_hash(value):
+    return _rng_hash(_decode_observed_rng(value))
+
+
+def _continuation_rng(snapshot, device):
+    # CPU restoration deliberately leaves opaque native state outside its claim.
+    return replace(snapshot, torch_mps_state=None) if device == "cpu" else snapshot
 
 
 def clone_training_state(model, optimizer, device):
@@ -511,12 +518,14 @@ def measure_resume(config, *, model, optimizer, progress, source, device, output
     from silent_cascade.train.pilot_data import next_pilot_batch
 
     model, optimizer = clone_training_state(model, optimizer, device)
+    observations = {"initial": _rng_observation(_continuation_rng(snapshot_global_rng(), device))}
     updates = 2
     if not optimizer.state:
         batch = next_pilot_batch(
             config.config, stage=progress.stage, batch_counter=progress.batch_counter
         ).to(device)
-        pilot_train_one_step(model, optimizer, batch, config.config)
+        bootstrap = capture_update(model, optimizer, batch, config.config)
+        _save_capture(output_dir / "bootstrap", bootstrap)
         progress = progress.model_copy(
             update={
                 "global_step": progress.global_step + 1,
@@ -528,15 +537,17 @@ def measure_resume(config, *, model, optimizer, progress, source, device, output
     digest = save_pilot_checkpoint(
         path, model=model, optimizer=optimizer, progress=progress, config=config, source=source
     )
-    observations = {"before": _rng_observation(snapshot_global_rng())}
+    observations["before"] = _rng_observation(_continuation_rng(snapshot_global_rng(), device))
     observations["draws"] = _random_draws(device)
     batch = next_pilot_batch(
         config.config, stage=progress.stage, batch_counter=progress.batch_counter
     ).to(device)
     expected = capture_update(model, optimizer, batch, config.config)
-    observations["after"] = _rng_observation(snapshot_global_rng())
+    observations["after"] = _rng_observation(_continuation_rng(snapshot_global_rng(), device))
     restored, _, _ = load_numeric_checkpoint(path, config=config, source=source, device=device)
-    observations["restored_before"] = _rng_observation(snapshot_global_rng())
+    observations["restored_before"] = _rng_observation(
+        _continuation_rng(snapshot_global_rng(), device)
+    )
     observations["restored_draws"] = _random_draws(device)
     next_batch = next_pilot_batch(
         config.config, stage=restored.progress.stage, batch_counter=restored.progress.batch_counter
@@ -544,7 +555,9 @@ def measure_resume(config, *, model, optimizer, progress, source, device, output
     actual = capture_update(restored.model, restored.optimizer, next_batch, config.config)
     _save_capture(output_dir / "expected", expected)
     _save_capture(output_dir / "restored", actual)
-    observations["restored_after"] = _rng_observation(snapshot_global_rng())
+    observations["restored_after"] = _rng_observation(
+        _continuation_rng(snapshot_global_rng(), device)
+    )
     result = PilotResumeReport(
         device=device,
         checkpoint_sha256=digest,
@@ -969,11 +982,18 @@ def verify_pilot_numerics(
             model = EventFlowModel(config.config.neural)
             optimizer = make_optimizer(model, config.config.pilot)
             progress, original_sha = PilotProgress(), None
+            parity_rng = snapshot_global_rng()
         else:
             session, original_sha, _ = load_numeric_checkpoint(
                 checkpoint, config=config, source=source, device="cpu"
             )
             model, optimizer, progress = session.model, session.optimizer, session.progress
+            parity_rng = session.rng
+            if parity_rng.torch_mps_state is None:
+                # Available hardware cannot supply native continuation evidence
+                # that is absent from the input archive.
+                devices, missing = ("cpu",), ("mps",)
+            restore_rng_snapshot(parity_rng, restore_mps="mps" in devices)
             from silent_cascade.train.pilot_data import _publish_pilot_bytes, _read_pilot_bytes
 
             _publish_pilot_bytes(
@@ -996,7 +1016,6 @@ def verify_pilot_numerics(
         )
         cpu, parity, batches, recipes = {}, {}, {}, {}
         updates = forwards = 0
-        parity_rng = snapshot_global_rng()
         for stage in ("one_hop", "primary"):
             batch = diagnostic_batch(config.config, stage=stage, counter=0)
             batches[stage] = batch.example_hashes
@@ -1040,7 +1059,7 @@ def verify_pilot_numerics(
                 output_dir=output_dir / f"resume-{device}",
             )
             updates += resumes[device].diagnostic_updates
-            forwards += 2
+            forwards += resumes[device].diagnostic_updates
             _evaluate_subset(
                 config,
                 model=model,
@@ -1193,7 +1212,97 @@ def _read_capture(path, *, model):
     return result
 
 
-def _read_resume(root, *, expected_report, model, config, source):
+def _optimizer_groups(model, optimizer):
+    names = {id(p): n for n, p in model.named_parameters()}
+    return [
+        {
+            **{k: v for k, v in group.items() if k != "params"},
+            "params": [names[id(p)] for p in group["params"]],
+        }
+        for group in optimizer.param_groups
+    ]
+
+
+def _optimizer_tensors(model, optimizer):
+    return _tensors({n: optimizer.state.get(p, {}) for n, p in model.named_parameters()})
+
+
+def _exact_tensors(left, right):
+    return left.keys() == right.keys() and all(torch.equal(left[n], right[n]) for n in left)
+
+
+def _bind_resume_start(root, *, session, initial, model, config, device, observations):
+    """Artifact-only starting-state and bootstrap arithmetic consistency.
+
+    Saved gradients are execution evidence, not independently regenerated here.
+    Only configured AdamW/clipping arithmetic runs on a disposable CPU clone;
+    no forward, training batch, event engine or persisted model update is allowed.
+    """
+    from silent_cascade.train.pilot_state import PilotProgress
+    from silent_cascade.train.trainer import make_optimizer
+
+    if initial is None:
+        starting_model = model
+        starting_optimizer = make_optimizer(starting_model, config.config.pilot)
+        progress = PilotProgress()
+        rng = _decode_observed_rng(observations["initial"])
+    else:
+        starting_model, starting_optimizer = initial.model, initial.optimizer
+        progress, rng = initial.progress, initial.rng
+    if device == "mps" and rng.torch_mps_state is None:
+        raise ValueError("raw starting input lacks native RNG evidence")
+    initial_hash = _rng_hash(_continuation_rng(rng, device))
+    if initial_hash != _observed_rng_hash(
+        observations["initial"]
+    ) or initial_hash != _observed_rng_hash(observations["before"]):
+        # The existing deterministic objective/bootstrap consumes no global RNG.
+        raise ValueError("raw starting input/bootstrap RNG differs")
+    expected_model, expected_optimizer = clone_training_state(
+        starting_model, starting_optimizer, "cpu"
+    )
+    if not starting_optimizer.state:
+        bootstrap = _read_capture(root / "bootstrap", model=model)
+        for name, parameter in expected_model.named_parameters():
+            parameter.grad = bootstrap.tensors["gradients"]["/" + name].clone()
+        torch.nn.utils.clip_grad_norm_(expected_model.parameters(), 1.0, error_if_nonfinite=True)
+        expected_optimizer.step()
+        expected_model.train()
+        rtol, atol = (0.0, 0.0) if device == "cpu" else (1e-4, 1e-5)
+        for group, actual in (
+            ("parameters", _tensors(expected_model.state_dict())),
+            ("optimizer", _optimizer_tensors(expected_model, expected_optimizer)),
+        ):
+            if not _compare(actual, bootstrap.tensors[group], rtol=rtol, atol=atol).passed:
+                raise ValueError("raw bootstrap arithmetic differs from input state")
+        if not _exact_tensors(
+            _tensors(session.model.state_dict()), bootstrap.tensors["parameters"]
+        ) or not _exact_tensors(
+            _optimizer_tensors(session.model, session.optimizer), bootstrap.tensors["optimizer"]
+        ):
+            raise ValueError("raw bootstrap output differs from resume archive")
+        progress = progress.model_copy(
+            update={
+                "global_step": progress.global_step + 1,
+                "batch_counter": progress.batch_counter + 1,
+            }
+        )
+    elif not _exact_tensors(
+        _tensors(expected_model.state_dict()), _tensors(session.model.state_dict())
+    ) or not _exact_tensors(
+        _optimizer_tensors(expected_model, expected_optimizer),
+        _optimizer_tensors(session.model, session.optimizer),
+    ):
+        raise ValueError("raw starting input model/optimizer differs")
+    if (
+        session.progress != progress
+        or session.model.training != expected_model.training
+        or canonical_json_bytes({"groups": _optimizer_groups(session.model, session.optimizer)})
+        != canonical_json_bytes({"groups": _optimizer_groups(expected_model, expected_optimizer)})
+    ):
+        raise ValueError("raw starting input progress/mode/optimizer groups differ")
+
+
+def _read_resume(root, *, expected_report, model, config, source, initial=None):
     from silent_cascade.report.pilot_artifacts import read_json
     from silent_cascade.train.pilot_data import _read_pilot_bytes, next_pilot_batch
 
@@ -1205,6 +1314,7 @@ def _read_resume(root, *, expected_report, model, config, source):
         raise ValueError("raw resume source/config differs")
     observations = read_json(root / "observations.json")
     if set(observations) != {
+        "initial",
         "before",
         "after",
         "restored_before",
@@ -1213,8 +1323,24 @@ def _read_resume(root, *, expected_report, model, config, source):
         "restored_draws",
     }:
         raise ValueError("raw resume observation inventory differs")
-    if _rng_hash(session.rng) != _observed_rng_hash(observations["before"]):
+    for name in ("initial", "before", "after", "restored_before", "restored_after"):
+        if (_decode_observed_rng(observations[name]).torch_mps_state is not None) != (
+            expected_report.device == "mps"
+        ):
+            raise ValueError("raw resume RNG scope differs from device")
+    if _rng_hash(_continuation_rng(session.rng, expected_report.device)) != _observed_rng_hash(
+        observations["before"]
+    ):
         raise ValueError("raw resume RNG differs from archive")
+    _bind_resume_start(
+        root,
+        session=session,
+        initial=initial,
+        model=model,
+        config=config,
+        device=expected_report.device,
+        observations=observations,
+    )
     batch = next_pilot_batch(
         config.config, stage=archive.progress.stage, batch_counter=archive.progress.batch_counter
     )
@@ -1306,6 +1432,21 @@ def read_numeric_report(output_dir, *, config, source_commit):
         )
     if report.original_checkpoint_sha256 is not None:
         required.add("input-training.safetensors")
+    initial = None
+    resume_updates = 3
+    if report.original_checkpoint_sha256 is not None:
+        initial, digest, archived = _read_checked_archive(
+            output_dir / "input-training.safetensors", config=config, source=report.source
+        )
+        if digest != report.original_checkpoint_sha256:
+            raise ValueError("raw input archive identity differs")
+        resume_updates = 2 if archived.optimizer_names else 3
+    if resume_updates == 3:
+        required.update(
+            f"resume-{device}/bootstrap.{ext}"
+            for device in devices
+            for ext in ("json", "safetensors")
+        )
     if not required <= report.artifact_hashes.keys():
         raise ValueError("numeric artifact closure omits required capture")
     weights = load_neural_weights(
@@ -1344,20 +1485,14 @@ def read_numeric_report(output_dir, *, config, source_commit):
     _check_artifact_closure(
         output_dir, report.artifact_hashes, required, report_name="numeric-report.json"
     )
-    resume_updates = 3
-    if report.original_checkpoint_sha256 is not None:
-        _, digest, archived = _read_checked_archive(
-            output_dir / "input-training.safetensors", config=config, source=report.source
-        )
-        if (
-            digest != report.original_checkpoint_sha256
-            or archived.weights.identity != weights.identity
-        ):
-            raise ValueError("raw input archive identity differs")
-        resume_updates = 2 if archived.optimizer_names else 3
+    if (
+        report.original_checkpoint_sha256 is not None
+        and archived.weights.identity != weights.identity
+    ):
+        raise ValueError("raw input archive identity differs")
     if (
         report.diagnostic_updates != len(devices) * (2 + resume_updates)
-        or report.extra_diagnostic_forwards != 4 * len(devices)
+        or report.extra_diagnostic_forwards != (2 + resume_updates) * len(devices)
         or report.cpu_resume.diagnostic_updates != resume_updates
         or (
             report.mps_resume is not None and report.mps_resume.diagnostic_updates != resume_updates
@@ -1412,6 +1547,7 @@ def read_numeric_report(output_dir, *, config, source_commit):
             model=weights.model,
             config=config,
             source=report.source,
+            initial=initial,
         )
     if (
         "mps" in devices

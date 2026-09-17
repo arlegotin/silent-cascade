@@ -252,6 +252,12 @@ def test_public_numeric_report_is_diagnostic_and_authenticates_artifacts(
     assert result.initial_model_sha256 == result.runtime_model_sha256
     assert result.cpu_inventory.keys() == {"one_hop", "primary"}
     assert result.runtime_episodes == 16
+
+    def forbidden_execution(*args, **kwargs):
+        raise AssertionError("artifact reader must not execute a forward or training update")
+
+    monkeypatch.setattr(verification, "training_objective", forbidden_execution)
+    monkeypatch.setattr(verification, "pilot_train_one_step", forbidden_execution)
     restored = verification.read_numeric_report(
         tmp_path / "numeric", config=config, source_commit=source.source_commit
     )
@@ -274,6 +280,7 @@ def test_public_numeric_report_is_diagnostic_and_authenticates_artifacts(
         "raw_rng",
         "count",
         "dtype",
+        "bootstrap_gradient",
     ):
         payload = json.loads(
             originals[next(p for p in originals if str(p) == "numeric-report.json")]
@@ -295,13 +302,19 @@ def test_public_numeric_report_is_diagnostic_and_authenticates_artifacts(
             payload["artifact_hashes"][name] = sha256_bytes((root / name).read_bytes())
         elif mutation == "count":
             payload["diagnostic_updates"] += 1
-        elif mutation == "dtype":
+        elif mutation in {"dtype", "bootstrap_gradient"}:
             from safetensors.torch import load, save
 
-            name = "primary-cpu.safetensors"
+            name = (
+                "primary-cpu.safetensors"
+                if mutation == "dtype"
+                else "resume-cpu/bootstrap.safetensors"
+            )
             values = load((root / name).read_bytes())
             key = next(k for k in values if k.startswith("gradients/"))
-            values[key] = values[key].to(torch.int64)
+            values[key] = (
+                values[key].to(torch.int64) if mutation == "dtype" else values[key] + 0.125
+            )
             (root / name).write_bytes(save(values))
             payload["artifact_hashes"][name] = sha256_bytes((root / name).read_bytes())
         else:
@@ -450,4 +463,177 @@ def test_native_raw_runtime_summary_cannot_be_rehashed(
     (root / "numeric-report.json").write_bytes(raw)
     (root / "DONE").write_bytes(canonical_json_bytes({"report_sha256": sha256_bytes(raw)}))
     with pytest.raises(ValueError, match="raw runtime comparison"):
+        verification.read_numeric_report(root, config=config, source_commit=source.source_commit)
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="native MPS missing; not parity evidence"
+)
+@pytest.mark.parametrize("archived_native_rng", [True, False])
+def test_checkpoint_native_continuation_uses_only_archived_rng(
+    verification, resume_case, tmp_path, monkeypatch, archived_native_rng
+):
+    import json
+
+    from silent_cascade.eventflow.neural_weights import decode_archive, encode_archive
+    from silent_cascade.hashing import sha256_bytes
+    from silent_cascade.models.event_flow import EventFlowModel
+    from silent_cascade.rng import seed_all
+    from silent_cascade.train.pilot_checkpoints import PilotCheckpoint, save_pilot_checkpoint
+    from silent_cascade.train.trainer import make_optimizer
+
+    config, _, _, progress, source = resume_case
+    monkeypatch.setattr(verification, "authenticate_numeric_source", lambda *args: source)
+    seed_all(11)
+    model = EventFlowModel(config.config.neural).to("mps")
+    optimizer = make_optimizer(model, config.config.pilot)
+    torch.rand(17, device="mps")
+    checkpoint = tmp_path / "input.safetensors"
+    digest = save_pilot_checkpoint(
+        checkpoint,
+        model=model,
+        optimizer=optimizer,
+        progress=progress,
+        config=config,
+        source=source,
+    )
+    metadata, tensors = decode_archive(
+        checkpoint.read_bytes(), digest, PilotCheckpoint, "pilot_training"
+    )
+    expected_native_draws = torch.rand(5, device="mps").cpu().tolist()
+    if not archived_native_rng:
+        tensors.pop("rng.mps")
+        metadata = metadata.model_copy(
+            update={"rng": metadata.rng.model_copy(update={"has_mps": False})}
+        )
+        checkpoint.write_bytes(encode_archive(tensors, metadata, "pilot_training"))
+    original = checkpoint.read_bytes()
+    root = tmp_path / "numeric"
+    result = verification.verify_pilot_numerics(config, checkpoint=checkpoint, output_dir=root)
+    assert checkpoint.read_bytes() == original
+    if not archived_native_rng:
+        assert result.missing_devices == ("mps",)
+        assert result.mps_resume is None
+        assert not result.device_checks_passed
+        assert not (root / "resume-mps").exists()
+    else:
+        assert result.missing_devices == ()
+        assert result.mps_resume.passed
+        raw = (root / "resume-mps/resume.safetensors").read_bytes()
+        _, resumed_tensors = decode_archive(
+            raw, sha256_bytes(raw), PilotCheckpoint, "pilot_training"
+        )
+        assert torch.equal(resumed_tensors["rng.mps"], tensors["rng.mps"])
+        observations = json.loads((root / "resume-mps/observations.json").read_bytes())
+        assert observations["draws"]["native_mps"] == expected_native_draws
+    assert (
+        verification.read_numeric_report(root, config=config, source_commit=source.source_commit)
+        == result
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    ["model", "optimizer", "progress", "counter", "rng", "bootstrap_model", "bootstrap_rng"],
+)
+def test_valid_foreign_resume_subtree_cannot_replace_input_continuation(
+    verification, resume_case, tmp_path, monkeypatch, changed
+):
+    import json
+    import shutil
+
+    from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.rng import seed_all, snapshot_global_rng
+    from silent_cascade.train.pilot_checkpoints import save_pilot_checkpoint
+    from silent_cascade.train.pilot_data import next_pilot_batch
+    from silent_cascade.train.pilot_trainer import pilot_train_one_step
+
+    config, model, optimizer, progress, source = resume_case
+    monkeypatch.setattr(verification, "authenticate_numeric_source", lambda *args: source)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    if not changed.startswith("bootstrap_"):
+        pilot_train_one_step(
+            model,
+            optimizer,
+            next_pilot_batch(config.config, stage="one_hop", batch_counter=0),
+            config.config,
+        )
+        progress = progress.model_copy(update={"global_step": 1, "batch_counter": 1})
+    initial_rng = snapshot_global_rng()
+    checkpoint = tmp_path / "input.safetensors"
+    save_pilot_checkpoint(
+        checkpoint,
+        model=model,
+        optimizer=optimizer,
+        progress=progress,
+        config=config,
+        source=source,
+    )
+    root = tmp_path / "numeric"
+    original = verification.verify_pilot_numerics(config, checkpoint=checkpoint, output_dir=root)
+    assert (
+        verification.read_numeric_report(root, config=config, source_commit=source.source_commit)
+        == original
+    )
+    donor_model, donor_optimizer = verification.clone_training_state(model, optimizer, "cpu")
+    donor_progress = progress
+    restore_rng_snapshot(initial_rng)
+    if changed in {"model", "bootstrap_model"}:
+        with torch.no_grad():
+            next(donor_model.parameters()).add_(0.01)
+    elif changed == "optimizer":
+        next(iter(donor_optimizer.state.values()))["exp_avg"].add_(0.125)
+    elif changed == "progress":
+        donor_progress = progress.model_copy(update={"stage": "two_hop", "stage_start_step": 1})
+    elif changed == "counter":
+        donor_progress = progress.model_copy(update={"global_step": 2, "batch_counter": 2})
+        for state in donor_optimizer.state.values():
+            state["step"].add_(1)
+    else:
+        seed_all(23)
+    donor_checkpoint = tmp_path / "donor.safetensors"
+    save_pilot_checkpoint(
+        donor_checkpoint,
+        model=donor_model,
+        optimizer=donor_optimizer,
+        progress=donor_progress,
+        config=config,
+        source=source,
+    )
+    donor, _, _ = verification.load_numeric_checkpoint(
+        donor_checkpoint, config=config, source=source, device="cpu"
+    )
+    donor_root = tmp_path / "donor-resume"
+    foreign = verification.measure_resume(
+        config,
+        model=donor.model,
+        optimizer=donor.optimizer,
+        progress=donor.progress,
+        source=source,
+        device="cpu",
+        output_dir=donor_root,
+    )
+    assert foreign.passed
+    if changed in {"optimizer", "progress", "counter", "rng", "bootstrap_rng"}:
+        assert all(
+            torch.equal(a, b)
+            for a, b in zip(donor.model.parameters(), model.parameters(), strict=True)
+        )
+    verification.load_numeric_checkpoint(
+        donor_root / "resume.safetensors", config=config, source=source, device="cpu"
+    )
+    shutil.rmtree(root / "resume-cpu")
+    shutil.copytree(donor_root, root / "resume-cpu")
+    payload = json.loads((root / "numeric-report.json").read_bytes())
+    payload["cpu_resume"] = foreign.model_dump(mode="json")
+    payload["artifact_hashes"] = {
+        name: digest
+        for name, digest in verification._artifact_hashes(root).items()
+        if name not in {"numeric-report.json", "DONE"}
+    }
+    raw = canonical_json_bytes(payload)
+    (root / "numeric-report.json").write_bytes(raw)
+    (root / "DONE").write_bytes(canonical_json_bytes({"report_sha256": sha256_bytes(raw)}))
+    with pytest.raises(ValueError, match=r"raw.*(starting|bootstrap|input)"):
         verification.read_numeric_report(root, config=config, source_commit=source.source_commit)

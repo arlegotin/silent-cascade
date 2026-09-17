@@ -302,6 +302,19 @@ and throughput summaries from retained raw evidence; merely rehashing a changed
 summary does not validate it. Original full archives, resume RNG observations and
 final diagnostic weights remain separate from the untouched inference export.
 
+Checkpoint-backed native continuation restores the validated archive's MPS RNG;
+an archive without native RNG supplies missing native evidence even when MPS
+hardware is available. CPU continuation binds Python, NumPy and Torch CPU RNG
+exactly; opaque native bytes retained in the input are outside that CPU claim.
+Native continuation additionally binds the archived MPS state and observed draws.
+Readers bind starting model, optimizer tensors/groups, mode, complete progress
+and scoped RNG to the original archive. An empty optimizer triggers a separately
+retained real bootstrap update. Its reader checks configured AdamW/clipping
+arithmetic on disposable tensors and the legal progress/RNG transition, without
+running a forward, training batch or event engine. This establishes arithmetic
+consistency of retained execution evidence, not independent regeneration of its
+saved gradients. The extra bootstrap diagnostic forward is counted explicitly.
+
 New retained trajectories declare their actual CPU/MPS origin in schema v2.
 Portable CPU reading permits the existing forward tolerance only when recomputing
 positive-duration terminal flow from an MPS origin. Original float32 values,
