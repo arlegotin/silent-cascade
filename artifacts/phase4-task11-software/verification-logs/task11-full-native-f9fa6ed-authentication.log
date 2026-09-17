@@ -1,0 +1,24 @@
+{
+  "artifact_discovery_passed": true,
+  "before_after_intent_committed_working_equal": true,
+  "file_sha256": {
+    "intent.json": "155c142651f6d11820ce55d7f9dbaa9c7193b6af327065c9cb58973560b55a13",
+    "process-result.json": "da90d1f20a6eb5be9a862b679aa34307f25a5762edc91179cee3ee3f7e655bd9",
+    "receipt.json": "df3771b1b6596245669a9f03d57a360faa361e98c9bbf04b9bb7780d05418b12",
+    "stderr.log": "a6e9c2f727eb7376459afbf0732b352ae708858675ff2a2772847b41b2b48ec9",
+    "stdout.log": "48e6df7307e27aa09f83d422c371c3980cf4906ee7b92a439bfa09e1e78d6026"
+  },
+  "fixture_outcome": "debug_non_acceptance",
+  "foundation_model_calls": 0,
+  "make_verify_returncode": 0,
+  "native_fixture": "/private/tmp/task11-full-native-f9fa6ed.S4zgMF/task11-fixture-only0/repo/runs/checks",
+  "native_omission_guard_would_skip": false,
+  "native_runtime_rows": 16,
+  "native_stages": [
+    "one_hop",
+    "primary"
+  ],
+  "source_unchanged": true,
+  "tracked_input_count": 292,
+  "verification_commit": "f9fa6ed955797971f75c53a1a0370fb9b3e52cae"
+}

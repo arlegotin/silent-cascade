@@ -511,3 +511,39 @@ not a relabeled full suite on the later commit. Subsequent documentation does no
 replace the measured source identity. Selected-checkpoint checks, the production
 headroom gate and final Phase 4 acceptance remain unestablished. No throughput or
 debug report satisfies a training, accuracy or final-weight gate.
+
+## Task 11 recorded local software verification (2026-09-17)
+
+After the scoped evidence/recovery and canonical-filename reviews, the unchanged
+source `f9fa6ed955797971f75c53a1a0370fb9b3e52cae` passed the actual local gate:
+
+```sh
+UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py
+```
+
+The recorder ran `make verify` once, with real native MPS available and fallback
+disabled. Lint passed and all 272 Python files were already formatted. The three
+isolated pytest processes passed 3,169 main tests (7,452.20 seconds), 93 service
+tests (17.20 seconds), and 216 leakage tests (247.93 seconds): **3,478 passed,
+zero skips and zero reported warnings**. Doctor passed CPU, MPS availability,
+fallback, RNG, numeric-smoke and writable-path checks; both the source distribution
+and wheel built successfully. Timings reflect a shared host, not an idle benchmark.
+
+The create-only [receipt](../artifacts/phase4-local-verification/f9fa6ed955797971f75c53a1a0370fb9b3e52cae/receipt.json),
+intent, raw stdout/stderr and process result retain the exact execution evidence.
+Receipt SHA-256 is
+`df3771b1b6596245669a9f03d57a360faa361e98c9bbf04b9bb7780d05418b12`.
+All 292 tracked execution/test/build/config/approved-plan/spec inputs matched
+before and after execution and the committed source; artifact-only discovery
+authenticated the receipt and bound log hashes. This later documentation/evidence
+record does not relabel the producing source or require a duplicate test run.
+
+The real tiny Task 11 fixture retained both one-hop/primary native tensor
+inventories and 16 MPS runtime trajectories. The explicit omitted-MPS-tensor
+regression ran, rather than skipping. Its gate remained `debug_non_acceptance`;
+the additional fresh-destination recovery fixture was intentionally CPU-only.
+These are software/evidence-integration checks, not selected-weight production
+acceptance, convergence or throughput evidence. No production fit, new full
+profile, production audit or Task 12 execution was started. **Phase 4 remains
+incomplete and production remains storage-blocked** under the unchanged Task 10
+headroom result above; its historical native parameter-parity failure is retained.

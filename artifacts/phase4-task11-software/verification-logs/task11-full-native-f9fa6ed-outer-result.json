@@ -1,0 +1,13 @@
+{
+  "schema_version": "task11-outer-process-observation-v1",
+  "command": "UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py > /private/tmp/task11-full-native-f9fa6ed-outer.log 2>&1",
+  "cwd": "/Volumes/git/legotin/silent-cascade",
+  "verification_commit": "f9fa6ed955797971f75c53a1a0370fb9b3e52cae",
+  "owner_session": 56184,
+  "observed_exit_code": 0,
+  "observation_source": "Consumed unified-exec write_stdin final result, chunk 3e4c4e; this outer observation is not a replacement for the recorder-generated receipt.",
+  "outer_log": "artifacts/phase4-task11-software/verification-logs/task11-full-native-f9fa6ed-outer.log",
+  "outer_log_sha256": "0679ba1193a171434060dd0790f225cafdafde82df5bf397bafd8bf12619f614",
+  "receipt": "artifacts/phase4-local-verification/f9fa6ed955797971f75c53a1a0370fb9b3e52cae/receipt.json",
+  "receipt_sha256": "df3771b1b6596245669a9f03d57a360faa361e98c9bbf04b9bb7780d05418b12"
+}
