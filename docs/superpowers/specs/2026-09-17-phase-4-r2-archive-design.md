@@ -236,6 +236,17 @@ production accounting; changing a prefix does not reset usage. Catalog-only
 evidence recovery cannot authorize new remote writes until reservation history
 is authenticated. Pending local units do not themselves imply remote usage.
 
+Keep reservation and receipt/eviction-intent history in a bounded authenticated
+operational index with closed typed records. Only its roots and bounded pending
+transactions stay resident; verified historical pages are cold-readable. No
+unbounded per-object/per-unit local metadata or general database is introduced.
+Before publishing an operational metadata batch, durably reserve a finite
+source-derived bound for every page, root and commit, including the batch's own
+overhead. This local pending reservation does not trigger recursive reservation
+uploads. Retain ambiguous charges and settle only provably unused bytes after
+fully verified publication. Missing/corrupt pending history fails closed, and
+catalog-only recovery cannot reset remote usage.
+
 Lifecycle:
 
 1. The offline owner seals a closed inventory under its lock.

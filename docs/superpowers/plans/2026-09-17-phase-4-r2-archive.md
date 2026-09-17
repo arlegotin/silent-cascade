@@ -114,7 +114,7 @@ numerical execution owner at a time.
 | Task | New files | Main existing integration points |
 | --- | --- | --- |
 | 1 | `src/silent_cascade/archive/{__init__,types,catalog,bundles}.py`; `tests/archive/{conftest,test_catalog,test_bundles}.py` | existing safe I/O/hash/compact-index utilities, reused without weakening |
-| 2 | `archive/transport.py`; `tests/archive/test_transport.py` | existing local AWS CLI profile only |
+| 2 | `archive/{transport,operational}.py`; `tests/archive/{test_transport,test_operational}.py` | Task1 typed catalog nodes; existing local AWS CLI profile only |
 | 3 | `archive/{session,supervisor}.py`; `tests/archive/{test_session,test_supervisor}.py` | `train/pilot_offline.py` denial hooks |
 | 4 | `archive/producer.py`; `tests/pilot/test_pilot_archive_producer.py` | row publication, crash ownership descriptor, streaming finalizer, trainer/journals, provenance |
 | 5 | `archive/readers.py`; `tests/pilot/test_pilot_archive_readers.py` | episode scanner, report/evidence/index/journal/recovery readers |
@@ -294,7 +294,9 @@ receipt eviction, even when a newer root no longer references it.
 
 ## Task 2: R2 transfer, readback receipts and safe eviction
 
-**Files:** `archive/transport.py`, `tests/archive/test_transport.py`.
+**Files:** `archive/{transport,operational}.py`,
+`tests/archive/{test_transport,test_operational}.py`. Narrowly extend
+`archive/{types,catalog}.py` and adjacent tests for the closed operational index.
 Consumes Task 1 units and safe no-follow file operations.
 
 **Interfaces produced:**
@@ -337,6 +339,21 @@ attest a newly empty directory transport. Task7 supplies measured production
 initialization evidence and carries qualification usage into the production
 budget. A changed prefix or lost local ledger does not reset usage; catalog-only
 recovery is read-only until reservation history is authenticated.
+
+Use a bounded authenticated operational index for unique-object reservations
+and receipt/eviction-intent locators, not one permanently resident file per
+historical object or unit. Extend the catalog's closed typed record union; do not
+introduce a generic registry, plugin system or database. Only roots and bounded
+pending state remain resident; historical pages become cold only after verified
+readback. Preserve Task1 catalog behavior and its adjacent regressions.
+
+Avoid recursive self-accounting: durably reserve a finite, source-derived bound
+for the complete operational-page/root/commit publication batch before any of
+its network writes. Include the batch's own metadata overhead, retain its charge
+on ambiguous outcomes, and settle only provably unused bytes after fully verified
+publication. Do not recursively upload reservations to reserve themselves.
+Missing/corrupt pending history fails closed. Test publication cut points and
+large lazy histories; report the exact transaction and recovery interfaces.
 
 - [ ] **Step 1 — RED:** add `test_readback_corruption_never_authorizes_eviction`,
   `test_existing_different_object_is_not_overwritten`, and recovery cut-point tests.
