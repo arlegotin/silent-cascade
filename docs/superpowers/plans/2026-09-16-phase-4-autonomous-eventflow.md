@@ -1561,6 +1561,9 @@ expectations. No concurrent training job should exist when the pilot starts.
 - Modify: `src/silent_cascade/train/pilot_trainer.py` and
   `src/silent_cascade/report/pilot_artifacts.py` for that codec, preserving the
   public materialized dictionary interfaces and legacy-flat reading.
+- Modify: `src/silent_cascade/train/pilot_verification.py` and
+  `tests/pilot/test_pilot_numerics.py` to authenticate the already-saved numerical
+  operation observations used by the final gate, not merely their file hashes.
 - Create: `tests/pilot/test_pilot_artifact_index.py`.
 - Modify: `tests/pilot/test_pilot_report.py` only where existing negative cases
   decode the serialized training result; retain their original mutations and
@@ -1604,6 +1607,12 @@ expectations. No concurrent training job should exist when the pilot starts.
   driver for selected-weight evaluation, repeat, delay pairs, runtime
   checkpoint/replay, final numerics, offline check and evidence collection.
   Consume actual Task 5/10 APIs; do not duplicate the trainer or event engine.
+- `recover_pilot_checks(*, artifact_path: Path, raw_run_dir: Path,
+  destination: Path, retained_run_dir: Path | None = None) -> Phase4GateArtifact`
+  in `pilot_checks.py`: explicit recovery into a previously absent destination,
+  restoring authenticated training inputs and rerunning the shared final driver.
+  The original artifact determines source/config/selected weights; never refit,
+  reselect, overwrite the original run, or recover implicitly during verification.
 - `check_phase4_pilot.py`: source CLI for the shared package driver, also called
   by `pilot_workflow.py`. Never import source-only scripts from the installed
   package or duplicate its final-check loop. Do not rerun training. Discover
@@ -1707,6 +1716,63 @@ through the real reader before applying their original mutations; a deliberately
 mutated legacy envelope remains a valid historical-reader rejection test. Update
 workflow recovery tests to use `load_training_result` before `_restore_result`.
 Every tiny producer run must exercise v2, not only an oversized synthetic case.
+
+Close the four independently reviewed acceptance/recovery boundaries before the
+first full native verification of Task 11:
+
+1. Every retained continuation comparison must match. A later successful record
+   cannot hide an earlier mismatch merely by filling the same coverage set. Keep
+   the failed record, but raise a validation error or record an unmet gate. Test
+   an actual valid continuation plus a mismatched record whose obligations are
+   already covered; full coverage must not make the mismatch acceptable.
+2. `read_numeric_report` must consume the saved closed
+   `{update, extra_diagnostic_forward}` records as well as tensors. Parse the
+   existing `StepResult`/`NeuralComputeSnapshot` observations; validate objective,
+   config, parameter identity, finite nonnegative typed counters, multiply-add
+   identities and the distinct update/extra-forward backward scopes. Reject
+   nonzero or contradictory foundation-call observations. Reconcile numeric and
+   resume totals from all actual captures, including an optional bootstrap,
+   instead of returning absent operations or relying only on workload arithmetic.
+   Keep the public reader interface and actual Task10 artifacts; do not rewrite
+   historical bytes or rerun that historical workload. Extend the existing real
+   CPU diagnostic fixture with coordinated operation-JSON/report/hash mutations
+   and artifact-only execution tripwires. No forward/update is allowed in readers.
+3. Missing raw coverage is per evidence family, not a global switch. Authenticate
+   available selected/latest archives and portable weights independently of old
+   training sidecars. Check the durable journal closure when its own inputs are
+   present. Check each available continuation checkpoint/replay; fully validate
+   numeric, offline and evaluation families when their own inputs are complete.
+   In a partial numerical family, validate available capture JSON/tensor pairs
+   and archives where their dependencies permit, and explicitly identify remaining
+   unavailable cross-record checks. Return `unavailable_semantic_checks` alongside
+   missing raw paths; absence must never suppress a contradiction in available
+   evidence. Test an unrelated missing training sidecar together with coordinated
+   contradictory available numeric or replay evidence, without neural execution.
+4. Replace the misleading original-output reuse instruction with executable
+   recovery instructions through an explicit mode of `check_phase4_pilot.py`.
+   Require an absent fresh destination. Restore the exact training-result/index
+   and all indexed training inputs from the original run or a same-layout retained
+   mirror, verifying every copied hash and archive/weight descriptor. Missing
+   training/archive bytes must fail with exact restore-required paths, not trigger
+   a fit. Derive workflow/ownership identity from authenticated source/config/data
+   and archive device. Publish a recovery intent binding original gate SHA,
+   source/config/weights and input hashes; then use the shared owned final driver
+   to regenerate final evaluations, continuation/replay, numerics and offline
+   evidence into the fresh destination. Do not modify any original adverse output.
+   Document the original-source checkout requirement and distinguish restoring
+   training inputs from re-executing final evidence. Published commands use clearly
+   named required operator-supplied retained/fresh paths, validated as CLI or shell
+   parameters, not unexplained literal placeholder words. Reject conflicting
+   normal/recovery CLI modes. A real tiny CPU recovery test removes one training
+   sidecar and one final sidecar while retaining a complete mirror, follows the
+   documented fresh-destination procedure, verifies regenerated identity, and
+   checks every surviving original byte remains unchanged. Missing archive and
+   wrong retained-hash cases must fail before numerical execution. This adds no
+   general storage framework, production refit or separate native workload.
+
+These corrections enforce the existing exact-continuation, observed-compute,
+available-evidence and regeneration requirements. They change no learning rule,
+numerical tolerance, accuracy threshold, retention policy or scientific claim.
 
 - [ ] **Step 1: Write adversarial collector/verifier tests.**
 
