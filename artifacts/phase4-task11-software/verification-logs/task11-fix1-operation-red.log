@@ -1,0 +1,136 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_____ test_public_numeric_report_is_diagnostic_and_authenticates_artifacts _____
+
+verification = <module 'silent_cascade.train.pilot_verification' from '/Volumes/git/legotin/silent-cascade/src/silent_cascade/train/pilot_verification.py'>
+resume_case = (ResolvedConfig(config=Phase4Config(schema_version=1, experiment_version='phase4-pilot-v1', runtime=RuntimeConfig(devi...fffffffffff', config_sha256='f9b1fa70f4bbb075fef516b491125ff975cdb36301639741a44ad1f92956069b', data_introductions={}))
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1117/test_public_numeric_report_is_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11528ba70>
+
+    def test_public_numeric_report_is_diagnostic_and_authenticates_artifacts(
+        verification, resume_case, tmp_path, monkeypatch
+    ):
+        config, _, _, _, source = resume_case
+        monkeypatch.setattr(
+            verification, "authenticate_numeric_source", lambda config, checkpoint: source
+        )
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+        result = verification.verify_pilot_numerics(
+            config, checkpoint=None, output_dir=tmp_path / "numeric"
+        )
+        assert result.evidence_kind == "fresh_numerical_diagnostic"
+        assert result.missing_devices == ("mps",)
+        assert result.cpu_resume.passed
+        assert not result.device_checks_passed
+        assert not result.selection_verified
+        assert result.initial_model_sha256 == result.runtime_model_sha256
+        assert result.cpu_inventory.keys() == {"one_hop", "primary"}
+        assert result.runtime_episodes == 16
+    
+        def forbidden_execution(*args, **kwargs):
+            raise AssertionError("artifact reader must not execute a forward or training update")
+    
+        monkeypatch.setattr(verification, "training_objective", forbidden_execution)
+        monkeypatch.setattr(verification, "pilot_train_one_step", forbidden_execution)
+        restored = verification.read_numeric_report(
+            tmp_path / "numeric", config=config, source_commit=source.source_commit
+        )
+        assert restored == result
+        with pytest.raises(ValueError, match="source"):
+            verification.read_numeric_report(
+                tmp_path / "numeric", config=config, source_commit="f" * 40
+            )
+        import json
+    
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    
+        root = tmp_path / "numeric"
+        originals = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        for mutation in (
+            "operation_update_fm",
+            "operation_extra_fm",
+            "operation_timed_fm",
+            "operation_content_fm",
+            "operation_macs",
+            "operation_extra_backward",
+            "operation_parameters",
+            "operation_objective",
+            "operation_schema",
+            "omitted_capture",
+            "changed_summary",
+            "extra_file",
+            "resume_summary",
+            "raw_rng",
+            "count",
+            "dtype",
+            "bootstrap_gradient",
+        ):
+            payload = json.loads(
+                originals[next(p for p in originals if str(p) == "numeric-report.json")]
+            )
+            if mutation.startswith("operation_"):
+                name = "primary-cpu.json"
+                value = json.loads((root / name).read_bytes())
+                if mutation.endswith("_fm"):
+                    scope = mutation.removeprefix("operation_").removesuffix("_fm")
+                    compute = (value["extra_diagnostic_forward"] if scope == "extra"
+                               else value["update"]["compute" if scope == "update"
+                                                    else scope + "_compute"])
+                    compute["foundation_model_calls"] = 1
+                elif mutation == "operation_macs":
+                    value["update"]["compute"]["estimated_macs"] += 1
+                elif mutation == "operation_extra_backward":
+                    value["extra_diagnostic_forward"]["backward_macs"] = 1
+                elif mutation == "operation_parameters":
+                    value["update"]["compute"]["parameters"] += 1
+                elif mutation == "operation_objective":
+                    value["update"]["objective_version"] = "foreign-objective"
+                else:
+                    value["extra_unobserved_operation"] = True
+                (root / name).write_bytes(canonical_json_bytes(value))
+                payload["artifact_hashes"][name] = sha256_bytes((root / name).read_bytes())
+            elif mutation == "omitted_capture":
+                name = "primary-cpu.safetensors"
+                (root / name).unlink()
+                payload["artifact_hashes"].pop(name)
+            elif mutation == "changed_summary":
+                payload["cpu_inventory"]["primary"]["gradients"]["max_absolute_error"] = 0.125
+            elif mutation == "resume_summary":
+                payload["cpu_resume"]["rng_after_sha256"] = "1" * 64
+                payload["cpu_resume"]["restored_rng_after_sha256"] = "1" * 64
+            elif mutation == "raw_rng":
+                name = "resume-cpu/observations.json"
+                value = json.loads((root / name).read_bytes())
+                value["draws"]["python"] = 0.123
+                (root / name).write_bytes(canonical_json_bytes(value))
+                payload["artifact_hashes"][name] = sha256_bytes((root / name).read_bytes())
+            elif mutation == "count":
+                payload["diagnostic_updates"] += 1
+            elif mutation in {"dtype", "bootstrap_gradient"}:
+                from safetensors.torch import load, save
+    
+                name = (
+                    "primary-cpu.safetensors"
+                    if mutation == "dtype"
+                    else "resume-cpu/bootstrap.safetensors"
+                )
+                values = load((root / name).read_bytes())
+                key = next(k for k in values if k.startswith("gradients/"))
+                values[key] = (
+                    values[key].to(torch.int64) if mutation == "dtype" else values[key] + 0.125
+                )
+                (root / name).write_bytes(save(values))
+                payload["artifact_hashes"][name] = sha256_bytes((root / name).read_bytes())
+            else:
+                (root / "unrelated.json").write_bytes(b"{}")
+                payload["artifact_hashes"]["unrelated.json"] = sha256_bytes(b"{}")
+            raw = canonical_json_bytes(payload)
+            (root / "numeric-report.json").write_bytes(raw)
+            (root / "DONE").write_bytes(canonical_json_bytes({"report_sha256": sha256_bytes(raw)}))
+>           with pytest.raises(ValueError, match=r"artifact|raw|summary|closure"):
+E           Failed: DID NOT RAISE <class 'ValueError'>
+
+tests/pilot/test_pilot_numerics.py:356: Failed
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_numerics.py::test_public_numeric_report_is_diagnostic_and_authenticates_artifacts
+1 failed, 1 passed, 43 deselected in 13.72s

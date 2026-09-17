@@ -82,7 +82,7 @@ def test_numeric_flag_without_report_is_not_evidence():
         verify_numeric_evidence({"passed": True}, config=None, source=None, checkpoint=None)
 
 
-@pytest.mark.parametrize("damage", ["trace", "event_count", "mismatches"])
+@pytest.mark.parametrize("damage", ["trace", "event_count", "mismatches", "failed_duplicate"])
 def test_portable_replay_comparison_binds_actual_trace(neural_archive_case, damage):
     from copy import deepcopy
     from types import SimpleNamespace
@@ -153,6 +153,15 @@ def test_portable_replay_comparison_binds_actual_trace(neural_archive_case, dama
         "mode:observing",
         "variant:positive",
     )
+    if damage == "failed_duplicate":
+        failed = deepcopy(record)
+        failed["restored"]["trace_sha256"] = "d" * 64
+        # Avoid sharing the original/restored fixture dictionary in this case.
+        failed["original"] = deepcopy(record["original"])
+        failed["matched"] = False
+        with pytest.raises(ValueError, match="continuation"):
+            verify_continuation_records([record, failed], **arguments)
+        return
     for value in record["replay_comparisons"]:
         if damage == "trace":
             value["trace"] = CausalTraceArtifact.from_trace(

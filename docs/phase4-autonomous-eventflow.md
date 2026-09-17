@@ -273,6 +273,34 @@ performs artifact-only verification. Without raw attachments it explicitly lists
 missing coverage and proves recorded-evidence integrity, not a fresh neural
 rerun. Collection, verification and reporting do not launch model workloads.
 
+Recovery is a separate, explicit execution mode. In a checkout with the original
+gate's authenticated executable/config/plan/spec bytes, set `PHASE4_RECOVERY_DEST`
+to an absent fresh run path and `PHASE4_RETAINED_RUN` to a same-layout retained
+input mirror, then execute the gate's `raw_regeneration_command`. For direct CLI
+execution, also set `PHASE4_ORIGINAL_GATE` and `PHASE4_ORIGINAL_RUN` to the actual
+gate and original raw run paths:
+
+```sh
+UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/check_phase4_pilot.py \
+  --recover-from "${PHASE4_ORIGINAL_GATE:?set the original gate path}" \
+  --run-dir "${PHASE4_ORIGINAL_RUN:?set the original raw run path}" \
+  --destination "${PHASE4_RECOVERY_DEST:?set an absent fresh destination}" \
+  --retained-run-dir "${PHASE4_RETAINED_RUN:?set retained training input mirror}"
+```
+
+The CLI validates these paths; it never treats an existing output as a recovery
+destination. The retained-mirror flag may be omitted when every training input
+still exists in the original run. Every original training-result/index entry and
+selected/latest archive/weight input must be restored byte-for-byte and hash
+verified; missing inputs are reported by exact path and never trigger refitting.
+Only final evaluations, continuation/replay and numerical/offline diagnostics are
+rerun into the fresh destination through the shared driver. Original adverse data
+remain untouched, and a recovery intent binds source/config/weights and input
+inventories. Recovery does not imply a passing gate. Portable verification checks
+each available raw evidence family independently and lists both missing paths and
+`unavailable_semantic_checks`; unrelated missing files never excuse contradictions
+in present archives, replay, numerical operations or evaluation rows.
+
 New training results uniformly use `phase4-training-result-v2`, preserving the
 seven non-inventory fields and replacing the flattened artifact map with a
 `phase4-artifact-index-v1` descriptor. Its canonical JSONL path/hash stream is

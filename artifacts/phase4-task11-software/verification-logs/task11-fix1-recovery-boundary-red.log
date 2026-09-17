@@ -1,0 +1,190 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_______ test_recovery_destination_cannot_modify_an_input_tree[original] ________
+
+path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann0/unread-gate.json')
+
+    def strict_json(path, *, limit=MAX_BYTES):
+        try:
+>           return decode_json(read_bytes(path, limit=limit), limit=limit)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+src/silent_cascade/train/pilot_evidence_types.py:45: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/silent_cascade/train/evidence_types.py:63: in read_bytes
+    return read_archive_at(parent, name, max_bytes=limit, error_factory=ArtifactIntegrityError)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+parent = 12, name = 'unread-gate.json'
+
+    def read_archive_at(
+        parent: int, name: str, *, max_bytes: int, error_factory: ErrorFactory
+    ) -> bytes:
+        """Read one bounded regular file, detecting growth after the size check.
+    
+        Domain codecs adapt structural failures with error_factory and retain their
+        existing OSError handling. The caller owns parent; this owns the file FD.
+        """
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise error_factory("archive.byte_limit")
+        if not isinstance(name, str) or Path(name).name != name or name in {"", ".", ".."}:
+            raise error_factory("archive.path")
+>       descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'unread-gate.json'
+
+src/silent_cascade/eventflow/archive_io.py:43: FileNotFoundError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann0')
+parent = 'original'
+
+    @pytest.mark.parametrize("parent", ["original", "retained"])
+    def test_recovery_destination_cannot_modify_an_input_tree(tmp_path, parent):
+        from silent_cascade.train.pilot_checks import recover_pilot_checks
+    
+        original, retained = tmp_path / "original", tmp_path / "retained"
+        original.mkdir()
+        retained.mkdir()
+        destination = tmp_path / parent / "new-output"
+        with pytest.raises(ValueError, match="destination"):
+>           recover_pilot_checks(artifact_path=tmp_path / "unread-gate.json",
+                raw_run_dir=original, retained_run_dir=retained, destination=destination)
+
+tests/pilot/test_pilot_evidence.py:123: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/silent_cascade/train/pilot_checks.py:409: in recover_pilot_checks
+    verify_phase4_gate_artifact(artifact_path, repo_root=root, raw_run_dir=raw_run_dir)
+src/silent_cascade/train/pilot_evidence.py:1288: in verify_phase4_gate_artifact
+    canonical_json_bytes(strict_json(artifact_path, limit=MAX_FILE_BYTES))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann0/unread-gate.json')
+
+    def strict_json(path, *, limit=MAX_BYTES):
+        try:
+            return decode_json(read_bytes(path, limit=limit), limit=limit)
+        except Exception as error:
+>           raise ValueError(f"invalid evidence JSON: {error}") from error
+E           ValueError: invalid evidence JSON: [Errno 2] No such file or directory: 'unread-gate.json'
+
+src/silent_cascade/train/pilot_evidence_types.py:47: ValueError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann0')
+parent = 'original'
+
+    @pytest.mark.parametrize("parent", ["original", "retained"])
+    def test_recovery_destination_cannot_modify_an_input_tree(tmp_path, parent):
+        from silent_cascade.train.pilot_checks import recover_pilot_checks
+    
+        original, retained = tmp_path / "original", tmp_path / "retained"
+        original.mkdir()
+        retained.mkdir()
+        destination = tmp_path / parent / "new-output"
+>       with pytest.raises(ValueError, match="destination"):
+E       AssertionError: Regex pattern did not match.
+E        Regex: 'destination'
+E        Input: "invalid evidence JSON: [Errno 2] No such file or directory: 'unread-gate.json'"
+
+tests/pilot/test_pilot_evidence.py:122: AssertionError
+_______ test_recovery_destination_cannot_modify_an_input_tree[retained] ________
+
+path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann1/unread-gate.json')
+
+    def strict_json(path, *, limit=MAX_BYTES):
+        try:
+>           return decode_json(read_bytes(path, limit=limit), limit=limit)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+src/silent_cascade/train/pilot_evidence_types.py:45: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/silent_cascade/train/evidence_types.py:63: in read_bytes
+    return read_archive_at(parent, name, max_bytes=limit, error_factory=ArtifactIntegrityError)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+parent = 12, name = 'unread-gate.json'
+
+    def read_archive_at(
+        parent: int, name: str, *, max_bytes: int, error_factory: ErrorFactory
+    ) -> bytes:
+        """Read one bounded regular file, detecting growth after the size check.
+    
+        Domain codecs adapt structural failures with error_factory and retain their
+        existing OSError handling. The caller owns parent; this owns the file FD.
+        """
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise error_factory("archive.byte_limit")
+        if not isinstance(name, str) or Path(name).name != name or name in {"", ".", ".."}:
+            raise error_factory("archive.path")
+>       descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'unread-gate.json'
+
+src/silent_cascade/eventflow/archive_io.py:43: FileNotFoundError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann1')
+parent = 'retained'
+
+    @pytest.mark.parametrize("parent", ["original", "retained"])
+    def test_recovery_destination_cannot_modify_an_input_tree(tmp_path, parent):
+        from silent_cascade.train.pilot_checks import recover_pilot_checks
+    
+        original, retained = tmp_path / "original", tmp_path / "retained"
+        original.mkdir()
+        retained.mkdir()
+        destination = tmp_path / parent / "new-output"
+        with pytest.raises(ValueError, match="destination"):
+>           recover_pilot_checks(artifact_path=tmp_path / "unread-gate.json",
+                raw_run_dir=original, retained_run_dir=retained, destination=destination)
+
+tests/pilot/test_pilot_evidence.py:123: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/silent_cascade/train/pilot_checks.py:409: in recover_pilot_checks
+    verify_phase4_gate_artifact(artifact_path, repo_root=root, raw_run_dir=raw_run_dir)
+src/silent_cascade/train/pilot_evidence.py:1288: in verify_phase4_gate_artifact
+    canonical_json_bytes(strict_json(artifact_path, limit=MAX_FILE_BYTES))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann1/unread-gate.json')
+
+    def strict_json(path, *, limit=MAX_BYTES):
+        try:
+            return decode_json(read_bytes(path, limit=limit), limit=limit)
+        except Exception as error:
+>           raise ValueError(f"invalid evidence JSON: {error}") from error
+E           ValueError: invalid evidence JSON: [Errno 2] No such file or directory: 'unread-gate.json'
+
+src/silent_cascade/train/pilot_evidence_types.py:47: ValueError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1122/test_recovery_destination_cann1')
+parent = 'retained'
+
+    @pytest.mark.parametrize("parent", ["original", "retained"])
+    def test_recovery_destination_cannot_modify_an_input_tree(tmp_path, parent):
+        from silent_cascade.train.pilot_checks import recover_pilot_checks
+    
+        original, retained = tmp_path / "original", tmp_path / "retained"
+        original.mkdir()
+        retained.mkdir()
+        destination = tmp_path / parent / "new-output"
+>       with pytest.raises(ValueError, match="destination"):
+E       AssertionError: Regex pattern did not match.
+E        Regex: 'destination'
+E        Input: "invalid evidence JSON: [Errno 2] No such file or directory: 'unread-gate.json'"
+
+tests/pilot/test_pilot_evidence.py:122: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_evidence.py::test_recovery_destination_cannot_modify_an_input_tree[original]
+FAILED tests/pilot/test_pilot_evidence.py::test_recovery_destination_cannot_modify_an_input_tree[retained]
+2 failed, 12 deselected in 0.54s

@@ -1,0 +1,88 @@
+.........F                                                               [100%]
+=================================== FAILURES ===================================
+_ test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination _
+
+gate_artifact_case = (PosixPath('/private/tmp/task11-fix1-family-green2.nhnYJo/task11-fixture-only0/repo'), <function execute at 0x10cc38a40>)
+
+    def test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination(
+        gate_artifact_case,
+    ):
+        root, execute = gate_artifact_case
+>       execute(
+            root,
+            CASE_HEADER
+            + """
+    import shutil
+    import sys
+    from runpy import run_path
+    import silent_cascade.train.pilot_checks as checks
+    from silent_cascade.train.pilot_artifact_index import iter_artifact_index
+    assert callable(checks.recover_pilot_checks)
+    backup = root/'retained-recovery-inputs'
+    shutil.copytree(run, backup)
+    entries = dict(iter_artifact_index(run, payload['training_result']['artifact_index']))
+    training = next(p for p in entries if p.endswith('.neural.json'))
+    final = next(p for p in payload['upstream_artifact_hashes'] if p.startswith('final/eval/primary/')
+                 and p.endswith('.neural.json'))
+    for name in (training, final):
+        path = run/name
+        path.rename(path.with_suffix('.retained-test'))
+    before = {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+    destination = root/'runs/recovered-final'
+    # This extra fixture proves recovery, not a duplicate native diagnostic.
+    import silent_cascade.train.pilot_verification as numeric
+    numeric.native_devices = lambda: (('cpu',), ('mps',))
+    sys.argv = ['check_phase4_pilot.py', '--recover-from', str(run/'gate.json'),
+                '--run-dir', str(run), '--retained-run-dir', str(backup),
+                '--destination', str(destination)]
+    namespace = run_path(str(root/'scripts/check_phase4_pilot.py'))
+    assert namespace['main']() == 0
+    observed = json.loads((destination/'phase4-gate.json').read_bytes())
+    assert observed['source'] == payload['source']
+    assert observed['selected_weights_sha256'] == payload['selected_weights_sha256']
+    assert observed['model_state_sha256'] == payload['model_state_sha256']
+    assert observed['outcome'] == 'debug_non_acceptance'
+    assert (destination/training).read_bytes() == (backup/training).read_bytes()
+    assert (destination/final).is_file()
+    assert verify_phase4_gate_artifact(destination/'phase4-gate.json', repo_root=root,
+        raw_run_dir=destination)['missing_raw_attachments'] == []
+    assert before == {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+    for name in (training, final):
+        path = run/name
+        path.with_suffix('.retained-test').rename(path)
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:616: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green2.nhnYJo/task11-fixture-only0/repo')
+program = "\nimport json\nfrom pathlib import Path\nfrom silent_cascade.hashing import canonical_json_bytes, sha256_bytes\nfrom ...is_file()}\nfor name in (training, final):\n    path = run/name\n    path.with_suffix('.retained-test').rename(path)\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 37, in <module>
+E         File "/private/tmp/task11-fix1-family-green2.nhnYJo/task11-fixture-only0/repo/scripts/check_phase4_pilot.py", line 22, in main
+E           artifact = recover_pilot_checks(
+E                      ^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green2.nhnYJo/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 473, in recover_pilot_checks
+E           device=metadata.device,
+E                  ^^^^^^^^^^^^^^^
+E         File "/Volumes/git/legotin/silent-cascade/.venv/lib/python3.12/site-packages/pydantic/main.py", line 1042, in __getattr__
+E           raise AttributeError(f'{type(self).__name__!r} object has no attribute {item!r}')
+E       AttributeError: 'PilotCheckpoint' object has no attribute 'device'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_checks.py::test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination
+1 failed, 9 passed, 22 deselected in 345.78s (0:05:45)

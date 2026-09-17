@@ -1174,7 +1174,98 @@ def _runtime_artifact_inventory(root, *, config, manifest, subset, weights):
     return required | {"DONE"}
 
 
-def _read_capture(path, *, model):
+def _read_capture_operations(path, *, model, config):
+    """Consume saved observations, without executing a model or training step."""
+    import math
+
+    from silent_cascade.eval.compute import NeuralComputeSnapshot
+    from silent_cascade.report.pilot_artifacts import read_json
+    from silent_cascade.train.trainer import StepResult
+
+    value = read_json(path.with_suffix(".json"))
+    if not isinstance(value, dict) or set(value) != {"update", "extra_diagnostic_forward"}:
+        raise ValueError("raw operation record schema differs")
+    update = value["update"]
+    if not isinstance(update, dict) or set(update) != {field.name for field in fields(StepResult)}:
+        raise ValueError("raw operation update schema differs")
+
+    def compute(raw, *, backward):
+        if not isinstance(raw, dict) or set(raw) != {
+            field.name for field in fields(NeuralComputeSnapshot)
+        }:
+            raise ValueError("raw operation compute schema differs")
+        for name, observed in raw.items():
+            if name in {"module_calls", "operation_estimates"}:
+                valid = isinstance(observed, dict) and all(
+                    isinstance(k, str) and k and type(v) is int and v >= 0
+                    for k, v in observed.items()
+                )
+            elif name == "elapsed_seconds":
+                valid = type(observed) in (int, float) and math.isfinite(observed) and observed >= 0
+            elif name == "mps_peak_allocation_bytes" and observed is None:
+                valid = True
+            else:
+                valid = type(observed) is int and observed >= 0
+            if not valid:
+                raise ValueError("raw operation counter type/range differs: " + name)
+        if (
+            raw["estimated_macs"] != raw["forward_macs"]
+            or raw["parameters"] != sum(p.numel() for p in model.parameters())
+            or raw["foundation_model_calls"] != 0
+            or (raw["backward_macs"] > 0) is not backward
+            or raw["eligible_records"] > raw["records_scored"]
+        ):
+            raise ValueError("raw operation compute identity/scope differs")
+        return NeuralComputeSnapshot(**raw)
+
+    if (
+        update["objective_version"] != config.pilot.objective_version
+        or update["auxiliary_coefficient"] != config.pilot.content_auxiliary_weight
+    ):
+        raise ValueError("raw operation objective identity differs")
+    parsed = dict(update)
+    for name in ("compute", "timed_compute", "content_compute"):
+        parsed[name] = compute(update[name], backward=name == "compute")
+    extra = compute(value["extra_diagnostic_forward"], backward=False)
+    ignored = {"backward_macs", "elapsed_seconds", "mps_peak_allocation_bytes"}
+    for name in value["extra_diagnostic_forward"].keys() - ignored:
+        if update["compute"][name] != value["extra_diagnostic_forward"][name]:
+            raise ValueError("raw operation extra-forward identity differs: " + name)
+        left, right = update["timed_compute"][name], update["content_compute"][name]
+        if name in {"module_calls", "operation_estimates"}:
+            expected = dict(Counter(left) + Counter(right))
+        elif name in {"parameters", "memory_bytes"}:
+            expected = max(left, right)
+        else:
+            expected = left + right
+        if update["compute"][name] != expected:
+            raise ValueError("raw operation branch aggregate differs: " + name)
+
+    def finite_numbers(observed):
+        if isinstance(observed, list):
+            return all(finite_numbers(v) for v in observed)
+        return type(observed) in (int, float) and math.isfinite(observed)
+
+    for name in set(update) - {"objective_version", "compute", "timed_compute", "content_compute"}:
+        observed = update[name]
+        if name in {"terms", "subterms", "numerators", "denominators", "per_position"}:
+            valid = isinstance(observed, dict) and all(
+                isinstance(k, str)
+                and bool(k)
+                and (isinstance(v, list) if name == "per_position" else type(v) in (int, float))
+                and finite_numbers(v)
+                for k, v in observed.items()
+            )
+        else:
+            valid = type(observed) in (int, float) and math.isfinite(observed)
+        if not valid:
+            raise ValueError("raw operation nonfinite/invalid update field: " + name)
+    if update["gradient_norm"] < 0:
+        raise ValueError("raw operation negative gradient norm")
+    return StepResult(**parsed), extra
+
+
+def _read_capture(path, *, model, config):
     from safetensors.torch import load
 
     from silent_cascade.train.pilot_data import _read_pilot_bytes
@@ -1205,7 +1296,8 @@ def _read_capture(path, *, model):
                     )
                 if not bool(valid.all()):
                     raise ValueError("raw tensor contains nonfinite values")
-    result = CapturedUpdate(tensors, None, None)
+    step, extra = _read_capture_operations(path, model=model, config=config)
+    result = CapturedUpdate(tensors, step, extra)
     compare_update(
         result, result, expected=expected, resume_device="cpu"
     ).validate_complete_inventory(model)
@@ -1261,7 +1353,7 @@ def _bind_resume_start(root, *, session, initial, model, config, device, observa
         starting_model, starting_optimizer, "cpu"
     )
     if not starting_optimizer.state:
-        bootstrap = _read_capture(root / "bootstrap", model=model)
+        bootstrap = _read_capture(root / "bootstrap", model=model, config=config.config)
         for name, parameter in expected_model.named_parameters():
             parameter.grad = bootstrap.tensors["gradients"]["/" + name].clone()
         torch.nn.utils.clip_grad_norm_(expected_model.parameters(), 1.0, error_if_nonfinite=True)
@@ -1344,14 +1436,25 @@ def _read_resume(root, *, expected_report, model, config, source, initial=None):
     batch = next_pilot_batch(
         config.config, stage=archive.progress.stage, batch_counter=archive.progress.batch_counter
     )
+    captures = [
+        _read_capture(root / name, model=model, config=config.config)
+        for name in ("expected", "restored")
+    ]
     comparison = compare_update(
-        _read_capture(root / "expected", model=model),
-        _read_capture(root / "restored", model=model),
+        *captures,
         expected=expected_inventory(model),
         resume_device=expected_report.device,
     )
+    if (root / "bootstrap.json").exists():
+        captures.append(_read_capture(root / "bootstrap", model=model, config=config.config))
+    calls = sum(
+        c.step.compute.foundation_model_calls + c.diagnostic_forward_compute.foundation_model_calls
+        for c in captures
+    )
     recomputed = expected_report.model_copy(
         update={
+            "diagnostic_updates": len(captures),
+            "foundation_model_calls": calls,
             "checkpoint_sha256": sha256_bytes(raw),
             "archive_global_step": archive.progress.global_step,
             "next_batch_counter": batch.next_batch_counter,
@@ -1372,6 +1475,7 @@ def _read_resume(root, *, expected_report, model, config, source, initial=None):
         root / "resume.json"
     ) != expected_report.model_dump(mode="json"):
         raise ValueError("raw resume summary differs")
+    return len(captures), calls
 
 
 def _read_checked_archive(path, *, config, source):
@@ -1499,6 +1603,7 @@ def read_numeric_report(output_dir, *, config, source_commit):
         )
     ):
         raise ValueError("raw diagnostic operation count differs")
+    observed_updates = observed_forwards = observed_calls = 0
     for stage in ("one_hop", "primary"):
         batch = diagnostic_batch(config.config, stage=stage, counter=0)
         recipe = read_json(output_dir / f"{stage}-batch.json")
@@ -1520,8 +1625,16 @@ def read_numeric_report(output_dir, *, config, source_commit):
         ):
             raise ValueError("raw batch recipe hash differs")
         captures = {
-            d: _read_capture(output_dir / f"{stage}-{d}", model=weights.model) for d in devices
+            d: _read_capture(output_dir / f"{stage}-{d}", model=weights.model, config=config.config)
+            for d in devices
         }
+        observed_updates += len(captures)
+        observed_forwards += len(captures)
+        observed_calls += sum(
+            c.step.compute.foundation_model_calls
+            + c.diagnostic_forward_compute.foundation_model_calls
+            for c in captures.values()
+        )
         if (
             compare_update(
                 captures["cpu"],
@@ -1541,7 +1654,7 @@ def read_numeric_report(output_dir, *, config, source_commit):
         ):
             raise ValueError("raw device comparison summary differs")
     for device in devices:
-        _read_resume(
+        count, calls = _read_resume(
             output_dir / f"resume-{device}",
             expected_report=report.cpu_resume if device == "cpu" else report.mps_resume,
             model=weights.model,
@@ -1549,6 +1662,15 @@ def read_numeric_report(output_dir, *, config, source_commit):
             source=report.source,
             initial=initial,
         )
+        observed_updates += count
+        observed_forwards += count
+        observed_calls += calls
+    if (observed_updates, observed_forwards, observed_calls) != (
+        report.diagnostic_updates,
+        report.extra_diagnostic_forwards,
+        report.foundation_model_calls,
+    ):
+        raise ValueError("raw observed operation totals differ")
     if (
         "mps" in devices
         and compare_runtime(

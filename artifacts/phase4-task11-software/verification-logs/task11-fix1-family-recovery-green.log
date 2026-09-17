@@ -1,0 +1,692 @@
+EEEEEEEE                                                                 [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_missing_training_sidecar_never_suppresses_present_semantics[numeric] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_missing_training_sidecar_never_suppresses_present_semantics[replay] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_missing_training_sidecar_never_suppresses_present_semantics[numeric_partial] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_missing_training_sidecar_never_suppresses_present_semantics[replay_partial] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_recovery_refuses_unrestorable_inputs_before_execution[missing_archive] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_recovery_refuses_unrestorable_inputs_before_execution[wrong_backup] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_recovery_refuses_unrestorable_inputs_before_execution[existing_destination] _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ ERROR at setup of test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _trace=<pluggy._tracing.Tag...a50>, _basetemp=PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="session")
+    def gate_artifact_case(tmp_path_factory):
+        from .test_pilot_source import DATA_SETUP, checkout
+    
+        root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+>       execute(
+            root,
+            DATA_SETUP
+            + """
+    import json
+    import sys
+    from silent_cascade.train.pilot_workflow import train_pilot
+    from silent_cascade.train.pilot_checks import run_pilot_checks
+    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
+    run = Path('runs/checks')
+    trained = train_pilot(config_path=Path('configs/train/pilot_smoke.yaml'),
+                          manifest_dir=Path('pilot-data'), run_dir=run, device='cpu')
+    assert trained.progress.global_step == 4
+    assert trained.selected_checkpoint is None and not trained.gate_eligible
+    before = (run / 'training-result.json').read_bytes()
+    serialized = json.loads(before)
+    assert serialized['schema_version'] == 'phase4-training-result-v2'
+    assert 'artifact_hashes' not in serialized
+    assert serialized['artifact_index']['entry_count'] == len(trained.artifact_hashes)
+    artifact = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert artifact.outcome == 'debug_non_acceptance'
+    assert artifact.selected_checkpoint_sha256 is None
+    assert 'no_selected_checkpoint' in artifact.failures
+    assert artifact.suites['primary']['episode_count'] == 16
+    assert artifact.suites['primary_repeat']['episode_count'] == 16
+    assert artifact.repeat_equal
+    assert all(e['execution']['device'] == 'cpu' for e in artifact.execution_evidence.values()
+               if isinstance(e, dict) and 'execution' in e)
+    assert artifact.continuation_evidence
+    assert (run / 'training-result.json').read_bytes() == before
+    again = run_pilot_checks(run_dir=run, config=config, output_path=run/'gate.json')
+    assert again == artifact
+    checked = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert checked['valid'] and not checked['passed']
+    assert checked['neural_replay'] == 'not_rerun'
+    completed = subprocess.run([sys.executable, 'scripts/check_phase4_pilot.py',
+        '--config', 'configs/train/pilot_smoke.yaml', '--run-dir', str(run),
+        '--output', str(run/'gate.json')], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (run / 'training-result.json').read_bytes() == before
+    """,
+            timeout=900,
+        )
+
+tests/pilot/test_pilot_checks.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo')
+program = "\nfrom pathlib import Path\nimport subprocess\nfrom silent_cascade.train.pilot_config import resolve_pilot_config\nfr...d.returncode == 0, completed.stdout + completed.stderr\nassert (run / 'training-result.json').read_bytes() == before\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 49, in <module>
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 386, in run_pilot_checks
+E           return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_checks.py", line 329, in _run_pilot_checks_owned
+E           verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+E                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1490, in verify_phase4_gate_artifact
+E           _verify_available_training(
+E         File "/private/tmp/task11-fix1-family-green.nwXwOM/task11-fixture-only0/repo/src/silent_cascade/train/pilot_evidence.py", line 1024, in _verify_available_training
+E           or identity.model_dump(mode="json") != training["model_identity"]
+E              ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'NeuralModelIdentity' object has no attribute 'model_dump'
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+=========================== short test summary info ============================
+ERROR tests/pilot/test_pilot_checks.py::test_missing_training_sidecar_never_suppresses_present_semantics[numeric]
+ERROR tests/pilot/test_pilot_checks.py::test_missing_training_sidecar_never_suppresses_present_semantics[replay]
+ERROR tests/pilot/test_pilot_checks.py::test_missing_training_sidecar_never_suppresses_present_semantics[numeric_partial]
+ERROR tests/pilot/test_pilot_checks.py::test_missing_training_sidecar_never_suppresses_present_semantics[replay_partial]
+ERROR tests/pilot/test_pilot_checks.py::test_recovery_refuses_unrestorable_inputs_before_execution[missing_archive]
+ERROR tests/pilot/test_pilot_checks.py::test_recovery_refuses_unrestorable_inputs_before_execution[wrong_backup]
+ERROR tests/pilot/test_pilot_checks.py::test_recovery_refuses_unrestorable_inputs_before_execution[existing_destination]
+ERROR tests/pilot/test_pilot_checks.py::test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination
+23 deselected, 8 errors in 129.98s (0:02:09)

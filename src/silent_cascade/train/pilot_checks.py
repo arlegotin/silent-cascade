@@ -384,3 +384,133 @@ def run_pilot_checks(*, run_dir: Path, config, output_path: Path) -> Phase4GateA
         if identity != owner["run_identity"]:
             raise ValueError("standalone ownership identity differs")
         return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+
+
+def recover_pilot_checks(
+    *,
+    artifact_path: Path,
+    raw_run_dir: Path,
+    destination: Path,
+    retained_run_dir: Path | None = None,
+) -> Phase4GateArtifact:
+    """Restore immutable training inputs; rerun only final checks in a fresh run."""
+    from silent_cascade.eventflow.neural_weights import decode_archive
+    from silent_cascade.train.checkpoints import _Environment
+    from silent_cascade.train.pilot_artifact_index import (
+        iter_artifact_index,
+        parse_training_envelope,
+    )
+    from silent_cascade.train.pilot_checkpoints import PilotCheckpoint
+    from silent_cascade.train.pilot_config import resolve_pilot_config
+    from silent_cascade.train.pilot_workflow import pilot_ownership
+
+    root = Path(__file__).resolve().parents[3]
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("recovery destination must be absent; preserve previous evidence")
+    if any(
+        destination.resolve().is_relative_to(parent.resolve())
+        for parent in (raw_run_dir, retained_run_dir)
+        if parent is not None
+    ):
+        raise ValueError("recovery destination must be outside every input run")
+    verified = verify_phase4_gate_artifact(artifact_path, repo_root=root, raw_run_dir=raw_run_dir)
+    original_raw = read_bytes(artifact_path, limit=MAX_BYTES)
+    if sha256_bytes(original_raw) != verified["artifact_sha256"]:
+        raise ValueError("recovery gate changed after verification")
+    original = Phase4GateArtifact.model_validate_json(original_raw)
+    config = resolve_pilot_config(
+        "phase4_pilot"
+        if '"profile":"phase4_pilot"' in original.config_canonical_json
+        else "phase4_smoke"
+    )
+    envelope = parse_training_envelope(original.training_result)
+    descriptors = [
+        value
+        for value in (
+            envelope.selected_checkpoint,
+            envelope.selected_weights,
+            envelope.latest_weights,
+            envelope.progress["latest"],
+        )
+        if value is not None
+    ]
+
+    def inputs():
+        yield "training-result.json", sha256_bytes(canonical_json_bytes(original.training_result))
+        for part in envelope.artifact_index.shards:
+            yield part.path, part.sha256
+        yield from iter_artifact_index(artifact_path.parent, envelope.artifact_index)
+        for value in descriptors:
+            yield value["path"], value["sha256"]
+
+    def restored_bytes(name, digest):
+        for parent in (raw_run_dir, retained_run_dir):
+            if parent is None:
+                continue
+            path = child(parent, name)
+            if path.exists() or path.is_symlink():
+                raw = read_bytes(path, limit=1024**3)
+                if sha256_bytes(raw) != digest:
+                    raise ValueError("recovery retained input hash differs: " + name)
+                return raw
+        raise ValueError("recovery restore-required input: " + name)
+
+    # Preflight all immutable inputs before creating a destination or executing.
+    for name, digest in inputs():
+        restored_bytes(name, digest)
+    latest = envelope.progress["latest"]
+    metadata, _ = decode_archive(
+        restored_bytes(latest["path"], latest["sha256"]),
+        latest["sha256"],
+        PilotCheckpoint,
+        "pilot_training",
+    )
+    device = _Environment.model_validate(metadata.environment).device
+    manifest_directory = Path(original.source.data_introductions["primary/manifest"]["path"]).parent
+    identity = sha256_bytes(
+        canonical_json_bytes(
+            dict(
+                config_sha256=config.sha256,
+                executable_sha256=original.source.source_sha256,
+                device=device,
+                manifest_directory=manifest_directory.as_posix(),
+            )
+        )
+    )
+    with pilot_ownership(destination, run_identity=identity):
+        for name, digest in inputs():
+            _publish_pilot_bytes(child(destination, name), restored_bytes(name, digest))
+        _, authenticated, _, manifests, _, _ = authenticate_run(destination, config)
+        if authenticated != original.source:
+            raise ValueError("recovered training source differs")
+        _publish(
+            destination / "workflow.json",
+            dict(
+                schema_version="phase4-pilot-workflow-v1",
+                config_sha256=config.sha256,
+                source_commit=original.source.source_commit,
+                device=device,
+                seed=11,
+                manifest_hashes={
+                    name: sha256_bytes(canonical_json_bytes(value))
+                    for name, value in manifests.items()
+                },
+            ),
+        )
+        _publish(
+            destination / "recovery-intent.json",
+            dict(
+                schema_version="phase4-final-recovery-v1",
+                original_gate_sha256=verified["artifact_sha256"],
+                source_commit=original.source.source_commit,
+                config_sha256=config.sha256,
+                selected_weights_sha256=original.selected_weights_sha256,
+                model_state_sha256=original.model_state_sha256,
+                training_result_sha256=sha256_bytes(canonical_json_bytes(original.training_result)),
+                artifact_index=envelope.artifact_index.model_dump(mode="json"),
+                checkpoint_descriptors=descriptors,
+            ),
+        )
+        return _run_pilot_checks_owned(
+            run_dir=destination, config=config, output_path=destination / "phase4-gate.json"
+        )

@@ -1,0 +1,150 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_recovery_pins_gate_bytes_across_verification _______________
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1123/test_recovery_pins_gate_bytes_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10e89c290>
+
+    def test_recovery_pins_gate_bytes_across_verification(tmp_path, monkeypatch):
+        from silent_cascade.hashing import sha256_bytes
+        from silent_cascade.train import pilot_checks
+    
+        gate = tmp_path / "gate.json"
+        gate.write_bytes(b"{}")
+        def verified_then_changed(path, **kwargs):
+            digest = sha256_bytes(path.read_bytes())
+            path.write_bytes(b'{"changed":true}')
+            return {"artifact_sha256": digest}
+        monkeypatch.setattr(pilot_checks, "verify_phase4_gate_artifact", verified_then_changed)
+        with pytest.raises(ValueError, match="gate changed"):
+>           pilot_checks.recover_pilot_checks(artifact_path=gate, raw_run_dir=tmp_path / "original",
+                                             destination=tmp_path / "fresh")
+
+tests/pilot/test_pilot_evidence.py:140: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def recover_pilot_checks(
+        *,
+        artifact_path: Path,
+        raw_run_dir: Path,
+        destination: Path,
+        retained_run_dir: Path | None = None,
+    ) -> Phase4GateArtifact:
+        """Restore immutable training inputs; rerun only final checks in a fresh run."""
+        from silent_cascade.eventflow.neural_weights import decode_archive
+        from silent_cascade.train.pilot_artifact_index import (
+            iter_artifact_index,
+            parse_training_envelope,
+        )
+        from silent_cascade.train.pilot_checkpoints import PilotCheckpoint
+        from silent_cascade.train.pilot_config import resolve_pilot_config
+        from silent_cascade.train.pilot_workflow import pilot_ownership
+    
+        root = Path(__file__).resolve().parents[3]
+        if destination.exists() or destination.is_symlink():
+            raise ValueError("recovery destination must be absent; preserve previous evidence")
+        verify_phase4_gate_artifact(artifact_path, repo_root=root, raw_run_dir=raw_run_dir)
+>       original = Phase4GateArtifact.model_validate_json(
+            canonical_json_bytes(strict_json(artifact_path))
+        )
+E       pydantic_core._pydantic_core.ValidationError: 24 validation errors for Phase4GateArtifact
+E       changed
+E         Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+E           For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+E       outcome
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       source
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       config_canonical_json
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       selected_checkpoint_sha256
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       selected_weights_sha256
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       model_state_sha256
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       training_result
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       workload
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       suites
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       attachments
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       upstream_artifact_hashes
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       execution_evidence
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       continuation_evidence
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       pair_rows
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       repeat_equal
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       numeric_passed
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       offline_passed
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       numeric_evidence
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       offline_evidence
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       local_verification
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       coverage
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       failures
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+E       raw_regeneration_command
+E         Field required [type=missing, input_value={'changed': True}, input_type=dict]
+E           For further information visit https://errors.pydantic.dev/2.13/v/missing
+
+src/silent_cascade/train/pilot_checks.py:410: ValidationError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1123/test_recovery_pins_gate_bytes_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10e89c290>
+
+    def test_recovery_pins_gate_bytes_across_verification(tmp_path, monkeypatch):
+        from silent_cascade.hashing import sha256_bytes
+        from silent_cascade.train import pilot_checks
+    
+        gate = tmp_path / "gate.json"
+        gate.write_bytes(b"{}")
+        def verified_then_changed(path, **kwargs):
+            digest = sha256_bytes(path.read_bytes())
+            path.write_bytes(b'{"changed":true}')
+            return {"artifact_sha256": digest}
+        monkeypatch.setattr(pilot_checks, "verify_phase4_gate_artifact", verified_then_changed)
+>       with pytest.raises(ValueError, match="gate changed"):
+E       AssertionError: Regex pattern did not match.
+E        Regex: 'gate changed'
+E        Input: "24 validation errors for Phase4GateArtifact\nchanged\n  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\noutcome\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsource\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nconfig_canonical_json\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nselected_checkpoint_sha256\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nselected_weights_sha256\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nmodel_state_sha256\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ntraining_result\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nworkload\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsuites\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nattachments\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nupstream_artifact_hashes\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nexecution_evidence\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ncontinuation_evidence\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\npair_rows\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nrepeat_equal\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nnumeric_passed\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\noffline_passed\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nnumeric_evidence\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\noffline_evidence\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nlocal_verification\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ncoverage\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfailures\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nraw_regeneration_command\n  Field required [type=missing, input_value={'changed': True}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing"
+
+tests/pilot/test_pilot_evidence.py:139: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_evidence.py::test_recovery_pins_gate_bytes_across_verification
+1 failed, 14 deselected in 0.46s

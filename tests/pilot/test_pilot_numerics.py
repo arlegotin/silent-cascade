@@ -273,6 +273,19 @@ def test_public_numeric_report_is_diagnostic_and_authenticates_artifacts(
     root = tmp_path / "numeric"
     originals = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     for mutation in (
+        "operation_update_fm",
+        "operation_extra_fm",
+        "operation_timed_fm",
+        "operation_content_fm",
+        "operation_macs",
+        "operation_extra_backward",
+        "operation_parameters",
+        "operation_objective",
+        "operation_schema",
+        "operation_terms_type",
+        "operation_loss_type",
+        "operation_bootstrap_fm",
+        "operation_resume_fm",
         "omitted_capture",
         "changed_summary",
         "extra_file",
@@ -285,7 +298,42 @@ def test_public_numeric_report_is_diagnostic_and_authenticates_artifacts(
         payload = json.loads(
             originals[next(p for p in originals if str(p) == "numeric-report.json")]
         )
-        if mutation == "omitted_capture":
+        if mutation.startswith("operation_"):
+            name = (
+                "resume-cpu/bootstrap.json"
+                if mutation == "operation_bootstrap_fm"
+                else "resume-cpu/expected.json"
+                if mutation == "operation_resume_fm"
+                else "primary-cpu.json"
+            )
+            value = json.loads((root / name).read_bytes())
+            if mutation.endswith("_fm"):
+                scope = mutation.removeprefix("operation_").removesuffix("_fm")
+                if scope in {"bootstrap", "resume"}:
+                    scope = "update"
+                compute = (
+                    value["extra_diagnostic_forward"]
+                    if scope == "extra"
+                    else value["update"]["compute" if scope == "update" else scope + "_compute"]
+                )
+                compute["foundation_model_calls"] = 1
+            elif mutation == "operation_macs":
+                value["update"]["compute"]["estimated_macs"] += 1
+            elif mutation == "operation_extra_backward":
+                value["extra_diagnostic_forward"]["backward_macs"] = 1
+            elif mutation == "operation_parameters":
+                value["update"]["compute"]["parameters"] += 1
+            elif mutation == "operation_objective":
+                value["update"]["objective_version"] = "foreign-objective"
+            elif mutation == "operation_terms_type":
+                value["update"]["terms"] = 0
+            elif mutation == "operation_loss_type":
+                value["update"]["loss"] = [0]
+            else:
+                value["extra_unobserved_operation"] = True
+            (root / name).write_bytes(canonical_json_bytes(value))
+            payload["artifact_hashes"][name] = sha256_bytes((root / name).read_bytes())
+        elif mutation == "omitted_capture":
             name = "primary-cpu.safetensors"
             (root / name).unlink()
             payload["artifact_hashes"].pop(name)

@@ -1,0 +1,238 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+__ test_missing_training_sidecar_never_suppresses_present_semantics[numeric] ___
+
+gate_artifact_case = (PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1120/task11-fixture-only0/repo'), <function execute at 0x10cbbf4c0>)
+family = 'numeric'
+
+    @pytest.mark.parametrize("family", ["numeric", "replay"])
+    def test_missing_training_sidecar_never_suppresses_present_semantics(gate_artifact_case, family):
+        root, execute = gate_artifact_case
+>       execute(root, CASE_HEADER + f"family = {family!r}\n" + """
+    from silent_cascade.train.pilot_artifact_index import iter_artifact_index
+    from silent_cascade.eventflow.engine import EventEngine
+    from silent_cascade.eventflow.replay import _payload_hash
+    import silent_cascade.train.pilot_verification as numeric
+    def forbidden(*a, **k):
+        raise AssertionError('artifact-only check executed a workload')
+    EventEngine.step = forbidden
+    numeric.capture_update = forbidden
+    numeric.training_objective = forbidden
+    entries = dict(iter_artifact_index(run, payload['training_result']['artifact_index']))
+    missing = run/next(p for p in entries if p.endswith('.neural.json'))
+    retained = missing.with_suffix('.retained-test')
+    missing.rename(retained)
+    originals = {}
+    def replace(path, value):
+        originals.setdefault(path, path.read_bytes())
+        path.write_bytes(canonical_json_bytes(value))
+        payload['upstream_artifact_hashes'][path.relative_to(run).as_posix()] = sha256_bytes(path.read_bytes())
+    try:
+        if family == 'numeric':
+            path = run/'final/numerics/primary-cpu.json'
+            value = json.loads(path.read_bytes())
+            value['update']['compute']['foundation_model_calls'] = 1
+            replace(path, value)
+            report = payload['numeric_evidence']
+            report['artifact_hashes']['primary-cpu.json'] = sha256_bytes(path.read_bytes())
+            replace(run/'final/numerics/numeric-report.json', report)
+            replace(run/'final/numerics/DONE', {'report_sha256': sha256_bytes(
+                (run/'final/numerics/numeric-report.json').read_bytes())})
+        else:
+            record = payload['continuation_evidence'][0]
+            path = run/record['replay_path']
+            value = json.loads(path.read_bytes())
+            value['source_revision'] = 'f'*40
+            value['payload_sha256'] = _payload_hash(value)
+            replace(path, value)
+            for record in payload['continuation_evidence']:
+                if record['replay_path'] == path.relative_to(run).as_posix():
+                    record['replay_sha256'] = sha256_bytes(path.read_bytes())
+        candidate = run/('missing-unrelated-' + family + '.json')
+        candidate.write_bytes(canonical_json_bytes(payload))
+        try:
+            verify_phase4_gate_artifact(candidate, repo_root=root, raw_run_dir=run)
+        except ValueError as error:
+            assert ('operation' if family == 'numeric' else 'replay') in str(error), str(error)
+        else:
+            raise AssertionError('unrelated absence suppressed present ' + family + ' semantics')
+    finally:
+        for path, raw in originals.items():
+            path.write_bytes(raw)
+        retained.rename(missing)
+    """)
+
+tests/pilot/test_pilot_checks.py:445: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1120/task11-fixture-only0/repo')
+program = "\nimport json\nfrom pathlib import Path\nfrom silent_cascade.hashing import canonical_json_bytes, sha256_bytes\nfrom ...cs')\nfinally:\n    for path, raw in originals.items():\n        path.write_bytes(raw)\n    retained.rename(missing)\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 60, in <module>
+E       AssertionError: unrelated absence suppressed present numeric semantics
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+___ test_missing_training_sidecar_never_suppresses_present_semantics[replay] ___
+
+gate_artifact_case = (PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1120/task11-fixture-only0/repo'), <function execute at 0x10cbbf4c0>)
+family = 'replay'
+
+    @pytest.mark.parametrize("family", ["numeric", "replay"])
+    def test_missing_training_sidecar_never_suppresses_present_semantics(gate_artifact_case, family):
+        root, execute = gate_artifact_case
+>       execute(root, CASE_HEADER + f"family = {family!r}\n" + """
+    from silent_cascade.train.pilot_artifact_index import iter_artifact_index
+    from silent_cascade.eventflow.engine import EventEngine
+    from silent_cascade.eventflow.replay import _payload_hash
+    import silent_cascade.train.pilot_verification as numeric
+    def forbidden(*a, **k):
+        raise AssertionError('artifact-only check executed a workload')
+    EventEngine.step = forbidden
+    numeric.capture_update = forbidden
+    numeric.training_objective = forbidden
+    entries = dict(iter_artifact_index(run, payload['training_result']['artifact_index']))
+    missing = run/next(p for p in entries if p.endswith('.neural.json'))
+    retained = missing.with_suffix('.retained-test')
+    missing.rename(retained)
+    originals = {}
+    def replace(path, value):
+        originals.setdefault(path, path.read_bytes())
+        path.write_bytes(canonical_json_bytes(value))
+        payload['upstream_artifact_hashes'][path.relative_to(run).as_posix()] = sha256_bytes(path.read_bytes())
+    try:
+        if family == 'numeric':
+            path = run/'final/numerics/primary-cpu.json'
+            value = json.loads(path.read_bytes())
+            value['update']['compute']['foundation_model_calls'] = 1
+            replace(path, value)
+            report = payload['numeric_evidence']
+            report['artifact_hashes']['primary-cpu.json'] = sha256_bytes(path.read_bytes())
+            replace(run/'final/numerics/numeric-report.json', report)
+            replace(run/'final/numerics/DONE', {'report_sha256': sha256_bytes(
+                (run/'final/numerics/numeric-report.json').read_bytes())})
+        else:
+            record = payload['continuation_evidence'][0]
+            path = run/record['replay_path']
+            value = json.loads(path.read_bytes())
+            value['source_revision'] = 'f'*40
+            value['payload_sha256'] = _payload_hash(value)
+            replace(path, value)
+            for record in payload['continuation_evidence']:
+                if record['replay_path'] == path.relative_to(run).as_posix():
+                    record['replay_sha256'] = sha256_bytes(path.read_bytes())
+        candidate = run/('missing-unrelated-' + family + '.json')
+        candidate.write_bytes(canonical_json_bytes(payload))
+        try:
+            verify_phase4_gate_artifact(candidate, repo_root=root, raw_run_dir=run)
+        except ValueError as error:
+            assert ('operation' if family == 'numeric' else 'replay') in str(error), str(error)
+        else:
+            raise AssertionError('unrelated absence suppressed present ' + family + ' semantics')
+    finally:
+        for path, raw in originals.items():
+            path.write_bytes(raw)
+        retained.rename(missing)
+    """)
+
+tests/pilot/test_pilot_checks.py:445: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1120/task11-fixture-only0/repo')
+program = "\nimport json\nfrom pathlib import Path\nfrom silent_cascade.hashing import canonical_json_bytes, sha256_bytes\nfrom ...cs')\nfinally:\n    for path, raw in originals.items():\n        path.write_bytes(raw)\n    retained.rename(missing)\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 60, in <module>
+E       AssertionError: unrelated absence suppressed present replay semantics
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+_ test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination _
+
+gate_artifact_case = (PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1120/task11-fixture-only0/repo'), <function execute at 0x10cbbf4c0>)
+
+    def test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination(gate_artifact_case):
+        root, execute = gate_artifact_case
+>       execute(root, CASE_HEADER + """
+    import shutil
+    import sys
+    from runpy import run_path
+    import silent_cascade.train.pilot_checks as checks
+    from silent_cascade.train.pilot_artifact_index import iter_artifact_index
+    assert callable(checks.recover_pilot_checks)
+    backup = root/'retained-recovery-inputs'
+    shutil.copytree(run, backup)
+    entries = dict(iter_artifact_index(run, payload['training_result']['artifact_index']))
+    training = next(p for p in entries if p.endswith('.neural.json'))
+    final = next(p for p in payload['upstream_artifact_hashes'] if p.startswith('final/eval/primary/')
+                 and p.endswith('.neural.json'))
+    for name in (training, final):
+        path = run/name
+        path.rename(path.with_suffix('.retained-test'))
+    before = {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+    destination = root/'runs/recovered-final'
+    # This extra fixture proves recovery, not a duplicate native diagnostic.
+    import silent_cascade.train.pilot_verification as numeric
+    numeric.native_devices = lambda: (('cpu',), ('mps',))
+    sys.argv = ['check_phase4_pilot.py', '--recover-from', str(run/'gate.json'),
+                '--run-dir', str(run), '--retained-run-dir', str(backup),
+                '--destination', str(destination)]
+    namespace = run_path(str(root/'scripts/check_phase4_pilot.py'))
+    assert namespace['main']() == 0
+    observed = json.loads((destination/'phase4-gate.json').read_bytes())
+    assert observed['source'] == payload['source']
+    assert observed['selected_weights_sha256'] == payload['selected_weights_sha256']
+    assert observed['model_state_sha256'] == payload['model_state_sha256']
+    assert observed['outcome'] == 'debug_non_acceptance'
+    assert (destination/training).read_bytes() == (backup/training).read_bytes()
+    assert (destination/final).is_file()
+    assert verify_phase4_gate_artifact(destination/'phase4-gate.json', repo_root=root,
+        raw_run_dir=destination)['missing_raw_attachments'] == []
+    assert before == {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+    """, timeout=900)
+
+tests/pilot/test_pilot_checks.py:502: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/private/var/folders/q3/tm7kkng56417wgzydc4q8p8r0000gn/T/pytest-of-artemlegotin/pytest-1120/task11-fixture-only0/repo')
+program = "\nimport json\nfrom pathlib import Path\nfrom silent_cascade.hashing import canonical_json_bytes, sha256_bytes\nfrom ...aw_attachments'] == []\nassert before == {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}\n"
+
+    def execute(root, program, *, timeout=180):
+        completed = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": str(root / "src"), "OMP_NUM_THREADS": "1"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 18, in <module>
+E       AttributeError: module 'silent_cascade.train.pilot_checks' has no attribute 'recover_pilot_checks'. Did you mean: 'run_pilot_checks'?
+
+tests/neural/test_phase3_provenance.py:63: AssertionError
+=========================== short test summary info ============================
+FAILED tests/pilot/test_pilot_checks.py::test_missing_training_sidecar_never_suppresses_present_semantics[numeric]
+FAILED tests/pilot/test_pilot_checks.py::test_missing_training_sidecar_never_suppresses_present_semantics[replay]
+FAILED tests/pilot/test_pilot_checks.py::test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination
+3 failed, 23 deselected in 207.83s (0:03:27)

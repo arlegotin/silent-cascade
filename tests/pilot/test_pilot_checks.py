@@ -263,9 +263,12 @@ portable = verify_phase4_gate_artifact(run/'gate.json', repo_root=root)
 assert portable['valid'] and not portable['passed']
 assert portable['missing_raw_attachments']
 assert portable['neural_replay'] == 'not_rerun'
+assert 'numeric.complete_cross_record_validation' in portable['unavailable_semantic_checks']
+assert 'training.archives' in portable['unavailable_semantic_checks']
 raw = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
 assert raw['valid'] and not raw['missing_raw_attachments']
 assert raw['neural_replay'] == 'not_rerun'
+assert raw['unavailable_semantic_checks'] == []
 """,
     )
 
@@ -436,4 +439,232 @@ try:
 finally:
     retained.rename(path)
 """,
+    )
+
+
+@pytest.mark.parametrize("family", ["numeric", "replay", "numeric_partial", "replay_partial"])
+def test_missing_training_sidecar_never_suppresses_present_semantics(gate_artifact_case, family):
+    root, execute = gate_artifact_case
+    execute(
+        root,
+        CASE_HEADER
+        + f"family = {family!r}\n"
+        + """
+from silent_cascade.train.pilot_artifact_index import iter_artifact_index
+from silent_cascade.eventflow.engine import EventEngine
+from silent_cascade.eventflow.replay import _payload_hash
+import silent_cascade.train.pilot_verification as numeric
+def forbidden(*a, **k):
+    raise AssertionError('artifact-only check executed a workload')
+EventEngine.step = forbidden
+numeric.capture_update = forbidden
+numeric.training_objective = forbidden
+entries = dict(iter_artifact_index(run, payload['training_result']['artifact_index']))
+missing = run/next(p for p in entries if p.endswith('.neural.json'))
+retained = missing.with_suffix('.retained-test')
+missing.rename(retained)
+originals = {}
+additionally_missing = []
+def replace(path, value):
+    originals.setdefault(path, path.read_bytes())
+    path.write_bytes(canonical_json_bytes(value))
+    payload['upstream_artifact_hashes'][path.relative_to(run).as_posix()] = sha256_bytes(
+        path.read_bytes())
+try:
+    if family == 'numeric_partial':
+        path = run/'final/numerics/runtime-cpu/DONE'
+        renamed = path.with_suffix('.retained-test')
+        path.rename(renamed)
+        additionally_missing.append((path, renamed))
+    elif family == 'replay_partial':
+        path = run/payload['continuation_evidence'][0]['checkpoint_path']
+        renamed = path.with_suffix('.retained-test')
+        path.rename(renamed)
+        additionally_missing.append((path, renamed))
+    available = verify_phase4_gate_artifact(run/'gate.json', repo_root=root, raw_run_dir=run)
+    assert available['missing_raw_attachments'] and not available['passed']
+    unavailable = available['unavailable_semantic_checks']
+    assert ('numeric.complete_cross_record_validation' in unavailable) == (
+        family == 'numeric_partial')
+    if family == 'replay_partial':
+        assert 'continuation.checkpoint:' + payload['continuation_evidence'][0][
+            'checkpoint_path'] in unavailable
+    if family.startswith('numeric'):
+        path = run/'final/numerics/primary-cpu.json'
+        value = json.loads(path.read_bytes())
+        value['update']['compute']['foundation_model_calls'] = 1
+        replace(path, value)
+        report = payload['numeric_evidence']
+        report['artifact_hashes']['primary-cpu.json'] = sha256_bytes(path.read_bytes())
+        replace(run/'final/numerics/numeric-report.json', report)
+        replace(run/'final/numerics/DONE', {'report_sha256': sha256_bytes(
+            (run/'final/numerics/numeric-report.json').read_bytes())})
+    else:
+        record = payload['continuation_evidence'][0]
+        path = run/record['replay_path']
+        value = json.loads(path.read_bytes())
+        value['source_revision'] = 'f'*40
+        value['payload_sha256'] = _payload_hash(value)
+        replace(path, value)
+        for record in payload['continuation_evidence']:
+            if record['replay_path'] == path.relative_to(run).as_posix():
+                record['replay_sha256'] = sha256_bytes(path.read_bytes())
+    candidate = run/('missing-unrelated-' + family + '.json')
+    candidate.write_bytes(canonical_json_bytes(payload))
+    try:
+        verify_phase4_gate_artifact(candidate, repo_root=root, raw_run_dir=run)
+    except ValueError as error:
+        assert ('operation' if family.startswith('numeric') else 'replay') in str(error), str(error)
+    else:
+        raise AssertionError('unrelated absence suppressed present ' + family + ' semantics')
+finally:
+    for path, raw in originals.items():
+        path.write_bytes(raw)
+    retained.rename(missing)
+    for path, renamed in additionally_missing:
+        renamed.rename(path)
+""",
+    )
+
+
+@pytest.mark.parametrize("damage", ["missing_archive", "wrong_backup", "existing_destination"])
+def test_recovery_refuses_unrestorable_inputs_before_execution(gate_artifact_case, damage):
+    root, execute = gate_artifact_case
+    execute(
+        root,
+        CASE_HEADER
+        + f"damage = {damage!r}\n"
+        + """
+import silent_cascade.train.pilot_checks as checks
+def forbidden(*a, **k):
+    raise AssertionError('recovery executed before authenticating inputs')
+checks._run_pilot_checks_owned = forbidden
+destination = root/('runs/refused-recovery-' + damage)
+backup = root/('retained-refusal-' + damage)
+backup.mkdir()
+descriptor = payload['training_result']['progress']['latest']
+path = run/descriptor['path']
+retained = path.with_suffix('.retained-test')
+if damage == 'existing_destination':
+    destination.mkdir()
+else:
+    path.rename(retained)
+    if damage == 'wrong_backup':
+        target = backup/descriptor['path']
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'wrong retained checkpoint')
+try:
+    try:
+        checks.recover_pilot_checks(artifact_path=run/'gate.json', raw_run_dir=run,
+            destination=destination, retained_run_dir=backup)
+    except ValueError as error:
+        assert any(term in str(error) for term in (
+            'restore-required', 'hash differs', 'absent')), str(error)
+    else:
+        raise AssertionError('invalid recovery input accepted')
+    if damage != 'existing_destination':
+        assert not destination.exists()
+finally:
+    if retained.exists():
+        retained.rename(path)
+""",
+    )
+
+
+def test_recovery_rejects_schema_valid_gate_change_after_real_verification(gate_artifact_case):
+    root, execute = gate_artifact_case
+    execute(
+        root,
+        CASE_HEADER
+        + """
+import silent_cascade.train.pilot_checks as checks
+from silent_cascade.train.pilot_evidence_types import Phase4GateArtifact
+original = (run/'gate.json').read_bytes()
+destination = root/'runs/recovery-changed-gate'
+real_verify = checks.verify_phase4_gate_artifact
+def verified_then_changed(path, **kwargs):
+    result = real_verify(path, **kwargs)
+    changed = json.loads(path.read_bytes())
+    changed['raw_regeneration_command'] += ' --changed-after-verification'
+    raw = canonical_json_bytes(changed)
+    Phase4GateArtifact.model_validate_json(raw)
+    path.write_bytes(raw)
+    return result
+def forbidden(*a, **k):
+    raise AssertionError('changed gate reached numerical execution')
+checks.verify_phase4_gate_artifact = verified_then_changed
+checks._run_pilot_checks_owned = forbidden
+try:
+    try:
+        checks.recover_pilot_checks(artifact_path=run/'gate.json', raw_run_dir=run,
+            destination=destination)
+    except ValueError as error:
+        assert 'gate changed' in str(error), str(error)
+    else:
+        raise AssertionError('schema-valid changed gate accepted')
+    assert not destination.exists()
+finally:
+    (run/'gate.json').write_bytes(original)
+""",
+    )
+
+
+def test_explicit_recovery_restores_training_and_reruns_final_in_fresh_destination(
+    gate_artifact_case,
+):
+    root, execute = gate_artifact_case
+    execute(
+        root,
+        CASE_HEADER
+        + """
+import shutil
+import sys
+from runpy import run_path
+import silent_cascade.train.pilot_checks as checks
+from silent_cascade.train.pilot_artifact_index import iter_artifact_index
+assert callable(checks.recover_pilot_checks)
+import silent_cascade.train.pilot_trainer as trainer
+def forbidden_fit(*a, **k):
+    raise AssertionError('recovery refit training')
+trainer.run_pilot_training = forbidden_fit
+backup = root/'retained-recovery-inputs'
+shutil.copytree(run, backup)
+entries = dict(iter_artifact_index(run, payload['training_result']['artifact_index']))
+training = next(p for p in entries if p.endswith('.neural.json'))
+final = next(p for p in payload['upstream_artifact_hashes'] if p.startswith('final/eval/primary/')
+             and p.endswith('.neural.json'))
+for name in (training, final):
+    path = run/name
+    path.rename(path.with_suffix('.retained-test'))
+before = {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+destination = root/'runs/recovered-final'
+# This extra fixture proves recovery, not a duplicate native diagnostic.
+import silent_cascade.train.pilot_verification as numeric
+numeric.native_devices = lambda: (('cpu',), ('mps',))
+sys.argv = ['check_phase4_pilot.py', '--recover-from', str(run/'gate.json'),
+            '--run-dir', str(run), '--retained-run-dir', str(backup),
+            '--destination', str(destination)]
+namespace = run_path(str(root/'scripts/check_phase4_pilot.py'))
+assert namespace['main']() == 0
+observed = json.loads((destination/'phase4-gate.json').read_bytes())
+assert observed['source'] == payload['source']
+assert observed['selected_weights_sha256'] == payload['selected_weights_sha256']
+assert observed['model_state_sha256'] == payload['model_state_sha256']
+assert observed['outcome'] == 'debug_non_acceptance'
+assert observed['training_result'] == payload['training_result']
+intent = json.loads((destination/'recovery-intent.json').read_bytes())
+assert intent['original_gate_sha256'] == sha256_bytes((run/'gate.json').read_bytes())
+assert intent['source_commit'] == payload['source']['source_commit']
+assert intent['selected_weights_sha256'] == payload['selected_weights_sha256']
+assert intent['model_state_sha256'] == payload['model_state_sha256']
+assert (destination/training).read_bytes() == (backup/training).read_bytes()
+assert (destination/final).is_file()
+assert verify_phase4_gate_artifact(destination/'phase4-gate.json', repo_root=root,
+    raw_run_dir=destination)['missing_raw_attachments'] == []
+assert before == {p.relative_to(run): p.read_bytes() for p in run.rglob('*') if p.is_file()}
+for name in (training, final):
+    path = run/name
+    path.with_suffix('.retained-test').rename(path)
+""",
+        timeout=900,
     )

@@ -109,3 +109,71 @@ def test_gate_reader_enforces_committed_file_limit(tmp_path, monkeypatch):
     path.write_text('{"payload":"' + "x" * 100 + '"}')
     with pytest.raises(ValueError, match=r"archive\.byte_limit"):
         pilot_evidence.verify_phase4_gate_artifact(path, repo_root=tmp_path)
+
+
+@pytest.mark.parametrize("parent", ["original", "retained"])
+def test_recovery_destination_cannot_modify_an_input_tree(tmp_path, parent):
+    from silent_cascade.train.pilot_checks import recover_pilot_checks
+
+    original, retained = tmp_path / "original", tmp_path / "retained"
+    original.mkdir()
+    retained.mkdir()
+    (original / "preserved").write_bytes(b"original evidence")
+    (retained / "preserved").write_bytes(b"retained evidence")
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    destination = tmp_path / parent / "new-output"
+    with pytest.raises(ValueError, match="destination"):
+        recover_pilot_checks(
+            artifact_path=tmp_path / "unread-gate.json",
+            raw_run_dir=original,
+            retained_run_dir=retained,
+            destination=destination,
+        )
+    assert not destination.exists()
+    assert before == {
+        p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    }
+
+
+def test_recovery_pins_gate_bytes_across_verification(tmp_path, monkeypatch):
+    from silent_cascade.hashing import sha256_bytes
+    from silent_cascade.train import pilot_checks
+
+    gate = tmp_path / "gate.json"
+    gate.write_bytes(b"{}")
+
+    def verified_then_changed(path, **kwargs):
+        digest = sha256_bytes(path.read_bytes())
+        path.write_bytes(b'{"changed":true}')
+        return {"artifact_sha256": digest}
+
+    monkeypatch.setattr(pilot_checks, "verify_phase4_gate_artifact", verified_then_changed)
+    with pytest.raises(ValueError, match="gate changed"):
+        pilot_checks.recover_pilot_checks(
+            artifact_path=gate, raw_run_dir=tmp_path / "original", destination=tmp_path / "fresh"
+        )
+    assert not (tmp_path / "fresh").exists()
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--recover-from", "gate", "--config", "config", "--destination", "fresh"],
+        ["--recover-from", "gate", "--output", "output", "--destination", "fresh"],
+        ["--recover-from", "gate"],
+        ["--config", "config", "--output", "output", "--destination", "fresh"],
+        ["--config", "config", "--output", "output", "--retained-run-dir", "retained"],
+    ],
+)
+def test_checker_rejects_conflicting_recovery_modes_before_execution(tmp_path, monkeypatch, flags):
+    import sys
+    from pathlib import Path
+    from runpy import run_path
+
+    script = Path(__file__).resolve().parents[2] / "scripts/check_phase4_pilot.py"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(script), "--run-dir", "original", *flags])
+    with pytest.raises(SystemExit) as error:
+        run_path(str(script))["main"]()
+    assert error.value.code == 2
+    assert not tuple(tmp_path.iterdir())

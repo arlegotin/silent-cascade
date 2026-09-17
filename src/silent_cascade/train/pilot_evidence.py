@@ -673,7 +673,9 @@ def pair_results(left, right):
     return tuple(result)
 
 
-def verify_continuation_records(records, *, rows, config, source, weights_sha, run_dir=None):
+def verify_continuation_records(
+    records, *, rows, config, source, weights_sha, run_dir=None, unavailable=None
+):
     """Validate retained comparisons and real pause/replay identities, never rerun."""
     from silent_cascade.eventflow.checkpoint_state import _trace_from_metadata
     from silent_cascade.eventflow.neural_checkpoint import load_neural_runtime_checkpoint
@@ -702,6 +704,7 @@ def verify_continuation_records(records, *, rows, config, source, weights_sha, r
         "matched",
     }
     by_id = {value["row"]["public_id"]: value for value in rows}
+    unavailable = [] if unavailable is None else unavailable
     coverage = set()
     for record in records:
         if set(record) != required:
@@ -770,7 +773,13 @@ def verify_continuation_records(records, *, rows, config, source, weights_sha, r
         )
         if record["matched"] is not matched:
             raise ValueError("continuation comparison flag differs")
-        if run_dir is not None:
+        if not matched:
+            raise ValueError("continuation comparison failed; later coverage cannot excuse it")
+        checkpoint_present = (
+            run_dir is not None and child(run_dir, record["checkpoint_path"]).exists()
+        )
+        replay_present = run_dir is not None and child(run_dir, record["replay_path"]).exists()
+        if checkpoint_present:
             checkpoint = load_neural_runtime_checkpoint(
                 child(run_dir, record["checkpoint_path"]),
                 expected_sha256=record["checkpoint_sha256"],
@@ -789,6 +798,9 @@ def verify_continuation_records(records, *, rows, config, source, weights_sha, r
                 or metadata.experiment_config_canonical_json != config.canonical_json.decode()
             ):
                 raise ValueError("continuation paused archive differs")
+        else:
+            unavailable.append("continuation.checkpoint:" + record["checkpoint_path"])
+        if replay_present:
             replay_raw = read_bytes(child(run_dir, record["replay_path"]), limit=MAX_BYTES)
             if sha256_bytes(replay_raw) != record["replay_sha256"]:
                 raise ValueError("continuation replay hash differs")
@@ -802,12 +814,14 @@ def verify_continuation_records(records, *, rows, config, source, weights_sha, r
                 or replay.expected_result != comparisons[0].result
             ):
                 raise ValueError("continuation replay archive differs")
+        else:
+            unavailable.append("continuation.replay:" + record["replay_path"])
         if matched:
             coverage.update(expected_coverage)
     return tuple(sorted(coverage))
 
 
-def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None):
+def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None, unavailable=None):
     from silent_cascade.train.pilot_verification import PilotNumericReport, read_numeric_report
 
     try:
@@ -821,52 +835,237 @@ def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None):
         or report.initial_model_sha256 != checkpoint["model_state_sha256"]
     ):
         raise ValueError("numeric selected full archive differs")
-    if run_dir is not None:
+    unavailable = [] if unavailable is None else unavailable
+    directory = run_dir / "final/numerics" if run_dir is not None else None
+    names = {*report.artifact_hashes, "numeric-report.json", "DONE"}
+    if directory is not None and all(child(directory, name).exists() for name in names):
         actual = read_numeric_report(
             run_dir / "final/numerics", config=config, source_commit=source.source_commit
         )
         if actual != report:
             raise ValueError("numeric evidence differs from raw tensor comparisons")
+    else:
+        unavailable.append("numeric.complete_cross_record_validation")
+        if directory is not None:
+            import torch
+
+            from silent_cascade.models.event_flow import EventFlowModel
+            from silent_cascade.train.pilot_verification import (
+                _read_capture,
+                _read_capture_operations,
+                _read_checked_archive,
+            )
+
+            with torch.random.fork_rng(devices=[]):
+                model = EventFlowModel(config.config.neural)
+            stems = {
+                name.removesuffix(".safetensors")
+                for name in names
+                if name.endswith(".safetensors")
+                and (
+                    name.startswith(("one_hop-", "primary-"))
+                    or name.rsplit("/", 1)[-1]
+                    in {"expected.safetensors", "restored.safetensors", "bootstrap.safetensors"}
+                )
+            }
+            for stem in sorted(stems):
+                path = child(directory, stem)
+                if path.with_suffix(".json").exists():
+                    if path.with_suffix(".safetensors").exists():
+                        _read_capture(path, model=model, config=config.config)
+                    else:
+                        _read_capture_operations(path, model=model, config=config.config)
+                        unavailable.append("numeric.capture_tensors:" + stem)
+                else:
+                    unavailable.append("numeric.capture_operations:" + stem)
+            for name in (
+                "input-training.safetensors",
+                "resume-cpu/resume.safetensors",
+                "resume-mps/resume.safetensors",
+            ):
+                if name in names:
+                    if child(directory, name).exists():
+                        _read_checked_archive(child(directory, name), config=config, source=source)
+                    else:
+                        unavailable.append("numeric.archive:" + name)
     return report.device_checks_passed
 
 
-def verify_offline_evidence(value, *, source, run_dir=None):
+def verify_offline_evidence(value, *, source, run_dir=None, missing_raw=(), unavailable=None):
     from silent_cascade.train.pilot_offline import PilotOfflineReport
 
     report = PilotOfflineReport.model_validate_json(canonical_json_bytes(value))
     if report.source_commit != source.source_commit or report.forbidden_modules:
         raise ValueError("offline source/import evidence differs")
+    unavailable = [] if unavailable is None else unavailable
     if run_dir is not None:
         from silent_cascade.eventflow.neural_replay import _parse
 
         root = run_dir / "final/offline"
-        executed = strict_json(root / "executed-source.json")
         expected = {p: h for p, h in source.source_files.items() if p.startswith("src/")}
-        if executed != expected or report.executed_source_sha256 != sha256_bytes(
-            canonical_json_bytes(executed)
+        if (root / "executed-source.json").exists():
+            executed = strict_json(root / "executed-source.json")
+            if executed != expected or report.executed_source_sha256 != sha256_bytes(
+                canonical_json_bytes(executed)
+            ):
+                raise ValueError("offline executing source differs")
+        else:
+            unavailable.append("offline.executed_source")
+        if (root / "step.json").exists():
+            step = strict_json(root / "step.json")
+            if (
+                step["compute"]["backward_macs"] != report.backward_macs
+                or step["compute"]["foundation_model_calls"] != 0
+            ):
+                raise ValueError("offline raw update/count evidence differs")
+        else:
+            unavailable.append("offline.update")
+        if (root / "replay.json").exists():
+            replay_raw = read_bytes(root / "replay.json", limit=MAX_BYTES)
+            replay, _, _ = _parse(replay_raw)
+            if (
+                replay.weights_sha256 != report.weights_sha256
+                or replay.source_revision != source.source_commit
+                or sha256_bytes(replay_raw) != report.replay_sha256
+                or replay.expected_result.counters.foundation_model_calls
+            ):
+                raise ValueError("offline raw replay/count evidence differs")
+        else:
+            unavailable.append("offline.replay")
+        for name, digest in (
+            ("weights.safetensors", report.weights_sha256),
+            ("report/report.md", report.artifact_report_sha256),
         ):
-            raise ValueError("offline executing source differs")
-        identity, rows, metrics, _ = load_evaluation(root / "run/eval/primary")
-        step = strict_json(root / "step.json")
-        replay_raw = read_bytes(root / "replay.json", limit=MAX_BYTES)
-        replay, _, _ = _parse(replay_raw)
-        if (
-            identity.purpose != "debug"
-            or len(rows) != 16
-            or report.weights_sha256 != identity.checkpoint_sha256
-            or report.weights_sha256 != replay.weights_sha256
-            or report.weights_sha256 != sha256_bytes(read_bytes(root / "weights.safetensors"))
-            or report.manifest_sha256 != identity.manifest_sha256
-            or report.replay_sha256 != sha256_bytes(replay_raw)
-            or report.artifact_report_sha256 != sha256_bytes(read_bytes(root / "report/report.md"))
-            or step["compute"]["backward_macs"] != report.backward_macs
-            or step["compute"]["foundation_model_calls"]
-            + metrics.foundation_model_calls
-            + replay.expected_result.counters.foundation_model_calls
-            != 0
+            if (root / name).exists():
+                if sha256_bytes(read_bytes(root / name)) != digest:
+                    raise ValueError("offline raw attachment differs")
+            else:
+                unavailable.append("offline.attachment:" + name)
+        prefix = "final/offline/run/eval/primary/"
+        if (root / "run/eval/primary/DONE").exists() and not any(
+            name.startswith(prefix) for name in missing_raw
         ):
-            raise ValueError("offline raw execution/count evidence differs")
+            identity, rows, metrics, _ = load_evaluation(root / "run/eval/primary")
+            if (
+                identity.purpose != "debug"
+                or len(rows) != 16
+                or report.weights_sha256 != identity.checkpoint_sha256
+                or report.manifest_sha256 != identity.manifest_sha256
+                or metrics.foundation_model_calls
+            ):
+                raise ValueError("offline raw evaluation/count evidence differs")
+        else:
+            unavailable.append("offline.evaluation")
+    else:
+        unavailable.extend(
+            "offline." + name
+            for name in ("executed_source", "update", "replay", "evaluation", "weights", "report")
+        )
     return True
+
+
+def _verify_available_training(run_dir, *, training, config, source, unavailable):
+    """Archive/weights authentication must not depend on old trajectory availability."""
+    from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
+    from silent_cascade.eventflow.neural import NeuralModelIdentity
+    from silent_cascade.eventflow.neural_weights import load_neural_weights
+    from silent_cascade.rng import snapshot_global_rng
+    from silent_cascade.train.pilot_checkpoints import load_pilot_checkpoint
+    from silent_cascade.train.pilot_state import PilotProgress
+    from silent_cascade.train.pilot_workflow import _durable
+
+    if run_dir is None:
+        unavailable.extend(("training.archives", "training.weights", "training.durable_journal"))
+        return
+    progress = PilotProgress.model_validate_json(canonical_json_bytes(training["progress"]))
+    for label, descriptor in (
+        ("selected", training["selected_checkpoint"]),
+        ("latest", training["progress"]["latest"]),
+    ):
+        if descriptor is None:
+            continue
+        path = child(run_dir, descriptor["path"])
+        if not path.exists():
+            unavailable.append("training.archive:" + label)
+            continue
+        before = snapshot_global_rng()
+        try:
+            session = load_pilot_checkpoint(
+                path,
+                expected_sha256=descriptor["sha256"],
+                config=config,
+                source=source,
+                device="cpu",
+            )
+        finally:
+            restore_rng_snapshot(before, restore_mps=False)
+        identity = NeuralModelIdentity.from_model(
+            session.model, source_revision=source.source_commit
+        )
+        if identity.model_state_sha256 != descriptor["model_state_sha256"]:
+            raise ValueError("available training archive model differs")
+        portable = training["selected_weights" if label == "selected" else "latest_weights"]
+        if portable is not None and identity.model_state_sha256 != portable["model_state_sha256"]:
+            raise ValueError("available training archive/portable binding differs")
+        if (
+            label == "selected"
+            and config.config.pilot.is_production
+            and (
+                not training["gate_eligible"]
+                or not descriptor["eligible"]
+                or descriptor["stage"] != "robustness"
+                or portable is None
+            )
+        ):
+            raise ValueError("available selected archive lacks training eligibility")
+        if label == "latest" and (
+            session.progress.model_dump(exclude={"latest"})
+            != progress.model_dump(exclude={"latest"})
+            or identity != NeuralModelIdentity(**training["model_identity"])
+        ):
+            raise ValueError("available latest archive/result differs")
+    for label in ("selected_weights", "latest_weights"):
+        descriptor = training[label]
+        if descriptor is None:
+            continue
+        path = child(run_dir, descriptor["path"])
+        if not path.exists():
+            unavailable.append("training.weights:" + label)
+            continue
+        weights = load_neural_weights(path, expected_sha256=descriptor["sha256"], device="cpu")
+        if (
+            weights.identity.model_state_sha256 != descriptor["model_state_sha256"]
+            or weights.identity.source_revision != source.source_commit
+        ):
+            raise ValueError("available training portable identity differs")
+    complete = (run_dir / "checkpoint-index.json").exists()
+    cursor, seen = progress.journal_sha256, set()
+    while cursor is not None:
+        if cursor in seen:
+            raise ValueError("available training journal is cyclic")
+        seen.add(cursor)
+        path = child(run_dir, "journal-" + cursor + ".json")
+        if not path.exists():
+            complete = False
+            break
+        raw = read_bytes(path)
+        if sha256_bytes(raw) != cursor:
+            raise ValueError("available training journal hash differs")
+        record = strict_json(path)
+        complete = complete and all(
+            child(run_dir, name).exists() for name in record.get("artifacts", {})
+        )
+        cursor = record["prior"]
+    latest = progress.latest
+    complete = complete and latest is not None and child(run_dir, latest.path).exists()
+    if complete:
+        before = snapshot_global_rng()
+        try:
+            _durable(run_dir, config, source, "cpu", result=training)
+        finally:
+            restore_rng_snapshot(before, restore_mps=False)
+    else:
+        unavailable.append("training.durable_journal")
 
 
 def collect_pilot_evidence(*, run_dir, config, output_path):
@@ -1062,12 +1261,12 @@ def collect_pilot_evidence(*, run_dir, config, output_path):
         local_verification=local_verification,
         failures=failures,
         raw_regeneration_command=(
-            "uv run python scripts/check_phase4_pilot.py --config configs/train/"
-            + ("pilot.yaml" if config.config.pilot.is_production else "pilot_smoke.yaml")
+            "uv run python scripts/check_phase4_pilot.py --recover-from "
+            + quote(str(output_path))
             + " --run-dir "
             + quote(str(run_dir))
-            + " --output "
-            + quote(str(output_path))
+            + ' --destination "${PHASE4_RECOVERY_DEST:?set an absent fresh destination}"'
+            + ' --retained-run-dir "${PHASE4_RETAINED_RUN:?set retained training input mirror}"'
         ),
     )
     if (
@@ -1235,7 +1434,7 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
         or repeat != artifact.repeat_equal
     ):
         raise ValueError("repeat/pair evidence mismatch")
-    missing = []
+    missing, unavailable = [], []
     envelope = parse_training_envelope(artifact.training_result)
     validate_training_result(
         envelope.model_dump(mode="json", exclude={"schema_version", "artifact_index"})
@@ -1288,6 +1487,13 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
         else:
             verify_raw(name, digest)
     raw_complete = raw_run_dir is not None and not missing
+    _verify_available_training(
+        raw_run_dir,
+        training=artifact.training_result,
+        config=config,
+        source=source,
+        unavailable=unavailable,
+    )
     if raw_complete:
         authenticate_run(raw_run_dir, config, repo_root=repo_root)
         if strict_json(raw_run_dir / "training-result.json") != artifact.training_result:
@@ -1295,12 +1501,15 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
     if raw_run_dir is not None:
         for name in record_hashes:
             if any(path.startswith(f"final/eval/{name}/") for path in missing):
+                unavailable.append("evaluation:" + name)
                 continue
             _, raw_records, _ = compact_evaluation(raw_run_dir / "final/eval" / name)
             if record_hashes[name] != [
                 sha256_bytes(canonical_json_bytes(record)) for record in raw_records
             ]:
                 raise ValueError("raw episode inventory differs")
+    else:
+        unavailable.extend("evaluation:" + name for name in record_hashes)
     weights = selected_weights or artifact.training_result["latest_weights"]
     coverage = verify_continuation_records(
         artifact.continuation_evidence,
@@ -1308,17 +1517,23 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
         config=config,
         source=source,
         weights_sha=weights["sha256"],
-        run_dir=raw_run_dir if raw_complete else None,
+        run_dir=raw_run_dir,
+        unavailable=unavailable,
     )
     numeric = artifact.numeric_evidence is not None and verify_numeric_evidence(
         artifact.numeric_evidence,
         config=config,
         source=source,
         checkpoint=selected_checkpoint or artifact.training_result["progress"]["latest"],
-        run_dir=raw_run_dir if raw_complete else None,
+        run_dir=raw_run_dir,
+        unavailable=unavailable,
     )
     offline = artifact.offline_evidence is not None and verify_offline_evidence(
-        artifact.offline_evidence, source=source, run_dir=raw_run_dir if raw_complete else None
+        artifact.offline_evidence,
+        source=source,
+        run_dir=raw_run_dir,
+        missing_raw=missing,
+        unavailable=unavailable,
     )
     if (
         coverage != artifact.coverage
@@ -1354,6 +1569,7 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
         passed=outcome == "passed" and not missing,
         recorded_outcome=outcome,
         missing_raw_attachments=missing,
+        unavailable_semantic_checks=sorted(set(unavailable)),
         verification_scope="recorded_evidence_integrity",
         neural_replay="not_rerun",
         source_commit=source.source_commit,
