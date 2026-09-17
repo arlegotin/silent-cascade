@@ -33,5 +33,10 @@ def test_installed_console_script_runs_doctor(tmp_path) -> None:
     assert json.loads(completed.stdout)["ok"] is True
 
 
-def test_cli_exposes_only_approved_phase2_root_commands() -> None:
-    assert {command.name for command in app.registered_commands} == {"doctor", "replay"}
+def test_cli_exposes_only_implemented_root_commands() -> None:
+    assert {command.name for command in app.registered_commands} == {
+        "doctor",
+        "replay",
+        "train",
+        "evaluate",
+    }

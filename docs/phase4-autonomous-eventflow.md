@@ -197,3 +197,87 @@ OMP_NUM_THREADS=1 UV_OFFLINE=1 UV_CACHE_DIR="$task7_cache_dir" \
 Large raw artifacts stay in owner-local storage, identified by the portable
 hashes above. A fresh run records its own timing-dependent report/artifact hashes;
 do not assume byte equality or relabel its executing source as this run's source.
+
+## Local pilot commands and initial data setup
+
+The pilot uses only seed 11, offline execution and zero foundation-model calls.
+`make pilot` uses the closed production profile; `make pilot-smoke` uses the
+16-example debug profile and stops after four optimizer updates. Set
+`PILOT_RUN_DIR`, `PILOT_MANIFEST_DIR` and `PILOT_DEVICE` externally as needed;
+their defaults are `runs/phase4-pilot-v1/event_flow/11/pilot`,
+`manifests/validation/phase4` and `cpu`. The smoke target appends `-smoke` to the
+run and manifest directories to keep the two profiles distinct.
+
+Start from committed, compatible source. The first workflow invocation produces
+the missing `one_hop.json`, `two_hop.json`, `primary.json`, `robustness.json` and
+`audits/<stage>/report.json` inputs, then stops with a **commit-data precondition**.
+The raw audit auxiliary manifest/index remain under `audit-raw/`; introduce only
+the four canonical stage manifests and the four exact audit reports. Review and
+commit those eight files, then create a distinct compatible training revision
+(an explicit empty commit is sufficient). Run the same command again. No command
+auto-commits Git state. Debug data preserve this introduction chain while their
+small-corpus audits explicitly remain non-acceptance. Production statistical
+audit acceptance is required before fitting; no training command reruns probes
+to replace failed or missing evidence.
+
+```sh
+make pilot-smoke
+# After reviewing and explicitly introducing the eight printed input paths:
+git commit --allow-empty -m "Record compatible pilot training revision"
+make pilot-smoke
+```
+
+Production command forms, once their stated inputs exist:
+
+```sh
+uv run silent-cascade data freeze --pilot-stage primary --config configs/train/pilot.yaml --output manifests/validation/phase4/primary.json
+uv run silent-cascade train --config configs/train/pilot.yaml --manifest-dir manifests/validation/phase4 --run-dir runs/phase4-pilot-v1/event_flow/11/pilot --seed 11 --device cpu
+uv run silent-cascade evaluate --checkpoint runs/phase4-pilot-v1/event_flow/11/pilot/selected.json --manifest manifests/validation/phase4/primary.json --output runs/phase4-pilot-v1/event_flow/11/pilot/eval/primary --device cpu
+uv run silent-cascade report build --pilot --run-dir runs/phase4-pilot-v1/event_flow/11/pilot --output reports/phase4-pilot-v1
+```
+
+`selected.json` binds an eligible checkpoint by hash; debug or unsuccessful runs
+have latest diagnostic weights and cannot publish accepted selection. `train
+--resume PATH` accepts the run's exact latest durable training archive. The full
+workflow verifies and reuses completed steps, recovers interrupted training from
+its verified durable checkpoint, and refuses incompatible directories with a
+new-run-path instruction. Ownership records bind PID, absolute process creation
+time and run identity; no process is killed to clear ownership.
+
+Neural replay uses `silent-cascade replay ARTIFACT --weights WEIGHTS --json`.
+Scripted replay remains available without loading neural training modules.
+Reports read retained artifacts, verify hashes and reconstruct integer
+denominators; missing or corrupt evidence fails explicitly. Timelines and guard
+plots use retained trajectories. Debug completion is reported separately from an
+unmet production gate. Failed production learning produces an adverse report and
+nonzero workflow status; the workflow never starts another seed or Phase 5.
+These commands never access frozen tests. `make verify` remains the complete
+local quality gate and never launches production fitting or pilot statistical
+audits. Device/resource acceptance and the final Phase 4 evidence gate remain
+separate later tasks.
+
+## Existing fixed64 engineering diagnostic
+
+Task 8's existing seed-11 debug run at source
+`1853840629d26136feb0b5ee70a293beca50ae1c` first met its separate fixed64 criterion
+after 525 updates: 64/64 complete chains, 59/64 timed successes, 0/32 negative
+false actions and zero errors at that boundary. Positives had 27/32 timed
+successes, all 32 classes correct and five early actions. Four earlier dynamics
+failures remain in the retained history. These are training-exposed debug
+results (`gate_eligible=False`), not held-out generalization or production
+readiness. The prior wrapper recorded 560.85 seconds and exited 1 after the
+application completed because macOS denied its clockrate query; no peak-RSS
+claim follows. Task 9 does not rerun this diagnostic.
+
+The preserved artifact root is
+`runs/phase4-overfit-debug-v1/task8-1853840-seed11-20260917`.
+Its raw `result.json` has SHA-256
+`90bded2f293113c07943117d125a07cc89e5783ee026213fbedf5b07981deffb`;
+final portable weights hash
+`0c5d590ce816f7b29cda9f8c026fc100bb05f9711e8cf5e0374938d84f19812e`;
+ordered debug data hash
+`982a8660db4a318a93e77a91cd1d3abdcf4eb5cd84dfe576ae7ef953bc7ad9b9`;
+canonical configuration hash
+`f9b1fa70f4bbb075fef516b491125ff975cdb36301639741a44ad1f92956069b`.
+The recipe uses roots 449/457, fixed indices 0–63, generator `ofd-v1` and
+one-hop transform `ofd-one-hop-v1` inside `phase4-data-v1`.

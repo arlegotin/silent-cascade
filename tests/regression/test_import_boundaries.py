@@ -156,6 +156,45 @@ def test_oracle_does_not_import_generator_or_invariants() -> None:
     assert "silent_cascade.env.invariants" not in modules
 
 
+def test_scripted_cli_execution_keeps_heavy_pilot_modules_unloaded(tmp_path):
+    program = """
+import importlib.abc
+import sys
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if ((fullname.startswith('silent_cascade.train.') and
+             fullname != 'silent_cascade.train.pilot_cli') or
+            fullname.startswith(('silent_cascade.models', 'silent_cascade.eventflow.neural',
+                                 'silent_cascade.report', 'mlx', 'huggingface_hub'))):
+            raise AssertionError(fullname)
+from pathlib import Path
+from typer.testing import CliRunner
+sys.meta_path.insert(0, Blocker())
+from silent_cascade.cli import app
+runner = CliRunner()
+help_result = runner.invoke(app, ['--help'])
+assert help_result.exit_code == 0, help_result.exception
+for command in ('train', 'evaluate', 'report'):
+    assert command in help_result.output
+result = runner.invoke(app, ['episode', 'inspect', '--help'])
+assert result.exit_code == 0, result.exception
+import importlib.util
+sys.path.insert(0, 'tests')
+spec = importlib.util.spec_from_file_location(
+    'cli_fixtures', 'tests/integration/test_cli_replay.py')
+fixtures = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixtures)
+from silent_cascade.cli import _runtime_config
+artifact, _, _ = fixtures._artifact(Path(sys.argv[1]), _runtime_config())
+result = runner.invoke(app, ['replay', str(artifact), '--json'])
+assert result.exit_code == 0, (result.output, result.exception)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program, str(tmp_path)], capture_output=True, text=True
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_agent_facing_modules_cannot_import_private_environment_or_foundations() -> None:
     """Any later agent-facing module is picked up without importing it at runtime."""
     package = SOURCE_ROOT / "silent_cascade"

@@ -1,4 +1,14 @@
-.PHONY: setup doctor lint test smoke verify
+.PHONY: setup doctor lint test smoke verify pilot pilot-smoke
+
+PILOT_RUN_DIR ?= runs/phase4-pilot-v1/event_flow/11/pilot
+PILOT_DEVICE ?= cpu
+PILOT_MANIFEST_DIR ?= manifests/validation/phase4
+
+pilot:
+	uv run python scripts/run_pilot.py --config configs/train/pilot.yaml --manifest-dir "$(PILOT_MANIFEST_DIR)" --run-dir "$(PILOT_RUN_DIR)" --device "$(PILOT_DEVICE)"
+
+pilot-smoke:
+	uv run python scripts/run_pilot.py --config configs/train/pilot_smoke.yaml --manifest-dir "$(PILOT_MANIFEST_DIR)-smoke" --run-dir "$(PILOT_RUN_DIR)-smoke" --device "$(PILOT_DEVICE)"
 
 setup:
 	uv sync --locked --group dev

@@ -59,3 +59,12 @@ def test_installed_wheel_executes_training_offline_outside_checkout(tmp_path, pr
     )
     assert help_result.returncode == 0, help_result.stderr
     assert "evaluate-components" in help_result.stdout
+    root_help = subprocess.run(
+        [sys.executable, "-S", "-m", "silent_cascade.cli", "--help"],
+        cwd=unrelated,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert root_help.returncode == 0, root_help.stderr
+    assert all(command in root_help.stdout for command in ("train", "evaluate", "report"))

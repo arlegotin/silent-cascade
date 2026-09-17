@@ -82,6 +82,8 @@ PHASE2_ENGINE_SOURCE_PATHS = (
     "src/silent_cascade/provenance.py",
     "src/silent_cascade/rng.py",
     "src/silent_cascade/schemas.py",
+    "src/silent_cascade/train/__init__.py",
+    "src/silent_cascade/train/pilot_cli.py",
     "src/silent_cascade/validation.py",
     "uv.lock",
 )

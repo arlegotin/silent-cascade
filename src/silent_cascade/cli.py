@@ -44,6 +44,7 @@ from silent_cascade.logging.runtime_diagnostics import (
     RuntimeDiagnosticIdentity,
     runtime_diagnostic_identity,
 )
+from silent_cascade.train.pilot_cli import register_pilot_commands
 from silent_cascade.validation import StrictModel
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -55,6 +56,7 @@ app.add_typer(data_app, name="data")
 app.add_typer(episode_app, name="episode")
 app.add_typer(oracle_app, name="oracle")
 app.add_typer(leakage_app, name="leakage")
+register_pilot_commands(app)
 
 _PHASE1_ALLOCATION_SELECTOR = "phase1-gate"
 _PHASE1_ALLOCATION_ID = "phase1-independent-gate-v1"
@@ -163,7 +165,7 @@ def _closed_schema(raw: bytes) -> str | int:
     if not isinstance(payload, dict) or "schema_version" not in payload:
         raise _replay_error("archive.schema_version")
     schema = payload["schema_version"]
-    if schema in ("phase2-replay-v1", "phase2-engine-gate-v1") or (
+    if schema in ("phase2-replay-v1", "phase2-engine-gate-v1", "phase4-neural-replay-v1") or (
         type(schema) is int and schema == 1
     ):
         return schema
@@ -293,11 +295,27 @@ def replay_command(
     artifact: Annotated[Path, typer.Argument()],
     json_output: Annotated[bool, typer.Option("--json")] = False,
     sample_index: Annotated[int | None, typer.Option("--sample-index")] = None,
+    weights: Annotated[Path | None, typer.Option("--weights")] = None,
 ) -> None:
-    """Verify one closed validation replay or crash archive on CPU."""
+    """Verify scripted CPU replay or neural replay on its recorded device."""
     try:
         raw = _read_replay_input(artifact)
         schema = _closed_schema(raw)
+        if schema == "phase4-neural-replay-v1":
+            from silent_cascade.eventflow.neural_replay import verify_neural_replay
+
+            if weights is None or sample_index is not None:
+                raise _replay_error("neural.weights_or_sample_index")
+            neural_report = verify_neural_replay(artifact, weights_path=weights)
+            public_report = neural_report.model_dump(mode="json", exclude={"trace", "result"})
+            typer.echo(
+                json.dumps(public_report, allow_nan=False, sort_keys=True)
+                if json_output
+                else "Neural replay matched"
+            )
+            return
+        if weights is not None:
+            raise _replay_error("scripted.unexpected_weights")
         if schema == "phase2-engine-gate-v1":
             from silent_cascade.eventflow.evidence import parse_phase2_gate_bytes
 
@@ -466,14 +484,41 @@ def _invoke_phase1[RequestT](
 @data_app.command("freeze")
 def data_freeze_command(
     output: Annotated[Path, typer.Option("--output")],
-    root_seed: Annotated[int, typer.Option("--root-seed")],
-    public_id_seed: Annotated[int, typer.Option("--public-id-seed")],
+    root_seed: Annotated[int | None, typer.Option("--root-seed")] = None,
+    public_id_seed: Annotated[int | None, typer.Option("--public-id-seed")] = None,
     config: Annotated[Path, typer.Option("--config")] = Path("configs/base.yaml"),
     data_config: Annotated[Path, typer.Option("--data-config")] = Path("configs/data/primary.yaml"),
     set_overrides: Annotated[list[str] | None, typer.Option("--set")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
+    pilot_stage: Annotated[str | None, typer.Option("--pilot-stage")] = None,
 ) -> None:
     """Freeze the fixed matched-validation manifest."""
+    if pilot_stage is not None:
+        from silent_cascade.train.pilot_workflow import freeze_pilot
+
+        if (
+            root_seed is not None
+            or public_id_seed is not None
+            or set_overrides
+            or data_config != Path("configs/data/primary.yaml")
+        ):
+            raise typer.BadParameter("pilot seed/data/config overrides are forbidden")
+        try:
+            manifest = freeze_pilot(config_path=config, stage=pilot_stage, output=output)
+        except (ValueError, OSError) as error:
+            typer.echo(f"Pilot validation freeze refused: {error}", err=True)
+            raise typer.Exit(1) from None
+        typer.echo(
+            manifest.model_dump_json()
+            if json_output
+            else f"Pilot {manifest.split} freeze: {manifest.count} entries; "
+            "commit-data precondition applies"
+        )
+        return
+    if root_seed is None or public_id_seed is None:
+        raise typer.BadParameter(
+            "--root-seed and --public-id-seed are required outside --pilot-stage"
+        )
     request = FreezeValidationRequest(
         config=_config_selection(config, data_config, set_overrides),
         output_path=output,

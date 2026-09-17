@@ -25,6 +25,10 @@ silent-cascade data freeze --output PATH --root-seed INT --public-id-seed INT
 silent-cascade episode inspect MANIFEST (--episode-id UUID | --entry-index INT) [--oracle]
 silent-cascade oracle evaluate (--manifest PATH | --allocation phase1-gate)
 silent-cascade leakage audit (--manifest PATH | --allocation phase1-gate) --profile (test | phase1-gate)
+silent-cascade data freeze --pilot-stage primary --config configs/train/pilot.yaml --output PATH
+silent-cascade train --config configs/train/pilot.yaml --manifest-dir PATH --run-dir PATH --seed 11 --device cpu
+silent-cascade evaluate --checkpoint PATH/selected.json --manifest PATH/primary.json --output PATH --device cpu
+silent-cascade report build --pilot --run-dir PATH --output PATH
 ```
 
 The Phase 1 commands also accept `--config`, `--data-config`, repeatable
@@ -49,5 +53,10 @@ and package builds run only in the local workspace.
 - [Research and claim boundary](docs/research-boundary.md)
 - [Approved deviations](docs/deviations.md)
 
-Training, learned-condition evaluation, intervention, reporting, and demo
-commands remain unimplemented until their owning phases.
+The local Phase 4 pilot workflow is available through `make pilot` and
+`make pilot-smoke`. Both first require separately introduced immutable manifests
+and audit reports, followed by a distinct compatible training revision. Initial
+setup creates missing inputs and stops before fitting; it never commits your
+checkout. See [pilot setup and command details](docs/phase4-autonomous-eventflow.md).
+The four-update smoke is debug engineering evidence, not a passed production
+learning gate. Intervention, general reporting and demo commands remain future work.

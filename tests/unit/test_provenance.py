@@ -102,6 +102,64 @@ def _neural_only_engine_import(relative, node, parents):
     return ast.dump(parent.body[0]) == ast.dump(expected_guard)
 
 
+def _pilot_callback_import(relative, node, parents):
+    """Only the exact registered neural callbacks escape the scripted closure."""
+    if not isinstance(node, ast.ImportFrom) or node.level:
+        return False
+    chain, current = [], node
+    while current in parents:
+        current = parents[current]
+        chain.append(current)
+    scope = ".".join(
+        item.name for item in reversed(chain) if isinstance(item, ast.FunctionDef | ast.ClassDef)
+    )
+    imported = tuple((alias.name, alias.asname) for alias in node.names)
+    key = relative, scope, node.module, imported
+    callbacks = {
+        (
+            "src/silent_cascade/train/pilot_cli.py",
+            "train_command",
+            "silent_cascade.train.pilot_workflow",
+            (("train_pilot", None),),
+        ),
+        (
+            "src/silent_cascade/train/pilot_cli.py",
+            "evaluate_command",
+            "silent_cascade.train.pilot_workflow",
+            (("evaluate_pilot", None),),
+        ),
+        (
+            "src/silent_cascade/train/pilot_cli.py",
+            "report_command",
+            "silent_cascade.report.pilot",
+            (("build_pilot_report", None),),
+        ),
+    }
+    if key in callbacks:
+        return isinstance(parents[node], ast.FunctionDef) and parents[node].name == scope
+    guarded = {
+        (
+            "src/silent_cascade/cli.py",
+            "replay_command",
+            "silent_cascade.eventflow.neural_replay",
+            (("verify_neural_replay", None),),
+        ): 'schema == "phase4-neural-replay-v1"',
+        (
+            "src/silent_cascade/cli.py",
+            "data_freeze_command",
+            "silent_cascade.train.pilot_workflow",
+            (("freeze_pilot", None),),
+        ): "pilot_stage is not None",
+    }
+    parent = parents[node]
+    return (
+        key in guarded
+        and isinstance(parent, ast.If)
+        and node in parent.body
+        and ast.dump(parent.test) == ast.dump(ast.parse(guarded[key], mode="eval").body)
+    )
+
+
 @pytest.mark.parametrize(
     "program",
     [
@@ -156,7 +214,9 @@ def test_phase2_provenance_scope_closes_over_executed_local_imports() -> None:
             child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
         }
         for node in ast.walk(tree):
-            if _neural_only_engine_import(relative, node, parents):
+            if _neural_only_engine_import(relative, node, parents) or _pilot_callback_import(
+                relative, node, parents
+            ):
                 continue
             names = (
                 [node.module]
@@ -168,6 +228,48 @@ def test_phase2_provenance_scope_closes_over_executed_local_imports() -> None:
                     candidate = root / "src" / (name.replace(".", "/") + ".py")
                     if candidate.is_file():
                         assert candidate.relative_to(root).as_posix() in declared
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "from silent_cascade.train.pilot_workflow import train_pilot",
+        "def other():\n    from silent_cascade.train.pilot_workflow import train_pilot",
+        "def replay_command():\n    if True:\n"
+        "        from silent_cascade.eventflow.neural_replay import verify_neural_replay",
+    ],
+)
+def test_pilot_import_exemptions_reject_eager_moved_or_weakened_dispatch(program):
+    tree = ast.parse(program)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    node = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    for relative in ("src/silent_cascade/cli.py", "src/silent_cascade/train/pilot_cli.py"):
+        assert not _pilot_callback_import(relative, node, parents)
+
+
+def test_dirty_pilot_registration_module_is_rejected(tmp_path):
+    from pilot.test_pilot_source import checkout
+
+    root, execute = checkout(tmp_path / "repo")
+    execute(
+        root,
+        """
+from pathlib import Path
+import subprocess
+from silent_cascade.train.pilot_config import resolve_pilot_config
+from silent_cascade.train.pilot_provenance import authenticate_pilot_source
+source = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+path = Path('src/silent_cascade/train/pilot_cli.py')
+path.write_text(path.read_text() + '\\n# dirty registration\\n')
+try:
+    authenticate_pilot_source(repo_root=Path.cwd(), source_commit=source,
+                              config=resolve_pilot_config('phase4_smoke'))
+except ValueError as error:
+    assert 'pilot_cli.py' in str(error)
+else:
+    raise AssertionError('dirty executed registration accepted')
+""",
+    )
 
 
 @pytest.mark.parametrize(
