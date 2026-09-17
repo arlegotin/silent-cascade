@@ -330,9 +330,111 @@ Reports include component-evaluation costs, event/error distributions, process
 RSS high-water and separate tensor-memory estimates, measured retained bytes,
 and a conditional compute/storage range. Final acceptance/replay stays on CPU.
 
-Actual uncontended production-dimensional measurements and the final selected
-checkpoint checks are not established yet. Concurrent unrelated workloads must
-finish before publishing device-choice timings. A fresh full local `make verify`
-must pass before production preflight. Recheck free space at a stable retained
-destination; system temporary directories are unsuitable for multi-day evidence.
-No throughput or debug report satisfies a training, accuracy or final-weight gate.
+### Actual production-dimensional diagnostic (2026-09-17)
+
+The reviewed executor `64446327b537565f9fb7dccd9182d0938b655f62` completed one
+`profile_pilot(resolve_pilot_config("phase4_pilot"), output_dir=...)` call in
+4,450.753695 seconds wall (09:10:58.814154–10:25:09.567849 UTC), exit 0 and empty
+stderr. This was fresh seed-11 diagnostic work, **not a production fit** or the
+existing fixed64 model. No checkpoint was supplied, selection/data-introduction
+verification remain false, and foundation-model calls were exactly zero.
+
+All four batch-128 trials retained 16 warmup and 32 measured updates: 192 actual
+updates, including 64 warmups. One-hop and primary traces had maximum lengths
+5 and 11 respectively, with primary exercising four hops. Numerical diagnostics
+added 10 actual updates and 10 separately counted diagnostic forwards; none of
+these weights count toward pilot training. The 2,781,042-parameter starting model
+and untouched portable runtime export were identical across devices.
+
+The complete numerical inventories contain 79 forward tensors, 147 loss tensors,
+71 gradients, 71 updated parameter tensors and 213 optimizer tensors per recipe.
+One-hop passed every group. Primary forward/loss/gradient/optimizer groups passed,
+but **one updated parameter element failed** the fixed `rtol=1e-3, atol=1e-5`:
+`controller.network.0.weight[167,449]` was 0.00021155402646400034 on CPU and
+0.00022310856729745865 on MPS. Absolute error 0.000011554540833458304 exceeded
+the allowed 0.00001022310856729746. The failure is retained, with no rerun or
+tolerance amendment. Exact CPU resume and native MPS resume passed all groups
+and scoped RNG/next-batch checks. No device evidence was missing.
+
+The 64 paired numerical episodes had zero decision, score, timestamp or error
+mismatches. Both devices took no ACT: 32 positives failed with `no_action` and
+32 negatives succeeded. Throughput used another 256 executions per device
+(128 positive, 64 safe negative, 64 disconnected negative), again no ACT,
+128 `no_action` failures, 128 successes and zero errors. Each device recorded
+256 activations, 3,077 facts, 67 recalls, 18 compositions and 256 terminal events;
+episodes had 7–24 events (mean 14.3515625). These are short, untrained cascades,
+not evidence of competent validation or learned multi-hop performance.
+
+Both subsets are explicit prefixes (0–63 and 0–255) of the same authenticated
+10,000-entry primary manifest, not smaller replacement acceptance corpora.
+There were 640 scalar episode executions in total, not 640 unique examples;
+the prefixes overlap. Component timing added 256 actual examples per device.
+
+| Observed operation | CPU, one thread | Native MPS |
+| --- | ---: | ---: |
+| One-hop full update, mean seconds | 0.799317 | 3.146011 |
+| Primary full update, mean seconds | 1.854461 | 7.845695 |
+| 256 scalar episodes, seconds | 82.567770 | 2,815.954506 |
+| Scalar episodes/second | 3.100483 | 0.090911 |
+| 256 component examples, seconds | 0.238568 | 2.637973 |
+
+The recorded choice is **CPU: native MPS numerical checks failed**. CPU was also
+faster in these observed operations. This is not an uncontended benchmark:
+process snapshots showed a VM around 101–300% CPU, desktop activity and later
+external Python/Rust work around 99% CPU. No unrelated process was stopped.
+Native MPS fallback was disabled; Python 3.12.1, Torch 2.13.0 and one Torch/OMP
+thread were used offline. Final acceptance and exact replay remain on CPU.
+
+Process-lifetime RSS high-water was 2,866,954,240 bytes at CPU trials and
+2,943,336,448 at MPS trials, not isolated per-trial peaks. Reported tensor working
+estimates were 3,145,728 bytes for training and 24,576 for runtime; these are not
+total memory. MPS current driver allocation was 3,239,788,544/3,264,626,688 bytes
+after one-hop/primary training, not a peak or energy measurement.
+
+The conditional compute projection is 58,042.55–2,874,015.20 seconds
+(16.12 hours–33.26 days), **not a convergence promise or competent-validation
+ETA**. It includes the optimistic 4,000-update path and the 75,000-update ceiling,
+up to 75 boundaries/1.5 million autonomous/750,000 component validations, and
+40,640 final episode executions (40,000 repeat/two-hop/robustness, 512 delay-pair,
+128 device-smoke). Replay is a coverage-derived estimate of 12–216 episode
+equivalents, approximately 3.87–378.73 seconds under the same assumptions;
+Task 11 must collect actual coverage. Four historical 6,376.053914-second audits
+are context, not newly measured four-stage audits. The upper scenario scales
+runtime/storage by 5.4363 for 64 internal events plus observed ordinary events;
+future cascades, failure modes and host load can exceed this scenario. Direct
+10,000-row scaling of the observed CPU sample alone is 3,225.30 seconds.
+
+The final retained tree has 2,197 files and 955,360,236 logical bytes; the forecast
+captured 955,046,884 bytes before its own report/DONE. All failures remain.
+Projected retained storage is 30,322,463,395–3,675,694,793,937 bytes, including
+journals, component rows, manifests and explicit estimated audit allowances.
+The required `ceil(1.2 * upper_retention) + checkpoint_working_space` is
+**4,411,034,493,825 bytes**, including 200,741,100 checkpoint-working bytes,
+against only **16,358,002,688 observed free bytes**. Storage headroom failed.
+No production run was started; nothing was deleted, relocated or pruned to fit.
+Remeasure at the actual stable retained destination before production.
+
+Raw evidence remains under the ignored stable local path
+`runs/phase4-task10-measurements/6444632-seed11-20260917/profile`, not system temp.
+Both strict readers authenticated required inventories and recomputed summaries
+from saved tensors/runtime rows without retraining (430 numeric artifacts and
+2,195 throughput artifacts, the latter including the numeric subtree).
+
+| Measured identity | SHA-256 |
+| --- | --- |
+| Numeric report | `955b011e178f1222d5fcf4709e4c2e07b6fb44ed8f18481a8dc23fc8c63c12df` |
+| Throughput report | `4a9cd9885d68afcfaa4cb6dd9ee15ad783f4a6a3cd5d6339f5115de473793419` |
+| Source-file closure (129 files) | `19c3f9b1ed4b16f19daf4dcf244268ec9179ffb6331486a8804d0aca5a3cd72c` |
+| Canonical configuration | `62b892f07b07b8b943121a7084d2492e33bb4e295e5dc311f50f9bed23b57729` |
+| Primary manifest | `76558bbf83fac06c25d590fbd00aab9d2384fe8a61011473bdea1519df9e77a7` |
+| Initial/runtime logical model | `5053ec7272f59e0d65c16e14c007c8ddf9c31c40a713269589efcb78f904502d` |
+| Untouched portable weights | `22ccef645265b2e00c757051be393e2b41605c39dfb82ebcacbd74367a5483af` |
+
+The earlier native full `make verify` passed 3,365 tests, doctor and package builds
+on `1be49c37`; the reviewed checkpoint-evidence correction then passed 288 native
+covering tests with no skips, repository lint/format and package builds on the
+measured source. This is explicitly pre-fix full versus post-fix covering evidence,
+not a relabeled full suite on the later commit. Subsequent documentation does not
+replace the measured source identity. Selected-checkpoint checks, the production
+headroom gate and final Phase 4 acceptance remain unestablished. No throughput or
+debug report satisfies a training, accuracy or final-weight gate.
