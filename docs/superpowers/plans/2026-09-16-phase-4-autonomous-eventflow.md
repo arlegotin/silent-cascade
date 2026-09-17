@@ -1303,6 +1303,7 @@ the attempt and diagnose before Task12; never silently restart or extend it.
 - Create: `src/silent_cascade/train/pilot_cli.py`, `src/silent_cascade/report/{__init__,pilot}.py`, `scripts/run_pilot.py`.
 - Create/update: `docs/phase4-autonomous-eventflow.md`, reader-facing command status in `README.md`.
 - Modify: `src/silent_cascade/cli.py`, `Makefile` and their existing command/package tests.
+- Maintain current CLI source closure: `src/silent_cascade/eventflow/provenance.py`, `tests/unit/test_provenance.py`, `tests/regression/test_import_boundaries.py`.
 - Create: `tests/pilot/{test_pilot_cli,test_pilot_report,test_pilot_workflow}.py`.
 
 **Interfaces:**
@@ -1340,6 +1341,15 @@ identity. Check numeric regeneration against raw rows, error/missing artifact
 refusal, malicious hashes/paths, negative conclusion and no canned metrics/plots.
 CLI tests invoke the smoke trainer and real miniature evaluator, not mocks claiming
 the command worked. Preserve all existing Phase1/2/3 commands and help behavior.
+Pilot `data freeze` obtains its fixed seeds from the closed profile, whereas the
+existing Phase1 branch still requires its explicit seed options. Test conditional
+requirements and reject conflicting pilot overrides. Root CLI registration adds
+the lightweight `train/__init__.py` and `train/pilot_cli.py` to the genuinely
+executed current-source closure. Keep heavy neural imports behind the actual
+guarded callbacks; extend exact AST exceptions only for those sites, not all local
+imports. Test real scripted CLI execution under heavy-import blockers and dirty
+registration-module rejection. Preserve the stronger codec-only import checks and
+all original pinned historical source inventories.
 
 - [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_cli.py tests/pilot/test_pilot_report.py tests/pilot/test_pilot_workflow.py`.
 
@@ -1378,6 +1388,13 @@ Publish each verified Task6 audit report's exact bytes at
 producer's auxiliary copied manifest/index can remain in the raw audit run
 directory; do not add redundant manifest copies to the source inventory. Require
 both the stage manifests and their audit reports committed before production fit.
+The reviewed trainer also authenticates the source/data introduction chain for
+debug inputs, while their small-corpus audits remain explicitly non-acceptance.
+Apply the same commit-data precondition to newly generated smoke inputs: list the
+exact manifest/audit paths and stop before optimization until introduction and a
+distinct compatible training revision exist. Never auto-commit the caller's
+checkout or bypass authentication. Document this initial input setup, then verify
+the full four-update smoke command using real temporary Git introduction fixtures.
 
 The orchestrator must refuse concurrent writers via an ownership record containing
 PID, process start identity and run identity. An existing live matching process is
