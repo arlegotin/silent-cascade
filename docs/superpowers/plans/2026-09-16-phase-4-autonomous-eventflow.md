@@ -305,7 +305,7 @@ source writers concurrently. Independent read-only work may overlap verification
 | 5 | `src/silent_cascade/eval/{runner,metrics,artifacts}.py`, `src/silent_cascade/logging/neural_trace.py` | compute instrumentation |
 | 6 | `src/silent_cascade/env/pilot.py`, `src/silent_cascade/train/pilot_data.py`, `src/silent_cascade/eval/pilot_audit.py` | generalize curriculum config boundary; reuse shortcut-probe mathematics |
 | 7 | `src/silent_cascade/eval/action_diagnostics.py`, `scripts/diagnose_phase4_actions.py` | no model/loss change by default |
-| 8 | `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,archive_tensors}.py` | narrowly extract common archive/optimization contracts |
+| 8 | `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,pilot_overfit,archive_tensors}.py` | narrowly extract common archive/optimization contracts; maintain current Phase3 source closure |
 | 9 | `src/silent_cascade/train/pilot_cli.py`, `src/silent_cascade/report/{__init__,pilot}.py`, `scripts/run_pilot.py`, `docs/phase4-autonomous-eventflow.md` | root CLI, Makefile, command/package tests |
 | 10 | `src/silent_cascade/train/pilot_verification.py` | new local numerical/offline/throughput tests |
 | 11 | `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence}.py`, `scripts/{check_phase4_pilot,verify_phase4_gate_artifact}.py` | finish source inventory, Phase4 delivery guard/tests |
@@ -1131,10 +1131,13 @@ diagnostic before the production fit; no claim that the action problem is solved
 
 **Files:**
 
-- Create: `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,archive_tensors}.py`.
+- Create: `src/silent_cascade/train/{pilot_state,pilot_checkpoints,pilot_trainer,pilot_provenance,pilot_overfit,archive_tensors}.py`.
 - Modify: `src/silent_cascade/train/{objective,checkpoints}.py` only for shared
   objective typing and safe tensor/archive helpers; preserve Phase3 wire format.
-- Create: `tests/pilot/{test_pilot_curriculum,test_pilot_trainer,test_pilot_checkpoints,test_pilot_source}.py`.
+- Modify: `src/silent_cascade/train/provenance.py` and
+  `tests/neural/test_phase3_provenance.py` to authenticate the newly extracted
+  archive helper in the current source closure. Preserve historical pinned tuples.
+- Create: `tests/pilot/{test_pilot_curriculum,test_pilot_trainer,test_pilot_checkpoints,test_pilot_source,test_pilot_overfit}.py`.
 
 **Interfaces:**
 
@@ -1162,6 +1165,25 @@ diagnostic before the production fit; no claim that the action problem is solved
 - `run_pilot_training(config: ResolvedConfig[Phase4Config], *,
   manifests: Mapping[str, Path], run_dir: Path, device: str, source_commit: str,
   resume: Path | None = None) -> PilotTrainingResult`.
+- `run_pilot_tiny_overfit(config: ResolvedConfig[Phase4Config], *, device: str,
+  output_dir: Path, source_commit: str) -> PilotOverfitResult` in
+  `pilot_overfit.py`: a separately identified engineering diagnostic, not an
+  alternate production or smoke profile. Its result records the actual workload,
+  ordered data hashes, source/config/model identities, updates, losses, gradients,
+  complete raw outcomes and artifact hashes, with `gate_eligible=False`.
+- Each supplied `<manifest_dir>/<stage>.json` has its actual audit report at
+  `<manifest_dir>/audits/<stage>/report.json`. Validate the Task6
+  `PilotAuditReport` schema, exact manifest/config/corpus and ordered projection/
+  oracle inventories, complete declared probes/controls, zero foundation calls
+  and derived acceptance before production optimization. Bind every executing
+  source-file entry to the real producer's regular Git blobs; reject omitted,
+  additional or unsafe paths. Require exact manifest and report introduction
+  blobs before the first update, with producer -> introduction -> training
+  ancestry and compatible executable/config/approved-plan bytes. These revisions
+  are distinct; never rewrite a producer revision to make them equal. Keep data
+  introductions separate from the executable-source digest. Debug reports remain
+  explicitly non-acceptance. Verify saved reports; do not rerun statistical fits
+  on every trainer startup. Task11 independently checks this chain.
 
 - [ ] **Step 1: Write promotion, global-budget and real resume tests.**
 
@@ -1183,8 +1205,10 @@ promotion booleans, missing rows, any dynamics error, wrong stage/checkpoint/has
 stale primary results during robustness, and a 75,001st update. Exercise patience,
 tie selection, no passing final checkpoint, best-three/latest-one retention,
 interruption before/after a durable checkpoint and exact CPU next update.
+Also reject missing, substituted or uncommitted audit reports, a dirty extracted
+archive helper and attempts to pass the tiny diagnostic as production validation.
 
-- [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_curriculum.py tests/pilot/test_pilot_trainer.py tests/pilot/test_pilot_checkpoints.py tests/pilot/test_pilot_source.py`.
+- [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_curriculum.py tests/pilot/test_pilot_trainer.py tests/pilot/test_pilot_checkpoints.py tests/pilot/test_pilot_source.py tests/pilot/test_pilot_overfit.py`.
 
 - [ ] **Step 3: Implement one objective, one optimizer and one global budget.**
 
@@ -1237,9 +1261,39 @@ a production promotion or accepted gate. Only Task 12 starts production training
 
 - [ ] **Step 4: Run GREEN:** trainer/curriculum/checkpoint tests, exact two-step
 CPU interrupted/uninterrupted update comparison, original Phase3 checkpoint and
-objective regressions. A tiny 64-example debug overfit run is diagnostic: show
-actual class/timing/guard losses and autonomous progress, never substitute it for
-the 10,000-episode promotion. Failure to learn triggers debugging before Task 12.
+objective/source regressions. Run the separately bounded tiny-data diagnostic:
+
+```python
+result = run_pilot_tiny_overfit(
+    resolve_pilot_config("phase4_smoke"), device="cpu",
+    output_dir=fresh_diagnostic_dir, source_commit=committed_source,
+)
+assert result.evidence_kind == "phase4_overfit_engineering_diagnostic"
+assert result.episode_count == 64
+assert result.optimizer_steps <= 1000
+assert result.gate_eligible is False
+```
+
+The immutable diagnostic recipe is `phase4-overfit-debug-v1`: seed 11, the existing
+debug architecture/optimizer/objective, exactly 64 one-hop examples from debug
+roots `449/457` at indices `0..63` (32 positive, 16 safe, 16 disconnected), repeated
+full batch 64, maximum 1,000 updates, and diagnostics at step zero and every 25
+updates. Share the real trainer's single-update implementation; the diagnostic
+driver owns this separate budget. Do not mutate the closed configuration, invent
+a pilot manifest, or serialize this as the four-update/16-example smoke workload.
+Record its actual workload independently of the model/optimizer base config.
+
+At each boundary, measure content and autonomous behavior from the same current
+weights. Reuse `EventEngine`, `NeuralEventFlowAgent` and `score_actions`; do not
+create another event loop, decoder or scorer. Preserve every episode's actions,
+score, trace identity and error, plus actual class/timing/guard losses, gradients
+and update identity. These are training-exposed debug examples, not validation.
+Stop at the first boundary with all 64 complete chains correct, at least 58/64
+timed successes, at most 3/32 negative false actions and zero dynamics errors,
+or at the 1,000-update ceiling. Earlier errors stay recorded; valid training can
+continue, while nonfinite training remains fatal. A diagnostic pass cannot enter
+promotion or checkpoint selection. If this bounded run does not learn, preserve
+the attempt and diagnose before Task12; never silently restart or extend it.
 - [ ] **Step 5: Commit:** `feat: train resumable autonomous EventFlow curricula`.
 
 ### Task 9: Expose Working Local Commands and an Artifact-Only Pilot Report
@@ -1319,6 +1373,11 @@ publish accepted evidence. Production fitting requires the four validation
 manifests already introduced in Git, as Task 12 specifies. If absent, create the
 requested validation files and stop before fitting with an explicit commit-data
 precondition, rather than silently training on an unrecorded freeze.
+Publish each verified Task6 audit report's exact bytes at
+`<manifest_dir>/audits/<stage>/report.json`, as consumed by Task8. The Task6
+producer's auxiliary copied manifest/index can remain in the raw audit run
+directory; do not add redundant manifest copies to the source inventory. Require
+both the stage manifests and their audit reports committed before production fit.
 
 The orchestrator must refuse concurrent writers via an ownership record containing
 PID, process start identity and run identity. An existing live matching process is
@@ -1525,6 +1584,7 @@ task-scoped spec/quality review. Resolve source changes before production freeze
 **Files:**
 
 - Generate: `manifests/validation/phase4/{one_hop,two_hop,primary,robustness}.json`.
+- Generate: `manifests/validation/phase4/audits/{one_hop,two_hop,primary,robustness}/report.json` from the actual verified Task6 audit outputs, preserving exact bytes.
 - Generate: `manifests/validation/phase4/autonomous-gate-v1.json`,
   `manifests/validation/phase4/delivery.json`,
   `manifests/validation/phase4/compact/` acceptance rows, `reports/phase4-pilot-v1/`.
@@ -1550,6 +1610,10 @@ production validation manifests from it, run their oracle/shortcut audits, then
 commit them separately without changing their bytes. Record both source and
 manifest-introduction commits. This is a pilot validation freeze, not the Phase6
 architecture/test freeze and not the `experiment-v1-freeze` tag.
+Include each verified audit report at its Task8/9 sibling locator in that data
+commit and record its exact introduction/hash too. Keep auxiliary copied
+manifests/indexes in the raw audit directory; the trainer verifies published
+reports instead of repeating the statistical fits at startup.
 
 - [ ] **Step 2: Start or resume exactly one authenticated pilot.**
 
