@@ -86,6 +86,7 @@ PHASE3_SOURCE_PATHS = (
     "src/silent_cascade/schemas.py",
     "src/silent_cascade/train/__init__.py",
     "src/silent_cascade/train/__main__.py",
+    "src/silent_cascade/train/archive_tensors.py",
     "src/silent_cascade/train/batches.py",
     "src/silent_cascade/train/checkpoints.py",
     "src/silent_cascade/train/cli.py",

@@ -11,19 +11,35 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_checkout_keeps_source_bytes_and_modes_with_fresh_timestamps(tmp_path):
+    import stat
+    import time
+
+    before = time.time()
+    root = checkout(tmp_path / "source")
+    original = ROOT / "src/silent_cascade/eventflow/config.py"
+    copied = root / "src/silent_cascade/eventflow/config.py"
+    assert copied.read_bytes() == original.read_bytes()
+    assert stat.S_IMODE(copied.stat().st_mode) == stat.S_IMODE(original.stat().st_mode)
+    assert copied.stat().st_mtime >= before
+
+
 def checkout(path):
     """Real isolated Git history containing the currently executing implementation."""
     path.mkdir()
     for directory in ("src", "configs", "scripts", "docs/superpowers"):
         shutil.copytree(
-            ROOT / directory, path / directory, ignore=shutil.ignore_patterns("__pycache__")
+            ROOT / directory,
+            path / directory,
+            ignore=shutil.ignore_patterns("__pycache__"),
+            copy_function=shutil.copy,
         )
     for name in ("pyproject.toml", "uv.lock", ".gitignore"):
-        shutil.copy2(ROOT / name, path / name)
+        shutil.copy(ROOT / name, path / name)
     mapping = Path("manifests/validation/phase3/delivery.json")
     if (ROOT / mapping).exists():
         (path / mapping).parent.mkdir(parents=True)
-        shutil.copy2(ROOT / mapping, path / mapping)
+        shutil.copy(ROOT / mapping, path / mapping)
     for args in (
         ("init", "-q"),
         ("config", "user.email", "test@example.invalid"),
@@ -72,6 +88,7 @@ def test_source_closure_includes_ancestor_initializers_and_execution_consumers()
     for name in (
         "train/observations.py",
         "train/checkpoints.py",
+        "train/archive_tensors.py",
         "train/verification.py",
         "train/objective.py",
         "train/numeric_inventory.py",

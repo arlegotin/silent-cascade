@@ -45,6 +45,7 @@ from silent_cascade.eventflow.checkpoint_rng import (
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.rng import RngSnapshot, snapshot_global_rng
+from silent_cascade.train.archive_tensors import validate_moments as _validate_moments
 from silent_cascade.train.config import Phase3Config, parse_phase3_canonical
 from silent_cascade.train.state import CheckpointDescriptor, TrainingError, TrainProgress
 from silent_cascade.validation import JsonValue, StrictModel
@@ -321,20 +322,6 @@ def _optimizer_snapshot(model, optimizer, progress, config):
             tensors[f"optimizer/{name}/{kind}"] = tensor.detach().cpu().contiguous().clone()
     _validate_moments(tensors, progress.optimizer_step)
     return tuple(groups), tuple(sorted(state_names)), tensors
-
-
-def _validate_moments(tensors, global_step):
-    for name, value in tensors.items():
-        if not name.startswith("optimizer/"):
-            continue
-        if not bool(torch.isfinite(value).all()):
-            raise TrainingError("nonfinite AdamW state")
-        if name.endswith("/step"):
-            step = float(value)
-            if not 1 <= step <= global_step or not step.is_integer():
-                raise TrainingError("invalid AdamW step")
-        elif name.endswith("/exp_avg_sq") and bool((value < 0).any()):
-            raise TrainingError("negative AdamW second moment")
 
 
 def _config(config: ResolvedConfig[Phase3Config]) -> Phase3Config:
