@@ -225,6 +225,183 @@ def retained_evaluation(neural_archive_case, tmp_path):
     return case, identity, row, destination
 
 
+def test_trajectory_writer_records_origin_and_reads_legacy_exact_cpu(retained_evaluation):
+    import gzip
+
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.logging.neural_trace import validate_full_neural_trace
+
+    _, identity, row, root = retained_evaluation
+    payload = json.loads(gzip.decompress((root / row.full_trace_ref).read_bytes()))
+    assert payload["schema"] == "phase4-neural-trajectory-v2"
+    assert payload["origin_device"] == "cpu"
+    events = json.loads((root / row.neural_trace_ref).read_bytes())["causal_events"]
+    payload["schema"] = "phase4-neural-trajectory-v1"
+    del payload["origin_device"]
+    validate_full_neural_trace(
+        gzip.compress(canonical_json_bytes(payload), mtime=0),
+        identity_sha256=identity.sha256,
+        episode_sha256=row.episode_sha256,
+        events=events,
+        initialization_failed=False,
+    )
+
+
+def test_portable_terminal_rounding_does_not_relax_live_checkpoint_or_cpu(retained_evaluation):
+    import gzip
+
+    import torch
+
+    from silent_cascade.errors import DynamicsError
+    from silent_cascade.eventflow.invariants import validate_runtime_state
+    from silent_cascade.logging.neural_trace import _trajectory_state
+
+    _, _, row, root = retained_evaluation
+    anchor = json.loads(gzip.decompress((root / row.full_trace_ref).read_bytes()))["anchors"][-1]
+    assert anchor["core"]["mode"] == "terminal"
+    assert anchor["time"] > anchor["segment"]["started_at"]
+    values = anchor["core"]["continuous"]["focus_key"]["values"]
+    values[0] = torch.nextafter(torch.tensor(values[0]), torch.tensor(1.0)).item()
+    with pytest.raises(DynamicsError):
+        _trajectory_state(anchor)
+    # Portable construction retains original bits; it cannot silently normalize
+    # the tensor or weaken the ordinary exact live/checkpoint validator.
+    state = _trajectory_state(anchor, origin_device="mps")
+    assert state.core.continuous.focus_key[0].item() == values[0]
+    with pytest.raises(DynamicsError):
+        validate_runtime_state(state)
+    with pytest.raises(DynamicsError):
+        _trajectory_state(anchor, origin_device="cpu")
+    values[0] += 0.1
+    values[0] = torch.tensor(values[0]).item()
+    with pytest.raises(DynamicsError):
+        _trajectory_state(anchor, origin_device="mps")
+
+
+@pytest.mark.parametrize(
+    "corruption", ["zero_time", "nonterminal", "guards", "snapshot", "event_time", "provenance"]
+)
+def test_portable_validation_keeps_other_invariants_exact(retained_evaluation, corruption):
+    import gzip
+
+    import torch
+
+    from silent_cascade.errors import DynamicsError
+    from silent_cascade.logging.neural_trace import _trajectory_state
+
+    _, _, row, root = retained_evaluation
+    anchors = json.loads(gzip.decompress((root / row.full_trace_ref).read_bytes()))["anchors"]
+    anchor = anchors[0] if corruption == "zero_time" else anchors[-1]
+    if corruption in {"zero_time", "nonterminal"}:
+        values = anchor["core"]["continuous"]["focus_key"]["values"]
+        values[0] = torch.nextafter(torch.tensor(values[0]), torch.tensor(1.0)).item()
+        if corruption == "nonterminal":
+            anchor["core"]["mode"] = "observing"
+    elif corruption == "guards":
+        anchor["core"]["continuous"]["guard_accumulators"]["values"][0] = torch.tensor(1e-7).item()
+    elif corruption == "snapshot":
+        anchor["segment"]["prediction_snapshot_sha256"] = "f" * 64
+    elif corruption == "event_time":
+        anchor["core"]["last_event_time"] = anchor["time"] + 1.0
+    else:
+        anchor["core"]["memory"]["records"][0]["record"]["provenance"] = "inferred"
+    with pytest.raises((DynamicsError, ValueError)):
+        _trajectory_state(anchor, origin_device="mps")
+
+
+@pytest.mark.parametrize("origin", [None, "cuda", "MPS", 1])
+def test_nonempty_v2_trajectory_rejects_invalid_origin(retained_evaluation, origin):
+    import gzip
+
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.logging.neural_trace import validate_full_neural_trace
+
+    _, identity, row, root = retained_evaluation
+    payload = json.loads(gzip.decompress((root / row.full_trace_ref).read_bytes()))
+    payload.update(schema="phase4-neural-trajectory-v2", origin_device=origin)
+    events = json.loads((root / row.neural_trace_ref).read_bytes())["causal_events"]
+    with pytest.raises(ValueError, match="trajectory"):
+        validate_full_neural_trace(
+            gzip.compress(canonical_json_bytes(payload), mtime=0),
+            identity_sha256=identity.sha256,
+            episode_sha256=row.episode_sha256,
+            events=events,
+            initialization_failed=False,
+        )
+
+
+def test_empty_initialization_trajectory_requires_null_origin(tmp_path):
+    import gzip
+
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.logging.neural_trace import (
+        validate_full_neural_trace,
+        write_full_neural_trace,
+    )
+
+    path = tmp_path / "empty.gz"
+    write_full_neural_trace(
+        path, identity_sha256="a" * 64, episode_sha256="b" * 64, trajectory=None
+    )
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    assert payload["origin_device"] is None
+    validate_full_neural_trace(
+        path.read_bytes(),
+        identity_sha256="a" * 64,
+        episode_sha256="b" * 64,
+        events=[],
+        initialization_failed=True,
+    )
+    payload["origin_device"] = "mps"
+    with pytest.raises(ValueError, match="trajectory"):
+        validate_full_neural_trace(
+            gzip.compress(canonical_json_bytes(payload)),
+            identity_sha256="a" * 64,
+            episode_sha256="b" * 64,
+            events=[],
+            initialization_failed=True,
+        )
+
+
+def test_writer_rejects_mixed_snapshot_devices_before_publication(retained_evaluation, tmp_path):
+    import gzip
+    from dataclasses import fields, is_dataclass, replace
+    from types import SimpleNamespace
+
+    import torch
+
+    from silent_cascade.logging.neural_trace import _trajectory_state, write_full_neural_trace
+
+    if not torch.backends.mps.is_available():
+        pytest.skip("native MPS required for genuinely mixed CPU/MPS snapshots")
+    _, identity, row, root = retained_evaluation
+    anchor = json.loads(gzip.decompress((root / row.full_trace_ref).read_bytes()))["anchors"][0]
+    cpu = _trajectory_state(anchor)
+
+    def move(value):
+        if isinstance(value, torch.Tensor):
+            return value.to("mps")
+        if is_dataclass(value):
+            return replace(value, **{f.name: move(getattr(value, f.name)) for f in fields(value)})
+        if isinstance(value, tuple):
+            return tuple(move(v) for v in value)
+        return value
+
+    native = move(cpu)
+    from silent_cascade.eventflow.invariants import validate_runtime_state
+
+    validate_runtime_state(native)
+    destination = tmp_path / "mixed.gz"
+    with pytest.raises(ValueError, match=r"uniform.*origin"):
+        write_full_neural_trace(
+            destination,
+            identity_sha256=identity.sha256,
+            episode_sha256=row.episode_sha256,
+            trajectory=SimpleNamespace(checkpoint_snapshots=lambda: (cpu, native)),
+        )
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize("substitution", ["neural_sidecar", "other_episode", "other_evaluation"])
 def test_retained_trajectory_substitution_never_publishes_done(
     retained_evaluation, tmp_path, substitution

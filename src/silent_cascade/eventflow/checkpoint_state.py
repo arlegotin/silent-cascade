@@ -145,6 +145,16 @@ def _metadata_hash(payload: dict) -> str:
 def _decode_state(
     metadata: StateMetadata, prefix: str, tensors: dict[str, torch.Tensor], device: str
 ) -> RuntimeState:
+    state = _construct_state(metadata, prefix, tensors, device)
+    validate_runtime_state(state)
+    return state
+
+
+def _construct_state(
+    metadata: StateMetadata, prefix: str, tensors: dict[str, torch.Tensor], device: str
+) -> RuntimeState:
+    """Private construction shared by exact archives and portable trace validation."""
+
     def channels(group, cls):
         return cls(
             **{
@@ -175,7 +185,6 @@ def _decode_state(
         ),
         metadata.time,
     )
-    validate_runtime_state(state)
     return state
 
 

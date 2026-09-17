@@ -115,10 +115,17 @@ def _host(value):
 def write_full_neural_trace(path: Path, *, identity_sha256, episode_sha256, trajectory):
     """Lossless float32 JSON anchors compressed deterministically, one episode at a time."""
     snapshots = () if trajectory is None else trajectory.checkpoint_snapshots()
+    devices = _snapshot_devices(snapshots)
+    if (snapshots and (len(devices) != 1 or not devices <= {"cpu", "mps"})) or (
+        not snapshots and devices
+    ):
+        raise ValueError("trajectory requires one uniform native origin device")
+    origin_device = next(iter(devices)) if devices else None
     raw = gzip.compress(
         canonical_json_bytes(
             {
-                "schema": "phase4-neural-trajectory-v1",
+                "schema": "phase4-neural-trajectory-v2",
+                "origin_device": origin_device,
                 "identity_sha256": identity_sha256,
                 "episode_sha256": episode_sha256,
                 "anchors": [_host(state) for state in snapshots],
@@ -130,15 +137,36 @@ def write_full_neural_trace(path: Path, *, identity_sha256, episode_sha256, traj
     return sha256_bytes(raw)
 
 
+def _snapshot_devices(value):
+    if isinstance(value, torch.Tensor):
+        return {value.device.type}
+    if is_dataclass(value):
+        return set().union(*(_snapshot_devices(getattr(value, f.name)) for f in fields(value)))
+    if isinstance(value, dict):
+        return set().union(*(_snapshot_devices(v) for v in value.values()))
+    if isinstance(value, (tuple, list)):
+        return set().union(*(_snapshot_devices(v) for v in value))
+    return set()
+
+
 def _trajectory_object(value, keys):
     if not isinstance(value, dict) or set(value) != set(keys):
         raise ValueError("invalid trajectory object fields")
     return value
 
 
-def _trajectory_state(anchor):
-    """Adapt the existing JSON wire layout to the shared typed CPU state decoder."""
-    from silent_cascade.eventflow.checkpoint_state import CoreMetadata, StateMetadata, _decode_state
+def _trajectory_state(anchor, *, origin_device="cpu"):
+    """Keep exact archive decoding separate from declared portable MPS evidence."""
+    from silent_cascade.eventflow.checkpoint_state import (
+        CoreMetadata,
+        StateMetadata,
+        _construct_state,
+        _decode_state,
+    )
+    from silent_cascade.eventflow.invariants import _validate_portable_mps_trajectory_state
+
+    if origin_device not in {"cpu", "mps"}:
+        raise ValueError("invalid trajectory origin device")
 
     anchor = _trajectory_object(anchor, ("core", "segment", "time"))
     core = dict(_trajectory_object(anchor["core"], (*CoreMetadata.model_fields, "continuous")))
@@ -210,7 +238,11 @@ def _trajectory_state(anchor):
             }
         )
     )
-    return _decode_state(metadata, "anchor", tensors, "cpu")
+    if origin_device == "cpu":
+        return _decode_state(metadata, "anchor", tensors, "cpu")
+    state = _construct_state(metadata, "anchor", tensors, "cpu")
+    _validate_portable_mps_trajectory_state(state)
+    return state
 
 
 def validate_full_neural_trace(
@@ -242,12 +274,19 @@ def validate_full_neural_trace(
             or decoder.unconsumed_tail
         ):
             raise ValueError("invalid or oversized trajectory gzip member")
-        payload = _trajectory_object(
-            json.loads(decoded, object_pairs_hook=unique_object, parse_constant=reject_constant),
-            ("schema", "identity_sha256", "episode_sha256", "anchors"),
+        payload = json.loads(
+            decoded, object_pairs_hook=unique_object, parse_constant=reject_constant
         )
+        version = payload.get("schema") if isinstance(payload, dict) else None
+        if version not in {"phase4-neural-trajectory-v1", "phase4-neural-trajectory-v2"}:
+            raise ValueError("invalid trajectory schema")
+        keys = ("schema", "identity_sha256", "episode_sha256", "anchors")
+        payload = _trajectory_object(
+            payload, keys + (("origin_device",) if version.endswith("v2") else ())
+        )
+        origin_device = payload.get("origin_device", "cpu")
         if (payload["schema"], payload["identity_sha256"], payload["episode_sha256"]) != (
-            "phase4-neural-trajectory-v1",
+            version,
             identity_sha256,
             episode_sha256,
         ):
@@ -256,11 +295,16 @@ def validate_full_neural_trace(
         expected_count = 0 if initialization_failed else len(events) + 1
         if not isinstance(anchors, list) or len(anchors) != expected_count:
             raise ValueError("trajectory anchor count mismatch")
+        if version.endswith("v2") and (
+            (not anchors and origin_device is not None)
+            or (anchors and origin_device not in ("cpu", "mps"))
+        ):
+            raise ValueError("trajectory origin device differs from anchor inventory")
         if initialization_failed:
             if events:
                 raise ValueError("initialization failure cannot have trajectory events")
             return
-        previous = _trajectory_state(anchors[0])
+        previous = _trajectory_state(anchors[0], origin_device=origin_device)
         if (
             previous.core.mode is not Mode.OBSERVING
             or previous.core.last_event_id is not None
@@ -272,7 +316,7 @@ def validate_full_neural_trace(
         ):
             raise ValueError("invalid initial trajectory anchor")
         for anchor, event in zip(anchors[1:], events, strict=True):
-            state = _trajectory_state(anchor)
+            state = _trajectory_state(anchor, origin_device=origin_device)
             if (
                 previous.core.mode is Mode.TERMINAL
                 or state.time < previous.time

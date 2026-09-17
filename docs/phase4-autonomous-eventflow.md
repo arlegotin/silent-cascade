@@ -281,3 +281,45 @@ canonical configuration hash
 `f9b1fa70f4bbb075fef516b491125ff975cdb36301639741a44ad1f92956069b`.
 The recipe uses roots 449/457, fixed indices 0–63, generator `ofd-v1` and
 one-hop transform `ofd-one-hop-v1` inside `phase4-data-v1`.
+
+## Task 10 numerical and workload diagnostics
+
+`verify_pilot_numerics(config, checkpoint=..., output_dir=...)` checks the actual
+combined objective on one-hop and maximum-four-hop debug batches. It enumerates
+every timed/content objective-boundary tensor, loss reduction, named gradient,
+updated state tensor and AdamW moment independently. CPU continuation is exact;
+native MPS continuation uses the approved tolerances and exact RNG/next-batch
+identity. Missing native MPS is reported as missing evidence.
+
+The optional checkpoint must be a full `phase4-pilot-training-v1` archive.
+Portable-only weights cannot establish optimizer/RNG continuation and are
+rejected. Its original file hash and initial logical model hash remain distinct
+from diagnostic updates. Runtime comparison uses untouched exported weights on
+an explicitly addressed balanced subset of a real manifest. A supplied archive
+is not proof of selection: Task 11 must bind its hash to the selected descriptor.
+Artifact readers derive required capture/runtime inventories and recompute numeric
+and throughput summaries from retained raw evidence; merely rehashing a changed
+summary does not validate it. Original full archives, resume RNG observations and
+final diagnostic weights remain separate from the untouched inference export.
+
+New retained trajectories declare their actual CPU/MPS origin in schema v2.
+Portable CPU reading permits the existing forward tolerance only when recomputing
+positive-duration terminal flow from an MPS origin. Original float32 values,
+causal hashes, guards, decisions and timestamps remain unchanged. Live state and
+checkpoint validation stay exact; legacy v1 trajectories retain exact CPU checks.
+
+`profile_pilot(config, output_dir=...)` measures native, synchronized full updates
+and the actual scalar engine, retaining warmup/update rows and every evaluation
+failure. The production recipe uses batch 128, 16 warmups and 32 measured updates
+for each one-hop/four-hop device trial, plus 256 manifest-addressed autonomous
+episodes per device. The smoke recipe is explicitly diagnostic and smaller.
+Reports include component-evaluation costs, event/error distributions, process
+RSS high-water and separate tensor-memory estimates, measured retained bytes,
+and a conditional compute/storage range. Final acceptance/replay stays on CPU.
+
+Actual uncontended production-dimensional measurements and the final selected
+checkpoint checks are not established yet. Concurrent unrelated workloads must
+finish before publishing device-choice timings. A fresh full local `make verify`
+must pass before production preflight. Recheck free space at a stable retained
+destination; system temporary directories are unsuitable for multi-day evidence.
+No throughput or debug report satisfies a training, accuracy or final-weight gate.

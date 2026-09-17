@@ -138,6 +138,39 @@ def validate_runtime_state(state: RuntimeState) -> None:
     Terminal states retain their preceding segment and reset guards, so their
     latent flow is checked against that segment without claiming a new origin.
     """
+    expected = _validated_runtime_flow(state)
+    for item in fields(ContinuousChannels):
+        _require(
+            torch.equal(getattr(state.core.continuous, item.name), getattr(expected, item.name)),
+            "continuous_matches_segment",
+        )
+    _validate_materialized_guards(state, expected)
+
+
+@_typed_boundary
+def _validate_portable_mps_trajectory_state(state: RuntimeState) -> None:
+    """CPU artifact reader only; never used by live or checkpoint restoration.
+
+    MPS terminal flow may differ after positive elapsed time on CPU. Keep source
+    bits intact and all other invariants exact; no caller-selected tolerances.
+    """
+    _require(state.core.continuous.device.type == "cpu", "portable_cpu_reader")
+    expected = _validated_runtime_flow(state)
+    cross_device_terminal = (
+        state.core.mode is Mode.TERMINAL and state.time > state.segment.started_at
+    )
+    for item in fields(ContinuousChannels):
+        actual, reference = getattr(state.core.continuous, item.name), getattr(expected, item.name)
+        _require(
+            torch.allclose(actual, reference, rtol=1e-4, atol=1e-5)
+            if cross_device_terminal
+            else torch.equal(actual, reference),
+            "continuous_matches_segment",
+        )
+    _validate_materialized_guards(state, expected)
+
+
+def _validated_runtime_flow(state: RuntimeState):
     _require(isinstance(state, RuntimeState), "runtime_state")
     require_time(state.time, "runtime time")
     _validate_core(state.core, state.time)
@@ -179,12 +212,10 @@ def validate_runtime_state(state: RuntimeState) -> None:
         ),
         "prediction_snapshot",
     )
-    expected = state_at(state, state.time)
-    for item in fields(ContinuousChannels):
-        _require(
-            torch.equal(getattr(state.core.continuous, item.name), getattr(expected, item.name)),
-            "continuous_matches_segment",
-        )
+    return state_at(state, state.time)
+
+
+def _validate_materialized_guards(state, expected):
     if state.core.mode is Mode.TERMINAL:
         _require(
             not bool(torch.count_nonzero(state.core.continuous.guard_accumulators)),
