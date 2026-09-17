@@ -1555,11 +1555,11 @@ expectations. No concurrent training job should exist when the pilot starts.
 
 **Files:**
 
-- Create: `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence}.py`.
+- Create: `src/silent_cascade/train/{pilot_evidence_types,pilot_evidence,pilot_checks}.py`.
 - Create: `scripts/check_phase4_pilot.py`, `scripts/verify_phase4_gate_artifact.py`.
-- Modify: `src/silent_cascade/train/pilot_provenance.py`, `scripts/run_pilot.py`,
+- Modify: `src/silent_cascade/train/{pilot_provenance,pilot_workflow}.py`, `scripts/run_pilot.py`,
   `tests/integration/test_phase0_repository.py` for the actual Phase4 delivery guard.
-- Create: `tests/pilot/{test_pilot_evidence,test_pilot_gate_verifier,test_pilot_delivery}.py`.
+- Create: `tests/pilot/{test_pilot_evidence,test_pilot_gate_verifier,test_pilot_delivery,test_pilot_checks}.py`.
 
 **Interfaces:**
 
@@ -1570,15 +1570,43 @@ expectations. No concurrent training job should exist when the pilot starts.
 - `collect_pilot_evidence(*, run_dir: Path, config: ResolvedConfig[Phase4Config],
   output_path: Path) -> Phase4GateArtifact`: authenticates actual raw execution
   artifacts; cannot manufacture outcomes from a config or cached success flag.
+  Collection, independent verification and reporting are artifact-only: none
+  may implicitly train, evaluate or perform a fresh neural replay.
 - `verify_phase4_gate_artifact(artifact_path: Path, *, repo_root: Path,
   raw_run_dir: Path | None = None) -> dict`: independently validates source,
   introduction history, recomputed aggregates and all gate conditions. With raw
   data present, rehash and recompute every referenced row; portable verification
   must say explicitly which raw attachments were unavailable and cannot claim a
   full reproduction without them.
-- `check_phase4_pilot.py`: CLI entry to complete selected-weight evaluation,
-  repeat, delay pairs, runtime checkpoint/replay, final numerics and collector;
-  uses actual Task 5/10 APIs, does not rerun training.
+- `run_pilot_checks(*, run_dir: Path, config: ResolvedConfig[Phase4Config],
+  output_path: Path) -> Phase4GateArtifact` in `pilot_checks.py`: shared execution
+  driver for selected-weight evaluation, repeat, delay pairs, runtime
+  checkpoint/replay, final numerics, offline check and evidence collection.
+  Consume actual Task 5/10 APIs; do not duplicate the trainer or event engine.
+- `check_phase4_pilot.py`: source CLI for the shared package driver, also called
+  by `pilot_workflow.py`. Never import source-only scripts from the installed
+  package or duplicate its final-check loop. Do not rerun training. Discover
+  manifest/audit locations from authenticated training-archive data introductions
+  and validate their paths/source/introduction history; do not guess directories.
+
+Task 9 placed orchestration and locking in the installed package, while the
+original Task 11 file map named only its source wrapper. This integration
+clarification keeps the two entrypoints on one scientific path without changing
+any workload, threshold or evidence requirement. The workflow owns the permanent
+run lock; avoid nested acquisition. A standalone checker must exclude concurrent
+training/check execution. Reuse authenticates execution device and purpose as
+well as source/config/data/weights. Final acceptance evaluations execute on CPU
+even after MPS training. Persist closed execution/continuation/replay evidence;
+a device request marker, checkpoint hash or cached passed flag alone is not proof
+that the claimed workload ran. Final numerics consumes the selected full training
+archive, not portable weights or the root selection metadata file.
+
+`PilotTrainingResult.gate_eligible` remains the learning-selection result. The
+complete production command separately honors the final evidence gate, publishes
+its failed outcome when unmet, and returns nonzero. If training stops naturally
+without a selected checkpoint, preserve a failed result with missing final
+evidence; never substitute latest weights as an acceptance selection. Debug runs
+remain non-acceptance, and execution `DONE` is not a passing scientific gate.
 
 - [ ] **Step 1: Write adversarial collector/verifier tests.**
 
@@ -1596,7 +1624,14 @@ foreign loaded package, omitted source file, modified approved plan, source chan
 mid-run, wrong variant denominators, conditional-only success, untested MPS tensors,
 missing CPU replay, hidden failed delay pairs and a debug run relabeled production.
 
-- [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_evidence.py tests/pilot/test_pilot_gate_verifier.py tests/pilot/test_pilot_delivery.py`. Preserve historical Phase1/2/3 rejection tests, not only their passing pinned-checkout path.
+Use a real tiny debug execution to cover the shared driver and standalone CLI
+without a second fit, CPU final-execution identity, compatible reuse, concurrent
+owner refusal, natural failed-learning preservation, and nonzero final status
+when eligible training is followed by a failed final gate. Check that the
+installed package imports without source-only scripts. Compact evidence parsing
+must reject malformed, duplicate-key, nonfinite and over-limit attachments.
+
+- [ ] **Step 2: Run RED:** `uv run pytest -q tests/pilot/test_pilot_evidence.py tests/pilot/test_pilot_gate_verifier.py tests/pilot/test_pilot_delivery.py tests/pilot/test_pilot_checks.py`. Preserve historical Phase1/2/3 rejection tests, not only their passing pinned-checkout path.
 
 - [ ] **Step 3: Implement a complete source and artifact chain.**
 
