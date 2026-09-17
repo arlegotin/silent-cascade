@@ -172,7 +172,8 @@ class UnitRef:
 
 def seal_unit(*, run_dir: Path, control_dir: Path, logical_root: str,
               paths: tuple[str, ...], kind: str, identity: dict,
-              policy: ArchivePolicy) -> UnitRef: ...
+              policy: ArchivePolicy,
+              episode_groups: tuple[tuple[str, ...], ...] = ()) -> UnitRef: ...
 def iter_unit_files(control_dir: Path, ref: UnitRef) -> Iterator[FileEntry]: ...
 def iter_unit_chunks(*, run_dir: Path, control_dir: Path, ref: UnitRef,
                      scratch_dir: Path, policy: ArchivePolicy) -> Iterator[Path]: ...
@@ -202,6 +203,11 @@ shared parent directories among disjoint journal segments.
 before calling codecs. `selected_paths` must be an exact authenticated episode
 owned-file set or an explicit bounded diagnostic selection, never caller-supplied
 unchecked spans. Full-unit restore remains subject to the same admission ledger.
+For `episode_pack`, `episode_groups` is required to form an exact disjoint partition
+of owned paths, with nonempty sorted groups and the declared count/episode bounds.
+Authenticate it in the manifest. Do not infer episode ownership from directories:
+real ordinal payloads are flat files and crash files can live elsewhere. Task 4
+supplies the groups from durable episode commits. Other kinds use no episode groups.
 
 - [ ] **Step 1 — RED: exact bytes and unsafe inventories.** Add this synthetic
   test, then traversal/symlink/hardlink/special-file, duplicate logical member,

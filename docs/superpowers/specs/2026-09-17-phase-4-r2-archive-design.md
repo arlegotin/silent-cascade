@@ -181,6 +181,9 @@ and abandonment bindings.
    path/size/hash inventory and shared input references. Without it no live-writer
    eviction is legal. Shared crash weights remain pinned through finalization;
    they are never owned by the first failed episode.
+   Transport manifests authenticate explicit episode-owned path groups; directory
+   names cannot establish ownership because ordinal files are flat and crash
+   files can live in another directory.
 4. Pack committed episodes, upload/readback/receipt, then evict exact unchanged
    owned payloads. Keep active rows/controls. Backpressure is between episodes,
    not a change to neural computation.
