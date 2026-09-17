@@ -1559,6 +1559,8 @@ expectations. No concurrent training job should exist when the pilot starts.
 - Create: `scripts/check_phase4_pilot.py`, `scripts/verify_phase4_gate_artifact.py`.
 - Modify: `src/silent_cascade/train/{pilot_provenance,pilot_workflow}.py`, `scripts/run_pilot.py`,
   `tests/integration/test_phase0_repository.py` for the actual Phase4 delivery guard.
+- Modify: `tests/pilot/test_pilot_workflow.py` to verify the expanded, explicitly
+  named final-evaluation report inventory while retaining interrupted-run checks.
 - Create: `tests/pilot/{test_pilot_evidence,test_pilot_gate_verifier,test_pilot_delivery,test_pilot_checks}.py`.
 
 **Interfaces:**
