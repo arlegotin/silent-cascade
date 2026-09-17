@@ -301,11 +301,17 @@ Consumes Task 1 units and safe no-follow file operations.
 
 ```python
 class ObjectTransport(Protocol):
+    transport_id: str  # stable opaque SHA256 of the operational destination identity
     def create(self, key: str, source: Path) -> None: ...
     def download(self, key: str, destination: Path, *, max_bytes: int) -> None: ...
 
 class R2CliTransport:
     def __init__(self, *, profile: str, bucket: str, prefix: str): ...
+
+def initialize_remote_reservations(*, control_dir: Path, transport_id: str,
+                                  accounted_bytes: int,
+                                  accounting_evidence_sha256: str,
+                                  policy: ArchivePolicy) -> None: ...
 
 def archive_unit(*, run_dir: Path, control_dir: Path, ref: UnitRef,
                  transport: ObjectTransport, policy: ArchivePolicy) -> str: ...
@@ -320,6 +326,17 @@ only the R2 CLI implementation. `evict_unit` requires the archive/writer locks,
 zero active leases, exact current file hashes and a committed catalog generation.
 Reject eviction of `control_snapshot` source files; snapshots version mutable
 controls for recovery, while the active local controls remain pinned.
+
+Remote reservation bootstrap is explicit and create-only. Bind the transport
+identity, strict accounted byte count within policy, and actual accounting-
+evidence hash; a supplied label/hash alone does not establish production
+qualification. Missing/corrupt history never implies zero usage. Refuse automatic
+reinitialization when prior remote-archive/catalog-commit/receipt/eviction history
+exists; pending local units alone are not proof of remote writes. Fixtures may
+attest a newly empty directory transport. Task7 supplies measured production
+initialization evidence and carries qualification usage into the production
+budget. A changed prefix or lost local ledger does not reset usage; catalog-only
+recovery is read-only until reservation history is authenticated.
 
 - [ ] **Step 1 — RED:** add `test_readback_corruption_never_authorizes_eviction`,
   `test_existing_different_object_is_not_overwritten`, and recovery cut-point tests.

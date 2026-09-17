@@ -229,6 +229,13 @@ manifests, catalogs and ambiguous/failed attempts. A retry of the same verified
 object does not consume a second unique-object reservation. Never reset usage on
 restart or ignore orphaned/unconfirmed writes to remain under the configured cap.
 
+Initialize this reservation history explicitly from measured accounting evidence,
+using a create-only record bound to the operational destination identity. Missing
+or corrupt history is not a fresh zero balance. Qualification bytes carry into
+production accounting; changing a prefix does not reset usage. Catalog-only
+evidence recovery cannot authorize new remote writes until reservation history
+is authenticated. Pending local units do not themselves imply remote usage.
+
 Lifecycle:
 
 1. The offline owner seals a closed inventory under its lock.
