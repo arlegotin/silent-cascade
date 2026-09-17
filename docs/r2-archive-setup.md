@@ -86,3 +86,9 @@ It must cover the following before the production pilot can use R2:
 
 R2 is an archive destination, not a mounted filesystem or a substitute for
 retention, scientific gates, reproducible evidence or CPU replay.
+
+The proposed [storage design](superpowers/specs/2026-09-17-phase-4-r2-archive-design.md)
+and [Phase 4 implementation-plan amendment](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
+now specify the producer, journal, lease, recovery and verification changes. They
+remain pending explicit plan approval; the commands and limits in that plan are
+implementation requirements, not already available archive functionality.

@@ -13,3 +13,8 @@ The canonical requirements live in the [design specification](superpowers/specs/
 | 6A — Freeze preparation | Governed by a separate plan after the Phase 5 gate | Phase 5 must pass first |
 | 6B — Final runs | Governed by a separate plan after the explicit freeze checkpoint | Frozen protocol required |
 | 7 — Optional showcase | Governed by a separate optional plan after Phase 6 | Scientific release path required |
+
+Phase 4 storage follow-up: [bounded R2 archive design](superpowers/specs/2026-09-17-phase-4-r2-archive-design.md)
+and [implementation-plan amendment](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
+are proposed and await explicit plan approval. R2 provisioning is verified;
+archive integration and the production pilot are not yet complete.
