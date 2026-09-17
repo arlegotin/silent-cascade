@@ -547,3 +547,20 @@ acceptance, convergence or throughput evidence. No production fit, new full
 profile, production audit or Task 12 execution was started. **Phase 4 remains
 incomplete and production remains storage-blocked** under the unchanged Task 10
 headroom result above; its historical native parameter-parity failure is retained.
+
+## R2 provisioning update (2026-09-17)
+
+The owner authorized a private remote archive as a response to the local storage
+limit. The dedicated `silent-cascade-artifacts` R2 bucket and bucket-only local
+credentials are now provisioned. A tiny upload/download passed byte and SHA-256
+comparison; its test object was removed, and access to an unrelated bucket was
+denied. See [R2 archive setup](r2-archive-setup.md) for the verified scope and local
+credential handling.
+
+No experiment evidence was uploaded or deleted. The current trainer and evidence
+readers have not acquired remote-storage support, and the historical preflight
+has not been relaxed. Storage implementation requires an explicitly user-approved,
+phase-scoped Superpowers plan or amendment. **Task 12 remains unstarted** until
+the reviewed storage integration demonstrates bounded local space, verified
+archival and recovery while preserving offline scientific execution and every
+retention gate.
