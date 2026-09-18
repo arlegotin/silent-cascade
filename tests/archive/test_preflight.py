@@ -1,5 +1,7 @@
 """Frozen engineering custody must consume the existing global allowance."""
 
+import hashlib
+import json
 import os
 import subprocess
 
@@ -161,6 +163,236 @@ def test_bootstrap_refuses_insufficient_physical_space_before_output(tmp_path, m
     with pytest.raises(ledger.StorageBlocked):
         bootstrap(tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_bootstrap_metadata_peak_refusal_does_not_publish_anything(tmp_path, existing):
+    policy = ArchivePolicy(metadata_bytes=16384 if existing else 4096, page_bytes=4096)
+    workspace = tmp_path / "operational"
+    if existing:
+        ledger.initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
+        (workspace / ".silent-cascade-storage/prior-output").write_bytes(b"x" * 8192)
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(ledger.StorageBlocked, match="metadata"):
+        bootstrap(tmp_path, policy=policy)
+    after = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert after == before
+    assert not (tmp_path / ".silent-cascade-engineering.json").exists()
+    assert not (workspace / ".silent-cascade-storage/retained").exists()
+    if not existing:
+        assert not workspace.exists()
+
+
+def test_bootstrap_cannot_spend_an_existing_metadata_owners_reservation(tmp_path):
+    policy = ArchivePolicy()
+    workspace = tmp_path / "operational"
+    ledger.initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
+    budget = ledger._StorageBudget(workspace=workspace, policy=policy)
+    with budget.reserve(metadata=4096):
+        before = (budget.root / "workspace.json").read_bytes()
+        with pytest.raises(ledger.StorageBlocked, match=r"metadata.*owned"):
+            bootstrap(tmp_path, policy=policy)
+        assert (budget.root / "workspace.json").read_bytes() == before
+        assert not (tmp_path / ".silent-cascade-engineering.json").exists()
+        assert not (budget.root / "retained").exists()
+
+
+def test_linked_inventory_preserves_reverse_rows_with_two_bounded_traversals(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    for group in range(3):
+        original = tmp_path / f"{group}-a"
+        original.write_bytes(bytes([group]) * 17)
+        os.link(original, tmp_path / f"{group}-b")
+        os.link(original, tmp_path / f"{group}-c")
+    inventory = preflight._inventory
+    traversals = []
+
+    def counted(*args, **kwargs):
+        traversals.append(kwargs)
+        yield from inventory(*args, **kwargs)
+
+    monkeypatch.setattr(preflight, "_inventory", counted)
+    forward = list(preflight._accounted_inventory(tmp_path, tmp_path / "operational"))
+    assert len(traversals) <= 2
+    traversals.clear()
+    reverse = list(preflight._accounted_inventory(tmp_path, tmp_path / "operational", reverse=True))
+    assert len(traversals) <= 2
+    assert forward == list(reversed(reverse))
+    assert sum(row["allocated"] for row in forward) == (
+        tmp_path.stat().st_blocks * 512 + 3 * (tmp_path / "0-a").stat().st_blocks * 512
+    )
+    assert [row["path"] for row in forward if row["path"] != "." and row["allocated"]] == [
+        "0-a",
+        "1-a",
+        "2-a",
+    ]
+    assert all(row["sha256"] is None for row in forward)
+
+
+@pytest.mark.parametrize(
+    "fault", ["external", "over_capacity", "changed_identity", "invalid_links"]
+)
+def test_linked_inventory_fails_closed_on_ambiguous_custody(tmp_path, monkeypatch, fault):
+    from silent_cascade.archive import preflight
+
+    for group in range(2):
+        (tmp_path / f"{group}-a").write_bytes(b"linked")
+        os.link(tmp_path / f"{group}-a", tmp_path / f"{group}-b")
+    if fault == "external":
+        os.link(tmp_path / "0-a", tmp_path.parent / (tmp_path.name + "-outside"))
+    elif fault == "over_capacity":
+        monkeypatch.setattr(preflight, "_LINKED_INODES_LIMIT", 1, raising=False)
+    else:
+        inventory = preflight._inventory
+
+        def corrupted(*args, **kwargs):
+            for row in inventory(*args, **kwargs):
+                if row["path"] == "0-b":
+                    row["inode" if fault == "changed_identity" else "links"] = 0
+                yield row
+
+        monkeypatch.setattr(preflight, "_inventory", corrupted)
+    with pytest.raises(ledger.StorageBlocked):
+        list(preflight._accounted_inventory(tmp_path, tmp_path / "operational"))
+
+
+@pytest.mark.parametrize(
+    ("page_bytes", "page_entries", "groups"),
+    [(95, 1000, [8, 1, 1, 1, 1]), (103, 1000, [9, 2, 1]), (103, 2, [2] * 6)],
+)
+def test_inventory_pages_preserve_exact_byte_and_entry_boundaries(page_bytes, page_entries, groups):
+    from silent_cascade.archive import preflight
+
+    # All rows deliberately have identical seven-byte encodings.
+    records = [{"n": index % 10} for index in range(12)]
+    pages = list(
+        preflight._pages(records, ArchivePolicy(page_bytes=page_bytes, page_entries=page_entries))
+    )
+    assert [len(page[2]) for page in pages] == groups
+    offset, previous = 0, None
+    for digest, raw, entries in pages:
+        expected_entries = records[offset : offset + len(entries)]
+        expected = json.dumps(
+            {"entries": expected_entries, "next": previous},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        assert raw == expected
+        assert digest == hashlib.sha256(expected).hexdigest()
+        assert entries == expected_entries
+        previous, offset = digest, offset + len(entries)
+
+
+def test_inventory_pages_escape_rows_and_refuse_oversize_after_head_changes():
+    from silent_cascade.archive import preflight
+
+    records = [{"x": 'é"\\\n'}, {"x": "another"}]
+    pages = list(preflight._pages(records, ArchivePolicy(page_entries=1, page_bytes=256)))
+    assert pages[0][1] == b'{"entries":[{"x":"\xc3\xa9\\"\\\\\\n"}],"next":null}'
+    assert pages[1][1] == (b'{"entries":[{"x":"another"}],"next":"' + pages[0][0].encode() + b'"}')
+    assert list(preflight._pages([], ArchivePolicy())) == []
+    with pytest.raises(ledger.StorageBlocked):
+        list(preflight._pages([{"n": 0}], ArchivePolicy(page_bytes=32)))
+    with pytest.raises(ledger.StorageBlocked):
+        list(preflight._pages([{"n": 0}, {"n": 1}], ArchivePolicy(page_bytes=33)))
+
+
+def test_inventory_page_serialization_work_is_linear_in_rows(monkeypatch):
+    from silent_cascade.archive import preflight
+
+    original = preflight.canonical_json_bytes
+    work = 0
+
+    def measured(value):
+        nonlocal work
+        work += len(value["entries"]) if "entries" in value else 1
+        return original(value)
+
+    monkeypatch.setattr(preflight, "canonical_json_bytes", measured)
+    records = [{"n": index} for index in range(512)]
+    pages = list(preflight._pages(records, ArchivePolicy(page_entries=128, page_bytes=4096)))
+    assert sum(len(page[2]) for page in pages) == 512
+    assert work <= 3 * len(records)
+
+
+def test_bootstrap_admits_allocation_blocks_not_preferred_io_size(tmp_path, monkeypatch):
+    values = list(os.statvfs(tmp_path))
+    values[0], values[1] = 1024**2, 4096
+    monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+    budget = bootstrap(tmp_path, policy=ArchivePolicy(metadata_bytes=1024**2, page_bytes=4096))
+    assert budget.check()["metadata"] < 65536
+
+
+def test_prelude_bounds_ignore_io_hint_but_preserve_allocation_geometry(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget, _transport, candidate, review = prepared_candidate(tmp_path)
+    selected = tuple(member for member in candidate.members if member.path in review.paths)
+    values = list(os.statvfs(tmp_path))
+    values[0], values[1] = 1024**2, 4096
+    monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+    large_io = preflight._prelude_bounds(budget, candidate, selected)
+    values[0] = 4096
+    small_io = preflight._prelude_bounds(budget, candidate, selected)
+    assert large_io == small_io
+    values[1] = 8192
+    larger_allocation = preflight._prelude_bounds(budget, candidate, selected)
+    assert all(larger_allocation[name] > large_io[name] for name in ("metadata", "scratch"))
+
+
+@pytest.mark.parametrize("fragment", [0, -4096, 1000])
+def test_bootstrap_rejects_unusable_allocation_geometry_without_output(
+    tmp_path, monkeypatch, fragment
+):
+    values = list(os.statvfs(tmp_path))
+    values[1] = fragment
+    monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+    with pytest.raises(ledger.StorageBlocked, match="allocation geometry"):
+        bootstrap(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_actual_atomic_archive_peaks_fit_derived_bounds_with_shared_history(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget, transport, candidate, review = prepared_candidate(tmp_path, extra=True)
+    fsync = os.fsync
+    observed, before = {}, {}
+
+    def measured_sync(descriptor):
+        fsync(descriptor)
+        # At file fsync the staged file is allocated; at directory fsync the
+        # publication is complete. Observe real physical categories in both.
+        measured = budget.measure()
+        for category in ("metadata", "scratch"):
+            observed[category] = max(observed[category], measured[category] - before[category])
+
+    for index in range(2):
+        if index:
+            remote = json.loads(
+                (budget.workspace / "control/remote-reservations/state.json").read_bytes()
+            )
+            assert remote["operational_head"]["entry_count"] > 0
+            candidate = next(preflight.iter_engineering_candidates(budget))
+            review = preflight.EngineeringContentReview(
+                candidate_id=candidate.candidate_id,
+                executable_sha256=candidate.executable_sha256,
+                paths=("tmp/task-1/safe/second.bin",),
+                producer_evidence_sha256="c" * 64,
+            )
+        selected = tuple(member for member in candidate.members if member.path in review.paths)
+        bound = preflight._prelude_bounds(budget, candidate, selected)
+        before, observed = budget.measure(), {"metadata": 0, "scratch": 0}
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "fsync", measured_sync)
+            preflight.archive_engineering_candidate(
+                budget=budget, candidate=candidate, review=review, transport=transport
+            )
+        assert 0 < observed["metadata"] <= bound["metadata"]
+        assert 0 < observed["scratch"] <= bound["scratch"]
+        assert not (tmp_path / review.paths[0]).exists()
 
 
 def prepared_candidate(root, *, policy=None, extra=False):

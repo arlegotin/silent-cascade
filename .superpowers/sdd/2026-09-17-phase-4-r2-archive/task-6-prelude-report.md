@@ -276,3 +276,181 @@ Files changed: archive/ledger.py, archive/types.py, new archive/preflight.py,
 train/pilot_evidence.py, new tests/archive/test_preflight.py,
 tests/pilot/test_pilot_source.py, and this report. No setup document, dependencies,
 CI, worktree, provider configuration or credentials were changed by this agent.
+
+## Fix round1 — bootstrap admission and measured feasibility defects
+
+Fix base43cb193f053f3ba8d82c2ce46a37dabb31f26092. Scope is the controller's
+task-6-prelude-fix1-brief.md, independent Important finding, and three measured
+feasibility defects. Status: DONE_WITH_CONCERNS pending fresh independent review.
+This section supersedes the earlier I/O-size rounding and repeated-inventory
+performance descriptions; earlier test evidence remains historical, not merged.
+
+### Corrections and root causes
+
+1. Bootstrap previously checked only normal/physical capacity before publishing
+   permanent authority/pages/v2 descriptor. Metadata category denial happened
+   afterward. It now separates external retained authority overhead from the
+   operational metadata peak and checks existing metadata allocation plus that
+   derived peak before any bootstrap publication. Any existing positive metadata
+   reservation is owned by another admission and blocks bootstrap, including a
+   fully consumed reservation whose ownership remains. Existing scratch-only
+   reservation migration is preserved. For compatible ledgers, workspace.lock is
+   held through ownership/admission checks and publication, avoiding a competing
+   reservation race. Old descriptor, authority absence and page absence are
+   asserted after fresh/compatible refusals. No new category or allowance.
+2. `_accounted_inventory` previously rescanned the entire tree once per linked
+   pathname. It now uses exactly two streaming traversals and a finite4096-inode
+   linked-only table: first collect identity/count/lexicographic-first-path,
+   reject external aliases/capacity/invalid links; then revalidate and emit the
+   original deterministic forward or reverse rows. Only the first path receives
+   physical charge, all linked members remain ineligible, and a changed/missing
+   group fails closed. No all-path map, persistent cache or scratch inventory.
+3. `_pages` previously serialized each growing page twice per new record. It now
+   counts each canonical row once, incrementally adds comma/header bytes, and
+   serializes the complete page once at publication. Exact bytes, hashes and
+   boundaries are unchanged, including UTF-8/escaping, null→hashed next-pointer
+   width, entry limit, exact byte limit, empty input and oversize first/later rows.
+   A512-row test observed66,556 serialized row-visits before the correction;
+   corrected work stays within the independent linear3N bound.
+4. `_allocation_unit` now derives physical rounding from validated f_frsize,
+   independent of f_bsize. It rejects nonpositive/nonintegral/out-of-range units,
+   units inconsistent with512-byte stat allocation counters, and invalid available
+   block counts. No fallback to a guessed unit. Both bootstrap and archival
+   formulas retain every prior inode/directory/atomic/old+new/catalog term.
+   [Apple's statvfs manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/fstatvfs.3.html)
+   identifies f_frsize as allocation granularity and f_bsize as preferred I/O
+   request size; on this APFS volume those differ4096 versus1,048,576.
+
+### Exact fix-round commands and RED/GREEN
+
+All tests used this common command, substituting the exact selection and unique
+label from the table. Only fresh counted fix1 fixtures were created:
+
+```sh
+env PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 \
+ TMPDIR="$PWD/.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/temp" \
+ TMP="$PWD/.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/temp" \
+ TEMP="$PWD/.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/temp" \
+ SILENT_CASCADE_ARCHIVE_TEST_SCRATCH="$PWD/.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/archive" \
+ SILENT_CASCADE_ARCHIVE_TEST_PRESERVE_SCRATCH=1 \
+ .venv/bin/python -m pytest <selection> -q \
+ --basetemp=.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/<label> \
+ -o cache_dir=.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/cache-<label>
+```
+
+P/L/S retain the explicit file/node meanings defined above.
+
+| Label | Selection | Actual output and explanation |
+| --- | --- | --- |
+| red-1 | P -k 'bootstrap_metadata_peak or existing_metadata_owners' |3failed,33deselected in0.56s. Fresh refusal left5new files; compatible atomic peak and metadata ownership cases DID NOT RAISE. |
+| green-1 | P -k 'bootstrap_metadata_peak or existing_metadata_owners or compatible_attach' |4passed,32deselected in0.50s. |
+| red-2 | P -k linked_inventory |3failed,2passed,36deselected in0.35s. Ten traversals exceeded2; capacity and invalid-link cases DID NOT RAISE. |
+| green-2 | P -k 'linked_inventory or linked_sparse or unsupported_entries' |7passed,34deselected in0.52s. |
+| red-3 | P -k 'inventory_pages or page_serialization' |1failed,4passed,41deselected in0.30s.66,556 serialized row-visits exceeded3*512. |
+| green-3 | P -k 'inventory_pages or page_serialization or multi_page' |6passed,40deselected in0.43s. |
+| red-4 | P -k 'preferred_io or allocation_geometry' |5failed,46deselected in0.87s. I/O hint incorrectly denied small bootstrap/changed archive bounds; invalid geometry lacked its own fail-closed validation. |
+| green-4 | P -k 'preferred_io or allocation_geometry or bootstrap_metadata_peak or existing_metadata_owners' |8passed,43deselected in0.75s. |
+| green-5 | P -k actual_atomic_archive |1passed,51deselected in10.60s. Two real small local-double archives, second with nonzero shared operational history. |
+| cover-1 | P L S |65passed in27.93s, no skips/deselections/warnings. Final source-bound covering after controller freeze. |
+
+The atomic-publication test observes actual category allocations at real file and
+directory fsync boundaries, including staged and published objects. For each of
+two archives it independently asserts positive observed metadata/scratch growth
+does not exceed the pre-derived respective bounds. The second uses the same
+remote ledger with an observed nonzero operational entry_count, not a new allowance.
+Only the transport endpoint is a local double; sealing, publication, receipts,
+eviction, ledger measurements and fsync remain real. This is not provider/native
+descriptor qualification. No unchanged neural suites/full gate were repeated.
+
+Final scoped commands:
+
+```sh
+env RUFF_CACHE_DIR="$PWD/.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/ruff" \
+ .venv/bin/ruff check src/silent_cascade/archive/preflight.py tests/archive/test_preflight.py
+# All checks passed!
+env RUFF_CACHE_DIR="$PWD/.superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-6-prelude-fix1/ruff" \
+ .venv/bin/ruff format --check src/silent_cascade/archive/preflight.py tests/archive/test_preflight.py
+# 2 files already formatted
+git diff --check
+# exit0, no output
+```
+
+An intermediate scoped Ruff check found one regex string needing a raw-string
+prefix; corrected before final covering. No default cache was used this round.
+Before the final report append, counted fix1 output8,708KiB; wholeplan5,997,512KiB,
+below64MiB additional output and the6GiB warning. Earlier evidence stayed intact.
+
+### Updated prospective formulas; not real admission
+
+Using only the earlier measured representative3,098,274-byte tensor,132pages and
+46,484,267-byte inventory bound from prelude-feasibility-prep.md, the corrected
+current source formulas give the following values. No new real-history snapshot,
+bootstrap, remote ledger or provider call was performed. Current executable formula
+was evaluated in memory, replacing absent-ledger readers with the explicitly
+listed prospective counts, exactly as the prior read-only diagnostic. Local
+reservation/completed-intent counts are0 scenarios, not observed real counters.
+
+| Prospective prior operational entries | Metadata | Scratch |
+| --- | ---: | ---: |
+|0 |88,029,457 |7,282,855 |
+|34 |92,290,711 |8,750,193 |
+|100 |100,562,557 |11,672,265 |
+
+Bootstrap becomes81,177,387bytes aggregate output, of which81,152,811 is operational
+metadata peak. With the historical retained6,132,498,432bytes, the normal inequality
+would leave765,646,037bytes after bootstrap peak. These stale-input scenarios are
+not executable authority; reviewer/report growth, real remote history, remaining
+reservations and fresh frozen identity must be measured later. The earlier
+prior34 scratch failure was specifically the incorrect1MiB I/O-size rounding;
+its correction does not reset any usage or increase the256MiB cap. Existing control
+reader limits and eventual cardinality limits remain unchanged.
+
+### Remaining lifecycle concern and interface assessment (not implemented)
+
+Controller's separate read-only grouping audit reports798 positive files in369
+actual candidate groups; top10/20/50 free approximately479/625/891MB. Even the six
+old roots alone have95,763rows/96pages/~31.6MB per generation; the full-plan
+inventory is larger. Current reverse-linked pages include the previous page hash,
+so an early changed ancestor row can change every downstream page hash. Keeping
+all generations while republishing the whole chain per tiny unit can exhaust the
+1GiB metadata category before useful reclamation. Geometry/performance fixes do
+not solve this separate load-bearing lifecycle problem. No page deletion, quota
+increase, source-authority reset or speculative catalog rewrite was added.
+
+For the controller's requested next-interface comparison:
+
+- **Stable-range immutable leaves plus a bounded authenticated index:** smaller
+  change to the existing single-unit recovery contract. Persist original path-range
+  boundaries (not shifting every1000 surviving rows), store leaf payloads without
+  predecessor hashes, and atomically reference an authenticated bounded index.
+  Unchanged leaves retain their hashes; only changed leaves and the small index
+  become a new generation. All old pages/indexes remain present and charged.
+  This mainly changes `_snapshot` publication, `_stored_records` authentication
+  and page/index capacity derivation, while preserving one pending receipt,
+  exact retained-sibling checks and atomic per-unit charge update. An explicit
+  bounded index capacity/schema and old-generation reading policy are required;
+  neither a mutable cache nor unauthenticated range hints are sufficient.
+- **Bounded multi-unit reclamation followed by one residual publication:** may
+  reduce generations, but changes the operational/recovery contract more widely.
+  It needs an authenticated cohort of reviews/receipts, union-of-removals residual
+  validation, admission covering all simultaneous controls and stranded scratch,
+  and deterministic interruption recovery across completed/partial units. Current
+  discovery refuses pending eviction and candidates bind the frozen snapshot, so
+  this cannot be achieved merely by looping existing archive calls. Old retained
+  charge must remain until the complete cohort is authenticated; no early credit.
+
+Recommendation for a separately approved correction: investigate stable ranges
+with a bounded authenticated index first. It retains the existing per-unit trust
+boundary and charges rather than introducing a multi-receipt pending state machine.
+Existing content-addressed create-only helpers can be reused; the public remote
+catalog has different strict record schemas and should not be reclassified as a
+private stat-inventory codec without explicit design. Exact changed-leaf/index
+growth and representative369-group feasibility still need proof, not assumption.
+
+Self-review: compared admission with existing reservation ownership arithmetic,
+checked external authority remains retained rather than falsely categorized,
+checked reverse linked rows and unchanged canonical page hashes, inspected staged
+allocation observations, and reran the real source-inventory closure. Changed
+files this round are only preflight.py, test_preflight.py and this appended report.
+No real authority/provider/bootstrap/history eviction occurred. Independent review
+and the retained-generation lifecycle correction precede real operational use.

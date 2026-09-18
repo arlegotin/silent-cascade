@@ -12,7 +12,7 @@ import os
 import re
 import stat
 import subprocess
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -33,6 +33,22 @@ from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 _AUTHORITY = ".silent-cascade-engineering.json"
 _TASKS = ("task-1", "task-2", "task-3", "task-4", "task-4-fix1", "task-4-fix2")
 _REGULAR_LIMIT = 128 * 1024**2
+_LINKED_INODES_LIMIT = 4096
+
+
+def _allocation_unit(volume):
+    # statvfs.f_frsize is the allocation unit. On Darwin f_bsize is only
+    # preferred I/O length (statfs.f_iosize), not physical allocation rounding.
+    unit = volume.f_frsize
+    if (
+        type(unit) is not int
+        or not 0 < unit <= 2**63 - 1
+        or unit % 512
+        or type(volume.f_bavail) is not int
+        or not 0 <= volume.f_bavail <= volume.f_blocks
+    ):
+        raise StorageBlocked("storage_blocked: unusable allocation geometry")
+    return unit
 
 
 def _require_single_authority(workspace: Path) -> None:
@@ -148,37 +164,61 @@ def _inventory(custody_root: Path, workspace: Path, *, hashes=True, reverse=Fals
 
 
 def _accounted_inventory(custody_root, workspace, *, reverse=False):
+    # Store only linked inode identities, never an all-path inventory. Two
+    # traversals suffice even for many aliases; the second authenticates the
+    # same inode metadata and emits the original forward/reverse row order.
+    linked = {}
+    for record in _inventory(custody_root, workspace, hashes=False):
+        if stat.S_ISDIR(record["mode"]):
+            continue
+        if type(record["links"]) is not int or record["links"] < 1:
+            raise StorageBlocked("storage_blocked: malformed retained inode links")
+        if record["links"] == 1:
+            continue
+        key = record["device"], record["inode"]
+        identity = {name: value for name, value in record.items() if name != "path"}
+        if key not in linked:
+            if len(linked) == _LINKED_INODES_LIMIT:
+                raise StorageBlocked("storage_blocked: linked inode inventory exceeds capacity")
+            linked[key] = {"first": record["path"], "identity": identity, "count": 0, "seen": 0}
+        entry = linked[key]
+        if identity != entry["identity"]:
+            raise StorageBlocked("storage_blocked: retained linked inode changed")
+        entry["count"] += 1
+        entry["first"] = min(entry["first"], record["path"])
+    if any(entry["count"] != entry["identity"]["links"] for entry in linked.values()):
+        raise StorageBlocked("storage_blocked: retained inode has external aliases")
     for record in _inventory(custody_root, workspace, reverse=reverse):
-        if not stat.S_ISDIR(record["mode"]) and record["links"] > 1:
-            # Linked fixtures remain ineligible. Re-scan only linked inodes to
-            # detect external aliases without an unbounded in-memory inode set.
-            aliases = 0
-            first = record["path"]
-            for other in _inventory(custody_root, workspace, hashes=False):
-                if (other["device"], other["inode"]) == (record["device"], record["inode"]):
-                    aliases += 1
-                    first = min(first, other["path"])
-            if aliases != record["links"]:
-                raise StorageBlocked("storage_blocked: retained inode has external aliases")
-            if first != record["path"]:
+        key = record["device"], record["inode"]
+        if not stat.S_ISDIR(record["mode"]) and (record["links"] != 1 or key in linked):
+            entry = linked.get(key)
+            identity = {name: value for name, value in record.items() if name != "path"}
+            if entry is None or identity != entry["identity"]:
+                raise StorageBlocked("storage_blocked: retained linked inode changed")
+            entry["seen"] += 1
+            if record["path"] != entry["first"]:
                 record["allocated"] = 0
         yield record
+    if any(entry["seen"] != entry["count"] for entry in linked.values()):
+        raise StorageBlocked("storage_blocked: retained linked aliases changed")
 
 
 def _pages(records, policy):
     head, page = None, []
+    encoded = len(canonical_json_bytes({"next": head, "entries": []}))
     for record in records:
+        row_bytes = len(canonical_json_bytes(record))
         if page and (
-            len(page) == policy.page_entries
-            or len(canonical_json_bytes({"next": head, "entries": [*page, record]}))
-            > policy.page_bytes
+            len(page) == policy.page_entries or encoded + 1 + row_bytes > policy.page_bytes
         ):
             raw = canonical_json_bytes({"next": head, "entries": page})
             head = sha256_bytes(raw)
             yield head, raw, page
             page = []
+            encoded = len(canonical_json_bytes({"next": head, "entries": []}))
+        encoded += row_bytes + bool(page)
         page.append(record)
-        if len(canonical_json_bytes({"next": head, "entries": page})) > policy.page_bytes:
+        if encoded > policy.page_bytes:
             raise StorageBlocked("storage_blocked: retained record exceeds page bound")
     if page:
         raw = canonical_json_bytes({"next": head, "entries": page})
@@ -306,7 +346,7 @@ def bootstrap_engineering_workspace(
         raise StorageBlocked(
             "storage_blocked: engineering source revision differs from executable checkout"
         )
-    with _pinned_directory(custody_root) as root:
+    with _pinned_directory(custody_root) as root, ExitStack() as admission:
         try:
             os.stat(_AUTHORITY, dir_fd=root, follow_symlinks=False)
         except FileNotFoundError:
@@ -316,7 +356,7 @@ def bootstrap_engineering_workspace(
         _require_single_authority(workspace)
         initial = _snapshot(custody_root, workspace, policy)
         volume = os.statvfs(custody_root)
-        block = max(volume.f_frsize, volume.f_bsize, 4096)
+        block = _allocation_unit(volume)
 
         def bootstrap_records():
             yield from _accounted_inventory(custody_root, workspace)
@@ -330,19 +370,37 @@ def bootstrap_engineering_workspace(
         # atomic replacement use the policy cap, even for a large prior ledger.
         # Four directories, four control leaves and two atomic directory slots.
         bootstrap_bytes += 16384 + policy.page_bytes * 2 + 10 * block
+        # The external authority leaf and its parent remain retained custody;
+        # all other bootstrap output belongs to the existing metadata category.
+        metadata_peak = bootstrap_bytes - 16384 - 2 * block
         prior = None
         if workspace.exists():
             prior = _StorageBudget(workspace=workspace, policy=policy)
+            admission.enter_context(
+                _lock(
+                    control_dir=prior.root,
+                    relative=("workspace.lock",),
+                    shared=False,
+                    blocking=True,
+                )
+            )
             prior.check()
-        operational, remaining = 0, 0
+        operational, remaining, metadata = 0, 0, 0
         if prior is not None:
             allocated = prior.measure()
             operational = sum(allocated.values())
+            metadata = allocated["metadata"]
             for reservation in prior._state()["reservations"].values():
+                if reservation["amounts"].get("metadata", 0):
+                    raise StorageBlocked(
+                        "storage_blocked: bootstrap metadata capacity is owned by another admission"
+                    )
                 remaining += sum(
                     max(0, amount - max(0, allocated[name] - reservation["before"][name]))
                     for name, amount in reservation["amounts"].items()
                 )
+        if metadata + metadata_peak > policy.metadata_bytes:
+            raise StorageBlocked("storage_blocked: bootstrap metadata peak exceeds category")
         operational += remaining
         if (
             initial["allocated"] + operational + bootstrap_bytes
@@ -385,8 +443,12 @@ def bootstrap_engineering_workspace(
             control_dir=budget.root, relative=("engineering.lock",), shared=False, blocking=True
         ):
             pass
-        with _lock(
-            control_dir=budget.root, relative=("workspace.lock",), shared=False, blocking=True
+        with (
+            nullcontext()
+            if prior is not None
+            else _lock(
+                control_dir=budget.root, relative=("workspace.lock",), shared=False, blocking=True
+            )
         ):
             state = budget._state()
             snapshot = _snapshot(custody_root, workspace, policy, publish=budget.root)
@@ -773,7 +835,7 @@ def _prelude_bounds(budget, candidate, selected):
         if record["admission"] == {"engineering_candidate": candidate.candidate_id}
     )
     volume = os.statvfs(budget.workspace)
-    block = max(volume.f_bsize, volume.f_frsize, 4096)
+    block = _allocation_unit(volume)
     # Source-visible fixed leaves/directory closure; variable addressed leaves above.
     fixed_files = (
         "workspace.json",
