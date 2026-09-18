@@ -15,6 +15,9 @@ import subprocess
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
+
+from pydantic import TypeAdapter
 
 from silent_cascade.archive import _retained
 from silent_cascade.archive.catalog import (
@@ -28,13 +31,47 @@ from silent_cascade.archive.catalog import (
 )
 from silent_cascade.archive.ledger import StorageBlocked, _process_identity, _StorageBudget
 from silent_cascade.archive.transport import _lock
-from silent_cascade.archive.types import ArchivePolicy, EngineeringContentReview, FileEntry, UnitRef
+from silent_cascade.archive.types import (
+    ArchivePolicy,
+    EngineeringContentReview,
+    FileEntry,
+    Hash,
+    Revision,
+    UnitRef,
+)
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.validation import StrictModel
 
 _AUTHORITY = ".silent-cascade-engineering.json"
 _TASKS = ("task-1", "task-2", "task-3", "task-4", "task-4-fix1", "task-4-fix2")
 _REGULAR_LIMIT = 128 * 1024**2
 _LINKED_INODES_LIMIT = 4096
+_SOURCE_AUTHORITY_LIMIT = 16 * 1024
+_SOURCE_CLOSURE_SCHEMA = "silent-cascade-python-v1"
+
+
+class _ReviewedSourceRecord(StrictModel):
+    schema_version: Literal["phase4-reviewed-source-v1"] = "phase4-reviewed-source-v1"
+    anchor_authority_sha256: Hash
+    source_commit: Revision
+    executable_sha256: Hash
+    source_closure_schema: Literal["silent-cascade-python-v1"] = _SOURCE_CLOSURE_SCHEMA
+    policy_sha256: Hash
+    review_sha256: Hash
+    failure_proof_sha256: Hash | None = None
+
+
+@dataclass(frozen=True)
+class _SourceIdentity:
+    source_commit: str
+    executable_sha256: str
+
+
+@dataclass(frozen=True)
+class _ReviewedSource:
+    source_commit: str
+    executable_sha256: str
+    source_authority_sha256: str
 
 
 def _allocation_unit(volume):
@@ -52,12 +89,18 @@ def _allocation_unit(volume):
     return unit
 
 
+def _read_authority_at(directory: int) -> bytes | None:
+    try:
+        return _read_at(directory, _AUTHORITY, max_bytes=16384)
+    except FileNotFoundError:
+        return None
+
+
 def _require_single_authority(workspace: Path) -> None:
     for parent in workspace.parents:
-        try:
-            with _pinned_directory(parent) as directory:
-                raw = _read_at(directory, _AUTHORITY, max_bytes=16384)
-        except FileNotFoundError:
+        with _pinned_directory(parent) as directory:
+            raw = _read_authority_at(directory)
+        if raw is None:
             continue
         authority = json.loads(raw)
         if authority.get("workspace") != str(workspace):
@@ -234,7 +277,9 @@ def _authority(budget):
     if engineering is None:
         _require_single_authority(budget.workspace)
         for parent in budget.workspace.parents:
-            if (parent / _AUTHORITY).exists():
+            with _pinned_directory(parent) as directory:
+                raw = _read_authority_at(directory)
+            if raw is not None:
                 raise StorageBlocked("storage_blocked: engineering bootstrap is incomplete")
         return None
     custody = Path(engineering["custody_root"])
@@ -446,11 +491,10 @@ def bootstrap_engineering_workspace(
         return budget
 
 
-def _executable_digest():
-    """Hash the actual loaded package source closure, independently of caller labels."""
-    package = Path(__file__).absolute().parents[1]
+def _package_digest(package: Path, paths: tuple[Path, ...] | None = None) -> str:
+    paths = tuple(sorted(package.rglob("*.py"))) if paths is None else paths
     digest = hashlib.sha256()
-    for path in sorted(package.rglob("*.py")):
+    for path in paths:
         with _pinned_directory(path.parent) as directory:
             raw = _read_at(directory, path.name, max_bytes=16 * 1024**2)
         digest.update(
@@ -461,6 +505,239 @@ def _executable_digest():
     return digest.hexdigest()
 
 
+def _executable_digest(*, package: Path | None = None):
+    """Hash the actual loaded package source closure, independently of caller labels."""
+    package = Path(__file__).absolute().parents[1] if package is None else package.absolute()
+    return _package_digest(package)
+
+
+def _git_head(repo_root: Path) -> str:
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise StorageBlocked("storage_blocked: source revision is unavailable") from error
+    return TypeAdapter(Revision).validate_python(revision)
+
+
+def _current_source_identity() -> _SourceIdentity:
+    return _SourceIdentity(
+        _git_head(Path(__file__).absolute().parents[3]),
+        _executable_digest(),
+    )
+
+
+def _committed_source_identity(
+    *, repo_root: Path | None = None, package: Path | None = None
+) -> _SourceIdentity:
+    """Authenticate the exact working package against regular blobs at Git HEAD."""
+    repo_root = Path(__file__).absolute().parents[3] if repo_root is None else repo_root.absolute()
+    package = Path(__file__).absolute().parents[1] if package is None else package.absolute()
+    try:
+        prefix = package.relative_to(repo_root).as_posix()
+    except ValueError as error:
+        raise StorageBlocked("storage_blocked: package escapes source repository") from error
+    revision = _git_head(repo_root)
+    try:
+        raw_tree = subprocess.run(
+            ["git", "ls-tree", "-r", "-z", revision, "--", prefix],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise StorageBlocked(
+            "storage_blocked: committed source inventory is unavailable"
+        ) from error
+    committed = set()
+    try:
+        for entry in (item for item in raw_tree.split(b"\0") if item):
+            metadata, encoded = entry.split(b"\t", 1)
+            mode, object_type, _object_id = metadata.decode("ascii").split(" ", 2)
+            path = encoded.decode("utf-8")
+            if path.endswith(".py"):
+                if mode not in {"100644", "100755"} or object_type != "blob":
+                    raise ValueError("package source is not a regular Git blob")
+                committed.add(path)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise StorageBlocked("storage_blocked: committed source inventory is malformed") from error
+    actual = tuple(sorted(package.rglob("*.py")))
+    if {path.relative_to(repo_root).as_posix() for path in actual} != committed:
+        raise StorageBlocked("storage_blocked: package source is not exactly committed")
+    digest = hashlib.sha256()
+    for path in actual:
+        relative = path.relative_to(repo_root).as_posix()
+        try:
+            expected = subprocess.run(
+                ["git", "cat-file", "blob", f"{revision}:{relative}"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                timeout=30,
+            ).stdout
+            with _pinned_directory(path.parent) as directory:
+                observed = _read_at(directory, path.name, max_bytes=16 * 1024**2)
+        except (OSError, subprocess.CalledProcessError, ValueError) as error:
+            raise StorageBlocked(
+                "storage_blocked: committed package source is unavailable"
+            ) from error
+        if observed != expected:
+            raise StorageBlocked("storage_blocked: package source is not exactly committed")
+        digest.update(
+            canonical_json_bytes(
+                {"path": path.relative_to(package).as_posix(), "sha256": sha256_bytes(observed)}
+            )
+        )
+    executable = digest.hexdigest()
+    if _package_digest(package, actual) != executable:
+        raise StorageBlocked("storage_blocked: package source changed during authentication")
+    return _SourceIdentity(revision, executable)
+
+
+def _resolve_reviewed_source(
+    *, budget, source_commit: str, authority_sha256: str | None, allow_pending: bool
+) -> _ReviewedSource:
+    source_commit = TypeAdapter(Revision).validate_python(source_commit)
+    if authority_sha256 is not None:
+        authority_sha256 = TypeAdapter(Hash).validate_python(authority_sha256)
+    budget.check()
+    engineering = _authority(budget)
+    if engineering is None or ("pending" in engineering and not allow_pending):
+        raise StorageBlocked("storage_blocked: clean engineering authority is unavailable")
+    anchor_raw = _control_reader(Path(engineering["custody_root"]))(_AUTHORITY, 16384)
+    anchor = json.loads(anchor_raw)
+    current = _current_source_identity()
+    if current.source_commit != source_commit:
+        raise ValueError("source revision differs from executable checkout")
+    if (
+        source_commit == anchor["source_commit"]
+        and current.executable_sha256 == anchor["executable_sha256"]
+    ):
+        if authority_sha256 not in {None, engineering["authority_sha256"]}:
+            raise ValueError("bootstrap source authority hash differs")
+        return _ReviewedSource(
+            source_commit, current.executable_sha256, engineering["authority_sha256"]
+        )
+    if authority_sha256 == engineering["authority_sha256"]:
+        raise ValueError("source differs from immutable bootstrap authority")
+    if authority_sha256 is None:
+        raise ValueError("changed source requires an explicit reviewed-source hash")
+    path = budget.root / "source-authorities" / current.executable_sha256 / f"{source_commit}.json"
+    with _pinned_directory(path.parent) as directory:
+        raw = _read_at(directory, path.name, max_bytes=_SOURCE_AUTHORITY_LIMIT)
+    if sha256_bytes(raw) != authority_sha256:
+        raise ValueError("reviewed-source content hash differs")
+    try:
+        record = _ReviewedSourceRecord.model_validate_json(raw)
+    except Exception as error:
+        raise ValueError("reviewed-source record is invalid") from error
+    if canonical_json_bytes(record) != raw:
+        raise ValueError("reviewed-source record is not canonical")
+    if (
+        record.anchor_authority_sha256 != engineering["authority_sha256"]
+        or record.source_commit != source_commit
+        or record.executable_sha256 != current.executable_sha256
+        or record.policy_sha256 != sha256_bytes(canonical_json_bytes(budget.policy))
+    ):
+        raise ValueError("reviewed-source binding differs")
+    return _ReviewedSource(source_commit, current.executable_sha256, authority_sha256)
+
+
+def _reviewed_source(
+    *, budget, source_commit: str, authority_sha256: str | None = None
+) -> _ReviewedSource:
+    return _resolve_reviewed_source(
+        budget=budget,
+        source_commit=source_commit,
+        authority_sha256=authority_sha256,
+        allow_pending=False,
+    )
+
+
+def publish_reviewed_source(
+    *,
+    budget,
+    source_commit: str,
+    executable_sha256: str,
+    review_sha256: str,
+    failure_proof_sha256: str | None = None,
+) -> str:
+    """Publish one bounded exact release authority; never select or replace one."""
+    source_commit = TypeAdapter(Revision).validate_python(source_commit)
+    executable_sha256 = TypeAdapter(Hash).validate_python(executable_sha256)
+    review_sha256 = TypeAdapter(Hash).validate_python(review_sha256)
+    if failure_proof_sha256 is not None:
+        failure_proof_sha256 = TypeAdapter(Hash).validate_python(failure_proof_sha256)
+    committed = _committed_source_identity()
+    if committed != _SourceIdentity(source_commit, executable_sha256):
+        raise ValueError("reviewed source arguments differ from committed package source")
+    with _lock(
+        control_dir=budget.root, relative=("engineering.lock",), shared=False, blocking=True
+    ):
+        engineering = _authority(budget)
+        if engineering is None or "pending" in engineering:
+            raise StorageBlocked(
+                "storage_blocked: pending engineering eviction blocks source review"
+            )
+        budget.check()
+        engineering = _authority(budget)
+        if engineering is None or "pending" in engineering:
+            raise StorageBlocked(
+                "storage_blocked: pending engineering eviction blocks source review"
+            )
+        anchor_raw = _control_reader(Path(engineering["custody_root"]))(_AUTHORITY, 16384)
+        if sha256_bytes(anchor_raw) != engineering["authority_sha256"]:
+            raise StorageBlocked("storage_blocked: engineering anchor changed")
+        record = _ReviewedSourceRecord(
+            anchor_authority_sha256=engineering["authority_sha256"],
+            source_commit=source_commit,
+            executable_sha256=executable_sha256,
+            policy_sha256=sha256_bytes(canonical_json_bytes(budget.policy)),
+            review_sha256=review_sha256,
+            failure_proof_sha256=failure_proof_sha256,
+        )
+        raw = canonical_json_bytes(record)
+        if len(raw) > _SOURCE_AUTHORITY_LIMIT:
+            raise StorageBlocked("storage_blocked: reviewed-source record exceeds limit")
+        digest = sha256_bytes(raw)
+        block = _allocation_unit(os.statvfs(budget.workspace))
+        allocation = ((len(raw) + block - 1) // block) * block + 4 * block
+        parent = budget.root / "source-authorities" / executable_sha256
+        with budget.reserve(admission={"reviewed_source": digest}, metadata=allocation):
+            with _pinned_directory(parent, create=True) as directory:
+                try:
+                    existing = _read_at(
+                        directory, f"{source_commit}.json", max_bytes=_SOURCE_AUTHORITY_LIMIT
+                    )
+                except FileNotFoundError:
+                    try:
+                        _create_at(directory, f"{source_commit}.json", raw)
+                    except FileExistsError:
+                        existing = _read_at(
+                            directory,
+                            f"{source_commit}.json",
+                            max_bytes=_SOURCE_AUTHORITY_LIMIT,
+                        )
+                    else:
+                        existing = raw
+                if existing != raw:
+                    raise FileExistsError("different reviewed-source record already exists")
+                reread = _read_at(
+                    directory, f"{source_commit}.json", max_bytes=_SOURCE_AUTHORITY_LIMIT
+                )
+                if reread != raw or sha256_bytes(reread) != digest:
+                    raise ValueError("reviewed-source publication readback differs")
+            budget.check()
+        return digest
+
+
 def _stored_records(budget, snapshot):
     yield from _retained.read_records(budget.root, snapshot, budget.policy, reverse=True)
 
@@ -468,12 +745,16 @@ def _stored_records(budget, snapshot):
 @dataclass(frozen=True)
 class EngineeringCandidate:
     candidate_id: str
+    source_commit: str
     executable_sha256: str
+    source_authority_sha256: str
     logical_root: str
     members: tuple[FileEntry, ...]
 
 
-def iter_engineering_candidates(budget):
+def iter_engineering_candidates(
+    budget, *, source_commit: str | None = None, source_authority_sha256: str | None = None
+):
     """Yield filesystem-safe children only; this does NOT authorize their upload.
 
     Positive privacy/producer-format custody is separately required for the exact
@@ -484,12 +765,13 @@ def iter_engineering_candidates(budget):
     engineering = _authority(budget)
     if engineering is None or "pending" in engineering:
         raise StorageBlocked("storage_blocked: frozen engineering authority is unavailable")
-    executable = _executable_digest()
     authority = json.loads(_control_reader(Path(engineering["custody_root"]))(_AUTHORITY, 16384))
-    if authority["executable_sha256"] != executable:
-        raise StorageBlocked(
-            "storage_blocked: frozen executable changed; explicit transition required"
-        )
+    source_commit = authority["source_commit"] if source_commit is None else source_commit
+    source = _reviewed_source(
+        budget=budget,
+        source_commit=source_commit,
+        authority_sha256=source_authority_sha256,
+    )
 
     def candidates(prefix):
         members, eligible, exists = [], True, False
@@ -507,14 +789,21 @@ def iter_engineering_candidates(budget):
         if exists and eligible and members:
             members = tuple(sorted(members, key=lambda item: item.path))
             identity = {
-                "authority": engineering["authority_sha256"],
+                "anchor_authority": engineering["authority_sha256"],
                 "inventory": engineering["snapshot"]["head"],
                 "root": prefix,
-                "executable": executable,
+                "source_commit": source.source_commit,
+                "executable": source.executable_sha256,
+                "source_authority": source.source_authority_sha256,
                 "members": [asdict(member) for member in members],
             }
             yield EngineeringCandidate(
-                sha256_bytes(canonical_json_bytes(identity)), executable, prefix, members
+                sha256_bytes(canonical_json_bytes(identity)),
+                source.source_commit,
+                source.executable_sha256,
+                source.source_authority_sha256,
+                prefix,
+                members,
             )
         elif exists:
             # Retained records are already paged; never materialize a directory list.
@@ -535,14 +824,27 @@ def _validated_review(budget, candidate, review):
     ):
         raise ValueError("exact engineering content review is required")
     review = EngineeringContentReview.model_validate(review.model_dump())
+    source = _reviewed_source(
+        budget=budget,
+        source_commit=candidate.source_commit,
+        authority_sha256=candidate.source_authority_sha256,
+    )
     if (
         review.candidate_id != candidate.candidate_id
         or review.executable_sha256 != candidate.executable_sha256
-        or candidate.executable_sha256 != _executable_digest()
+        or candidate.executable_sha256 != source.executable_sha256
+        or candidate.source_authority_sha256 != source.source_authority_sha256
         or not set(review.paths) <= {member.path for member in candidate.members}
     ):
         raise ValueError("content review inventory/source/paths differ")
-    if not any(actual == candidate for actual in iter_engineering_candidates(budget)):
+    if not any(
+        actual == candidate
+        for actual in iter_engineering_candidates(
+            budget,
+            source_commit=candidate.source_commit,
+            source_authority_sha256=candidate.source_authority_sha256,
+        )
+    ):
         raise StorageBlocked("storage_blocked: stale or forged engineering candidate")
     selected = tuple(member for member in candidate.members if member.path in review.paths)
     if sum(member.bytes for member in selected) > budget.policy.logs_bytes:
@@ -996,8 +1298,12 @@ def archive_engineering_candidate(*, budget, candidate, review, transport):
         engineering = _authority(budget)
         run_id = "engineering-" + candidate.candidate_id
         custody = Path(engineering["custody_root"])
-        authority = json.loads(_control_reader(custody)(_AUTHORITY, 16384))
         with _engineering_reservation(budget, candidate.candidate_id, bounds) as token:
+            source = _reviewed_source(
+                budget=budget,
+                source_commit=candidate.source_commit,
+                authority_sha256=candidate.source_authority_sha256,
+            )
             ref = seal_unit(
                 run_dir=custody,
                 control_dir=control,
@@ -1007,7 +1313,7 @@ def archive_engineering_candidate(*, budget, candidate, review, transport):
                 policy=budget.policy,
                 identity={
                     "run_id": run_id,
-                    "source_commit": authority["source_commit"],
+                    "source_commit": source.source_commit,
                     "config_sha256": sha256_bytes(canonical_json_bytes(review)),
                     "evidence_identity_sha256": candidate.candidate_id,
                     "checkpoint_sha256": None,
@@ -1108,16 +1414,25 @@ def resume_engineering_eviction(*, budget, transport):
         pending = engineering["pending"]
         value = pending["candidate"]
         candidate = EngineeringCandidate(
-            value["candidate_id"],
-            value["executable_sha256"],
-            value["logical_root"],
-            tuple(FileEntry(**entry) for entry in value["members"]),
+            candidate_id=value["candidate_id"],
+            source_commit=value["source_commit"],
+            executable_sha256=value["executable_sha256"],
+            source_authority_sha256=value["source_authority_sha256"],
+            logical_root=value["logical_root"],
+            members=tuple(FileEntry(**entry) for entry in value["members"]),
         )
         review = EngineeringContentReview.model_validate_json(
             canonical_json_bytes(pending["review"])
         )
+        source = _resolve_reviewed_source(
+            budget=budget,
+            source_commit=candidate.source_commit,
+            authority_sha256=candidate.source_authority_sha256,
+            allow_pending=True,
+        )
         if (
-            candidate.executable_sha256 != _executable_digest()
+            candidate.executable_sha256 != source.executable_sha256
+            or candidate.source_authority_sha256 != source.source_authority_sha256
             or review.candidate_id != candidate.candidate_id
             or review.executable_sha256 != candidate.executable_sha256
             or tuple(pending["paths"]) != review.paths

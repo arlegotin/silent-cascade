@@ -3,11 +3,13 @@
 import json
 import os
 import subprocess
+from dataclasses import replace
 
 import pytest
 
 from silent_cascade.archive import ledger
 from silent_cascade.archive.types import ArchivePolicy
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 
 
 def source_commit():
@@ -25,6 +27,294 @@ def bootstrap(root, *, policy=None):
         policy=policy or ArchivePolicy(),
         source_commit=source_commit(),
     )
+
+
+def _set_source_identity(monkeypatch, preflight, revision, executable):
+    identity = preflight._SourceIdentity(revision, executable)
+    monkeypatch.setattr(preflight, "_current_source_identity", lambda: identity)
+    monkeypatch.setattr(preflight, "_committed_source_identity", lambda: identity)
+    return identity
+
+
+def _publish_release(budget, monkeypatch, *, revision="1" * 40, executable="2" * 64):
+    from silent_cascade.archive import preflight
+
+    _set_source_identity(monkeypatch, preflight, revision, executable)
+    digest = preflight.publish_reviewed_source(
+        budget=budget,
+        source_commit=revision,
+        executable_sha256=executable,
+        review_sha256="3" * 64,
+    )
+    return revision, executable, digest
+
+
+def _source_authority_path(budget, revision, executable):
+    return budget.root / "source-authorities" / executable / f"{revision}.json"
+
+
+def test_reviewed_source_requires_explicit_hash_and_preserves_bootstrap(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget = bootstrap(tmp_path)
+    engineering = budget._state()["engineering"]
+    anchor_path = tmp_path / ".silent-cascade-engineering.json"
+    anchor_before = anchor_path.read_bytes()
+    bootstrap_source = preflight._reviewed_source(budget=budget, source_commit=source_commit())
+    assert bootstrap_source.source_authority_sha256 == engineering["authority_sha256"]
+    revision, executable, digest = _publish_release(budget, monkeypatch)
+    with pytest.raises(ValueError, match="explicit"):
+        preflight._reviewed_source(budget=budget, source_commit=revision)
+    resolved = preflight._reviewed_source(
+        budget=budget, source_commit=revision, authority_sha256=digest
+    )
+    assert (resolved.source_commit, resolved.executable_sha256) == (revision, executable)
+    assert resolved.source_authority_sha256 == digest
+    record_path = _source_authority_path(budget, revision, executable)
+    raw = record_path.read_bytes()
+    assert len(raw) <= 16_384
+    assert raw == canonical_json_bytes(json.loads(raw))
+    assert json.loads(raw) == {
+        "schema_version": "phase4-reviewed-source-v1",
+        "anchor_authority_sha256": engineering["authority_sha256"],
+        "source_commit": revision,
+        "executable_sha256": executable,
+        "source_closure_schema": "silent-cascade-python-v1",
+        "policy_sha256": sha256_bytes(canonical_json_bytes(budget.policy)),
+        "review_sha256": "3" * 64,
+        "failure_proof_sha256": None,
+    }
+    assert anchor_path.read_bytes() == anchor_before
+    assert budget._state()["engineering"]["authority_sha256"] == engineering["authority_sha256"]
+
+
+def test_reviewed_source_publication_is_create_only_and_idempotent(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget = bootstrap(tmp_path)
+    revision, executable, first = _publish_release(budget, monkeypatch)
+    second = preflight.publish_reviewed_source(
+        budget=budget,
+        source_commit=revision,
+        executable_sha256=executable,
+        review_sha256="3" * 64,
+    )
+    assert second == first
+    before = _source_authority_path(budget, revision, executable).read_bytes()
+    with pytest.raises(FileExistsError, match="different"):
+        preflight.publish_reviewed_source(
+            budget=budget,
+            source_commit=revision,
+            executable_sha256=executable,
+            review_sha256="4" * 64,
+        )
+    assert _source_authority_path(budget, revision, executable).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["hash", "anchor", "policy", "revision", "digest", "noncanonical", "oversized"],
+)
+def test_reviewed_source_rejects_wrong_or_unbounded_record(tmp_path, monkeypatch, fault):
+    from silent_cascade.archive import preflight
+
+    budget = bootstrap(tmp_path)
+    revision, executable, expected = _publish_release(budget, monkeypatch)
+    path = _source_authority_path(budget, revision, executable)
+    if fault == "hash":
+        expected = "f" * 64
+    elif fault == "noncanonical":
+        path.write_bytes(path.read_bytes() + b"\n")
+        expected = sha256_bytes(path.read_bytes())
+    elif fault == "oversized":
+        path.write_bytes(b"{" + b" " * 16_384 + b"}")
+        expected = sha256_bytes(path.read_bytes())
+    else:
+        record = json.loads(path.read_bytes())
+        field = {
+            "anchor": "anchor_authority_sha256",
+            "policy": "policy_sha256",
+            "revision": "source_commit",
+            "digest": "executable_sha256",
+        }[fault]
+        record[field] = "f" * (40 if fault == "revision" else 64)
+        raw = canonical_json_bytes(record)
+        path.write_bytes(raw)
+        expected = sha256_bytes(raw)
+    with pytest.raises((ValueError, ledger.StorageBlocked)):
+        preflight._reviewed_source(budget=budget, source_commit=revision, authority_sha256=expected)
+
+
+def test_same_digest_revisions_require_distinct_explicit_authorities(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget = bootstrap(tmp_path)
+    executable = "2" * 64
+    first_revision, _, first = _publish_release(
+        budget, monkeypatch, revision="1" * 40, executable=executable
+    )
+    _set_source_identity(monkeypatch, preflight, "4" * 40, executable)
+    with pytest.raises((FileNotFoundError, ValueError)):
+        preflight._reviewed_source(budget=budget, source_commit="4" * 40, authority_sha256=first)
+    second = preflight.publish_reviewed_source(
+        budget=budget,
+        source_commit="4" * 40,
+        executable_sha256=executable,
+        review_sha256="5" * 64,
+        failure_proof_sha256="6" * 64,
+    )
+    assert second != first
+    assert _source_authority_path(budget, first_revision, executable).exists()
+    assert _source_authority_path(budget, "4" * 40, executable).exists()
+    with pytest.raises(ValueError, match="explicit"):
+        preflight._reviewed_source(budget=budget, source_commit="4" * 40)
+
+
+def test_publication_rejects_pending_engineering_eviction_before_output(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget = bootstrap(tmp_path)
+    authenticated = preflight._authority(budget)
+    _set_source_identity(monkeypatch, preflight, "1" * 40, "2" * 64)
+    monkeypatch.setattr(preflight, "_authority", lambda _budget: authenticated | {"pending": {}})
+    with pytest.raises(ledger.StorageBlocked, match="pending"):
+        preflight.publish_reviewed_source(
+            budget=budget,
+            source_commit="1" * 40,
+            executable_sha256="2" * 64,
+            review_sha256="3" * 64,
+        )
+    assert not (budget.root / "source-authorities").exists()
+
+
+def test_publication_rejects_mismatching_source_argument_before_output(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget = bootstrap(tmp_path)
+    _set_source_identity(monkeypatch, preflight, "1" * 40, "2" * 64)
+    with pytest.raises(ValueError, match="arguments"):
+        preflight.publish_reviewed_source(
+            budget=budget,
+            source_commit="3" * 40,
+            executable_sha256="2" * 64,
+            review_sha256="4" * 64,
+        )
+    assert not (budget.root / "source-authorities").exists()
+
+
+@pytest.mark.parametrize("mutation", ["modified", "added", "removed"])
+def test_committed_source_identity_rejects_dirty_python_closure(tmp_path, mutation):
+    from silent_cascade.archive import preflight
+
+    repository = tmp_path / "repository"
+    package = repository / "src/silent_cascade"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    clean = preflight._committed_source_identity(repo_root=repository, package=package)
+    if mutation == "modified":
+        (package / "__init__.py").write_text("VALUE = 2\n")
+    elif mutation == "added":
+        (package / "added.py").write_text("VALUE = 2\n")
+    else:
+        (package / "__init__.py").unlink()
+    with pytest.raises(ledger.StorageBlocked, match="committed"):
+        preflight._committed_source_identity(repo_root=repository, package=package)
+    assert len(clean.source_commit) == 40 and len(clean.executable_sha256) == 64
+
+
+def test_reviewed_candidate_binds_release_and_sealed_executor_identity(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+    from silent_cascade.archive.catalog import _opened_unit
+
+    budget, transport, bootstrap_candidate, _review = prepared_candidate(tmp_path)
+    revision, executable, authority = _publish_release(budget, monkeypatch)
+    candidate = next(
+        preflight.iter_engineering_candidates(
+            budget,
+            source_commit=revision,
+            source_authority_sha256=authority,
+        )
+    )
+    assert candidate.candidate_id != bootstrap_candidate.candidate_id
+    assert (candidate.source_commit, candidate.executable_sha256) == (revision, executable)
+    assert candidate.source_authority_sha256 == authority
+    review = preflight.EngineeringContentReview(
+        candidate_id=candidate.candidate_id,
+        executable_sha256=candidate.executable_sha256,
+        paths=("tmp/task-1/safe/tensor.bin",),
+        producer_evidence_sha256="7" * 64,
+    )
+    changed = replace(candidate, source_authority_sha256="f" * 64)
+    with pytest.raises((ValueError, ledger.StorageBlocked)):
+        preflight.archive_engineering_candidate(
+            budget=budget, candidate=changed, review=review, transport=transport
+        )
+    assert transport.create_calls == 0
+    result = preflight.archive_engineering_candidate(
+        budget=budget, candidate=candidate, review=review, transport=transport
+    )
+    with _opened_unit(budget.workspace / "control", result.ref) as (_unit, manifest):
+        assert manifest.identity.source_commit == revision
+
+
+def test_reviewed_candidate_resume_requires_same_exact_source(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+    from silent_cascade.archive import transport as transfer
+
+    budget, transport, _bootstrap_candidate, _review = prepared_candidate(tmp_path)
+    revision, executable, authority = _publish_release(budget, monkeypatch)
+    candidate = next(
+        preflight.iter_engineering_candidates(
+            budget,
+            source_commit=revision,
+            source_authority_sha256=authority,
+        )
+    )
+    review = preflight.EngineeringContentReview(
+        candidate_id=candidate.candidate_id,
+        executable_sha256=candidate.executable_sha256,
+        paths=("tmp/task-1/safe/tensor.bin",),
+        producer_evidence_sha256="8" * 64,
+    )
+    original = transfer._write_intent
+
+    def interrupt(control_dir, ref, intent, *, replace):
+        if intent["completed"]:
+            raise OSError("interrupted reviewed eviction")
+        return original(control_dir, ref, intent, replace=replace)
+
+    monkeypatch.setattr(transfer, "_write_intent", interrupt)
+    with pytest.raises(OSError, match="interrupted reviewed"):
+        preflight.archive_engineering_candidate(
+            budget=budget, candidate=candidate, review=review, transport=transport
+        )
+    pending = budget._state()["engineering"]["pending"]
+    assert pending["candidate"] == {
+        "candidate_id": candidate.candidate_id,
+        "source_commit": revision,
+        "executable_sha256": executable,
+        "source_authority_sha256": authority,
+        "logical_root": candidate.logical_root,
+        "members": [
+            {"path": item.path, "sha256": item.sha256, "bytes": item.bytes}
+            for item in candidate.members
+        ],
+    }
+    monkeypatch.setattr(transfer, "_write_intent", original)
+    _set_source_identity(monkeypatch, preflight, "9" * 40, "a" * 64)
+    with pytest.raises((ValueError, ledger.StorageBlocked)):
+        preflight.resume_engineering_eviction(budget=budget, transport=transport)
+    assert "pending" in budget._state()["engineering"]
+    _set_source_identity(monkeypatch, preflight, revision, executable)
+    preflight.resume_engineering_eviction(budget=budget, transport=transport)
+    assert "pending" not in budget._state()["engineering"]
 
 
 def test_retained_history_is_charged_outside_seven_categories(tmp_path):
@@ -97,6 +387,36 @@ def test_authority_cannot_be_rebound_to_a_new_operational_allowance(tmp_path):
             workspace_root=tmp_path / "fixture", policy=budget.policy, baseline=()
         )
     assert not (tmp_path / "another").exists()
+
+
+def test_host_authority_isolation_preserves_local_and_unrelated_reads(
+    tmp_path, isolated_archive_authorities
+):
+    from silent_cascade.archive import preflight
+    from silent_cascade.archive.catalog import _pinned_directory
+
+    host = next(parent for parent in tmp_path.parents if (parent / preflight._AUTHORITY).exists())
+    with _pinned_directory(host) as directory:
+        assert preflight._read_authority_at(directory) is None
+        with isolated_archive_authorities.host_visible():
+            assert (
+                preflight._read_authority_at(directory)
+                == (host / preflight._AUTHORITY).read_bytes()
+            )
+        assert preflight._read_authority_at(directory) is None
+    ordinary = tmp_path / "ordinary.bin"
+    ordinary.write_bytes(b"ordinary")
+    with _pinned_directory(tmp_path) as directory:
+        assert preflight._read_at(directory, ordinary.name, max_bytes=8) == b"ordinary"
+    (tmp_path / preflight._AUTHORITY).write_bytes(
+        canonical_json_bytes({"workspace": str(tmp_path / "owned")})
+    )
+    (tmp_path / "nested").mkdir()
+    with pytest.raises(ledger.StorageBlocked, match="another workspace"):
+        preflight._require_single_authority(tmp_path / "nested" / "candidate")
+    (tmp_path / preflight._AUTHORITY).write_bytes(b"not-json")
+    with pytest.raises(json.JSONDecodeError):
+        preflight._require_single_authority(tmp_path / "nested" / "candidate")
 
 
 def test_unsupported_entries_remain_charged_and_external_alias_blocks(tmp_path):

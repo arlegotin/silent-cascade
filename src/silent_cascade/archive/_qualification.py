@@ -6,7 +6,6 @@ import multiprocessing
 import os
 import signal
 import stat
-import subprocess
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -16,7 +15,6 @@ from typing import Literal
 
 from silent_cascade.archive.bundles import restore_unit
 from silent_cascade.archive.catalog import (
-    _control_reader,
     _create_at,
     _open_child_directory,
     _opened_unit,
@@ -29,11 +27,9 @@ from silent_cascade.archive.catalog import (
 )
 from silent_cascade.archive.ledger import StorageBlocked, _StorageBudget
 from silent_cascade.archive.preflight import (
-    _AUTHORITY,
     _allocation_unit,
     _archive_unit_bounds,
-    _authority,
-    _executable_digest,
+    _reviewed_source,
 )
 from silent_cascade.archive.transport import (
     ObjectTransport,
@@ -558,9 +554,10 @@ class _RetryResult(StrictModel):
 
 
 class QualificationResult(StrictModel):
-    schema_version: Literal["phase4-r2-early-qualification-v1"] = "phase4-r2-early-qualification-v1"
+    schema_version: Literal["phase4-r2-early-qualification-v2"] = "phase4-r2-early-qualification-v2"
     source_commit: Revision
     executable_sha256: Hash
+    source_authority_sha256: Hash
     protocol_sha256: Hash
     policy_sha256: Hash
     run_id: str
@@ -591,6 +588,21 @@ def _require_bounds(derived, admitted):
         raise StorageBlocked("storage_blocked: qualification grant underestimated")
 
 
+def _qualification_identity(
+    *, source, protocol_sha256, policy, debug_commit_sha256, debug_review_sha256
+):
+    return {
+        "schema_version": "phase4-r2-early-qualification-input-v2",
+        "source_commit": source.source_commit,
+        "executable_sha256": source.executable_sha256,
+        "source_authority_sha256": source.source_authority_sha256,
+        "protocol_sha256": protocol_sha256,
+        "policy_sha256": sha256_bytes(canonical_json_bytes(policy)),
+        "debug_commit_sha256": debug_commit_sha256,
+        "debug_review_sha256": debug_review_sha256,
+    }
+
+
 def run_early_r2_qualification(
     *,
     budget: _StorageBudget,
@@ -601,6 +613,7 @@ def run_early_r2_qualification(
     debug_review_sha256: str,
     protocol_sha256: str,
     source_commit: str,
+    source_authority_sha256: str | None = None,
     transport,
 ) -> QualificationResult:
     from silent_cascade.archive.transport import R2CliTransport
@@ -617,6 +630,7 @@ def run_early_r2_qualification(
             debug_review_sha256=debug_review_sha256,
             protocol_sha256=protocol_sha256,
             source_commit=source_commit,
+            source_authority_sha256=source_authority_sha256,
             transport=transport,
         )
     except Exception:
@@ -635,6 +649,7 @@ def _run_qualification(
     debug_review_sha256,
     protocol_sha256,
     source_commit,
+    source_authority_sha256=None,
     transport,
 ):
     from pydantic import TypeAdapter
@@ -672,35 +687,18 @@ def _run_qualification(
     with _lock(
         control_dir=budget.root, relative=("engineering.lock",), shared=False, blocking=True
     ):
-        engineering = _authority(budget)
-        if engineering is None or "pending" in engineering:
-            raise ValueError("qualification requires a clean reviewed authority")
-        authority = json.loads(
-            _control_reader(Path(engineering["custody_root"]))(_AUTHORITY, 16384)
+        source = _reviewed_source(
+            budget=budget,
+            source_commit=source_commit,
+            authority_sha256=source_authority_sha256,
         )
-        executable = _executable_digest()
-        revision = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        ).stdout.strip()
-        if (
-            authority["source_commit"] != source_commit
-            or revision != source_commit
-            or authority["executable_sha256"] != executable
-        ):
-            raise ValueError("qualification executable authority differs")
-        identity = {
-            "schema_version": "phase4-r2-early-qualification-input-v1",
-            "source_commit": source_commit,
-            "executable_sha256": executable,
-            "protocol_sha256": protocol_sha256,
-            "policy_sha256": sha256_bytes(canonical_json_bytes(policy)),
-            "debug_commit_sha256": sha256_bytes(canonical_json_bytes(asdict(debug_commit))),
-            "debug_review_sha256": debug_review_sha256,
-        }
+        identity = _qualification_identity(
+            source=source,
+            protocol_sha256=protocol_sha256,
+            policy=policy,
+            debug_commit_sha256=sha256_bytes(canonical_json_bytes(asdict(debug_commit))),
+            debug_review_sha256=debug_review_sha256,
+        )
         run_id = "qualification-" + sha256_bytes(canonical_json_bytes(identity))
         before_remote = _remote_reservation_snapshot(
             control_dir=control, transport=transport, policy=policy
@@ -794,7 +792,7 @@ def _run_qualification(
             observe()
             unit_identity = dict(
                 run_id=run_id,
-                source_commit=source_commit,
+                source_commit=source.source_commit,
                 config_sha256=protocol_sha256,
                 evidence_identity_sha256=identity["debug_commit_sha256"],
                 checkpoint_sha256=None,

@@ -1,11 +1,107 @@
+import functools
 import hashlib
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+_ENGINEERING_AUTHORITY = ".silent-cascade-engineering.json"
+_ENGINEERING_AUTHORITY_LIMIT = 16_384
+
+
+def _authority_boundary(case_root: Path) -> tuple[tuple[int, int], ...]:
+    """Capture only pre-existing ancestor authorities, before a case creates any."""
+    identities = []
+    for parent in case_root.parents:
+        try:
+            (parent / _ENGINEERING_AUTHORITY).lstat()
+        except FileNotFoundError:
+            continue
+        info = parent.stat()
+        identities.append((info.st_dev, info.st_ino))
+    return tuple(identities)
+
+
+@contextmanager
+def _hide_host_authorities(boundary: tuple[tuple[int, int], ...]):
+    """Hide captured host custody only at the exact production read boundary."""
+    from silent_cascade.archive import preflight
+
+    original = preflight._read_at
+    hidden = set(boundary)
+
+    def isolated(parent, name, *, max_bytes):
+        info = os.fstat(parent)
+        if (
+            name == _ENGINEERING_AUTHORITY
+            and max_bytes == _ENGINEERING_AUTHORITY_LIMIT
+            and (info.st_dev, info.st_ino) in hidden
+        ):
+            raise FileNotFoundError(name)
+        return original(parent, name, max_bytes=max_bytes)
+
+    isolated.__wrapped__ = original
+    preflight._read_at = isolated
+    try:
+        yield
+    finally:
+        preflight._read_at = original
+
+
+def _isolated_spawn_target(boundary, target, args):
+    with _hide_host_authorities(boundary):
+        target(*args)
+
+
+def _isolated_archive_child(boundary, *args):
+    with _hide_host_authorities(boundary):
+        from silent_cascade.archive._qualification import _archive_child
+
+        _archive_child(*args)
+
+
+@dataclass(frozen=True)
+class AuthorityIsolation:
+    boundary: tuple[tuple[int, int], ...]
+
+    def target(self, callable_, *args):
+        return functools.partial(_isolated_spawn_target, self.boundary, callable_, args)
+
+    @contextmanager
+    def host_visible(self):
+        from silent_cascade.archive import preflight
+
+        isolated = preflight._read_at
+        original = isolated.__wrapped__
+        preflight._read_at = original
+        try:
+            yield
+        finally:
+            preflight._read_at = isolated
+
+
+@pytest.fixture(autouse=True)
+def isolated_archive_authorities(request, monkeypatch):
+    """Keep synthetic authorities independent from the live parent custody root."""
+    if request.module.__name__ not in {"test_preflight", "test_qualification"}:
+        yield None
+        return
+    case_root = request.getfixturevalue("tmp_path")
+    boundary = _authority_boundary(case_root)
+    isolation = AuthorityIsolation(boundary)
+    from silent_cascade.archive import _qualification
+
+    with _hide_host_authorities(boundary):
+        monkeypatch.setattr(
+            _qualification,
+            "_archive_child",
+            functools.partial(_isolated_archive_child, boundary),
+        )
+        yield isolation
 
 
 @pytest.fixture

@@ -454,6 +454,98 @@ def test_controller_refuses_double_without_output(process_case):
     assert not destination.exists()
 
 
+def test_qualification_changed_source_requires_explicit_authority_before_output(
+    process_case, monkeypatch
+):
+    from silent_cascade.archive import _qualification
+    from silent_cascade.archive.transport import _lock
+    from silent_cascade.archive.types import EpisodeCommit, FileEntry
+
+    budget, unit, transport = process_case
+    output = budget.workspace / "reviewed-qualification"
+    for root, category in {
+        output: "metadata",
+        output / "source-probe": "spool",
+        output / "source-debug": "spool",
+        output / "restore-probe": "cache",
+        output / "restore-debug": "cache",
+        output / "events": "logs",
+    }.items():
+        budget.bind(root, category=category)
+    with _lock(
+        control_dir=budget.root, relative=("engineering.lock",), shared=False, blocking=True
+    ):
+        pass
+    entry = FileEntry("probe/probe.bin", sha256_bytes(bytes(range(160))), 160)
+    commit = EpisodeCommit(
+        "phase4-evaluation-episode-commit-v1",
+        "1" * 64,
+        0,
+        "debug",
+        "2" * 64,
+        0,
+        1,
+        "3" * 64,
+        (entry,),
+        (),
+    )
+    observed = {}
+
+    def refused(**kwargs):
+        observed.update(kwargs)
+        raise ValueError("explicit reviewed source required")
+
+    monkeypatch.setattr(_qualification, "_reviewed_source", refused, raising=False)
+    with pytest.raises(ValueError, match="explicit reviewed source"):
+        _qualification._run_qualification(
+            budget=budget,
+            output_root=output,
+            debug_source_root=unit.root,
+            debug_logical_root="probe",
+            debug_commit=commit,
+            debug_review_sha256="4" * 64,
+            protocol_sha256="5" * 64,
+            source_commit="6" * 40,
+            source_authority_sha256="7" * 64,
+            transport=transport,
+        )
+    assert observed == {
+        "budget": budget,
+        "source_commit": "6" * 40,
+        "authority_sha256": "7" * 64,
+    }
+    assert not output.exists()
+
+
+def test_qualification_identity_changes_with_reviewed_source_authority(tiny_archive_policy):
+    from silent_cascade.archive._qualification import _qualification_identity
+    from silent_cascade.archive.preflight import _ReviewedSource
+
+    arguments = dict(
+        protocol_sha256="1" * 64,
+        policy=tiny_archive_policy,
+        debug_commit_sha256="2" * 64,
+        debug_review_sha256="3" * 64,
+    )
+    first = _qualification_identity(
+        source=_ReviewedSource("4" * 40, "5" * 64, "6" * 64), **arguments
+    )
+    second = _qualification_identity(
+        source=_ReviewedSource("4" * 40, "5" * 64, "7" * 64), **arguments
+    )
+    assert first == {
+        "schema_version": "phase4-r2-early-qualification-input-v2",
+        "source_commit": "4" * 40,
+        "executable_sha256": "5" * 64,
+        "source_authority_sha256": "6" * 64,
+        "protocol_sha256": "1" * 64,
+        "policy_sha256": sha256_bytes(canonical_json_bytes(tiny_archive_policy)),
+        "debug_commit_sha256": "2" * 64,
+        "debug_review_sha256": "3" * 64,
+    }
+    assert sha256_bytes(canonical_json_bytes(first)) != sha256_bytes(canonical_json_bytes(second))
+
+
 def test_bound_refusal_precedes_any_output_and_undergrant_cannot_pass(process_case):
     from dataclasses import replace
 
@@ -595,12 +687,16 @@ def _unreapable_parent(workspace, policy, fault):
 @pytest.mark.parametrize(
     "fault", ["alive", "kill", "join", "group-kill", "group-probe", "interrupt", "evidence"]
 )
-def test_unreapable_child_fail_stop_preserves_durable_reservation(process_case, fault):
+def test_unreapable_child_fail_stop_preserves_durable_reservation(
+    process_case, fault, isolated_archive_authorities
+):
     import multiprocessing
 
     budget, unit, _transport = process_case
     parent = multiprocessing.get_context("spawn").Process(
-        target=_unreapable_parent, args=(budget.workspace, unit.policy, fault)
+        target=isolated_archive_authorities.target(
+            _unreapable_parent, budget.workspace, unit.policy, fault
+        )
     )
     parent.start()
     parent.join(10)
