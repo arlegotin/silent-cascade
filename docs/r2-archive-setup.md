@@ -113,11 +113,29 @@ These focused runs are not a complete local quality-gate pass. Offline provenanc
 requires trusted Git >=2.45 with native no-lazy-fetch support; the executable is
 pinned privately before child launch. Older Apple Git is not a fallback.
 
-Producer integration, streaming scientific readers, CLI/preflight integration
-and the real R2 storage
-qualification remain pending in Tasks 4–7. No experiment evidence has been
-uploaded or deleted during this implementation. The new source has not yet
-passed a complete local `make verify` run or the production storage gate.
+Task 4 producer integration passed its scoped reviews through `7150b45`:
+per-episode publication, shared crash-weight ownership, bounded journal segments,
+control snapshots and stopped-writer handoff. These checks used local transport
+doubles, not R2.
+
+The first Task 5 milestone passed its scoped review through `045d234`: cold
+evaluation scanning, reports, training envelopes and journal readers authenticate
+one bounded unit at a time. Full Task 5 remains incomplete: cold partial/recovery
+integration, broader caller coverage and replay/continuation checks are still due.
+Two minor review findings remain tracked for that integration: duplicated metric
+finalization rules and a stronger same-binding mutation regression.
+
+The next prerequisite is same-ledger accounting and verified archival of retained
+engineering output. It must charge existing test files against the same 10 GiB
+ceiling and preserve unsupported fixtures locally. This is an approved ordering
+adjustment within Task 6, not a new storage allowance or a completed storage gate.
+Real archival operations require independent implementation review and bounded
+provider qualification first.
+
+CLI/preflight integration and the remaining real R2 storage qualification are
+pending. No experiment evidence has been uploaded or deleted during this
+implementation. The new source has not yet passed a complete local `make verify`
+run or the production storage gate.
 
 This is implementation progress, not a Phase 4 result: the seed-11 production
 pilot remains unstarted. The 10 GiB ceiling includes test output, temporary
