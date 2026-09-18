@@ -822,8 +822,12 @@ payloads; new controls live outside the scientific artifact inventory.
 `tests/pilot/test_pilot_archive_readers.py`. Modify
 `report/{pilot_artifacts,pilot}.py`, `eval/artifacts.py`,
 `train/{pilot_artifact_index,pilot_trainer,pilot_workflow,pilot_evidence,pilot_checks}.py`.
-Narrowly extend `archive/supervisor.py` for the remaining fixed
-verify/report/replay reader dispatch using the already-created local session.
+Extend `archive/{session,supervisor}.py` for the remaining fixed
+verify/report/replay reader dispatch and the closed recovery-source view/import
+contract below, using the already-created local session. A narrow
+`archive/producer.py` custody helper is allowed when required; callers must not
+mutate the producer's private resident inventory.
+Extend `tests/archive/{test_session,test_supervisor}.py` for these exact interfaces.
 Extend `tests/pilot/{test_pilot_artifact_index,test_pilot_checks,test_pilot_report,test_pilot_gate_verifier}.py`.
 
 **Interfaces produced:**
@@ -871,6 +875,77 @@ existing validation. `_compact_rows` consumes verified episode data instead of
 reopening files after lease release. Report figures use only already-decoded
 selected positive/negative examples, or reopen an explicit selected episode lease.
 No entire evaluation hydration for finalization, reporting, gate, replay or recovery.
+
+**Fresh-recovery authority and bounded import:** operational run IDs derive from
+absolute run paths; catalogs and remote chunks bind that identity. Never relocate
+source catalog heads to a new run or weaken membership checks. Use one fixed
+parent-bound read-only source view on the destination's existing IPC sequence,
+then re-publish verified inputs into destination-native units/catalogs. This
+duplicates remote input payloads: reserve/count their transfer, readback and
+retention within existing quotas, with no budget increase. Scientific file bytes,
+paths, EpisodeCommit digests, source/config identity and original gate stay exact;
+only operational run IDs, UnitRefs, receipts and catalog bindings change.
+
+Implement this closed interface, not a generic cross-run resolver:
+
+```python
+# Existing checks job gains a disjoint mode="recover" request containing
+# source run/control, original artifact path and optional retained-local root.
+# Destination stays run_dir; ordinary checks still require config_path.
+session.recovery_source() -> EvidenceContext
+session.import_original(lease, *, entries, commit=None, pin=False)
+```
+
+The source view shares the same request lock/sequence, parent liveness and lease
+registry. Only the admitted recovery checks job can create it. A literal
+`recovery_source` payload tag authorizes existing read operations only. The import
+method is a strict existing `seal` variant consuming an active parent-issued
+source lease token, never arbitrary source/destination paths, remote keys or
+caller-supplied run identities. Parent derives exact import membership from the
+pinned original gate's envelope/index/descriptor closure with bounded shard
+verification. Merely supplying a matching path/hash is not import authority.
+
+Before the offline child starts, bind the source run/control pair, catalog and
+episode-binding heads, original gate digest, policy, destination identity and
+request/source admission in existing bounded operational job data. Keep source
+exclusion and per-unit reader locks; verify known inactive pilot-owner identity
+without rewriting or taking over that owner. Reject nested/aliased/overlapping
+run/control roots, changed heads/inodes/gate/controls and out-of-workspace paths.
+Source cold units require pinned catalog membership, not destination pending-unit
+fallback. Cache/metadata roots live under counted destination controls, while
+source locks stay in source controls. Enforce one episode lease globally across
+both views, including shared borrowed inputs. No second session/server, foreign
+catalog membership, new unit/schema, or general context registry is introduced.
+
+Recovery order is binding:
+
+1. Reserve old/new/cache/staging/readback together. Operational control creation
+   may precede preflight; scientific destination creation may not.
+2. Exhaust the original gate/envelope/index and every required raw input with
+   complete semantic, journal and checkpoint closure. A final-page failure leaves
+   the scientific destination absent and executes no neural work.
+3. Recheck source authority/absence, then enter existing destination
+   `pilot_ownership` using authenticated scientific identity. Never copy old owner
+   files or put the old gate at destination `phase4-gate.json` for output reuse.
+4. Pin only admitted required controls with original hashes. Historical root
+   controls use explicit authenticated snapshot refs/checkpoints, not fabricated
+   exclusive ownership of `.`; other checkpoint/weight reads stay lease-scoped.
+5. Import shared primitive owners before borrowers, then one episode/page/journal/
+   metadata closure at a time through existing seal/archive/readback/receipt and
+   safe eviction. Preserve group/borrowed distinctions and bind unchanged
+   EpisodeCommits to new destination refs. Source plus destination copies coexist
+   only for the admitted current item. Preserve failed imports as counted evidence.
+6. Exhaust and authenticate the destination through ordinary context membership,
+   write unchanged workflow/recovery-intent schemas, then run new checks with the
+   destination producer/context. Closing the source view must not break subsequent
+   destination reads. Ordinary eager local recovery remains unchanged.
+
+Test foreign refs, source-tag writes, unknown fields, stale/released tokens,
+nonindexed imports, changed source heads/gate/controls, absent shared weights,
+corrupt last shard, destination absence timing, no-neural preflight, new native
+destination identity, byte-identical originals, one global episode lease, reader
+locks and combined peak allocation. Importing old final-output trees is not
+authorized merely because original gate verification could read them.
 
 - [ ] **Step 1 — RED:** use actual retained debug-run artifacts, not dummy metrics.
   Archive/evict episode payloads and multiple catalog/journal pages. Compare eager

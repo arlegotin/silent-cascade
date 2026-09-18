@@ -368,6 +368,20 @@ evaluation tree. This changes *simultaneous materialization*,
 not required input coverage. Keep old local recovery unchanged, preserve original
 artifacts, and reject overlapping destinations and changed gate identities.
 
+Operational run IDs are path-bound. Fresh recovery therefore uses one fixed
+parent-bound read-only source view on the existing destination session, followed
+by bounded re-publication into destination-native units/catalogs; it does not
+relocate catalog heads or authorize foreign members. Preserve scientific bytes,
+paths, EpisodeCommit digests and source/config identity. The duplicated remote
+inputs, source lease, current destination copy, metadata and readback all count
+against existing limits. Complete original-input authentication precedes creation
+of the scientific destination; complete native destination authentication precedes
+new neural work. Pin source heads/gate/owner authority and reject changes. There
+is one IPC sequence, one lease registry and one episode lease across both views.
+Imports require an active authenticated source lease and parent-derived membership
+in the original recovery input stream. The source view cannot write or evict.
+No new manifest schema, generic multi-run resolver or extra budget is introduced.
+
 ## 7. Provenance, compatibility and security
 
 - Archive policy, source, manifests, transfer receipts and control snapshots have
