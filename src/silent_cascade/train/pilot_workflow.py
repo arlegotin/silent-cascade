@@ -236,14 +236,20 @@ def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None, capture_s
 
 
 def _durable(run_dir, config, source, device, *, result=None, evidence_context=None):
-    index = read_json(run_dir / "checkpoint-index.json")
+    from silent_cascade.archive.readers import evidence_path
+
+    with evidence_path(
+        run_dir, "checkpoint-index.json", evidence_context=evidence_context
+    ) as local:
+        index = read_json(local)
     descriptor = PilotCheckpointDescriptor.model_validate_json(
         canonical_json_bytes(index["latest"])
     )
     path = child(run_dir, descriptor.path)
-    session = load_pilot_checkpoint(
-        path, expected_sha256=descriptor.sha256, config=config, source=source, device=device
-    )
+    with evidence_path(run_dir, descriptor.path, evidence_context=evidence_context) as local:
+        session = load_pilot_checkpoint(
+            local, expected_sha256=descriptor.sha256, config=config, source=source, device=device
+        )
     verify_journal(run_dir, session.progress, evidence_context=evidence_context)
     if (
         session.progress.global_step != descriptor.global_step
