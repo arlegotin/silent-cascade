@@ -176,6 +176,20 @@ def _child_main():
         watcher.join(timeout=2)
 
 
+def _bind_storage_paths(budget, run_dir, control_dir):
+    if run_dir == control_dir or run_dir.is_relative_to(control_dir):
+        raise ValueError("archive controls cannot contain the scientific run")
+    for path, category in (
+        (run_dir, "spool"),
+        (control_dir, "metadata"),
+        (control_dir / "lease-cache", "cache"),
+        (control_dir / "transfer-scratch", "scratch"),
+        (control_dir / "quarantine/cache", "cache"),
+        (control_dir / "quarantine/metadata", "metadata"),
+    ):
+        budget.bind(path, category=category)
+
+
 def supervise_job(
     *,
     job: str,
@@ -187,9 +201,7 @@ def supervise_job(
     policy: ArchivePolicy,
     output_bounds,
 ) -> int:
-    from silent_cascade.archive.ledger import _CATEGORIES
     from silent_cascade.archive.types import JobOutputBounds
-    from silent_cascade.train.pilot_offline import offline_environment
 
     if not isinstance(output_bounds, JobOutputBounds):
         raise ValueError("explicit source-derived output bounds required")
@@ -203,16 +215,81 @@ def supervise_job(
         or output_bounds.source_sha256 != source
     ):
         raise ValueError("output bounds identity differs")
+    try:
+        return _supervise_bound_job(
+            job=job,
+            request=request,
+            decoded=decoded,
+            source=source,
+            workspace_root=workspace_root,
+            run_dir=run_dir,
+            control_dir=control_dir,
+            transport=transport,
+            policy=policy,
+            output_bounds=output_bounds,
+        )
+    except (RuntimeError, OSError, ValueError):
+        _report_storage_blocked(
+            workspace_root=workspace_root, control_dir=control_dir, policy=policy
+        )
+        return 75
+
+
+def _report_storage_blocked(*, workspace_root, control_dir, policy):
+    payload = {
+        "status": "storage_blocked",
+        "action": "retain pending files and last durable pilot checkpoint; inspect storage",
+    }
+    # stderr is the nonallocating fallback when history cannot be authenticated or
+    # there is no room even for an atomic status descriptor. Never reset history.
+    with suppress(OSError):
+        sys.stderr.write(canonical_json_bytes(payload).decode() + "\n")
+    try:
+        budget = _StorageBudget(workspace=workspace_root, policy=policy)
+        budget.require_path(control_dir)
+        budget.bind(control_dir, category="metadata")
+        missing = sum(not parent.exists() for parent in (control_dir, *control_dir.parents))
+        block = max(4096, os.statvfs(workspace_root).f_frsize)
+        maximum = block * (missing + 8) + 2 * len(canonical_json_bytes(payload))
+        with budget.reserve(metadata=maximum):
+            _publish(control_dir, "blocked.json", payload, max_bytes=policy.page_bytes)
+    except (StorageBlocked, OSError, ValueError):
+        # A status file must never bypass the same ledger or overwrite evidence.
+        return
+
+
+def _supervise_bound_job(
+    *,
+    job,
+    request,
+    decoded,
+    source,
+    workspace_root,
+    run_dir,
+    control_dir,
+    transport,
+    policy,
+    output_bounds,
+):
+    from silent_cascade.archive.ledger import _CATEGORIES
+    from silent_cascade.train.pilot_offline import offline_environment, resolve_offline_git
+
     budget = _StorageBudget(workspace=workspace_root, policy=policy)
     for path in (run_dir, control_dir):
         budget.require_path(path)
     if job == "pilot":
         budget.require_path(decoded["manifest_dir"])
     amounts = {name: getattr(output_bounds, name + "_bytes") for name in _CATEGORIES}
-    with (
-        _lock(control_dir=control_dir, relative=("supervisor.lock",), shared=False, blocking=False),
-        budget.reserve(admission=output_bounds.model_dump(mode="json"), **amounts),
-    ):
+    with ExitStack() as ownership:
+        ownership.enter_context(
+            _lock(
+                control_dir=control_dir, relative=("supervisor.lock",), shared=False, blocking=False
+            )
+        )
+        _bind_storage_paths(budget, run_dir.absolute(), control_dir.absolute())
+        ownership.enter_context(
+            budget.reserve(admission=output_bounds.model_dump(mode="json"), **amounts)
+        )
         budget.inherit_reservations = True
         run_dir.mkdir(parents=True, exist_ok=True)
         run_id = sha256_bytes(str(run_dir.absolute()).encode())
@@ -230,6 +307,7 @@ def supervise_job(
         logs = workspace_root / "logs" / token
         scratch.mkdir(parents=True)
         logs.mkdir(parents=True)
+        git_pin = resolve_offline_git()
         _publish(
             control_dir,
             "job.json",
@@ -261,7 +339,7 @@ def supervise_job(
                 child = subprocess.Popen(
                     command,
                     cwd=Path(__file__).resolve().parents[3],
-                    env=offline_environment(scratch),
+                    env=offline_environment(scratch, git_pin=git_pin),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     start_new_session=True,
@@ -300,17 +378,6 @@ def supervise_job(
                         )
                         last_health = time.monotonic()
                 return child.wait(timeout=30)
-            except (StorageBlocked, OSError, ValueError):
-                _publish(
-                    control_dir,
-                    "blocked.json",
-                    {
-                        "status": "storage_blocked",
-                        "action": "retain pending files and last durable pilot checkpoint",
-                    },
-                    max_bytes=policy.page_bytes,
-                )
-                return 75
             finally:
                 if child is not None and child.poll() is None:
                     # The fresh child owns this otherwise-private process group.
@@ -376,14 +443,7 @@ class _ArchiveServer:
         self.budget = _StorageBudget(workspace=workspace_root, policy=policy)
         self.budget.require_path(self.run_dir)
         self.budget.require_path(self.control_dir)
-        self.budget.bind(self.run_dir, category="spool")
-        self.budget.bind(self.control_dir, category="metadata")
-        self.budget.bind(self.control_dir / "lease-cache", category="cache")
-        self.budget.bind(self.control_dir / "transfer-scratch", category="scratch")
-        self.budget.bind(self.control_dir / "quarantine/cache", category="cache")
-        self.budget.bind(self.control_dir / "quarantine/metadata", category="metadata")
-        if self.run_dir == self.control_dir or self.run_dir.is_relative_to(self.control_dir):
-            raise ValueError("archive controls cannot contain the scientific run")
+        _bind_storage_paths(self.budget, self.run_dir, self.control_dir)
         self.control_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_staging()
         locator = {

@@ -1,8 +1,14 @@
 """Fresh-interpreter network/import denial around actual train/eval/replay/report."""
 
+import hashlib
+import json
 import os
+import re
+import shutil
+import stat
 import subprocess
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -31,19 +37,103 @@ class PilotOfflineReport(StrictModel):
     artifact_report_sha256: str
 
 
-def offline_environment(scratch: Path) -> dict[str, str]:
+@dataclass(frozen=True)
+class OfflineGitPin:
+    executable: str
+    version: str
+    sha256: str
+
+
+_BOUNDARY_GIT_PIN: OfflineGitPin | None = None
+_GIT_PIN_ENV = "SILENT_CASCADE_OFFLINE_GIT_PIN"
+
+
+def _git_identity(path):
+    resolved = Path(path).resolve(strict=True)
+    if str(resolved) != path or not resolved.is_file():
+        raise RuntimeError("offline Git pin is not a real executable")
+    with resolved.open("rb") as source:
+        info = os.fstat(source.fileno())
+        if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022 or not info.st_mode & 0o111:
+            raise RuntimeError("offline Git executable ownership/mode is untrusted")
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    return digest
+
+
+def resolve_offline_git() -> OfflineGitPin:
+    """Operational parent prerequisite: local Git >=2.45, no install or network."""
+    candidate = shutil.which("git")
+    if candidate is None:
+        raise RuntimeError("offline provenance requires trusted Git >=2.45")
+    path = str(Path(candidate).resolve(strict=True))
+    digest = _git_identity(path)
+    completed = subprocess.run(
+        [path, "--version"],
+        capture_output=True,
+        timeout=5,
+        check=True,
+        env={
+            "PATH": os.defpath,
+            "LANG": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
+    )
+    match = re.fullmatch(rb"git version ([0-9]+\.[0-9]+\.[0-9]+)(?:[^\n]*)\n?", completed.stdout)
+    if match is None or len(completed.stdout) > 256:
+        raise RuntimeError("offline provenance requires trusted Git >=2.45")
+    version = match[1].decode()
+    if tuple(map(int, version.split(".")[:2])) < (2, 45):
+        raise RuntimeError("offline provenance requires trusted Git >=2.45")
+    return OfflineGitPin(path, version, digest)
+
+
+def _decode_git_pin(raw):
+    if type(raw) is not str or len(raw) > 4096:
+        raise RuntimeError("invalid offline Git pin")
+    value = json.loads(raw)
+    if type(value) is not dict or set(value) != {"executable", "version", "sha256"}:
+        raise RuntimeError("invalid offline Git pin")
+    if (
+        any(type(item) is not str for item in value.values())
+        or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value["version"])
+        or tuple(map(int, value["version"].split(".")[:2])) < (2, 45)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])
+        or _git_identity(value["executable"]) != value["sha256"]
+    ):
+        raise RuntimeError("offline Git executable pin differs")
+    return OfflineGitPin(**value)
+
+
+def offline_environment(scratch: Path, *, git_pin: OfflineGitPin | None = None) -> dict[str, str]:
     """Closed child environment; every runtime cache stays in counted scratch."""
     scratch = scratch.absolute()
+    pin = git_pin or _BOUNDARY_GIT_PIN or resolve_offline_git()
     return {
         key: value
         for key, value in {
             "PATH": os.defpath,
+            _GIT_PIN_ENV: json.dumps(asdict(pin), sort_keys=True, separators=(",", ":")),
             "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYTHONCOERCECLOCALE": "0",
+            **(
+                {"__CF_USER_TEXT_ENCODING": f"0x{os.getuid():X}:0x0:0x0"}
+                if sys.platform == "darwin"
+                else {}
+            ),
             "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src"),
             "PYTHONDONTWRITEBYTECODE": "1",
             "OMP_NUM_THREADS": "1",
             "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_ALLOW_PROTOCOL": "",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_LITERAL_PATHSPECS": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_PAGER": "",
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "core.fsmonitor",
@@ -58,6 +148,88 @@ def offline_environment(scratch: Path) -> dict[str, str]:
     }
 
 
+_GIT_PREFIX = (
+    "--no-pager",
+    "--no-replace-objects",
+    "--no-lazy-fetch",
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "submodule.recurse=false",
+    "-c",
+    "status.submoduleSummary=false",
+)
+_GIT_LOG_OPTIONS = ("--no-ext-diff", "--no-textconv", "--no-show-signature")
+
+
+def _closed_git_arguments(arguments):
+    """Only the local object/history forms used by existing provenance readers."""
+    values = tuple(arguments)
+    if not values or any(type(value) is not str for value in values):
+        raise RuntimeError("offline child forbids external command")
+
+    def revision(value):
+        return bool(re.fullmatch(r"(?:HEAD|[0-9a-f]{40})(?:\^\{commit\})?", value))
+
+    def path(value):
+        return bool(value) and not value.startswith(("/", "-")) and ".." not in Path(value).parts
+
+    command, *tail = values
+    admitted = False
+    if command == "rev-parse":
+        tail = tail[1:] if tail[:1] == ["--verify"] else tail
+        admitted = len(tail) == 1 and revision(tail[0])
+    elif command == "merge-base":
+        admitted = len(tail) == 3 and tail[0] == "--is-ancestor" and all(map(revision, tail[1:]))
+    elif command == "ls-files":
+        admitted = not tail
+    elif command == "rev-list":
+        admitted = len(tail) == 2 and tail[0] == "--topo-order" and revision(tail[1])
+    elif command == "status":
+        admitted = tail == ["--porcelain", "--untracked-files=normal"] or (
+            tail[:3] == ["--porcelain=v1", "--untracked-files=all", "--"]
+            and len(tail) > 3
+            and all(map(path, tail[3:]))
+        )
+    elif command == "cat-file":
+        admitted = tail == ["--batch"]
+        if len(tail) == 2 and tail[0] in {"-s", "blob"}:
+            oid, separator, name = tail[1].partition(":")
+            admitted = bool(re.fullmatch(r"[0-9a-f]{40}", oid)) and (
+                not separator or (tail[0] == "blob" and path(name))
+            )
+    elif command == "ls-tree":
+        if tail[:2] == ["-r", "--name-only"]:
+            tail = tail[2:]
+        elif tail[:1] in (["-z"], ["-rz"]):
+            tail = tail[1:]
+        else:
+            tail = []
+        admitted = (
+            bool(tail)
+            and revision(tail[0])
+            and (
+                len(tail) == 1
+                or (tail[1:2] == ["--"] and len(tail) > 2 and all(map(path, tail[2:])))
+            )
+        )
+    elif command == "log" and tail[:2] == ["-1", "--format=%H"]:
+        tail = tail[2:]
+        if tail and revision(tail[0]):
+            tail = tail[1:]
+        admitted = tail[:1] == ["--"] and len(tail) > 1 and all(map(path, tail[1:]))
+    if not admitted:
+        raise RuntimeError("offline child forbids external command")
+    if command == "status":
+        return (*values[:1], "--ignore-submodules=none", *values[1:])
+    return values[:1] + (_GIT_LOG_OPTIONS if command == "log" else ()) + values[1:]
+
+
 def install_offline_boundary(*, workspace_root: Path | None = None):
     """Install irreversible child-only denial hooks, retaining read-only Git."""
     import importlib.abc
@@ -65,9 +237,40 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
     import threading
     import urllib.request
 
+    global _BOUNDARY_GIT_PIN
+    pin = _decode_git_pin(os.environ.get(_GIT_PIN_ENV))
+    _BOUNDARY_GIT_PIN = pin
+    git_prefix = (pin.executable, *_GIT_PREFIX)
     workspace = None if workspace_root is None else Path(workspace_root).resolve(strict=True)
     workspace_device = None if workspace is None else workspace.stat().st_dev
     descriptor_open = threading.local()
+    trusted_repo = Path(__file__).resolve().parents[3]
+    trusted_environment = offline_environment(Path(os.environ["TMPDIR"]), git_pin=pin)
+    original_popen = subprocess.Popen
+
+    def closed_popen(args, *positional, **kwargs):
+        if isinstance(args, (list, tuple)) and args and args[0] in {"git", pin.executable}:
+            if (
+                positional
+                or kwargs.get("shell", False)
+                or kwargs.get("executable") not in {None, "git", pin.executable}
+                or Path(kwargs.get("cwd") or Path.cwd()) != trusted_repo
+                or dict(kwargs.get("env") if kwargs.get("env") is not None else os.environ)
+                != trusted_environment
+            ):
+                raise RuntimeError("offline child forbids untrusted Git context")
+            arguments = _closed_git_arguments(args[1:])
+            args = (*git_prefix, *arguments)
+            kwargs.update(
+                executable=pin.executable, cwd=trusted_repo, env=dict(trusted_environment)
+            )
+            descriptor_open.git_batch_pipe = (
+                arguments == ("cat-file", "--batch") and kwargs.get("stdin") == subprocess.PIPE
+            )
+        try:
+            return original_popen(args, *positional, **kwargs)
+        finally:
+            descriptor_open.git_batch_pipe = False
 
     def descriptor_path(descriptor):
         if sys.platform == "darwin":
@@ -80,6 +283,10 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
         if workspace is None:
             return
         if isinstance(path, int):
+            if getattr(descriptor_open, "git_batch_pipe", False) and stat.S_ISFIFO(
+                os.fstat(path).st_mode
+            ):
+                return
             target = descriptor_path(path)
         else:
             target = Path(os.fsdecode(path))
@@ -178,23 +385,25 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
                 check_write(argv[4])
                 return
             if (
-                executable not in {"git", "/usr/bin/git"}
+                executable != pin.executable
                 or not isinstance(argv, (list, tuple))
-                or len(argv) < 2
-                or argv[0] not in {"git", "/usr/bin/git"}
-                or argv[1]
-                not in {"rev-parse", "cat-file", "ls-tree", "status", "merge-base", "log"}
-                or any(
-                    str(arg).startswith(
-                        ("--exec", "--ext-diff", "--textconv", "--filters", "--output")
-                    )
-                    for arg in argv[2:]
-                )
+                or tuple(argv[: len(git_prefix)]) != git_prefix
+                or _cwd != trusted_repo
+                or _env != trusted_environment
             ):
                 raise RuntimeError("offline child permits only read-only Git provenance")
+            arguments = tuple(argv[len(git_prefix) :])
+            original_arguments = arguments
+            if arguments[:1] == ("log",) and arguments[1:4] == _GIT_LOG_OPTIONS:
+                original_arguments = arguments[:1] + arguments[4:]
+            if arguments[:2] == ("status", "--ignore-submodules=none"):
+                original_arguments = arguments[:1] + arguments[2:]
+            if _closed_git_arguments(original_arguments) != arguments:
+                raise RuntimeError("offline child forbids external command")
 
     sys.meta_path.insert(0, Blocker())
     sys.addaudithook(audit)
+    subprocess.Popen = closed_popen
     os.open = bounded_open
     socket.socket.connect = deny
     socket.socket.connect_ex = deny
@@ -222,6 +431,7 @@ def measure_pilot_offline(*, output_dir):
     from silent_cascade.train.pilot_data import _publish_pilot_bytes, _read_pilot_bytes
 
     root = Path(__file__).resolve().parents[3]
+    git_pin = _BOUNDARY_GIT_PIN or resolve_offline_git()
     # Persist intent before the child starts; all outputs/errors survive failures.
     _publish_pilot_bytes(
         output_dir / "intent.json", b'{"evidence_kind":"offline_smoke_diagnostic"}'
@@ -229,7 +439,7 @@ def measure_pilot_offline(*, output_dir):
     completed = subprocess.run(
         [sys.executable, "-B", "-c", _PROGRAM, str(output_dir.absolute())],
         cwd=root,
-        env=offline_environment(output_dir),
+        env=offline_environment(output_dir, git_pin=git_pin),
         capture_output=True,
         timeout=180,
     )

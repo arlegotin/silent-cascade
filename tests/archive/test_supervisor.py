@@ -95,6 +95,134 @@ def test_supervisor_rejects_missing_or_mismatched_bounds_before_child(tmp_path):
     assert not (tmp_path / "run").exists()
 
 
+def test_supervisor_binds_existing_run_before_reservation_snapshot(tmp_path, monkeypatch):
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.ledger import _StorageBudget, initialize_workspace_ledger
+    from silent_cascade.archive.types import ArchivePolicy, JobOutputBounds
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    policy = ArchivePolicy(scratch_bytes=64 * 1024, chunk_bytes=8192)
+    run, control = tmp_path / "ordinary-run", tmp_path / "ordinary-control"
+    run.mkdir()
+    existing = run / "retained.bin"
+    existing.write_bytes(bytes(range(256)) * 512)
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    bounds = JobOutputBounds(
+        job="report",
+        request_sha256=sha256_bytes(canonical_json_bytes({})),
+        policy_sha256=sha256_bytes(canonical_json_bytes(policy)),
+        source_sha256=supervisor.package_source_sha256(),
+        spool_bytes=4096,
+        cache_bytes=0,
+        pinned_bytes=0,
+        metadata_bytes=1024**2,
+        scratch_bytes=32768,
+        logs_bytes=16384,
+        emergency_bytes=0,
+    )
+    spawned = []
+    original_popen = supervisor.subprocess.Popen
+
+    def inspect_admission(*args, **kwargs):
+        if len(args[0]) == 2 and args[0][1] == "--version":
+            return original_popen(*args, **kwargs)
+        state = _StorageBudget(workspace=tmp_path, policy=policy)._state()
+        (record,) = state["reservations"].values()
+        assert record["before"]["spool"] >= existing.stat().st_blocks * 512
+        assert record["before"]["scratch"] < 32768
+        spawned.append(True)
+        raise OSError("injected local spawn failure")
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", inspect_admission)
+    assert (
+        supervisor.supervise_job(
+            job="report",
+            request={},
+            workspace_root=tmp_path,
+            run_dir=run,
+            control_dir=control,
+            transport=None,
+            policy=policy,
+            output_bounds=bounds,
+        )
+        == 75
+    )
+    assert spawned == [True]
+    assert existing.read_bytes() == bytes(range(256)) * 512
+
+
+@pytest.mark.parametrize("failure", ["admission", "corrupt", "missing", "startup", "no-space"])
+def test_admission_and_startup_return_blocked_without_losing_evidence(
+    tmp_path, monkeypatch, capsys, failure
+):
+    import json
+    import os
+
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.ledger import initialize_workspace_ledger
+    from silent_cascade.archive.types import ArchivePolicy, JobOutputBounds
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    policy = ArchivePolicy()
+    run, control = tmp_path / "run", tmp_path / "control"
+    run.mkdir()
+    control.mkdir()
+    pending = run / "pending.bin"
+    pending.write_bytes(b"never remove pending evidence")
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    state = tmp_path / ".silent-cascade-storage/workspace.json"
+    if failure == "corrupt":
+        state.write_bytes(b"{corrupt history")
+    elif failure == "missing":
+        state.rename(state.with_name("retained-history.json"))
+    elif failure == "startup":
+        (control / "storage-state.json").write_bytes(b"{}")
+    elif failure == "no-space":
+        values = list(os.statvfs(tmp_path))
+        values[4] = 0
+        monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+    bounds = JobOutputBounds(
+        job="report",
+        request_sha256=sha256_bytes(canonical_json_bytes({})),
+        policy_sha256=sha256_bytes(canonical_json_bytes(policy)),
+        source_sha256=supervisor.package_source_sha256(),
+        spool_bytes=policy.spool_bytes + 1 if failure == "admission" else 4096,
+        cache_bytes=0,
+        pinned_bytes=0,
+        metadata_bytes=1024**2,
+        scratch_bytes=1024**2,
+        logs_bytes=16384,
+        emergency_bytes=0,
+    )
+    monkeypatch.setattr(
+        supervisor.subprocess, "Popen", lambda *a, **kw: pytest.fail("child started")
+    )
+    assert (
+        supervisor.supervise_job(
+            job="report",
+            request={},
+            workspace_root=tmp_path,
+            run_dir=run,
+            control_dir=control,
+            transport=None,
+            policy=policy,
+            output_bounds=bounds,
+        )
+        == 75
+    )
+    assert pending.read_bytes() == b"never remove pending evidence"
+    message = json.loads(capsys.readouterr().err.strip())
+    assert message["status"] == "storage_blocked" and "retain" in message["action"]
+    if failure in {"admission", "startup"}:
+        assert json.loads((control / "blocked.json").read_bytes())["status"] == "storage_blocked"
+    else:
+        assert not (control / "blocked.json").exists()
+    if failure == "corrupt":
+        assert state.read_bytes() == b"{corrupt history"
+    if failure == "missing":
+        assert not state.exists() and state.with_name("retained-history.json").exists()
+
+
 def test_supervisor_abort_stops_nested_diagnostic_without_touching_other_processes(
     tmp_path, monkeypatch
 ):
@@ -144,6 +272,8 @@ def test_supervisor_abort_stops_nested_diagnostic_without_touching_other_process
     deadline = time.monotonic() + 40
 
     def child_fixture(command, **kwargs):
+        if len(command) == 2 and command[1] == "--version":
+            return original_popen(command, **kwargs)
         # Keep real _child_main, source checking, boundary and exact nested diagnostic.
         # Replace only the scientific job body to avoid a complete pilot-checks run.
         assert command[2] == "-c" and command[3].endswith("_child_main()")
@@ -171,7 +301,7 @@ s._child_main()
         result = original_check(budget)
         assert time.monotonic() < deadline, "nested diagnostic did not start"
         marker = control / "test-nested.pid"
-        if marker.exists() and (pid := marker.read_text()).isdigit():
+        if not descendants and marker.exists() and (pid := marker.read_text()).isdigit():
             descendants.append(psutil.Process(int(pid)))
             raise StorageBlocked("storage_blocked: injected exhaustion with active diagnostic")
         return result

@@ -59,6 +59,18 @@ def initialize_workspace_ledger(*, workspace_root: Path, policy: ArchivePolicy, 
     workspace_root.mkdir(parents=True, exist_ok=True)
     root = workspace_root / _STATE_DIRECTORY
     policy = ArchivePolicy.model_validate(policy.model_dump())
+    # The directory itself is the create-only bootstrap/history sentinel, even
+    # before a first baseline page or descriptor exists. Never reuse an old lock.
+    with _pinned_directory(workspace_root) as descriptor:
+        try:
+            os.mkdir(_STATE_DIRECTORY, mode=0o700, dir_fd=descriptor)
+        except FileExistsError as error:
+            if (root / "workspace.json").exists():
+                raise FileExistsError("workspace ledger already exists") from error
+            raise StorageBlocked(
+                "storage_blocked: prior bootstrap/history requires explicit recovery"
+            ) from error
+        os.fsync(descriptor)
     with _lock(control_dir=root, relative=("workspace.lock",), shared=False, blocking=True):
         if (root / "workspace.json").exists():
             raise FileExistsError("workspace ledger already exists")
@@ -157,6 +169,10 @@ class _StorageBudget:
             state = self._state()
             if relative in state["paths"] and state["paths"][relative] != category:
                 raise StorageBlocked("storage_blocked: category binding cannot be reassigned")
+            if state["paths"].get(relative) == category:
+                return
+            if state["reservations"]:
+                raise StorageBlocked("storage_blocked: category binding has live reservations")
             state["paths"][relative] = category
             self._store(state)
 
@@ -234,7 +250,7 @@ class _StorageBudget:
                 if name not in reservations or type(amount) is not int or amount < 0:
                     raise StorageBlocked("storage_blocked: corrupt reservation")
                 growth = max(0, allocated[name] - record["before"][name])
-                if growth > amount and amount:
+                if growth > amount:
                     raise StorageBlocked(
                         f"storage_blocked: {name} output exceeded admitted maximum"
                     )
@@ -297,6 +313,8 @@ class _StorageBudget:
                     state = self._state()
                     for name, value in amounts.items():
                         state["reservations"][token]["amounts"][name] -= value
+                        if name not in prior and state["reservations"][token]["amounts"][name] == 0:
+                            del state["reservations"][token]["amounts"][name]
                     self._store(state)
             return
         token = secrets.token_hex(16)

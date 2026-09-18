@@ -3,6 +3,22 @@
 import pytest
 
 
+def test_offline_git_pin_requires_no_lazy_fetch_version(tmp_path, monkeypatch):
+    import subprocess
+
+    from silent_cascade.train import pilot_offline
+
+    pin = pilot_offline.resolve_offline_git()
+    assert tuple(map(int, pin.version.split(".")[:2])) >= (2, 45)
+    monkeypatch.setattr(
+        pilot_offline.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, b"git version 2.44.0\n", b""),
+    )
+    with pytest.raises(RuntimeError, match=r"2\.45"):
+        pilot_offline.resolve_offline_git()
+
+
 def test_fresh_offline_boundary_denies_cloud_and_subprocess_escape(tmp_path):
     import json
     import os
@@ -94,6 +110,97 @@ for path in (root.parent / 'escaped.txt', root / '..' / 'escaped.txt'):
     assert (allowed / "retained.txt").read_text() == "inside"
     assert (allowed / "descriptor.txt").read_bytes() == b"inside"
     assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_git_provenance_denies_helper_configuration_and_keeps_closed_reads(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from silent_cascade.train.pilot_offline import offline_environment
+
+    program = r"""
+import os, subprocess, sys
+from pathlib import Path
+from silent_cascade.train import pilot_offline as module
+from silent_cascade.train.provenance import git, regular_blob
+from silent_cascade.train.pilot_provenance import _blobs, _package_paths
+root = Path(module.__file__).resolve().parents[3]
+scratch = Path(sys.argv[1])
+module.install_offline_boundary(workspace_root=scratch)
+trusted = dict(os.environ)
+marker = scratch / 'escaped-helper'
+helper = '!echo escaped > ' + str(marker)
+mutations = [
+    dict(trusted, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='core.fsmonitor',
+         GIT_CONFIG_VALUE_0=helper),
+    dict(trusted, GIT_CONFIG_PARAMETERS="'core.fsmonitor=" + helper + "'"),
+    dict(trusted, GIT_SSH_COMMAND=helper),
+    dict(trusted, GIT_CONFIG_GLOBAL=str(scratch / 'untrusted-config')),
+    dict(trusted, GIT_EXEC_PATH=str(scratch)),
+    dict(trusted, LD_PRELOAD=str(scratch / 'helper.so')),
+    dict(trusted, SILENT_CASCADE_OFFLINE_GIT_PIN='{}'),
+]
+for environment in mutations:
+    try:
+        subprocess.run(['git', 'status', '--porcelain', '--untracked-files=normal'],
+                       cwd=root, env=environment, capture_output=True, check=True)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('configuration-driven Git execution admitted')
+assert not marker.exists()
+os.environ['GIT_CONFIG_VALUE_0'] = helper
+try:
+    subprocess.run(['git', 'status', '--porcelain', '--untracked-files=normal'], cwd=root)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('mutated inherited Git environment admitted')
+os.environ.clear(); os.environ.update(trusted)
+for args in [('status', '--porcelain', '--ignore-submodules=none'),
+             ('log', '--show-signature'), ('cat-file', '--filters', 'HEAD:README.md')]:
+    try:
+        git(root, *args)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('unrequired executable Git form admitted')
+head = git(root, 'rev-parse', 'HEAD').decode().strip()
+assert len(head) == 40
+git(root, 'rev-parse', '--verify', head + '^{commit}')
+git(root, 'merge-base', '--is-ancestor', head, head)
+git(root, 'status', '--porcelain', '--untracked-files=normal')
+git(root, 'status', '--porcelain=v1', '--untracked-files=all', '--', 'src/silent_cascade')
+assert git(root, 'log', '-1', '--format=%H', head, '--', 'src/silent_cascade')
+assert git(root, 'ls-files')
+assert git(root, 'rev-list', '--topo-order', head)
+assert _package_paths(root, head)
+paths = ('src/silent_cascade/__init__.py',)
+assert paths[0] in _blobs(root, head, paths)
+regular_blob(root, head, paths[0])
+read_end, write_end = os.pipe()
+try:
+    try:
+        os.fdopen(write_end, 'wb', closefd=False)
+    except (RuntimeError, OSError):
+        pass
+    else:
+        raise AssertionError('unauthorized pipe descriptor admitted')
+finally:
+    os.close(read_end); os.close(write_end)
+print('closed Git provenance passed')
+"""
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", program, str(tmp_path)],
+        cwd=Path(__file__).parents[2],
+        env=offline_environment(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "closed Git provenance passed"
 
 
 def test_only_exact_nested_offline_diagnostic_is_admitted(tmp_path):

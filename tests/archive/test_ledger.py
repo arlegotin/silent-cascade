@@ -131,3 +131,106 @@ def test_ledger_persists_longest_category_binding_for_run_and_cache(tmp_path):
     cached.write_bytes(b"cached")
     restarted = _StorageBudget(workspace=tmp_path, policy=policy)
     assert restarted.measure()["cache"] >= cached.stat().st_blocks * 512
+
+
+def test_category_binding_cannot_reclassify_a_live_reservation(tmp_path):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    budget.bind(tmp_path / "run", category="spool")
+    with budget.reserve(spool=4096):
+        budget.bind(tmp_path / "run", category="spool")
+        other = _StorageBudget(workspace=tmp_path, policy=policy)
+        with pytest.raises(StorageBlocked, match="binding"):
+            other.bind(tmp_path / "run/new-category", category="scratch")
+
+
+@pytest.mark.parametrize("explicit_zero", [True, False])
+def test_explicit_zero_admission_forbids_growth_but_omitted_category_is_not_owned(
+    tmp_path, explicit_zero
+):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    (tmp_path / "spool").mkdir()
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    amounts = {"spool": 0} if explicit_zero else {"scratch": 4096}
+    with budget.reserve(**amounts):
+        (tmp_path / "spool/output").write_bytes(b"must count these output blocks")
+        if explicit_zero:
+            with pytest.raises(StorageBlocked, match="spool"):
+                budget.check()
+        else:
+            budget.check()
+
+
+def test_released_nested_category_is_omitted_not_replaced_with_zero(tmp_path):
+    from silent_cascade.archive.ledger import _StorageBudget, initialize_workspace_ledger
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    (tmp_path / "cache").mkdir()
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    with budget.reserve(metadata=65536):
+        with budget.reserve(cache=65536):
+            (tmp_path / "cache/leased-output").write_bytes(b"authenticated cached evidence")
+            budget.check()
+        budget.check()
+        (record,) = budget._state()["reservations"].values()
+        assert "cache" not in record["amounts"]
+        assert budget.measure()["cache"] > 0
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_empty_baseline_history_cannot_be_reinitialized_after_descriptor_loss(
+    tmp_path, monkeypatch, interrupted
+):
+    from silent_cascade.archive import ledger
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    original = ledger._create_control_object
+    if interrupted:
+
+        def interrupt(root, name, raw):
+            if name == "workspace.json":
+                raise OSError("injected interrupted bootstrap")
+            return original(root, name, raw)
+
+        monkeypatch.setattr(ledger, "_create_control_object", interrupt)
+        with pytest.raises(OSError, match="interrupted"):
+            ledger.initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+        monkeypatch.setattr(ledger, "_create_control_object", original)
+    else:
+        ledger.initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+        budget = ledger._StorageBudget(workspace=tmp_path, policy=policy)
+        context = budget.reserve(spool=4096)
+        context.__enter__()
+        state = tmp_path / ".silent-cascade-storage/workspace.json"
+        prior = state.read_bytes()
+        state.rename(state.with_name("retained-history.json"))
+    try:
+        with pytest.raises(ledger.StorageBlocked, match=r"bootstrap|history"):
+            ledger.initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    finally:
+        if not interrupted:
+            # Test-only restoration exits the reservation even on a failing RED.
+            assert state.with_name("retained-history.json").read_bytes() == prior
+            if state.exists():
+                state.rename(state.with_name("unexpected-reset.json"))
+            state.with_name("retained-history.json").rename(state)
+            context.__exit__(None, None, None)
