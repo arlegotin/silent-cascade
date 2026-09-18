@@ -426,6 +426,54 @@ output bounds. Bounded diagnostic records contain hashes and measured counters,
 not credentials, destination settings or private paths. Actual provider checks
 and later smoke are distinct gates, and local doubles cannot certify R2 behavior.
 
+### Bounded qualification continuation after an interrupted attempt
+
+A failed qualification remains failed. If its immutable, source-bound evidence
+already proves the real successful provider create followed by SIGKILL, a
+separately identified continuation may finish the same qualification campaign.
+This is a private storage-only recovery path, not permission to manufacture a
+normal fresh-run result or reuse a scientific pass. A new complete qualification
+would otherwise retain another interrupted chunk and can exhaust the unchanged
+256 MiB scratch ceiling even though the remaining checks fit.
+
+The continuation uses a distinct versioned result type and fresh evidence and
+restore roots. It must authenticate exact predecessor proof hashes, historical
+reviewed-source authority, original probe/debug manifests and inventories,
+policy/protocol, transport identity, and the actual interruption object's hash.
+It must establish historical premature-receipt/authorization absence from the
+preserved execution evidence and the authenticated historical driver's ordering;
+today's completed receipt is not evidence that it was absent before interruption.
+Missing or ambiguous historical evidence refuses continuation. Record explicitly
+which checks are inherited and which execute now. The cause of an unexplained
+failed resume remains unresolved even if a later retry succeeds.
+
+Reexecute provider collision and exact readback against the interrupted object's
+original key, using the verified original payload and existing reservation
+history. Then require a completed child retry with actual downloads, identical
+receipt and unchanged remote reservations; reject restore to an existing target;
+archive/read back the original sealed debug unit; restore both units one chunk
+at a time to fresh targets; verify exact inventories and source/restore bytes.
+The fixed 64 MiB probe and reviewed copied debug episode remain mandatory.
+No inherited successful status can substitute for these remaining operations.
+
+Source directories in the failed attempt are read-only. Pass explicit fresh
+event destinations through parent and child helpers rather than deriving them
+from the old source root. One newly admitted owner and explicit child capability
+span all continuation writes and process cleanup. Use source-derived remaining-
+work bounds: old interrupted chunks/sources are already charged, no new killed
+chunk or duplicate source copy is required, and complete restored trees still
+count. Preserve every predecessor, recovery and continuation byte. The 256 MiB
+additional campaign stop and 512 MiB combined qualification/smoke allowance cover
+all attempts cumulatively, including failures, not a new allowance per attempt.
+
+Final full authentication follows writer cleanup and precedes create-only result
+publication. Failed continuation produces no pass. An independently reviewed,
+actually executed composite record satisfying every check above can satisfy the
+early provider gate for engineering archival; it is not the final stable-source
+storage gate, local verification gate, smoke, or Phase 4 scientific acceptance.
+Keep the existing fresh-run interface/result unchanged. Do not add automatic
+resume, a public CLI, another ledger, or a general workflow engine.
+
 - Archive policy, source, manifests, transfer receipts and control snapshots have
   separate hashes. They do not masquerade as unchanged historical scientific data.
 - Include the approved amendment and new executable files in both pilot source

@@ -151,7 +151,77 @@ live only in its existing `operational/sdd` subtree.
    tuples separately. Verify the pending state is resolved without changing the
    charged history. Bind a fresh qualification root and rerun create/readback,
    real interruption, collision, idempotence and restore under the same transport
-   and shared qualification/smoke allowance. The old failed run stays failed.
+  and shared qualification/smoke allowance. The old failed run stays failed.
+
+#### Same-campaign qualification continuation refinement (2026-09-18)
+
+The fresh `5633b60` attempt proved real create/SIGKILL, then its resume child
+failed with a generic envelope. Exact-unit diagnostic resume subsequently
+succeeded on unchanged source, including the original-key collision/readback.
+The cause did not reproduce and is not declared fixed. Preserved scratch is now
+188,784,640 bytes; another complete fresh qualification needs over103MiB more,
+exceeding the unchanged256MiB category. The remaining checks fit without another
+killed chunk or source copy. Implement the design's narrow continuation contract
+before using composite evidence; ad-hoc helper composition is not a passing gate.
+
+**Scope:** private `archive/_qualification.py`, an optional focused private
+continuation module if it improves separation, focused archive qualification
+tests, and exact executable/source inventories when a module is added. Preserve
+all scientific modules, public commands, policy values and fresh-run results.
+
+**Interfaces:** add one private `continue_early_r2_qualification` entry taking
+the existing budget/transport, fresh output root, explicit predecessor/failure
+and recovery proof paths plus expected hashes, original source roots and sealed
+refs, reviewed debug EpisodeCommit/hash, protocol hash, and current reviewed
+executor revision/authority. Use a strict distinct continuation result. The
+task's reviewed interface proposal must specify its complete fields before code.
+Historical source/authority is separate from the current executor; authenticate
+both, never silently substitute one. Explicit fresh event-root plumbing through
+parent/child helpers defaults to current fresh-run behavior for compatibility.
+
+- [ ] Specify a bounded predecessor witness from the preserved failure phases,
+  original sealed source identities and historical source authority. The resume
+  stage was entered only after the historical driver checked premature receipt
+  and authorization absence; prove that ordering from the authenticated source
+  and exact phase witnesses. Refuse missing, forged, reordered or contradictory
+  witnesses. Do not infer history from a currently completed receipt.
+- [ ] RED-test wrong proof SHA, source/authority/policy/protocol/transport or
+  unit binding, missing historical witness, and changed original bytes. Assert
+  no provider calls or output directory on rejected preconditions.
+- [ ] Add explicit event-root parameters to the existing parent/child seam.
+  Test that a complete remaining-check execution leaves a digest of every old
+  attempt file unchanged and puts all new phases only below the fresh root.
+- [ ] Implement actual repeated collision/readback for the original interrupted
+  chunk, using the existing bounded chunk/transfer/reservation validators. Reuse
+  the existing child retry and receipt/streaming restore machinery. Do not copy
+  a saved success dictionary or bypass any check at the fresh driver's equivalent
+  interruption/retry/restore boundaries.
+- [ ] RED/GREEN behavioral tests must reject no collision, a different collision
+  key, no repeat downloads, changed receipt or reservations, missing remote
+  bytes, overwrite of an existing restore destination, wrong inventory and
+  byte-different restores. A valid local-double run restores both exact inputs
+  and records the inherited interruption separately from newly executed checks;
+  only real R2 can emit a provider qualification result.
+- [ ] Derive remaining local and cumulative remote bounds before publication.
+  Charge predecessor outputs and current shared history, complete restores,
+  payload/readback coexistence, native allocated-byte overhead, catalog staging,
+  metadata atomic peaks and bounded logs. No arbitrary smaller serializer limit
+  or quota reset. Test refusal at each category/normal/global/physical/campaign
+  limit, including previous failed usage consuming the remaining allowance.
+- [ ] Preserve owned-group cleanup, fail-stop ownership on unreaped children,
+  final full authentication, and create-only staged publication. Test cleanup
+  failure and final-authentication failure cannot publish a result. Default
+  checks remain full; scoped checks remain capability-bound.
+- [ ] Add bounded non-secret failure location/type evidence at the private child
+  boundary so future failures are diagnosable: no exception text, locals, paths,
+  provider stdout/stderr or destination settings. Test hostile exception text
+  does not escape. This does not retrospectively identify the observed failure.
+- [ ] Run focused RED/GREEN and stable qualification/continuation/ledger covers
+  within a separately admitted test slice, scoped lint/format/diff, commit on the
+  current branch, and obtain independent task review. Freeze source, publish its
+  exact reviewed authority, then execute the continuation under a fresh finite
+  admission. Only its actual complete composite evidence unlocks engineering
+  archival. Update status honestly; all later Task5/6/7 and pilot gates remain.
 
 Each implementation slice gets RED/GREEN evidence, bounded local covering tests,
 an independent task review and a meaningful current-branch commit. The scoped
