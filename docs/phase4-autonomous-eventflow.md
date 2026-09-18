@@ -614,3 +614,20 @@ retention, baseline, scientific setting, or acceptance gate was relaxed.
 Remaining reader/recovery integration, final CLI/preflight, full current-source
 local verification and storage/smoke gates still precede the production pilot.
 **Phase 4 and Task 12 remain incomplete; the production fit has not started.**
+
+### Cold interrupted-report integration milestone
+
+Commit `6c52d5d` adds authenticated discovery and reporting of archived interrupted
+evaluations with no complete rows. It preserves unfinished bytes, orphan hashes
+and unknown outcomes, while checking committed/abandoned journal history. Root
+controls remain pinned under the existing storage contract. Complete cold rows
+still fail closed until the next reader slice supplies their semantic checks.
+
+The controller's fresh six-test local check passed in 6.28 seconds; scoped lint
+and formatting checks passed, and independent review found no issues. All
+3,448 KiB of test output, including setup failures, were retained. A separate
+accounting check exposed an unregistered test scratch directory; explicitly
+binding that directory to the existing scratch category resolved it without
+deleting data, changing quota or resetting the baseline. The subsequent full
+accounting check passed. These are engineering checks, not pilot performance
+results or completion of the broader reader/recovery work.

@@ -1398,6 +1398,36 @@ unchanged. Reuse one helper across affected producer cases; do not disable the
 single-authority rule or create an uncounted output location. Preserve this
 setup failure separately from the later expected feature RED.
 
+#### Next bounded slice: complete rows in abandoned cold evaluations
+
+The first slice is implemented in `6c52d5d` and independently reviewed. Its
+temporary rejection of complete cold rows is replaced only after the existing
+row/trace/crash semantic checks work through authenticated reads. Add one narrow
+optional byte-reader argument to `eval/artifacts.py::_verify_evidence`, retaining
+the existing local default and all semantic validation. The cold partial reader
+supplies a closure that checks exact inventory membership, leases one named file,
+reads within existing limits and rechecks the original training digest at the
+actual read. Return bytes, never deferred leased Paths. No new session operation,
+EpisodeCommit, transport schema or whole-evaluation materialization is permitted.
+
+Use the already retained real one-episode success and initialization-failure
+artifacts identified in the operational preflight: payload totals 49,709 and
+12,037 bytes including their shared identity. Version exact small fixtures with
+decoded-byte hashes; a text encoding of existing gzip bytes is acceptable.
+Do not regenerate weights, fabricate outcomes or alter original scientific bytes.
+Compare eager/cold partial summaries for both cases; check retained row/error
+counts, unknown unwritten outcomes, sequential leases, no invented commitment,
+and rejection when evidence changes between initial inventory verification and
+the semantic reread. Preserve zero-row coverage and local defaults.
+
+Scope adds the existing `_verify_evidence` helper in `eval/artifacts.py`, its
+caller in `report/pilot_artifacts.py`, focused reader tests and small fixtures.
+Factor test setup locally only when needed for the repeated real producer case;
+do not redesign the test harness. Use a separate finite same-ledger admission,
+unique roots below the existing `operational/scratch/` binding, TDD, scoped local
+checks and independent review. Broader Task5 caller/gate/recovery/CPU obligations
+remain required after this slice.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
