@@ -559,8 +559,12 @@ credential handling.
 
 No experiment evidence was uploaded or deleted. The current trainer and evidence
 readers have not acquired remote-storage support, and the historical preflight
-has not been relaxed. Storage implementation requires an explicitly user-approved,
-phase-scoped Superpowers plan or amendment. **Task 12 remains unstarted** until
+has not been relaxed. The owner approved the
+[bounded R2 implementation plan](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
+on 2026-09-17 with a 10 GiB total local ceiling, including protected headroom.
+As of 2026-09-18, the bounded bundle/catalog and transport tasks are reviewed
+through `de88d0b`; supervisor, scientific integration and real-provider
+qualification work remain outstanding. **Task 12 remains unstarted** until
 the reviewed storage integration demonstrates bounded local space, verified
 archival and recovery while preserving offline scientific execution and every
 retention gate.

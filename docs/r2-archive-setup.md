@@ -69,9 +69,9 @@ configured. Standard storage and request charges follow
 
 The trainer, verifier and replay readers still assume locally available files.
 The historical 4.41 TB preflight remains unchanged and must not be bypassed merely
-because this bucket exists. An explicitly user-approved, phase-scoped Superpowers
-implementation plan or amendment is required before source/configuration changes.
-It must cover the following before the production pilot can use R2:
+because this bucket exists. The owner approved the phase-scoped implementation
+plan below; its remaining integration and qualification work must establish the
+following before the production pilot can use R2:
 
 1. A bounded local spool and a separate, explicit network-enabled archiver;
    primary training/evaluation remain offline with zero foundation-model calls.
@@ -87,7 +87,7 @@ It must cover the following before the production pilot can use R2:
 R2 is an archive destination, not a mounted filesystem or a substitute for
 retention, scientific gates, reproducible evidence or CPU replay.
 
-The proposed [storage design](superpowers/specs/2026-09-17-phase-4-r2-archive-design.md)
+The approved [storage design](superpowers/specs/2026-09-17-phase-4-r2-archive-design.md)
 and [Phase 4 implementation-plan amendment](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
 now specify per-episode publication, streaming readers, paged journals/catalogs,
 recovery and verification. Revision 2 replaces the rejected 64 GiB proposal with
@@ -96,3 +96,22 @@ normal allocation <=6.5 GiB, emergency allocation <=8 GiB, protected headroom 2 
 It does not require a whole evaluation to be local or an additional 16 GiB reserve.
 The user approved the revised plan for autonomous execution on 2026-09-17. These
 remain implementation and measurement requirements, not proven archive functionality.
+
+## Implementation checkpoint — 2026-09-18
+
+Tasks 1 and 2 passed their scoped implementation reviews through `de88d0b`:
+immutable bounded bundles/catalogs, create-only transport, verified readback,
+durable remote-byte reservations and conservative local eviction. Transport
+tests used local doubles; the native macOS descriptor-safety test ran separately
+because the managed sandbox denies the required descriptor reopen.
+
+Task 3 is implementing the finite supervisor, offline child boundary,
+single-episode leases and shared local-allocation ledger. Producer integration,
+streaming scientific readers, CLI/preflight integration and the real R2 storage
+qualification remain pending in Tasks 4–7. No experiment evidence has been
+uploaded or deleted during this implementation. The new source has not yet
+passed a complete local `make verify` run or the production storage gate.
+
+This is implementation progress, not a Phase 4 result: the seed-11 production
+pilot remains unstarted. The 10 GiB ceiling includes test output, temporary
+files, operational metadata, recovery copies and protected headroom.
