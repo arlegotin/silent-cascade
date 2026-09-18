@@ -563,6 +563,7 @@ operation. Scientific child code never invokes the network transport.
 `archive/supervisor.py` (closed producer dispatch wiring only),
 `archive/transport.py` (exact retained-file custody during partial-unit eviction),
 `archive/catalog.py` (targeted checkpoint-snapshot proof semantics),
+`archive/session.py` (lease-scoped authenticated inventory metadata only),
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
@@ -633,6 +634,16 @@ all receipt/catalog/lock/borrower checks. Cover sibling episodes, active control
 shared weights, forged/changed retained entries and interrupted eviction. Journal
 segments sharing the run root use the same custody rule. Existing empty-retained
 calls keep their strict behavior; no whole-directory deletion is permitted.
+
+For stopped custody spanning an existing owner, finish that owner's lifecycle
+using its complete authenticated inventory, not just the candidate intersection.
+Expose the already-validated response metadata root as immutable
+`EvidenceLease.metadata_root`, usable only inside the existing lease. Exhaust
+the complete inventory there via an existing sparse path lease; do not hydrate
+whole episode packs. Release the lease before eviction and suppress later
+candidate groups already covered by the completed owner. No new protocol or
+manifest schema is required. Cover split-owner boundaries, corrupted inventory
+tails and existing lease lifetime/ref checks.
 
 Before evicting finalized shared inputs, complete the supervisor's cold-borrowed
 lease path. Authenticate exact shared-owner entries through bounded sparse
