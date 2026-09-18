@@ -206,3 +206,67 @@ The complete `make verify` repository gate was not run under this task's finite
 fixture allowance; the executed covering scope and native skip are explicit above.
 No claim is made that retained qualification plus a later smoke fits 512 MiB:
 the controller must independently establish `Q_actual + S_bound <= 536870912`.
+
+## Fix round 1/5 — cleanup exceptions preserve ownership
+
+Review BASE: `e63acae82a07e854bdd92ebddc7c932a17784539`.
+Commit: `Fix qualification cleanup exceptions to preserve reservations`
+(the source/test/report commit containing this section; SHA supplied in handoff).
+Status: DONE for the independently identified cleanup exception gap.
+
+The review correctly identified that an exception from `killpg`, `kill`, `join`,
+group probing, or a KeyboardInterrupt could escape `_stop_child` without proof
+of termination. The surrounding normal reservation context would then release
+its durable ownership despite an unresolved writer. The smallest correction adds
+one BaseException boundary around the existing bounded cleanup. Any interrupted
+cleanup invokes the existing `_fail_stop`; its `finally: os._exit(70)` prevents
+unwinding even if bounded evidence publication itself raises. Successful cleanup,
+owned-group handshake, finite deadlines and all ledger semantics are unchanged.
+
+The isolated regression now covers seven cases: still alive, kill exception, join
+exception, owned-group kill exception, owned-group probe exception,
+KeyboardInterrupt during join, and KeyboardInterrupt while writing failure
+evidence. Each child creates a real local ledger reservation; the test requires
+exit 70, retained reservation with that child's PID, and no success certificate.
+Injected group operations never send an actual signal to the test parent's group.
+The RED harness catches an escaped exception only after reservation unwinding
+and exits 71, avoiding raw tracebacks while distinguishing the unsafe behavior.
+
+Commands used the same explicit `Q`, TMPDIR/TMP/TEMP, no-bytecode, archive scratch,
+preservation, and disabled pytest-cache environment documented above:
+
+```sh
+.venv/bin/python -m pytest tests/archive/test_qualification.py -k unreapable \
+  -q -p no:cacheprovider --basetemp="$Q/pytest-fix1-red-01" --tb=short
+# 5 failed, 2 passed, 26 deselected in 1.95s.
+# kill / join / group-kill / group-probe / interrupt each failed:
+# AssertionError: assert 71 == 70
+
+.venv/bin/python -m pytest tests/archive/test_qualification.py -k unreapable \
+  -q -p no:cacheprovider --basetemp="$Q/pytest-fix1-green-01" --tb=short
+# 7 passed, 26 deselected in 2.07s.
+
+.venv/bin/python -m pytest tests/archive/test_qualification.py \
+  tests/archive/test_ledger.py -q -p no:cacheprovider \
+  --basetemp="$Q/pytest-fix1-cover-01" --tb=short
+# 45 passed in 9.96s.
+
+RUFF_CACHE_DIR="$Q/ruff-cache" .venv/bin/ruff check \
+  src/silent_cascade/archive/_qualification.py tests/archive/test_qualification.py
+# All checks passed!
+RUFF_CACHE_DIR="$Q/ruff-cache" .venv/bin/ruff format --check \
+  src/silent_cascade/archive/_qualification.py tests/archive/test_qualification.py
+# 2 files already formatted
+git diff --check
+# exit 0, no output
+```
+
+Source was frozen before the named covering run, and the controller was notified.
+Self-review checked the complete cleanup boundary and the existing fail-stop's
+evidence-failure `finally` path. Only `_qualification.py`, its focused test and this
+report changed. Preserved output increased from 36,800 KiB to 39,316 KiB: 2,516 KiB,
+within the additional 8 MiB allowance. No source-closure tuple, shared sizing,
+ledger implementation, provider operation, production bootstrap, credentials,
+original evidence, numerical execution or cleanup was involved. The controller's
+separately reported native descriptor success is not a provider qualification
+claim by this fix. Independent scoped re-review remains controller-owned.

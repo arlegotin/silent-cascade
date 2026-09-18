@@ -414,24 +414,29 @@ def _fail_stop(events, phase):
 
 
 def _stop_child(child, *, owns_group, events, phase):
-    if owns_group:
-        with suppress(ProcessLookupError):
-            os.killpg(child.pid, signal.SIGKILL)
-    elif child.is_alive():
-        child.kill()
-    child.join(60)
-    if child.is_alive():
+    try:
+        if owns_group:
+            with suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+        elif child.is_alive():
+            child.kill()
+        child.join(60)
+        if child.is_alive():
+            _fail_stop(events, phase)
+        if owns_group:
+            deadline = time.monotonic() + 60
+            while True:
+                try:
+                    os.killpg(child.pid, 0)
+                except ProcessLookupError:
+                    break
+                if time.monotonic() >= deadline:
+                    _fail_stop(events, phase)
+                time.sleep(0.05)
+    except BaseException:
+        # Interrupted/failed cleanup supplies no termination proof. Preserve
+        # ownership even if the attempt to record this failure also raises.
         _fail_stop(events, phase)
-    if owns_group:
-        deadline = time.monotonic() + 60
-        while True:
-            try:
-                os.killpg(child.pid, 0)
-            except ProcessLookupError:
-                break
-            if time.monotonic() >= deadline:
-                _fail_stop(events, phase)
-            time.sleep(0.05)
 
 
 def _spawn_archive_phase(

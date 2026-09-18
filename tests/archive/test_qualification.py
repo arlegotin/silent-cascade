@@ -544,33 +544,63 @@ def test_interruption_terminates_owned_provider_descendant(process_case):
         os.kill(pid, 0)
 
 
-def _unreapable_parent(workspace, policy):
-    from silent_cascade.archive._qualification import _stop_child
+def _unreapable_parent(workspace, policy, fault):
+    from silent_cascade.archive import _qualification
     from silent_cascade.archive.ledger import _StorageBudget
 
     class Unreaped:
+        pid = os.getpid()
+
         def kill(self):
-            pass
+            if fault == "kill":
+                raise PermissionError("injected cleanup failure")
 
         def join(self, _timeout):
-            pass
+            if fault == "join":
+                raise OSError("injected cleanup failure")
+            if fault == "interrupt":
+                raise KeyboardInterrupt
 
         def is_alive(self):
-            return True
+            return fault != "group-probe"
+
+    def group_signal(_pid, signum):
+        # Never send a real signal to the isolated test parent's own group.
+        if fault == "group-kill" or (fault == "group-probe" and signum == 0):
+            raise PermissionError("injected cleanup failure")
+
+    def failed_evidence(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    owns_group = fault in {"group-kill", "group-probe"}
+    if owns_group:
+        _qualification.os.killpg = group_signal
+    if fault == "evidence":
+        _qualification._event = failed_evidence
 
     budget = _StorageBudget(workspace=workspace, policy=policy)
-    with budget.reserve(metadata=1024**2, logs=1024**2):
-        _stop_child(
-            Unreaped(), owns_group=False, events=workspace / "qualification/events", phase="resume"
-        )
+    try:
+        with budget.reserve(metadata=1024**2, logs=1024**2):
+            _qualification._stop_child(
+                Unreaped(),
+                owns_group=owns_group,
+                events=workspace / "qualification/events",
+                phase="resume",
+            )
+    except BaseException:
+        # Distinguish unsafe context unwinding without printing injected traces.
+        os._exit(71)
 
 
-def test_unreapable_child_fail_stop_preserves_durable_reservation(process_case):
+@pytest.mark.parametrize(
+    "fault", ["alive", "kill", "join", "group-kill", "group-probe", "interrupt", "evidence"]
+)
+def test_unreapable_child_fail_stop_preserves_durable_reservation(process_case, fault):
     import multiprocessing
 
     budget, unit, _transport = process_case
     parent = multiprocessing.get_context("spawn").Process(
-        target=_unreapable_parent, args=(budget.workspace, unit.policy)
+        target=_unreapable_parent, args=(budget.workspace, unit.policy, fault)
     )
     parent.start()
     parent.join(10)
