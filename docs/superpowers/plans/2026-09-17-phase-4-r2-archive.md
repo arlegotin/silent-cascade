@@ -742,6 +742,18 @@ payloads; new controls live outside the scientific artifact inventory.
   without durable rows. Resume enumerates cold and local journals/partials through
   the context, preserving last-checkpoint recovery and unknown outcomes. No
   same-directory per-episode validation resume or silent change of seed.
+  Supply a bounded immutable prior-writer/checkpoint custody handoff through the
+  existing `pilot_ownership` context while its permanent exclusive lock is held.
+  Validate run identity, prior owner/session status and PID creation time; denied
+  inspection is not proof of death. Complete the existing durable-checkpoint
+  recovery first. Do not steal, remove or reacquire a live owner's lock. Only the
+  authenticated handoff permits producer partial sealing, not a supplied stopped
+  boolean alone. Capturing exact safe files under a stopped attempt establishes
+  transport custody, not episode ownership or a claim about unknown creators.
+  Preserve pre-envelope/orphan crashes as partial bytes without inferred outcomes,
+  rows, episode commits or DONE. Keep checkpoints/controls/journal authorities
+  separate; unclassifiable outside-attempt files remain retained and blocking.
+  Reject links, special files and escaped paths, and keep custody metadata bounded.
 - [ ] **Step 8 — GREEN/review/commit:** run
   `uv run pytest -q tests/pilot/test_pilot_archive_producer.py tests/pilot/test_pilot_trainer.py tests/pilot/test_pilot_workflow.py tests/pilot/test_pilot_source.py`
   plus `uv run pytest -q tests/pilot/test_neural_crashes.py tests/pilot/test_pilot_artifacts.py tests/pilot/test_timed_runner.py`. Prove unchanged
