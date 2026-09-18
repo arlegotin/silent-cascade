@@ -1310,6 +1310,18 @@ def collect_pilot_evidence(*, run_dir, config, output_path):
     return artifact
 
 
+def _gate_verification_status(outcome, *, missing, unavailable):
+    return dict(
+        valid=True,
+        passed=outcome == "passed" and not missing and not unavailable,
+        recorded_outcome=outcome,
+        missing_raw_attachments=list(missing),
+        unavailable_semantic_checks=sorted(set(unavailable)),
+        verification_scope="recorded_evidence_integrity",
+        neural_replay="not_rerun",
+    )
+
+
 def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
     from silent_cascade.eval.artifacts import EvaluationIdentity
     from silent_cascade.train.pilot_config import resolve_pilot_config
@@ -1596,14 +1608,7 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
     )
     if failures != artifact.failures or outcome != artifact.outcome:
         raise ValueError("gate outcome differs from recomputed conditions")
-    return dict(
-        valid=True,
-        passed=outcome == "passed" and not missing,
-        recorded_outcome=outcome,
-        missing_raw_attachments=missing,
-        unavailable_semantic_checks=sorted(set(unavailable)),
-        verification_scope="recorded_evidence_integrity",
-        neural_replay="not_rerun",
+    return _gate_verification_status(outcome, missing=missing, unavailable=unavailable) | dict(
         source_commit=source.source_commit,
         selected_weights_sha256=artifact.selected_weights_sha256,
         artifact_sha256=sha256_bytes(read_bytes(artifact_path, limit=MAX_BYTES)),

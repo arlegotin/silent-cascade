@@ -1,6 +1,145 @@
 """Gate arithmetic must remain independent from convenient cached pass flags."""
 
+import json
+from types import SimpleNamespace
+
 import pytest
+
+
+def _untrusted_offline_declarations():
+    source = SimpleNamespace(
+        source_commit="f" * 40,
+        source_files={"src/silent_cascade/example.py": "a" * 64},
+    )
+    report = {
+        "evidence_kind": "offline_smoke_diagnostic",
+        "training_updates": 1,
+        "evaluation_episodes": 16,
+        "replayed_episodes": 1,
+        "artifact_reports": 1,
+        "backward_macs": 17,
+        "network_attempts": 0,
+        "optional_import_attempts": 0,
+        "forbidden_modules": [],
+        "foundation_model_calls": 0,
+        "config_sha256": "b" * 64,
+        "source_commit": source.source_commit,
+        "executed_source_sha256": "c" * 64,
+        "weights_sha256": "d" * 64,
+        "manifest_sha256": "e" * 64,
+        "replay_sha256": "1" * 64,
+        "artifact_report_sha256": "2" * 64,
+    }
+    return source, report
+
+
+@pytest.mark.parametrize(
+    ("outcome", "missing", "unavailable", "expected_unavailable", "expected_passed"),
+    [
+        ("passed", [], [], [], True),
+        ("passed", ["raw.json"], [], [], False),
+        (
+            "passed",
+            [],
+            ["offline.update", "offline.executed_source", "offline.update"],
+            ["offline.executed_source", "offline.update"],
+            False,
+        ),
+        ("passed", ["raw.json"], ["offline.update"], ["offline.update"], False),
+        ("failed", [], [], [], False),
+        ("failed", ["raw.json"], [], [], False),
+        ("failed", [], ["offline.update"], ["offline.update"], False),
+        ("failed", ["raw.json"], ["offline.update"], ["offline.update"], False),
+        ("debug_non_acceptance", [], [], [], False),
+        ("debug_non_acceptance", ["raw.json"], [], [], False),
+        (
+            "debug_non_acceptance",
+            [],
+            ["offline.update"],
+            ["offline.update"],
+            False,
+        ),
+        (
+            "debug_non_acceptance",
+            ["raw.json"],
+            ["offline.update"],
+            ["offline.update"],
+            False,
+        ),
+    ],
+)
+def test_gate_verification_status_requires_complete_semantic_evidence(
+    outcome, missing, unavailable, expected_unavailable, expected_passed
+):
+    from silent_cascade.train.pilot_evidence import _gate_verification_status
+
+    original_missing = list(missing)
+    original_unavailable = list(unavailable)
+
+    status = _gate_verification_status(outcome, missing=missing, unavailable=unavailable)
+
+    assert status == {
+        "valid": True,
+        "passed": expected_passed,
+        "recorded_outcome": outcome,
+        "missing_raw_attachments": original_missing,
+        "unavailable_semantic_checks": expected_unavailable,
+        "verification_scope": "recorded_evidence_integrity",
+        "neural_replay": "not_rerun",
+    }
+    assert missing == original_missing
+    assert unavailable == original_unavailable
+
+
+def test_offline_unavailable_checks_prevent_status_pass():
+    from silent_cascade.train.pilot_evidence import (
+        _gate_verification_status,
+        verify_offline_evidence,
+    )
+
+    source, report = _untrusted_offline_declarations()
+    unavailable = []
+
+    assert verify_offline_evidence(report, source=source, unavailable=unavailable) is True
+    assert _gate_verification_status("passed", missing=[], unavailable=unavailable) == {
+        "valid": True,
+        "passed": False,
+        "recorded_outcome": "passed",
+        "missing_raw_attachments": [],
+        "unavailable_semantic_checks": [
+            "offline.evaluation",
+            "offline.executed_source",
+            "offline.replay",
+            "offline.report",
+            "offline.update",
+            "offline.weights",
+        ],
+        "verification_scope": "recorded_evidence_integrity",
+        "neural_replay": "not_rerun",
+    }
+
+
+def test_offline_corruption_is_rejected_when_source_check_is_unavailable(tmp_path):
+    from silent_cascade.train.pilot_evidence import verify_offline_evidence
+
+    source, report = _untrusted_offline_declarations()
+    offline = tmp_path / "final/offline"
+    offline.mkdir(parents=True)
+    (offline / "step.json").write_text(
+        json.dumps(
+            {
+                "compute": {
+                    "backward_macs": report["backward_macs"] + 1,
+                    "foundation_model_calls": 0,
+                }
+            }
+        )
+    )
+    unavailable = []
+
+    with pytest.raises(ValueError, match="offline raw update/count evidence differs"):
+        verify_offline_evidence(report, source=source, run_dir=tmp_path, unavailable=unavailable)
+    assert unavailable == ["offline.executed_source"]
 
 
 @pytest.mark.parametrize(
