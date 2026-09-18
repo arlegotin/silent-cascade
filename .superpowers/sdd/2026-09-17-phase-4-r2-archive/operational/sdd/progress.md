@@ -977,3 +977,11 @@ open. The Phase 4 production pilot has not started.
   allocation guard may bound a fixture to64MiB, not promise every outcome fits;
   a guard breach is a failed retained prefix, never fabricated completion. Exact
   writer/rowappend/directory coverage and checkout bound required before admission.
+- Cold-auth capacity owner80995/PID52257@1789773243.811926 admitted token
+  bd55da5adc497ed28fab39a49faf6043 with spool134217728/cache16777216/
+  scratch33554432/metadata33562624/logs2097152/pinned0/emergency0. Before:
+  spool134307840/cache67153920/scratch222056448/metadata52965376/logs1368064;
+  retained6195077120 unchanged. Fixedguarded checkout bound12MiB per fixture,
+  currentderived10776576B; percommandadmin2MiB, twofixtures fit32MiBscratch.
+  Full derivation in task5-cold-authentication-bounds.md. Capacity grant does not
+  yet admit pytest: solewriter preparing testguards/command for controller check.
