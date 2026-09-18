@@ -279,6 +279,8 @@ def _validation(
     archive_producer=None,
     evidence_context=None,
 ):
+    if archive_producer is not None:
+        archive_producer.before_validation(manifest.stage)
     manifest_sha = sha256_bytes(canonical_json_bytes(manifest))
     artifacts = {}
     if manifest.stage == "one_hop":
@@ -517,6 +519,8 @@ def run_pilot_training(
             scheduled = progress.global_step % config.config.pilot.validation_every_steps == 0
             rank, eligible = (), False
             if scheduled:
+                if archive_producer is not None:
+                    archive_producer.before_validation(old_stage, publish_weights=True)
                 identity = NeuralModelIdentity.from_model(model, source_revision=source_commit)
                 weights_path = attempt_dir / f"weights-{progress.global_step}.safetensors"
                 weights_sha = save_neural_weights(weights_path, model=model, identity=identity)

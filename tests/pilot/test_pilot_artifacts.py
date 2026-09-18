@@ -5,6 +5,54 @@ import pytest
 from .test_timed_metrics import make_identity, make_row
 
 
+def test_row_fsync_precedes_envelope_and_interruption_retains_uncommitted_bytes(
+    neural_archive_case, tmp_path, monkeypatch
+):
+    import os
+
+    from silent_cascade.eval.runner import evaluate_episodes
+
+    from .test_pilot_archive_producer import producer_case
+
+    case = neural_archive_case
+    identity = make_identity(case, (case.bundle,), tmp_path)
+    with producer_case(tmp_path, monkeypatch) as (producer, session, server):
+        output = session.run_dir / "evaluation"
+        synced = []
+        original_fsync = os.fsync
+
+        def fsync(descriptor):
+            original_fsync(descriptor)
+            row_path = output / ".rows.pending.jsonl"
+            if row_path.exists() and os.fstat(descriptor).st_ino == row_path.stat().st_ino:
+                synced.append(row_path.read_bytes())
+
+        monkeypatch.setattr(os, "fsync", fsync)
+
+        def before_envelope(**kwargs):
+            assert synced == [kwargs["payload"]], "row descriptor was not durably synced"
+            assert not (session.control_dir / "episode-pending.json").exists()
+            assert not tuple(server._units())
+            raise RuntimeError("row durable; envelope absent")
+
+        monkeypatch.setattr(producer, "make_commit", before_envelope)
+        with pytest.raises(RuntimeError, match="envelope absent"):
+            evaluate_episodes(
+                case.model,
+                identity=identity,
+                config=case.config,
+                episodes=[case.bundle],
+                output_dir=output,
+                device="cpu",
+                archive_producer=producer,
+                evidence_context=session,
+            )
+        assert (output / ".rows.pending.jsonl").read_bytes() == synced[0]
+        assert (output / "episodes/00000.neural.json").is_file()
+        assert not (output / "DONE").exists()
+        assert not (session.control_dir / "episode-pending.json").exists()
+
+
 @pytest.mark.parametrize(
     "change",
     [

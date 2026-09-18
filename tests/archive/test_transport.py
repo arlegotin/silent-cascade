@@ -572,6 +572,66 @@ def test_interrupted_eviction_resumes_only_recorded_members(sealed_unit, transpo
     assert all(not (sealed_unit.root / path).exists() for path in sealed_unit.paths)
 
 
+@pytest.mark.parametrize("change", ["none", "forged", "changed-after-interruption"])
+def test_retained_custody_is_authenticated_and_bound_across_eviction_retry(
+    sealed_unit, transport, monkeypatch, change
+):
+    from dataclasses import replace
+
+    from silent_cascade.archive import transport as module
+    from silent_cascade.archive.types import FileEntry
+
+    control = sealed_unit.root / "pack/control.json"
+    control.write_bytes(b"current control")
+    retained = FileEntry(
+        "pack/control.json", sha256_bytes(control.read_bytes()), len(control.read_bytes())
+    )
+    receipt = _archive(sealed_unit, transport)
+    before = sealed_unit.original_bytes()
+
+    def evict(entries):
+        return module.evict_unit(
+            run_dir=sealed_unit.root,
+            control_dir=sealed_unit.control,
+            ref=sealed_unit.ref,
+            receipt_sha256=receipt,
+            retained=entries,
+        )
+
+    if change == "forged":
+        with pytest.raises(ValueError):
+            evict((replace(retained, sha256="0" * 64),))
+        assert sealed_unit.original_bytes() == before
+        assert control.read_bytes() == b"current control"
+        return
+    unlink = module._unlink_recorded_member
+
+    def interrupt(*args, **kwargs):
+        unlink(*args, **kwargs)
+        raise OSError("retained eviction interruption")
+
+    monkeypatch.setattr(module, "_unlink_recorded_member", interrupt)
+    with pytest.raises(OSError, match="interruption"):
+        evict((retained,))
+    assert sum((sealed_unit.root / path).exists() for path in sealed_unit.paths) == len(before) - 1
+    monkeypatch.setattr(module, "_unlink_recorded_member", unlink)
+    if change == "changed-after-interruption":
+        control.write_bytes(b"new current control")
+        changed = FileEntry(
+            retained.path, sha256_bytes(control.read_bytes()), len(control.read_bytes())
+        )
+        with pytest.raises(ValueError):
+            evict((changed,))
+        assert (
+            sum((sealed_unit.root / path).exists() for path in sealed_unit.paths) == len(before) - 1
+        )
+        assert control.read_bytes() == b"new current control"
+    else:
+        evict((retained,))
+        assert all(not (sealed_unit.root / path).exists() for path in sealed_unit.paths)
+        assert control.read_bytes() == b"current control"
+
+
 def test_control_snapshot_sources_are_pinned(task_scratch, tiny_archive_policy, archive_identity):
     from silent_cascade.archive.catalog import seal_unit
     from silent_cascade.archive.transport import evict_unit

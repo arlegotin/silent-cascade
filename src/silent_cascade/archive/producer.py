@@ -197,6 +197,27 @@ def before_work_bounds(operation):
         return {"spool": bounds.journal_record + ALLOCATION_OVERHEAD}
     if operation == "evaluation":
         return {"spool": 2 * EVALUATION_BYTES + ALLOCATION_OVERHEAD}
+    if operation in {
+        "validation_one_hop",
+        "validation_autonomous",
+        "validation_one_hop_weights",
+        "validation_autonomous_weights",
+    }:
+        # Identity, retention, row log/final rows (one inode), index, metrics,
+        # crash index and DONE; validation, promotion and journal pilot controls;
+        # optional component control. Episode payloads are drained one at a time.
+        controls = 7 * EVALUATION_BYTES + 3 * PILOT_BYTES
+        if operation.startswith("validation_one_hop"):
+            controls += PILOT_BYTES
+        weights = EVALUATION_BYTES if operation.endswith("_weights") else 0
+        return {
+            "spool": controls
+            + bounds.episode_owned
+            + bounds.shared_weights
+            + weights
+            + ALLOCATION_OVERHEAD,
+            "metadata": bounds.commit + ALLOCATION_OVERHEAD,
+        }
     if operation == "checkpoint":
         return {"spool": 2 * EVALUATION_BYTES + ALLOCATION_OVERHEAD}
     raise ValueError("unknown producer admission operation")
@@ -334,6 +355,7 @@ class ArchiveProducer:
             "stopped_control_sha256": None,
         }:
             raise ValueError("empty stopped custody handoff differs")
+        completed_paths = set()
         # The workflow has authenticated the old writer and durable scientific
         # checkpoint under its permanent lock. A filesystem walk now inventories
         # custody only; these records are deliberately never EpisodeCommits.
@@ -435,14 +457,35 @@ class ArchiveProducer:
                     if set(group) != {"ref", "entries"}:
                         raise ValueError("stopped owner group differs")
                     owner = UnitRef(**group["ref"])
-                    group_paths = []
+                    group_entries = []
                     for value in group["entries"]:
                         entry = FileEntry(**value)
                         if entry.path in retained_paths or original.get(entry.path) != entry:
                             raise ValueError("stopped custody partition overlaps or changes bytes")
                         retained_paths.add(entry.path)
-                        group_paths.append(entry.path)
-                    self._archive(owner, evict=True, owned=tuple(group_paths))
+                        group_entries.append(entry)
+                    if not group_entries:
+                        raise ValueError("stopped owner group is empty")
+                    from silent_cascade.archive.catalog import iter_unit_files
+
+                    # A partition intersects candidates, not unit ownership. Read
+                    # the complete authenticated metadata using one sparse payload
+                    # lease, then release its reader locks before whole-unit eviction.
+                    with self.session._leased({"path": group_entries[0].path}) as lease:
+                        if lease.ref != owner:
+                            raise ValueError("stopped owner lease identity differs")
+                        inventory = tuple(iter_unit_files(lease.metadata_root, owner))
+                        if any(entry not in inventory for entry in group_entries) or any(
+                            not Path(entry.path).is_relative_to(attempt.name)
+                            or (
+                                entry.path in self._resident and self._resident[entry.path] != entry
+                            )
+                            for entry in inventory
+                        ):
+                            raise ValueError("stopped owner complete inventory differs")
+                    owned = tuple(entry.path for entry in inventory)
+                    self._archive(owner, evict=True, owned=owned)
+                    completed_paths.update(owned)
                 remaining = tuple(entry for entry in entries if entry.path not in retained_paths)
                 if remaining:
                     proof = custody.model_copy(update={"entries": remaining})
@@ -460,6 +503,8 @@ class ArchiveProducer:
                     raise ValueError("all-owned stopped custody cannot mint partial ownership")
 
             for entry in candidates:
+                if entry.path in completed_paths:
+                    continue
                 if len(Path(entry.path).parts) == 2 and Path(entry.path).suffix == ".safetensors":
                     continue
                 if group and (
@@ -468,6 +513,8 @@ class ArchiveProducer:
                 ):
                     publish(group)
                     group, total = [], 0
+                    if entry.path in completed_paths:
+                        continue
                 if entry.bytes > self.policy.episode_bytes:
                     raise StorageBlocked("storage_blocked: stopped file exceeds partial bound")
                 group.append(entry)
@@ -607,6 +654,15 @@ class ArchiveProducer:
         if type(global_step) is not int or global_step < 0:
             raise ValueError("invalid update step")
         self._before("update")
+
+    def before_validation(self, stage: str, *, publish_weights: bool = False) -> None:
+        if (
+            stage not in {"one_hop", "two_hop", "primary", "robustness"}
+            or type(publish_weights) is not bool
+        ):
+            raise ValueError("invalid validation admission boundary")
+        operation = "validation_one_hop" if stage == "one_hop" else "validation_autonomous"
+        self._before(operation + ("_weights" if publish_weights else ""))
 
     def before_evaluation(self, logical_root: str) -> None:
         self._evaluations[logical_root]

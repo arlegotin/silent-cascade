@@ -4,6 +4,61 @@ import torch
 from .test_pilot_source import DATA_SETUP, checkout
 
 
+@pytest.mark.parametrize("remaining", [0, 512 * 1024**2])
+def test_scheduled_validation_admission_precedes_weights_and_component_inference(
+    tmp_path, remaining
+):
+    from pathlib import Path
+
+    root, execute = checkout(tmp_path / "repo")
+    execute(
+        root,
+        DATA_SETUP
+        + f"\nhelper = {str(Path(__file__).parent)!r}\nremaining = {remaining}\n"
+        + """
+import sys
+from pytest import MonkeyPatch
+sys.path.insert(0, helper)
+from test_pilot_archive_producer import producer_case
+from silent_cascade.archive.ledger import StorageBlocked
+import silent_cascade.train.pilot_trainer as trainer
+with MonkeyPatch.context() as patch:
+    with producer_case(root, patch, journal_records=2) as (producer, session, server):
+        journal = producer.after_journal
+        components = trainer.evaluate_components
+        observed = []
+        def observe_components(*args, **kwargs):
+            observed.append('inference')
+            return components(*args, **kwargs)
+        patch.setattr(trainer, 'evaluate_components', observe_components)
+        def exhaust_after_update(path, digest):
+            import json
+            record = json.loads((session.run_dir/path).read_bytes())
+            journal(path, digest)
+            if record['kind'] == 'update' and record['global_step'] == 2:
+                state = server.budget._state()
+                active = state['reservations'][server.budget.active_reservation]
+                growth = max(0, server.budget.measure()['spool'] - active['before']['spool'])
+                active['amounts']['spool'] = growth + remaining
+                server.budget._store(state)
+        patch.setattr(producer, 'after_journal', exhaust_after_update)
+        try:
+            trainer.run_pilot_training(config, manifests=manifests, run_dir=session.run_dir,
+                device='cpu', source_commit=source, archive_producer=producer,
+                evidence_context=session)
+        except StorageBlocked:
+            pass
+        else:
+            raise AssertionError('validation ran despite exhausted admission')
+        assert not observed, 'component inference preceded validation admission'
+        assert not list(session.run_dir.rglob('weights-*.safetensors'))
+        assert not list(session.run_dir.rglob('components.json'))
+        assert not list(session.run_dir.rglob('DONE'))
+""",
+        timeout=120,
+    )
+
+
 def _sparse_artifact(root, name, size):
     """Byte-boundary fixture only; deliberately not scientific evaluation rows."""
     import hashlib

@@ -195,8 +195,11 @@ def lookup_episode_binding(
 
 @dataclass(frozen=True)
 class EvidenceLease:
+    """Authenticated payload and inventory roots, valid only inside their lease."""
+
     ref: UnitRef
     local_root: Path
+    metadata_root: Path
 
 
 class EvidenceContext(Protocol):
@@ -314,7 +317,7 @@ class LocalArchiveSession:
                         _hash_file(local_root, entry)
                 for entry in manifest.borrowed:
                     _hash_file(local_root, FileEntry(entry.path, entry.sha256, entry.bytes))
-                yield EvidenceLease(ref, local_root)
+                yield EvidenceLease(ref, local_root, metadata_root)
         finally:
             self._request("release", {"token": response["token"]}, unit_id=ref.unit_id)
 

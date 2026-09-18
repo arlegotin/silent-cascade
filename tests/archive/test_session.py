@@ -303,6 +303,32 @@ def test_archive_request_restores_one_authenticated_episode_and_pins_reader(runn
     assert not lease.local_root.exists()
 
 
+def test_sparse_lease_metadata_lifetime_and_corrupted_tail_are_checked(running_archive):
+    import json
+
+    from silent_cascade.archive.catalog import iter_unit_files
+    from silent_cascade.archive.session import LocalArchiveSession
+
+    server, ref = running_archive
+    session = LocalArchiveSession(
+        run_dir=server.run_dir, control_dir=server.control_dir, policy=server.policy
+    )
+    with session._leased({"path": "evaluation/arbitrary.bin"}) as lease:
+        assert lease.ref == ref
+        entries = tuple(iter_unit_files(lease.metadata_root, ref))
+        assert [entry.path for entry in entries] == ["evaluation/arbitrary.bin"]
+        manifest = json.loads((lease.metadata_root / ref.manifest_path).read_bytes())
+        tail = (
+            lease.metadata_root / "units" / ref.unit_id / manifest["inventory_shards"][-1]["path"]
+        )
+        tail.write_bytes(b"corrupt inventory tail after lease acknowledgement")
+        with pytest.raises(ValueError):
+            tuple(iter_unit_files(lease.metadata_root, ref))
+    assert not lease.metadata_root.exists()
+    assert (server.run_dir / "evaluation/arbitrary.bin").read_bytes() == b"episode evidence"
+    assert not server.leases
+
+
 def test_child_rechecks_files_after_success_acknowledgement(running_archive, monkeypatch):
     from silent_cascade.archive.session import LocalArchiveSession
 

@@ -217,8 +217,8 @@ def test_real_episode_handoff_and_failure_cutpoints(
         if cut == "row":
             monkeypatch.setattr(
                 producer,
-                "after_episode",
-                lambda *args: (_ for _ in ()).throw(RuntimeError("injected row")),
+                "make_commit",
+                lambda **kwargs: (_ for _ in ()).throw(RuntimeError("injected row")),
             )
 
         def evaluate():
@@ -239,6 +239,8 @@ def test_real_episode_handoff_and_failure_cutpoints(
             assert not (output / "DONE").exists()
             assert (output / "episodes/00000.neural.json").exists()
             assert (output / ".rows.pending.jsonl").read_bytes().endswith(b"\n")
+            if cut == "row":
+                assert not (session.control_dir / "episode-pending.json").exists()
         else:
             result = evaluate()
             assert result.metrics.episode_count == 1
@@ -596,6 +598,50 @@ def test_empty_stopped_handoff_requires_parent_authority(tmp_path, monkeypatch, 
                 with pytest.raises(ValueError, match="custody"):
                     producer.adopt_stopped(custody, source_commit="b" * 40, config_sha256="c" * 64)
                 assert producer.stopped_checkpoint is None
+
+
+@pytest.mark.parametrize("kind", ["episode_pack", "evaluation_metadata"])
+def test_stopped_partition_finishes_whole_owner_across_candidate_boundary(
+    tmp_path, monkeypatch, kind
+):
+    from silent_cascade.archive.catalog import seal_unit
+    from silent_cascade.train.pilot_workflow import pilot_ownership
+
+    with producer_case(tmp_path, monkeypatch, stopped=True) as (producer, session, server):
+        attempt = session.run_dir / ("attempt-" + "1" * 32)
+        attempt.mkdir()
+        paths = tuple(f"{attempt.name}/{index:03d}.bin" for index in range(40))
+        for path in paths:
+            (session.run_dir / path).write_bytes(path.encode())
+        ref = seal_unit(
+            run_dir=session.run_dir,
+            control_dir=session.control_dir,
+            logical_root=attempt.name,
+            paths=paths,
+            kind=kind,
+            identity={
+                "run_id": "task4",
+                "source_commit": "b" * 40,
+                "config_sha256": "c" * 64,
+                "evidence_identity_sha256": "d" * 64,
+                "checkpoint_sha256": None,
+                "writer_stopped": True,
+                "checkpoint_committed": False,
+            },
+            episode_groups=(paths[:20], paths[20:]) if kind == "episode_pack" else (),
+            policy=session.policy,
+        )
+        with pilot_ownership(
+            session.run_dir, run_identity="a" * 64, recover=lambda: None, capture_stopped=True
+        ) as custody:
+            producer.adopt_stopped(custody, source_commit="b" * 40, config_sha256="c" * 64)
+        assert all(not (session.run_dir / path).exists() for path in paths)
+        assert tuple(server._units()) == (ref,)
+        assert {entry.path for entry in session.entries() if entry.path.endswith(".bin")} == set(
+            paths
+        )
+        with session._leased({"path": paths[-1]}) as lease:
+            assert (lease.local_root / paths[-1]).read_bytes() == paths[-1].encode()
 
 
 def test_old_checkpoint_snapshot_reads_its_original_index_after_replacement(tmp_path, monkeypatch):

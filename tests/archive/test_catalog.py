@@ -447,6 +447,72 @@ def test_control_snapshots_version_original_root_paths_without_active_collision(
     assert next(iter_unit_files(tmp_path / "control", second)).path == "state/head.json"
 
 
+@pytest.mark.parametrize(
+    "damage", ["final-shard", "unit-proof", "false-commitment", "ordinary-owner"]
+)
+def test_snapshot_proof_exhausts_tail_and_does_not_relax_other_ownership(
+    tmp_path, tiny_archive_policy, archive_identity, damage
+):
+    import json
+    from dataclasses import replace
+
+    from silent_cascade.archive.catalog import (
+        publish_run_catalog,
+        seal_unit,
+        verify_run_catalog_unit,
+    )
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    policy = tiny_archive_policy.model_copy(update={"page_entries": 1, "page_bytes": 4096})
+    run, control = tmp_path / "run", tmp_path / "control"
+    (run / "unit").mkdir(parents=True)
+    paths = tuple(f"unit/{index}.json" for index in range(3))
+    for path in paths:
+        (run / path).write_bytes(path.encode())
+    ref = seal_unit(
+        run_dir=run,
+        control_dir=control,
+        logical_root="unit",
+        paths=paths,
+        kind="diagnostic" if damage == "ordinary-owner" else "control_snapshot",
+        identity=archive_identity | {"checkpoint_sha256": "3" * 64, "checkpoint_committed": True},
+        policy=policy,
+    )
+    manifest = json.loads((control / ref.manifest_path).read_bytes())
+    assert len(manifest["inventory_shards"]) == 3
+    if damage == "false-commitment":
+        manifest["identity"]["checkpoint_committed"] = False
+        raw = canonical_json_bytes(manifest)
+        digest = sha256_bytes(raw)
+        parent = control / "units" / digest
+        parent.mkdir()
+        (parent / "manifest.json").write_bytes(raw + b"\n")
+        for shard in manifest["inventory_shards"]:
+            (parent / shard["path"]).write_bytes(
+                (control / "units" / ref.unit_id / shard["path"]).read_bytes()
+            )
+        ref = replace(ref, unit_id=digest, manifest_path=f"units/{digest}/manifest.json")
+    head = publish_run_catalog(
+        control_dir=control, run_id="debug-fixture", units=(ref,), policy=policy
+    )
+    root = json.loads((control / head.root_path).read_bytes())
+    if damage == "final-shard":
+        (control / "units" / ref.unit_id / manifest["inventory_shards"][-1]["path"]).write_bytes(
+            b"damaged tail"
+        )
+    elif damage == "unit-proof":
+        (control / root["units"]["path"]).write_bytes(b"damaged membership proof")
+    elif damage == "ordinary-owner":
+        root.update(ownership=None, ownership_count=0)
+        raw = canonical_json_bytes(root)
+        digest = sha256_bytes(raw)
+        path = f"catalog/roots/{digest}.json"
+        (control / path).write_bytes(raw + b"\n")
+        head = replace(head, catalog_id=digest, root_path=path)
+    with pytest.raises(ValueError):
+        verify_run_catalog_unit(control, head, ref, policy=policy)
+
+
 def test_run_root_logical_root_is_limited_to_journals_and_control_snapshots(
     tmp_path, tiny_archive_policy, archive_identity
 ):

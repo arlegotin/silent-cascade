@@ -7,6 +7,50 @@ from silent_cascade.eventflow.engine import EventEngine
 from silent_cascade.models.errors import NeuralError
 
 
+def test_runtime_crash_handoff_keeps_shared_weights_until_evaluation_closes(
+    neural_archive_case, tmp_path, monkeypatch
+):
+    from silent_cascade.eval.runner import evaluate_episodes
+    from silent_cascade.models.event_flow import EventFlowModel
+
+    from .test_pilot_archive_producer import producer_case
+    from .test_timed_metrics import make_identity
+
+    case = neural_archive_case
+    identity = make_identity(case, (case.bundle,), tmp_path)
+
+    def fail(*args, **kwargs):
+        raise NeuralError("runtime crash")
+
+    monkeypatch.setattr(EventFlowModel, "compose", fail)
+    with producer_case(tmp_path, monkeypatch) as (producer, session, _server):
+        commits = []
+        handoff = producer.after_episode
+
+        def after_episode(root, commit):
+            handoff(root, commit)
+            assert commit.borrowed
+            assert any(entry.path.endswith(".safetensors") for entry in commit.owned)
+            assert all(not (session.run_dir / entry.path).exists() for entry in commit.owned)
+            assert all((session.run_dir / entry.path).exists() for entry in commit.borrowed)
+            commits.append(commit)
+
+        monkeypatch.setattr(producer, "after_episode", after_episode)
+        result = evaluate_episodes(
+            case.model,
+            identity=identity,
+            config=case.config,
+            episodes=[case.bundle],
+            output_dir=session.run_dir / "evaluation",
+            device="cpu",
+            archive_producer=producer,
+            evidence_context=session,
+        )
+        assert result.metrics.episode_count == 1
+        assert len(commits) == 1
+        assert all(not (session.run_dir / entry.path).exists() for entry in commits[0].borrowed)
+
+
 def test_neural_failure_stages_before_callback(neural_archive_case, tmp_path, monkeypatch):
     from silent_cascade.eventflow.neural_checkpoint import (
         load_neural_runtime_checkpoint,

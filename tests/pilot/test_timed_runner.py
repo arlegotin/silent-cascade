@@ -8,6 +8,56 @@ import torch
 from .test_timed_metrics import make_identity
 
 
+def test_paired_validation_rechecks_remaining_admission_before_second_publication(tmp_path):
+    from pathlib import Path
+
+    from .test_pilot_source import DATA_SETUP, checkout
+
+    root, execute = checkout(tmp_path / "repo")
+    execute(
+        root,
+        DATA_SETUP
+        + f"\nhelper = {str(Path(__file__).parent)!r}\n"
+        + """
+import sys
+from pytest import MonkeyPatch
+sys.path.insert(0, helper)
+from test_pilot_archive_producer import producer_case
+from silent_cascade.archive.ledger import StorageBlocked
+from silent_cascade.models.event_flow import EventFlowModel
+from silent_cascade.eventflow.neural_weights import NeuralModelIdentity
+from silent_cascade.train.pilot_trainer import _validation
+loaded, _ = verify_pilot_data(repo_root=root, source_commit=source,
+                            config=config, manifests=manifests)
+model = EventFlowModel(config.config.neural)
+identity = NeuralModelIdentity.from_model(model, source_revision=source)
+with MonkeyPatch.context() as patch:
+    with producer_case(root, patch) as (producer, session, server):
+        first = session.run_dir/'validation-robustness'
+        _validation(model, loaded['robustness'], step=2, config=config, identity=identity,
+                    weights_sha='a'*64, directory=first, device='cpu',
+                    archive_producer=producer, evidence_context=session)
+        assert not (first/'autonomous/DONE').exists(), 'first paired closure was not drained'
+        state = server.budget._state()
+        active = state['reservations'][server.budget.active_reservation]
+        growth = max(0, server.budget.measure()['spool'] - active['before']['spool'])
+        active['amounts']['spool'] = growth + 512*1024**2
+        server.budget._store(state)
+        second = session.run_dir/'validation-primary'
+        try:
+            _validation(model, loaded['primary'], step=2, config=config, identity=identity,
+                        weights_sha='a'*64, directory=second, device='cpu',
+                        archive_producer=producer, evidence_context=session)
+        except StorageBlocked:
+            pass
+        else:
+            raise AssertionError('second paired validation bypassed remaining admission')
+        assert not second.exists(), 'second validation published before its capacity check'
+""",
+        timeout=120,
+    )
+
+
 @pytest.mark.parametrize("device", ["cpu", "mps"])
 def test_autonomous_evaluation_preserves_next_training_update(
     neural_archive_case, tmp_path, device
