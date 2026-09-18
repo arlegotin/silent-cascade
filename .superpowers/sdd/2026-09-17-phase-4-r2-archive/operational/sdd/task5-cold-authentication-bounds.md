@@ -20,7 +20,7 @@ not authorization to execute until guard coverage and exact command are checked.
 ## Checkout proof
 
 Per-checkout ceiling12MiB. Static inventory at review:177regular dense single-link
-files/24directories; logical3955245B, rounded4349952B. Derived peak10776576B:
+files/24directories; logical3955245B, rounded4349952B. Derived peak10780672B:
 
 | Component | Bytes |
 | --- | ---: |
@@ -29,7 +29,11 @@ files/24directories; logical3955245B, rounded4349952B. Derived peak10776576B:
 | Sixteen manifest/audit files | 311296 |
 | One24KiB publisher temp hardlink | 24576 |
 | Git index/locks/refs/config | 131072 |
-| 270directories,4KiB each | 1105920 |
+| 271directories,4KiB each | 1110016 |
+
+Correction after initial review: include the created `docs/` parent as well as
+the copied `docs/superpowers` subtree. This adds4096B to the original10776576B
+derivation, without changing the12MiB admission or any output.
 
 Recompute against actual source before the first write; require4KiB allocation
 unit and <=12MiB. Hash/lstat source inventory and reject drift, links, sparse or

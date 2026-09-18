@@ -985,3 +985,14 @@ open. The Phase 4 production pilot has not started.
   currentderived10776576B; percommandadmin2MiB, twofixtures fit32MiBscratch.
   Full derivation in task5-cold-authentication-bounds.md. Capacity grant does not
   yet admit pytest: solewriter preparing testguards/command for controller check.
+- Checkoutbound reviewer corrected one created docs/parent directory:271dirs,
+  derived10780672B (+4096B), unchanged12MiBcap. Bounds document corrected and
+  implementer received exactformula before execution. No command has run yet.
+- Initial guard-only command passed5cases/1deselected in0.68s; retainedscratch
+  12288B andlog4096B. Controller pre-run inspection corrected non-mapping result
+  serialization and representative instead of exactGitindexpaths before anyfit.
+  Additional safety finding: scientificruntime can catch a publisher exception,
+  so a guard rejection must be sticky and explicitly invalidate fixture success.
+  Implementer/newinstruction crossed; remove only prematurestickyimplementation,
+  retain regression, obtainRED thenGREEN. Two unique tinyguard commands admitted
+  <=1MiB each, guardgroup measuredgrowth+nextbound<=3MiB; no numericalrun yet.
