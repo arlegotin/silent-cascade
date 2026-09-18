@@ -234,8 +234,9 @@ def test_committed_source_identity_rejects_dirty_python_closure(tmp_path, mutati
     assert len(clean.source_commit) == 40 and len(clean.executable_sha256) == 64
 
 
+@pytest.mark.parametrize("source_read", [1, 2], ids=["initial-pass", "final-pass"])
 def test_publication_rejects_python_added_during_authentication_before_output(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, source_read
 ):
     from silent_cascade.archive import preflight
 
@@ -246,14 +247,15 @@ def test_publication_rejects_python_added_during_authentication_before_output(
     budget = bootstrap(custody)
     authenticate = preflight._committed_source_identity
     read_at = preflight._read_at
-    added = False
+    source_reads = 0
 
     def add_after_source_read(directory, name, *, max_bytes):
-        nonlocal added
+        nonlocal source_reads
         raw = read_at(directory, name, max_bytes=max_bytes)
-        if name == "__init__.py" and not added:
-            (package / "added.py").write_text("VALUE = 2\n")
-            added = True
+        if name == "__init__.py":
+            source_reads += 1
+            if source_reads == source_read:
+                (package / "added.py").write_text("VALUE = 2\n")
         return raw
 
     with monkeypatch.context() as authentication:
@@ -270,7 +272,7 @@ def test_publication_rejects_python_added_during_authentication_before_output(
                 executable_sha256=clean.executable_sha256,
                 review_sha256="3" * 64,
             )
-    assert added
+    assert source_reads >= source_read
     assert not (budget.root / "source-authorities").exists()
 
 

@@ -597,9 +597,12 @@ def _committed_source_identity(
         )
     executable = digest.hexdigest()
     final_actual = tuple(sorted(package.rglob("*.py")))
+    final_executable = _package_digest(package, final_actual)
+    post_hash_actual = tuple(sorted(package.rglob("*.py")))
     if (
         final_actual != actual
-        or _package_digest(package, final_actual) != executable
+        or final_executable != executable
+        or post_hash_actual != final_actual
         or _git_head(repo_root) != revision
     ):
         raise StorageBlocked("storage_blocked: package source changed during authentication")
