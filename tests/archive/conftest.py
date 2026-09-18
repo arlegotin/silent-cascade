@@ -1,4 +1,5 @@
 import hashlib
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -127,8 +128,11 @@ class DirectoryTransport:
 
 @pytest.fixture
 def task_scratch():
-    scratch_parent = Path(__file__).parents[2] / (
-        ".superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-2"
+    scratch_parent = Path(
+        os.environ.get(
+            "SILENT_CASCADE_ARCHIVE_TEST_SCRATCH",
+            Path(__file__).parents[2] / ".superpowers/sdd/2026-09-17-phase-4-r2-archive/tmp/task-2",
+        )
     )
     scratch_parent.mkdir(parents=True, exist_ok=True)
     root = Path(

@@ -1,6 +1,8 @@
 """Strict, immutable schemas for bounded Phase 4 archive units."""
 
+import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, model_validator
@@ -12,6 +14,90 @@ Hash = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Revision = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
 Positive = Annotated[int, Field(strict=True, gt=0, le=MAX_INTEGER)]
 Count = Annotated[int, Field(strict=True, ge=0, le=MAX_INTEGER)]
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    path: str
+    sha256: str
+    bytes: int
+
+
+@dataclass(frozen=True)
+class UnitRef:
+    unit_id: str
+    kind: str
+    logical_root: str
+    expanded_bytes: int
+    file_count: int
+    manifest_path: str
+
+
+@dataclass(frozen=True)
+class EpisodeCommit:
+    schema_version: Literal["phase4-evaluation-episode-commit-v1"]
+    identity_sha256: str
+    ordinal: int
+    episode_public_id: str
+    episode_sha256: str
+    row_offset: int
+    row_bytes: int
+    row_sha256: str
+    owned: tuple[FileEntry, ...]
+    borrowed: tuple[FileEntry, ...]
+
+    def __post_init__(self):
+        if self.schema_version != "phase4-evaluation-episode-commit-v1":
+            raise ValueError("invalid episode commit schema")
+        for name in ("ordinal", "row_offset", "row_bytes"):
+            value = getattr(self, name)
+            if (
+                type(value) is not int
+                or not (0 if name != "row_bytes" else 1) <= value <= MAX_INTEGER
+            ):
+                raise ValueError(f"invalid episode commit {name}")
+        if self.row_offset + self.row_bytes > MAX_INTEGER:
+            raise ValueError("episode row bound overflow")
+        if (
+            type(self.episode_public_id) is not str
+            or not self.episode_public_id
+            or len(self.episode_public_id) > 4096
+        ):
+            raise ValueError("invalid episode public identity")
+        for name in ("identity_sha256", "episode_sha256", "row_sha256"):
+            if type(getattr(self, name)) is not str or not re.fullmatch(
+                r"[0-9a-f]{64}", getattr(self, name)
+            ):
+                raise ValueError("invalid episode commit hash")
+        all_paths = set()
+        for name in ("owned", "borrowed"):
+            entries = getattr(self, name)
+            if type(entries) is not tuple:
+                raise ValueError("episode ownership must be immutable")
+            previous = ""
+            for entry in entries:
+                if (
+                    not isinstance(entry, FileEntry)
+                    or type(entry.path) is not str
+                    or not entry.path
+                    or PurePosixPath(entry.path).is_absolute()
+                    or ".." in PurePosixPath(entry.path).parts
+                    or str(PurePosixPath(entry.path)) != entry.path
+                ):
+                    raise ValueError("unsafe episode ownership path")
+                if entry.path <= previous or entry.path in all_paths:
+                    raise ValueError("episode ownership order or overlap differs")
+                if (
+                    type(entry.bytes) is not int
+                    or not 0 <= entry.bytes <= MAX_INTEGER
+                    or type(entry.sha256) is not str
+                    or not re.fullmatch(r"[0-9a-f]{64}", entry.sha256)
+                ):
+                    raise ValueError("invalid episode owned file identity")
+                previous = entry.path
+                all_paths.add(entry.path)
+
+
 UnitKind = Literal[
     "episode_pack",
     "evaluation_metadata",
@@ -74,6 +160,22 @@ class ArchivePolicy(StrictModel):
         if self.page_bytes > self.metadata_bytes:
             raise ValueError("metadata cannot hold one decoded catalog page")
         return self
+
+
+class JobOutputBounds(StrictModel):
+    """Source-bound maxima supplied by the local archive preflight."""
+
+    job: Literal["pilot", "checks", "verify", "report", "replay"]
+    request_sha256: Hash
+    policy_sha256: Hash
+    source_sha256: Hash
+    spool_bytes: Count
+    cache_bytes: Count
+    pinned_bytes: Count
+    metadata_bytes: Positive
+    scratch_bytes: Positive
+    logs_bytes: Positive
+    emergency_bytes: Count
 
 
 class UnitIdentity(StrictModel):
@@ -253,6 +355,38 @@ class EvictionLocatorEntry(StrictModel):
     completed: bool
 
 
+class EpisodeBinding(StrictModel):
+    schema_version: Literal["phase4-archive-episode-binding-v1"] = (
+        "phase4-archive-episode-binding-v1"
+    )
+    run_id: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    logical_root: str
+    ordinal: Count
+    commit_sha256: Hash
+    unit_ref: UnitRef
+    commit: EpisodeCommit
+
+    @model_validator(mode="after")
+    def validate_binding(self):
+        from dataclasses import asdict
+
+        from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+        if (
+            self.ordinal != self.commit.ordinal
+            or self.commit_sha256 != sha256_bytes(canonical_json_bytes(asdict(self.commit)))
+            or self.logical_root != self.unit_ref.logical_root
+        ):
+            raise ValueError("episode binding identity differs")
+        return self
+
+
+class EpisodeBindingEntry(StrictModel):
+    record_type: Literal["episode_binding"] = "episode_binding"
+    key: Hash
+    binding: EpisodeBinding
+
+
 type CatalogEntry = (
     UnitCatalogEntry
     | OwnershipCatalogEntry
@@ -260,12 +394,15 @@ type CatalogEntry = (
     | RemoteReservationEntry
     | ReceiptLocatorEntry
     | EvictionLocatorEntry
+    | EpisodeBindingEntry
 )
 
 
 class CatalogNode(StrictModel):
     schema_version: Literal["phase4-r2-catalog-node-v1"] = "phase4-r2-catalog-node-v1"
-    index: Literal["units", "ownership", "runs", "reservations", "receipts", "evictions"]
+    index: Literal[
+        "units", "ownership", "runs", "reservations", "receipts", "evictions", "episodes"
+    ]
     depth: Annotated[int, Field(strict=True, ge=0, le=255)]
     records: tuple[CatalogEntry, ...] = ()
     zero: CatalogNodeRef | None = None
@@ -289,6 +426,7 @@ class CatalogNode(StrictModel):
                 "reservations": {"reservation"},
                 "receipts": {"receipt"},
                 "evictions": {"eviction"},
+                "episodes": {"episode_binding"},
             }[self.index]
             if any(record.record_type not in expected for record in self.records):
                 raise ValueError("catalog entry belongs to another index")
@@ -344,23 +482,6 @@ class OperationalCatalogRoot(StrictModel):
         if any(count != (0 if ref is None else ref.entries) for count, ref in expected):
             raise ValueError("operational catalog count differs")
         return self
-
-
-@dataclass(frozen=True)
-class FileEntry:
-    path: str
-    sha256: str
-    bytes: int
-
-
-@dataclass(frozen=True)
-class UnitRef:
-    unit_id: str
-    kind: str
-    logical_root: str
-    expanded_bytes: int
-    file_count: int
-    manifest_path: str
 
 
 @dataclass(frozen=True)

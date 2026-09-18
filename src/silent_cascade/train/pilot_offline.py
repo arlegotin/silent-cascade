@@ -31,33 +31,189 @@ class PilotOfflineReport(StrictModel):
     artifact_report_sha256: str
 
 
+def offline_environment(scratch: Path) -> dict[str, str]:
+    """Closed child environment; every runtime cache stays in counted scratch."""
+    scratch = scratch.absolute()
+    return {
+        key: value
+        for key, value in {
+            "PATH": os.defpath,
+            "LANG": "C.UTF-8",
+            "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "OMP_NUM_THREADS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": "false",
+            "TMPDIR": str(scratch),
+            "TMP": str(scratch),
+            "TEMP": str(scratch),
+            "MPLCONFIGDIR": str(scratch / "matplotlib-cache"),
+            "MPL_IGNORE_SYSTEM_FONTS": "1",
+            "XDG_CACHE_HOME": str(scratch / "cache"),
+        }.items()
+    }
+
+
+def install_offline_boundary(*, workspace_root: Path | None = None):
+    """Install irreversible child-only denial hooks, retaining read-only Git."""
+    import importlib.abc
+    import socket
+    import threading
+    import urllib.request
+
+    workspace = None if workspace_root is None else Path(workspace_root).resolve(strict=True)
+    workspace_device = None if workspace is None else workspace.stat().st_dev
+    descriptor_open = threading.local()
+
+    def descriptor_path(descriptor):
+        if sys.platform == "darwin":
+            import fcntl
+
+            return Path(os.fsdecode(fcntl.fcntl(descriptor, 50, bytes(1024)).split(b"\0", 1)[0]))
+        return Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+
+    def check_write(path, directory_fd=None, *, mkdir=False):
+        if workspace is None:
+            return
+        if isinstance(path, int):
+            target = descriptor_path(path)
+        else:
+            target = Path(os.fsdecode(path))
+            if not target.is_absolute() and directory_fd not in {None, -1}:
+                target = descriptor_path(directory_fd) / target
+        target = target.absolute()
+        resolved = target.resolve()
+        if not resolved.is_relative_to(workspace):
+            if mkdir and workspace.is_relative_to(resolved) and resolved.is_dir():
+                # Existing safe publishers attempt mkdir while walking from /.
+                # Report EEXIST without issuing an out-of-workspace mutation.
+                raise FileExistsError(target)
+            raise RuntimeError("offline output escapes counted workspace")
+        for parent in (target, *target.parents):
+            if parent.exists():
+                if parent.is_symlink() or parent.stat().st_dev != workspace_device:
+                    raise RuntimeError("offline output uses symlink or second volume")
+                break
+
+    original_open = os.open
+
+    def bounded_open(path, flags, mode=0o777, *, dir_fd=None):
+        writing = flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+        if writing:
+            check_write(path, dir_fd)
+        descriptor_open.validated = bool(writing)
+        try:
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+        finally:
+            descriptor_open.validated = False
+
+    attempts = {"network": 0, "imports": 0}
+    blocked = (
+        "mlx",
+        "mlx_vlm",
+        "transformers",
+        "qwen_vl_utils",
+        "huggingface_hub",
+        "openai",
+        "boto3",
+        "botocore",
+        "s3fs",
+        "aiobotocore",
+        "awscli",
+        "google",
+        "azure",
+    )
+    for name in tuple(os.environ):
+        if name.startswith(("AWS_", "R2_", "CLOUDFLARE_", "GOOGLE_", "AZURE_", "OPENAI_")):
+            del os.environ[name]
+
+    class Blocker(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.split(".")[0] in blocked or "qwen" in fullname.lower():
+                attempts["imports"] += 1
+                raise RuntimeError("forbidden optional model/cloud import")
+
+    def deny(*args, **kwargs):
+        attempts["network"] += 1
+        raise RuntimeError("offline diagnostic forbids network/downloads")
+
+    def audit(event, args):
+        if event == "open" and not getattr(descriptor_open, "validated", False):
+            path, _mode, flags = args
+            if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+                check_write(path)
+        if event in {"os.mkdir", "os.remove", "os.rmdir"}:
+            check_write(
+                args[0], args[2] if event == "os.mkdir" else args[1], mkdir=event == "os.mkdir"
+            )
+        if event in {"os.rename", "os.link"}:
+            check_write(args[0], args[2])
+            check_write(args[1], args[3])
+        if event == "os.symlink" and workspace is not None:
+            raise RuntimeError("offline outputs cannot contain symlinks")
+        if event == "os.truncate":
+            check_write(args[0])
+        if event.startswith("socket.") and event != "socket.__new__":
+            deny()
+        if event in {"os.system", "os.exec", "os.posix_spawn", "os.spawn"}:
+            raise RuntimeError("offline child forbids external command")
+        if event == "subprocess.Popen":
+            executable, argv, _cwd, _env = args
+            if (
+                workspace is not None
+                and executable == sys.executable
+                and isinstance(argv, (list, tuple))
+                and len(argv) == 5
+                and list(argv[:4]) == [sys.executable, "-B", "-c", _PROGRAM]
+                and type(argv[4]) is str
+                and Path(argv[4]).is_absolute()
+                and _cwd is not None
+                and Path(_cwd) == Path(__file__).resolve().parents[3]
+                and _env == offline_environment(Path(argv[4]))
+            ):
+                check_write(argv[4])
+                return
+            if (
+                executable not in {"git", "/usr/bin/git"}
+                or not isinstance(argv, (list, tuple))
+                or len(argv) < 2
+                or argv[0] not in {"git", "/usr/bin/git"}
+                or argv[1]
+                not in {"rev-parse", "cat-file", "ls-tree", "status", "merge-base", "log"}
+                or any(
+                    str(arg).startswith(
+                        ("--exec", "--ext-diff", "--textconv", "--filters", "--output")
+                    )
+                    for arg in argv[2:]
+                )
+            ):
+                raise RuntimeError("offline child permits only read-only Git provenance")
+
+    sys.meta_path.insert(0, Blocker())
+    sys.addaudithook(audit)
+    os.open = bounded_open
+    socket.socket.connect = deny
+    socket.socket.connect_ex = deny
+    socket.create_connection = deny
+    socket.getaddrinfo = deny
+    socket.socket.sendto = deny
+    urllib.request.urlopen = deny
+    urllib.request.urlretrieve = deny
+    import torch
+
+    torch.hub.download_url_to_file = deny
+    torch.hub.load_state_dict_from_url = deny
+    return attempts, blocked
+
+
 _PROGRAM = r"""
-import importlib.abc
-import socket
 import sys
-import urllib.request
-attempts = {'network': 0, 'imports': 0}
-blocked = ('mlx', 'mlx_vlm', 'transformers', 'qwen_vl_utils', 'huggingface_hub', 'openai')
-class Blocker(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in blocked or 'qwen' in fullname.lower():
-            attempts['imports'] += 1
-            raise RuntimeError('forbidden optional model import')
-def deny(*args, **kwargs):
-    attempts['network'] += 1
-    raise RuntimeError('offline diagnostic forbids network/downloads')
-sys.meta_path.insert(0, Blocker())
-socket.socket.connect = deny
-socket.socket.connect_ex = deny
-socket.create_connection = deny
-socket.getaddrinfo = deny
-socket.socket.sendto = deny
-urllib.request.urlopen = deny
-urllib.request.urlretrieve = deny
-import torch
-torch.hub.download_url_to_file = deny
-torch.hub.load_state_dict_from_url = deny
-from silent_cascade.train.pilot_offline import _worker
+from silent_cascade.train.pilot_offline import _worker, install_offline_boundary
+attempts, blocked = install_offline_boundary(workspace_root=sys.argv[1])
 _worker(sys.argv[1], attempts, blocked)
 """
 
@@ -73,13 +229,7 @@ def measure_pilot_offline(*, output_dir):
     completed = subprocess.run(
         [sys.executable, "-B", "-c", _PROGRAM, str(output_dir.absolute())],
         cwd=root,
-        env={
-            **os.environ,
-            "OMP_NUM_THREADS": "1",
-            "PYTHONPATH": str(root / "src"),
-            "MPLCONFIGDIR": str(output_dir.absolute() / "matplotlib-cache"),
-            "XDG_CACHE_HOME": str(output_dir.absolute() / "cache"),
-        },
+        env=offline_environment(output_dir),
         capture_output=True,
         timeout=180,
     )

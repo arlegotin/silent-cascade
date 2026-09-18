@@ -1,0 +1,338 @@
+"""Shared durable physical-space admission and immutable baseline accounting."""
+
+import hashlib
+import json
+import os
+import secrets
+import stat
+from contextlib import contextmanager
+from pathlib import Path
+
+import psutil
+
+from silent_cascade.archive.catalog import (
+    _control_reader,
+    _create_control_object,
+    _pinned_directory,
+    _safe_logical_path,
+    _source_file,
+)
+from silent_cascade.archive.transport import _lock, _replace_at
+from silent_cascade.archive.types import ArchivePolicy, FileEntry
+from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+
+class StorageBlocked(RuntimeError):
+    """Evidence is retained; admission needs space or a healthy archive parent."""
+
+
+_CATEGORIES = ("spool", "cache", "pinned", "metadata", "scratch", "logs", "emergency")
+_STATE_DIRECTORY = ".silent-cascade-storage"
+
+
+def _process_identity(pid: int) -> float | None:
+    try:
+        process = psutil.Process(pid)
+        return None if process.status() == psutil.STATUS_ZOMBIE else process.create_time()
+    except psutil.NoSuchProcess:
+        return None
+    except (psutil.AccessDenied, PermissionError) as error:
+        raise StorageBlocked("storage_blocked: cannot inspect archive owner") from error
+
+
+def _hash_file(root: Path, entry: FileEntry) -> int:
+    digest = hashlib.sha256()
+    member = _safe_logical_path(entry.path, field="authenticated file")
+    with _source_file(root, member) as (descriptor, info):
+        if info.st_size != entry.bytes:
+            raise ValueError("authenticated file size differs")
+        while data := os.read(descriptor, 1024 * 1024):
+            digest.update(data)
+        if digest.hexdigest() != entry.sha256:
+            raise ValueError("authenticated file hash differs")
+        return info.st_blocks * 512
+
+
+def initialize_workspace_ledger(*, workspace_root: Path, policy: ArchivePolicy, baseline):
+    """Create one durable shared ledger; baseline is explicit, exact and immutable."""
+    workspace_root = workspace_root.absolute()
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    root = workspace_root / _STATE_DIRECTORY
+    policy = ArchivePolicy.model_validate(policy.model_dump())
+    with _lock(control_dir=root, relative=("workspace.lock",), shared=False, blocking=True):
+        if (root / "workspace.json").exists():
+            raise FileExistsError("workspace ledger already exists")
+        if (root / "baseline").exists():
+            raise StorageBlocked("storage_blocked: interrupted ledger bootstrap requires recovery")
+        head = None
+        page = []
+        previous = ""
+
+        def publish():
+            nonlocal head, page
+            raw = canonical_json_bytes({"next": head, "entries": page})
+            if len(raw) > policy.page_bytes:
+                raise StorageBlocked("storage_blocked: baseline page exceeds policy")
+            digest = sha256_bytes(raw)
+            _create_control_object(root, f"baseline/{digest}.json", raw)
+            head = digest
+            page = []
+
+        for entry in baseline:
+            if (
+                not isinstance(entry, FileEntry)
+                or entry.path <= previous
+                or entry.path.startswith(_STATE_DIRECTORY + "/")
+            ):
+                raise ValueError("baseline must be ordered unique scientific files")
+            _hash_file(workspace_root, entry)
+            previous = entry.path
+            record = {"path": entry.path, "sha256": entry.sha256, "bytes": entry.bytes}
+            if page and (
+                len(page) >= policy.page_entries
+                or len(canonical_json_bytes({"next": head, "entries": [*page, record]}))
+                > policy.page_bytes
+            ):
+                publish()
+            page.append(record)
+        if page:
+            publish()
+        payload = {
+            "schema_version": "phase4-r2-workspace-v1",
+            "workspace": str(workspace_root),
+            "device": workspace_root.stat().st_dev,
+            "policy_sha256": sha256_bytes(canonical_json_bytes(policy)),
+            "baseline": head,
+            "reservations": {},
+            "paths": {name: name for name in _CATEGORIES},
+        }
+        _create_control_object(root, "workspace.json", canonical_json_bytes(payload))
+
+
+class _StorageBudget:
+    """Count every inode below one workspace, including unknown stopped output."""
+
+    def __init__(self, *, workspace: Path, policy: ArchivePolicy):
+        self.workspace = workspace.absolute()
+        self.policy = ArchivePolicy.model_validate(policy.model_dump())
+        self.device = self.workspace.stat().st_dev
+        self.root = self.workspace / _STATE_DIRECTORY
+        self.active_reservation = None
+        self.inherit_reservations = False
+        self._state()
+
+    def _state(self):
+        state = json.loads(_control_reader(self.root)("workspace.json", self.policy.page_bytes))
+        if set(state) != {
+            "schema_version",
+            "workspace",
+            "device",
+            "policy_sha256",
+            "baseline",
+            "reservations",
+            "paths",
+        } or (
+            state["schema_version"] != "phase4-r2-workspace-v1"
+            or state["workspace"] != str(self.workspace)
+            or state["device"] != self.device
+            or state["policy_sha256"] != sha256_bytes(canonical_json_bytes(self.policy))
+            or not isinstance(state["reservations"], dict)
+        ):
+            raise StorageBlocked("storage_blocked: workspace ledger identity differs")
+        if type(state["paths"]) is not dict or any(
+            category not in _CATEGORIES for category in state["paths"].values()
+        ):
+            raise StorageBlocked("storage_blocked: invalid category paths")
+        return state
+
+    def bind(self, path: Path, *, category: str):
+        self.require_path(path)
+        relative = path.absolute().relative_to(self.workspace).as_posix()
+        _safe_logical_path(relative, field="category root")
+        if category not in _CATEGORIES or relative.startswith(_STATE_DIRECTORY):
+            raise ValueError("invalid workspace category binding")
+        with _lock(
+            control_dir=self.root, relative=("workspace.lock",), shared=False, blocking=True
+        ):
+            state = self._state()
+            if relative in state["paths"] and state["paths"][relative] != category:
+                raise StorageBlocked("storage_blocked: category binding cannot be reassigned")
+            state["paths"][relative] = category
+            self._store(state)
+
+    def _store(self, state):
+        raw = canonical_json_bytes(state)
+        if len(raw) > self.policy.page_bytes:
+            raise StorageBlocked("storage_blocked: reservation metadata limit")
+        with _pinned_directory(self.root) as descriptor:
+            _replace_at(descriptor, "workspace.json", raw)
+
+    def require_path(self, path: Path) -> None:
+        path = path.absolute()
+        if ".." in path.parts or not path.is_relative_to(self.workspace):
+            raise StorageBlocked("storage_blocked: output escapes counted workspace")
+        for parent in (path, *path.parents):
+            if not parent.is_relative_to(self.workspace):
+                break
+            try:
+                info = parent.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or info.st_dev != self.device:
+                raise StorageBlocked("storage_blocked: symlink or second volume in workspace")
+
+    def measure(self) -> dict[str, int]:
+        allocated = dict.fromkeys(_CATEGORIES, 0)
+        state = self._state()
+        bindings = sorted(
+            state["paths"].items(), key=lambda pair: len(Path(pair[0]).parts), reverse=True
+        )
+
+        def category_for(relative):
+            if relative.parts and relative.parts[0] == _STATE_DIRECTORY:
+                return "metadata"
+            return next(
+                (category for prefix, category in bindings if relative.is_relative_to(prefix)),
+                "scratch",
+            )
+
+        for directory, directories, files in os.walk(self.workspace, followlinks=False):
+            for name in directories:
+                self.require_path(Path(directory) / name)
+            for name in (".", *files):
+                path = Path(directory) / name
+                self.require_path(path)
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                    raise StorageBlocked("storage_blocked: ambiguous hard-linked allocation")
+                relative = path.relative_to(self.workspace)
+                category = category_for(relative) if relative.parts else "metadata"
+                allocated[category] += info.st_blocks * 512
+        head = self._state()["baseline"]
+        while head is not None:
+            raw = _control_reader(self.root)(f"baseline/{head}.json", self.policy.page_bytes)
+            if sha256_bytes(raw) != head:
+                raise StorageBlocked("storage_blocked: corrupt baseline page")
+            page = json.loads(raw)
+            if set(page) != {"next", "entries"} or len(page["entries"]) > self.policy.page_entries:
+                raise StorageBlocked("storage_blocked: malformed baseline page")
+            for value in page["entries"]:
+                entry = FileEntry(**value)
+                try:
+                    blocks = _hash_file(self.workspace, entry)
+                except (OSError, ValueError) as error:
+                    raise StorageBlocked("storage_blocked: immutable baseline differs") from error
+                allocated[category_for(Path(entry.path))] -= blocks
+            head = page["next"]
+        return allocated
+
+    def check(self) -> dict[str, int]:
+        allocated = self.measure()
+        reservations = dict.fromkeys(_CATEGORIES, 0)
+        for record in self._state()["reservations"].values():
+            for name, amount in record["amounts"].items():
+                if name not in reservations or type(amount) is not int or amount < 0:
+                    raise StorageBlocked("storage_blocked: corrupt reservation")
+                growth = max(0, allocated[name] - record["before"][name])
+                if growth > amount and amount:
+                    raise StorageBlocked(
+                        f"storage_blocked: {name} output exceeded admitted maximum"
+                    )
+                reservations[name] += max(0, amount - growth)
+        for name, value in allocated.items():
+            if value + reservations[name] > getattr(self.policy, f"{name}_bytes"):
+                raise StorageBlocked(
+                    f"storage_blocked: {name} category exhausted; retain pending files"
+                )
+        reserved = sum(reservations.values())
+        if (
+            sum(allocated.values()) + reserved + self.policy.reserve_bytes
+            > self.policy.workspace_bytes
+        ):
+            raise StorageBlocked(
+                "storage_blocked: global allocation exhausted; retain pending files"
+            )
+        volume = os.statvfs(self.workspace)
+        if volume.f_bavail * volume.f_frsize < reserved + self.policy.reserve_bytes:
+            raise StorageBlocked("storage_blocked: protected physical headroom unavailable")
+        return allocated
+
+    @contextmanager
+    def reserve(self, *, admission=None, **amounts: int):
+        if any(
+            name not in _CATEGORIES or type(value) is not int or value < 0
+            for name, value in amounts.items()
+        ):
+            raise ValueError("invalid storage reservation")
+        if self.active_reservation is not None and self.inherit_reservations:
+            active = self._state()["reservations"][self.active_reservation]
+            if any(value > active["amounts"].get(name, 0) for name, value in amounts.items()):
+                raise StorageBlocked("storage_blocked: nested output exceeds job admission")
+            self.check()
+            yield self.active_reservation
+            return
+        if self.active_reservation is not None:
+            token = self.active_reservation
+            with _lock(
+                control_dir=self.root, relative=("workspace.lock",), shared=False, blocking=True
+            ):
+                state = self._state()
+                active = state["reservations"][token]
+                prior = dict(active["amounts"])
+                for name, value in amounts.items():
+                    active["amounts"][name] = active["amounts"].get(name, 0) + value
+                self._store(state)
+                try:
+                    self.check()
+                except BaseException:
+                    active["amounts"] = prior
+                    self._store(state)
+                    raise
+            try:
+                yield token
+            finally:
+                with _lock(
+                    control_dir=self.root, relative=("workspace.lock",), shared=False, blocking=True
+                ):
+                    state = self._state()
+                    for name, value in amounts.items():
+                        state["reservations"][token]["amounts"][name] -= value
+                    self._store(state)
+            return
+        token = secrets.token_hex(16)
+        with _lock(
+            control_dir=self.root, relative=("workspace.lock",), shared=False, blocking=True
+        ):
+            state = self._state()
+            for record in state["reservations"].values():
+                for name, value in amounts.items():
+                    if value and record["amounts"].get(name, 0):
+                        raise StorageBlocked(
+                            f"storage_blocked: {name} capacity is owned by another admission"
+                        )
+            state["reservations"][token] = {
+                "pid": os.getpid(),
+                "create_time": _process_identity(os.getpid()),
+                "amounts": amounts,
+                "before": self.measure(),
+                "admission": admission,
+            }
+            self._store(state)
+            try:
+                self.check()
+            except BaseException:
+                del state["reservations"][token]
+                self._store(state)
+                raise
+        try:
+            previous_reservation = self.active_reservation
+            self.active_reservation = token
+            yield token
+        finally:
+            self.active_reservation = previous_reservation
+            with _lock(
+                control_dir=self.root, relative=("workspace.lock",), shared=False, blocking=True
+            ):
+                state = self._state()
+                del state["reservations"][token]
+                self._store(state)
