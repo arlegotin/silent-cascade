@@ -629,6 +629,16 @@ shared weights, forged/changed retained entries and interrupted eviction. Journa
 segments sharing the run root use the same custody rule. Existing empty-retained
 calls keep their strict behavior; no whole-directory deletion is permitted.
 
+Before evicting finalized shared inputs, complete the supervisor's cold-borrowed
+lease path. Authenticate exact shared-owner entries through bounded sparse
+leases, hold their locks for the borrowing episode's lifetime, and verify/copy
+from their actual lease roots rather than assuming resident run files. Expose
+one complete authenticated episode root even when only its shared input is cold.
+Charge source cache, copied shared bytes and atomic overhead simultaneously.
+Preserve the one-public-episode limit, reject corrupt/missing owners and cycles,
+and never recurse through episode packs as shared-input owners. Test cold/cold
+and resident/cold combinations, live-borrower eviction refusal and safe release.
+
 Before-work admission reuses the supervisor's held source-bound job reservation;
 it must not reserve the same capacity twice. Add one strict `status` payload
 variant for operation-specific, source-derived additional category maxima. The
