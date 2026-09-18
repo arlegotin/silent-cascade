@@ -474,6 +474,24 @@ storage gate, local verification gate, smoke, or Phase 4 scientific acceptance.
 Keep the existing fresh-run interface/result unchanged. Do not add automatic
 resume, a public CLI, another ledger, or a general workflow engine.
 
+Native allocated bytes can exceed rounded logical bytes: a preserved32MiB
+readback allocated33,882,112bytes on the target filesystem. Remaining-work
+admission must include the established conservative `2 * rounded(size) + block`
+native-write allowance for downloads and full restored files, alongside exact
+logical serializer/coexistence bounds and live allocation checks. Do not describe
+this operational cushion as a universal filesystem allocation proof.
+
+If retained implementation tests exhaust an internal slice, preserve and report
+the failed admission separately from functional outcomes. A reviewed early
+provider continuation may use prior full-module functional evidence plus fresh
+admitted coverage of every amended path, with that distinction explicit; it
+cannot claim a full current-source local gate. Independent review and actual
+provider checks remain mandatory before engineering archival. Complete stable
+module coverage and the unchanged Task7 source-bound local verification follow
+verified reclamation and remain prerequisites to final storage readiness and the
+scientific pilot. This changes verification order only, not scientific acceptance,
+local/remote ceilings, retained evidence, or the required final test coverage.
+
 - Archive policy, source, manifests, transfer receipts and control snapshots have
   separate hashes. They do not masquerade as unchanged historical scientific data.
 - Include the approved amendment and new executable files in both pilot source

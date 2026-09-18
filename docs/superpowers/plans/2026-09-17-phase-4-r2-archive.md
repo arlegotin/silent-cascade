@@ -223,6 +223,49 @@ parent/child helpers defaults to current fresh-run behavior for compatibility.
   admission. Only its actual complete composite evidence unlocks engineering
   archival. Update status honestly; all later Task5/6/7 and pilot gates remain.
 
+#### Continuation verification sequencing after retained test overrun (2026-09-18)
+
+The first unchanged-source qualification/ledger cover passed122tests, but its
+combined retained RED/GREEN/cover output exceeded the separately admitted8MiB
+test slice. Preserve that failed admission and every output; the functional test
+result is not a resource pass. Fresh ledger authentication still includes all
+bytes and must satisfy the unchanged category/global/physical limits.
+
+Before another provider call, correct the remaining-work native-allocation
+allowance: an earlier real32MiB R2 readback allocated33,882,112bytes, exceeding
+logical-size rounding. Use the already established conservative operational
+allowance `2 * round_up(size, allocation_unit) + allocation_unit` for each new
+download and each complete restored file, plus explicit concurrent debug payload,
+catalog stages and directory/control overhead. Preserve sequential maxima.
+This is not a universal filesystem theorem; exact logical serializer bounds,
+live allocated-byte checks, refusal and fail-stop remain mandatory.
+
+The unchanged256MiB scratch limit leaves only2,883,584bytes after the existing
+retained allocation and the corrected large-readback allowance. Therefore this
+ordering supersedes the immediate duplicate full-module cover above; it does
+not waive Task7's complete current-source local verification before the pilot:
+
+1. Commit the current implementation as reviewable work with its native-bound
+   defect and failed test admission explicitly open; no completion/provider pass.
+2. Obtain the independent task review before consuming the remaining test slice.
+   Batch its findings with the known bound correction in one normal fix round.
+3. Admit a separate2MiB affected-test slice, retaining all old output in the same
+   ledger. Add descriptor-only native-allocation and inflated-accounting refusal
+   regressions; exercise all continuation tests on the corrected frozen code.
+   Use `pytest tests/archive/test_qualification.py -k 'continuation_'` with
+   bytecode/cache disabled and unique preserved output roots. Capture owner PID
+   and creation time before execution; measure actual growth during the run.
+   No extra test run may silently consume this finite admission.
+4. Review the fix and exact source. Report the earlier122-test result as pre-fix
+   functional evidence only, alongside fresh affected-code results and the failed
+   resource slice. This can support only the early provider qualification path;
+   it is not a full current-source local-verification receipt.
+5. Execute the complete native qualification continuation under newly derived
+   bounds. Only a complete actual composite record allows engineering archival.
+   After verified reclamation, run the full stable modules and Task7 source-bound
+   `make verify` obligations before claiming final storage readiness or starting
+   Phase4 Task12. No scientific gate, test manifest, quota or retention rule changes.
+
 Each implementation slice gets RED/GREEN evidence, bounded local covering tests,
 an independent task review and a meaningful current-branch commit. The scoped
 briefs give exact tests/interfaces and finite output admission before dispatch.
