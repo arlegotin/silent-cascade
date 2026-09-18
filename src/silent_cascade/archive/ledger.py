@@ -161,6 +161,13 @@ class _StorageBudget:
             category not in _CATEGORIES for category in state["paths"].values()
         ):
             raise StorageBlocked("storage_blocked: invalid category paths")
+        try:
+            for value in state["paths"]:
+                _safe_logical_path(value, field="category root")
+                if value.startswith(_STATE_DIRECTORY):
+                    raise ValueError("reserved category root")
+        except (TypeError, ValueError) as error:
+            raise StorageBlocked("storage_blocked: invalid category paths") from error
         return state
 
     def retained_charge(self) -> int:
@@ -231,37 +238,69 @@ class _StorageBudget:
         def category_for(relative):
             return binding_for(relative)[1]
 
-        def opaque_scratch_info(path, relative):
+        def classify(info, relative):
             prefix, category = binding_for(relative)
-            if prefix is None or category != "scratch" or relative == prefix:
-                return None
-            self.require_path(path.parent)
-            info = path.lstat()
             if info.st_dev != self.device:
                 raise StorageBlocked("storage_blocked: symlink or second volume in workspace")
-            return info
+            opaque = prefix is not None and category == "scratch" and relative != prefix
+            if not opaque and stat.S_ISLNK(info.st_mode):
+                raise StorageBlocked("storage_blocked: symlink or second volume in workspace")
+            if not opaque and stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                raise StorageBlocked("storage_blocked: ambiguous hard-linked allocation")
+            return category if relative.parts else "metadata"
 
-        for directory, directories, files in os.walk(self.workspace, followlinks=False):
-            for name in tuple(directories):
-                path = Path(directory) / name
-                relative = path.relative_to(self.workspace)
-                info = opaque_scratch_info(path, relative)
-                if info is None:
-                    self.require_path(path)
-                elif not stat.S_ISDIR(info.st_mode):
-                    allocated["scratch"] += info.st_blocks * 512
-                    directories.remove(name)
-            for name in (".", *files):
-                path = Path(directory) / name
-                relative = path.relative_to(self.workspace)
-                info = opaque_scratch_info(path, relative)
-                if info is None:
-                    self.require_path(path)
-                    info = path.lstat()
-                    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-                        raise StorageBlocked("storage_blocked: ambiguous hard-linked allocation")
-                category = category_for(relative) if relative.parts else "metadata"
-                allocated[category] += info.st_blocks * 512
+        def scan_directory(descriptor, relative):
+            directory_info = os.fstat(descriptor)
+            category = classify(directory_info, relative)
+            if not stat.S_ISDIR(directory_info.st_mode):
+                raise StorageBlocked("storage_blocked: workspace changed during measurement")
+            allocated[category] += directory_info.st_blocks * 512
+            with os.scandir(descriptor) as entries:
+                for entry in entries:
+                    child_relative = relative / entry.name if relative.parts else Path(entry.name)
+                    info = entry.stat(follow_symlinks=False)
+                    category = classify(info, child_relative)
+                    if not stat.S_ISDIR(info.st_mode):
+                        allocated[category] += info.st_blocks * 512
+                        continue
+                    try:
+                        child = os.open(
+                            entry.name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=descriptor,
+                        )
+                    except OSError as error:
+                        raise StorageBlocked(
+                            "storage_blocked: workspace changed during measurement"
+                        ) from error
+                    try:
+                        opened = os.fstat(child)
+                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                            raise StorageBlocked(
+                                "storage_blocked: workspace changed during measurement"
+                            )
+                        scan_directory(child, child_relative)
+                        current = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                            raise StorageBlocked(
+                                "storage_blocked: workspace changed during measurement"
+                            )
+                    finally:
+                        os.close(child)
+
+        try:
+            with _pinned_directory(self.workspace) as workspace:
+                workspace_info = os.fstat(workspace)
+                scan_directory(workspace, Path())
+                with _pinned_directory(self.workspace) as current:
+                    current_info = os.fstat(current)
+                if (current_info.st_dev, current_info.st_ino) != (
+                    workspace_info.st_dev,
+                    workspace_info.st_ino,
+                ):
+                    raise StorageBlocked("storage_blocked: workspace changed during measurement")
+        except OSError as error:
+            raise StorageBlocked("storage_blocked: workspace changed during measurement") from error
         head = self._state()["baseline"]
         while head is not None:
             raw = _control_reader(self.root)(f"baseline/{head}.json", self.policy.page_bytes)

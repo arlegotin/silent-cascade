@@ -2,6 +2,7 @@
 
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,37 +27,120 @@ def _inode(*, kind, blocks, device=41, links=1, inode=1):
     )
 
 
-def _memory_budget(monkeypatch, *, records, walks, paths):
-    from silent_cascade.archive.ledger import _StorageBudget
+def _memory_budget(monkeypatch, *, records, children, paths):
+    from silent_cascade.archive import ledger
 
     workspace = Path("/virtual/workspace")
-    budget = object.__new__(_StorageBudget)
+    budget = object.__new__(ledger._StorageBudget)
     budget.workspace = workspace
     budget.device = 41
     state = {"paths": paths, "baseline": None}
     monkeypatch.setattr(budget, "_state", lambda: state)
     original_lstat = Path.lstat
     original_stat = Path.stat
+    original_close = os.close
+    original_fstat = os.fstat
+    original_open = os.open
+    original_os_stat = os.stat
+    original_scandir = os.scandir
+    descriptors = {9000: workspace}
+    next_descriptor = 9001
+
+    def record(path):
+        try:
+            value = records[Path(path)]
+        except KeyError:
+            pytest.fail(f"unexpected filesystem access: {path}")
+        return value() if callable(value) else value
+
+    @contextmanager
+    def pinned_directory(path, *, create=False):
+        assert Path(path) == workspace
+        assert create is False
+        yield 9000
+
+    class Entry:
+        def __init__(self, parent, name):
+            self.name = name
+            self._path = parent / name
+
+        def stat(self, *, follow_symlinks=True):
+            assert follow_symlinks is False
+            return record(self._path)
+
+    class Scandir:
+        def __init__(self, directory):
+            self._entries = iter(Entry(directory, name) for name in children.get(directory, ()))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._entries)
 
     def lstat(path, *args, **kwargs):
         path = Path(path)
         if not path.is_relative_to(workspace):
             return original_lstat(path, *args, **kwargs)
-        try:
-            record = records[path]
-        except KeyError:
-            pytest.fail(f"unexpected lstat: {path}")
-        return record() if callable(record) else record
+        return record(path)
 
-    def stat_path(path, *args, **kwargs):
+    def path_stat(path, *args, **kwargs):
         path = Path(path)
         if path.is_relative_to(workspace):
             pytest.fail(f"measurement followed an entry target: {path}")
         return original_stat(path, *args, **kwargs)
 
+    def fstat(descriptor):
+        if descriptor not in descriptors:
+            return original_fstat(descriptor)
+        return record(descriptors[descriptor])
+
+    def scandir(descriptor):
+        if descriptor not in descriptors:
+            return original_scandir(descriptor)
+        return Scandir(descriptors[descriptor])
+
+    def open_path(path, flags, *args, **kwargs):
+        nonlocal next_descriptor
+        parent = kwargs.get("dir_fd")
+        if parent not in descriptors:
+            return original_open(path, flags, *args, **kwargs)
+        child_path = descriptors[parent] / path
+        info = record(child_path)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError("mocked entry is no longer a directory")
+        descriptor = next_descriptor
+        next_descriptor += 1
+        descriptors[descriptor] = child_path
+        return descriptor
+
+    def relative_stat(path, *args, **kwargs):
+        parent = kwargs.get("dir_fd")
+        if parent not in descriptors:
+            return original_os_stat(path, *args, **kwargs)
+        assert kwargs.get("follow_symlinks") is False
+        return record(descriptors[parent] / path)
+
+    def close(descriptor):
+        if descriptor in descriptors and descriptor != 9000:
+            del descriptors[descriptor]
+            return None
+        return original_close(descriptor)
+
+    monkeypatch.setattr(ledger, "_pinned_directory", pinned_directory)
     monkeypatch.setattr(Path, "lstat", lstat)
-    monkeypatch.setattr(Path, "stat", stat_path)
-    monkeypatch.setattr(os, "walk", walks)
+    monkeypatch.setattr(Path, "stat", path_stat)
+    monkeypatch.setattr(os, "fstat", fstat)
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(os, "open", open_path)
+    monkeypatch.setattr(os, "stat", relative_stat)
+    monkeypatch.setattr(os, "close", close)
     return budget
 
 
@@ -76,21 +160,20 @@ def test_measure_counts_opaque_explicit_scratch_entries_without_following_links(
         scratch / "hard-b": _inode(kind=stat.S_IFREG, blocks=6, links=2, inode=700),
     }
 
-    def walks(root, *, followlinks):
-        assert Path(root) == workspace
-        assert followlinks is False
-        root_directories = ["scratch-zone"]
-        yield workspace, root_directories, []
-        scratch_directories = ["linked-directory", "real-directory"]
-        yield scratch, scratch_directories, ["linked-file", "hard-a", "hard-b"]
-        if "linked-directory" in scratch_directories:
-            pytest.fail("measurement retained a linked directory for traversal")
-        yield scratch / "real-directory", [], []
-
     budget = _memory_budget(
         monkeypatch,
         records=records,
-        walks=walks,
+        children={
+            workspace: ["scratch-zone"],
+            scratch: [
+                "linked-directory",
+                "real-directory",
+                "linked-file",
+                "hard-a",
+                "hard-b",
+            ],
+            scratch / "real-directory": [],
+        },
         paths={"scratch-zone": "scratch"},
     )
 
@@ -120,16 +203,10 @@ def test_measure_rejects_links_outside_explicit_scratch(monkeypatch, directory, 
         linked_file: _inode(kind=stat.S_IFLNK, blocks=3),
     }
 
-    def walks(walk_root, *, followlinks):
-        assert Path(walk_root) == workspace
-        assert followlinks is False
-        yield workspace, [directory], []
-        yield root, [], ["linked-file"]
-
     budget = _memory_budget(
         monkeypatch,
         records=records,
-        walks=walks,
+        children={workspace: [directory], root: ["linked-file"]},
         paths=paths,
     )
 
@@ -149,16 +226,10 @@ def test_measure_rejects_second_device_inside_explicit_scratch(monkeypatch):
         other_device: _inode(kind=stat.S_IFREG, blocks=3, device=42),
     }
 
-    def walks(root, *, followlinks):
-        assert Path(root) == workspace
-        assert followlinks is False
-        yield workspace, ["scratch-zone"], []
-        yield scratch, [], ["other-device"]
-
     budget = _memory_budget(
         monkeypatch,
         records=records,
-        walks=walks,
+        children={workspace: ["scratch-zone"], scratch: ["other-device"]},
         paths={"scratch-zone": "scratch"},
     )
 
@@ -172,33 +243,30 @@ def test_measure_rejects_stale_walk_beneath_linked_scratch_ancestor(monkeypatch)
     workspace = Path("/virtual/workspace")
     scratch = workspace / "scratch-zone"
     changed_directory = scratch / "changed-directory"
-    ancestor_linked = False
+    observations = 0
+
+    def changed_info():
+        nonlocal observations
+        observations += 1
+        return _inode(
+            kind=stat.S_IFDIR if observations == 1 else stat.S_IFLNK,
+            blocks=3,
+        )
+
     records = {
         workspace: _inode(kind=stat.S_IFDIR, blocks=1),
         scratch: _inode(kind=stat.S_IFDIR, blocks=2),
-        changed_directory: lambda: _inode(
-            kind=stat.S_IFLNK if ancestor_linked else stat.S_IFDIR,
-            blocks=3,
-        ),
+        changed_directory: changed_info,
     }
-
-    def walks(root, *, followlinks):
-        nonlocal ancestor_linked
-        assert Path(root) == workspace
-        assert followlinks is False
-        yield workspace, ["scratch-zone"], []
-        yield scratch, ["changed-directory"], []
-        ancestor_linked = True
-        yield changed_directory, [], ["outside-target"]
 
     budget = _memory_budget(
         monkeypatch,
         records=records,
-        walks=walks,
+        children={workspace: ["scratch-zone"], scratch: ["changed-directory"]},
         paths={"scratch-zone": "scratch"},
     )
 
-    with pytest.raises(StorageBlocked, match="symlink"):
+    with pytest.raises(StorageBlocked, match="changed"):
         budget.measure()
 
 
@@ -285,6 +353,148 @@ def test_non_scratch_descendant_link_remains_rejected(tmp_path):
 
     with pytest.raises(StorageBlocked, match="symlink"):
         budget.measure()
+
+
+def test_measure_never_uses_target_following_directory_classification(tmp_path, monkeypatch):
+    from silent_cascade.archive.ledger import _StorageBudget, initialize_workspace_ledger
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    external = tmp_path.parent / f"{tmp_path.name}-classification-target"
+    external.mkdir()
+    linked_directory = scratch / "linked-directory"
+    linked_directory.symlink_to(external, target_is_directory=True)
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    real_scandir = os.scandir
+
+    class GuardedEntry:
+        def __init__(self, entry):
+            self._entry = entry
+
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def is_dir(self, *args, **kwargs):
+            if self.name == linked_directory.name and kwargs.get("follow_symlinks", True):
+                pytest.fail("measurement followed a symlink to classify its target")
+            return self._entry.is_dir(*args, **kwargs)
+
+        def stat(self, *args, **kwargs):
+            if self.name == linked_directory.name and kwargs.get("follow_symlinks", True):
+                pytest.fail("measurement followed a symlink to stat its target")
+            return self._entry.stat(*args, **kwargs)
+
+    class GuardedScandir:
+        def __init__(self, directory):
+            self._context = real_scandir(directory)
+
+        def __enter__(self):
+            self._entries = self._context.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._context.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return GuardedEntry(next(self._entries))
+
+    monkeypatch.setattr(os, "scandir", GuardedScandir)
+
+    assert (
+        budget.measure()["scratch"]
+        == (scratch.lstat().st_blocks + linked_directory.lstat().st_blocks) * 512
+    )
+
+
+def test_measure_rejects_directory_replaced_by_link_before_traversal(tmp_path, monkeypatch):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    changing = scratch / "changing-directory"
+    changing.mkdir()
+    external = tmp_path.parent / f"{tmp_path.name}-replacement-target"
+    external.mkdir()
+    (external / "outside-target").write_bytes(b"must not be traversed")
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    real_islink = os.path.islink
+    real_open = os.open
+    real_scandir = os.scandir
+
+    def replace_with_link():
+        if changing.is_dir() and not changing.is_symlink():
+            changing.rmdir()
+            changing.symlink_to(external, target_is_directory=True)
+
+    def islink(path):
+        result = real_islink(path)
+        if Path(path) == changing and not result:
+            replace_with_link()
+        return result
+
+    def open_path(path, flags, *args, **kwargs):
+        if path == changing.name and flags & os.O_DIRECTORY and kwargs.get("dir_fd") is not None:
+            replace_with_link()
+        return real_open(path, flags, *args, **kwargs)
+
+    def scandir(directory):
+        if not isinstance(directory, int) and Path(directory) == changing and changing.is_symlink():
+            pytest.fail("measurement traversed a replacement symlink")
+        return real_scandir(directory)
+
+    monkeypatch.setattr(os.path, "islink", islink)
+    monkeypatch.setattr(os, "open", open_path)
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(StorageBlocked, match=r"symlink|changed"):
+        budget.measure()
+
+
+@pytest.mark.parametrize(
+    "invalid_binding",
+    [
+        "",
+        ".",
+        "/absolute",
+        "alias/",
+        "alias//child",
+        "alias/./child",
+        "alias/../child",
+        ".silent-cascade-storage",
+        ".silent-cascade-storage/baseline",
+        ".silent-cascade-storage-copy",
+    ],
+)
+def test_persisted_category_bindings_must_be_safe_explicit_paths(tmp_path, invalid_binding):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    state = budget._state()
+    state["paths"][invalid_binding] = "scratch"
+    budget._store(state)
+
+    with pytest.raises(StorageBlocked, match="invalid category paths"):
+        budget._state()
 
 
 def test_storage_admission_checks_free_space_and_rejects_second_volume(tmp_path, monkeypatch):
