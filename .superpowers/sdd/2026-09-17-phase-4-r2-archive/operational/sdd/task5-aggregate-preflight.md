@@ -36,3 +36,28 @@ offline output. No complete small checked-in training/gate fixture was found.
 Existing exact identity/partial fixtures are insufficient for full gate claims.
 No byte estimate is justified by episode counts: measure retained exact inputs,
 derive finite output/cache/publication bounds, admit before any numerical run.
+
+## Checkpoint prerequisite refinement
+
+Followup static review confirms an actual zero-step checkpoint is legal for
+_durable: initial PilotProgress has step/batch0, no journal and running status;
+empty optimizer state is supported and zero-update journal coverage is empty.
+The real trainer itself publishes this initial checkpoint. It is NOT a truthful
+completed training result: validate_training_result rejects running, and the
+fixed debug profile reaches its step ceiling at4, not0. Never relabel status
+to save test space. Therefore a bounded initial-checkpoint read-path test can
+advance _durable only; full authenticate_run/_train reuse still needs real
+completed training and later finite admission.
+
+Main read-only size observations from frozen Task4 files (no copies or imports):
+green-training-1/test_real_four_update_training0/repo/workspace/run/
+training-0-7bf0e773f8056ad5045a069b678440b92da17c2111183009a7fabb1b7bca5cc3.safetensors:
+3146426logicalbytes/6152filesystemblocks.
+red-training/test_real_four_update_training0/repo/whole/
+training-4-fac9a99c6177238f6a91551f67f81793e7166ab6f13b74c80554f0eba2f93d48.safetensors:
+9342174logicalbytes/18248blocks; its matching latest portable weights3098274bytes/
+6056blocks. Paths are relative to frozen tmp/task-4. These observations are
+fixture-sizing evidence, not authorization to relabel/rewrite old checkpoint
+source identity or a bound for all future output. A focused new zero-step unit
+case can enforce a4MiB pre-publication byte cap using the actual writer behind
+a test-owned size guard, without mocks of model/checkpoint/semantic success.

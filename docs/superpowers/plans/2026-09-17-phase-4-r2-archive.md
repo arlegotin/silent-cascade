@@ -1477,6 +1477,66 @@ reader threading. It closes a concrete fail-open status defect without changing
 scientific evidence or claiming that a full cold gate has been verified. The
 broader integration remains required and will supply end-to-end coverage.
 
+#### Checkpoint-reader prerequisite before full cold authentication
+
+Static integration review found that `_durable` accepts `evidence_context` but
+still reads checkpoint-index.json and the full checkpoint by raw local paths;
+only the subsequent journal check receives the context. Correct this narrow
+prerequisite in `train/pilot_workflow.py::_durable`, with a focused new
+`tests/pilot/test_pilot_cold_checkpoint.py`. Use the existing scoped reader:
+
+```python
+from silent_cascade.archive.readers import evidence_path
+
+with evidence_path(run_dir, "checkpoint-index.json", evidence_context=evidence_context) as local:
+    index = read_json(local)
+# Parse the existing descriptor and keep path = child(run_dir, descriptor.path).
+with evidence_path(run_dir, descriptor.path, evidence_context=evidence_context) as local:
+    session = load_pilot_checkpoint(
+        local, expected_sha256=descriptor.sha256, config=config, source=source, device=device
+    )
+# Existing journal, progress and model-identity checks remain after both leases close.
+# Return the original logical path, never the released local cache path.
+```
+
+- [ ] Use an actual initialized debug EventFlowModel, its real empty AdamW state,
+  `PilotProgress()` and real save/load checkpoint functions. The initial running
+  zero-step state is legal and is produced by the normal trainer. Supply a
+  clearly labeled unit expected-source identity, as existing checkpoint unit
+  tests do; source-history authentication belongs to the later full-run test.
+  No metrics, completed training envelope, terminal status or successful fit may
+  be invented. This tests the checkpoint consumer, not provider publication.
+- [ ] Publish a genuine checkpoint and index using existing checkpoint helpers.
+  First exercise local `_durable`, then move this newly created unit fixture's
+  index/checkpoint to a strict context-backed directory, preserving the bytes.
+  Exercise cold `_durable`; require equal logical return paths, exact restored
+  model identity/tensors, one active lease maximum and zero leases on return.
+  Never move or modify any previously retained workspace artifact.
+- [ ] Obtain RED on the current missing local index/checkpoint path before the
+  scoped-read change. Test bad checkpoint digest and descriptor step/model
+  mismatch independently; original errors must survive and all leases close.
+  Do not stub checkpoint decoding, tensor reconstruction, journal verification
+  or semantic success. A strict path/lease double is allowed at this unit layer.
+- [ ] Preserve local defaults, return type, journal validation and all existing
+  comparisons. Do not yet change authenticate_run, full trainer resume, aggregate
+  collectors, supervisor dispatch or recovery authority. Those remain required.
+- [ ] Bound actual checkpoint publication before writing: a test-owned guard
+  checks at most4MiB and delegates to the real publication function. Historical
+  same-profile zero-step archive size was3146426bytes; this observation motivates
+  the guard but is not a substitute for it. No checkpoint/model fixture is
+  committed; all new outputs remain in unique admitted scratch roots.
+- [ ] Before each command derive its fixed file/payload/directory allowance,
+  retain prior RED/GREEN output, and require measured cumulative growth plus
+  that command's allowance plus administrative headroom to fit the existing
+  48MiB shared status/authentication grant. No full four-update fixture is admitted
+  by this subsection. Run scoped local checks and independent review, then commit.
+
+Ruling: zero-step is sufficient only for this real checkpoint-read boundary.
+It cannot substitute for completed-training authentication/reuse or later exact
+CPU next-batch/resume/recovery gates. Keeping the primitive test separate avoids
+fabricating terminal status to fit storage; the cost is later end-to-end work,
+which remains explicit and mandatory.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the

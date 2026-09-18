@@ -899,3 +899,25 @@ open. The Phase 4 production pilot has not started.
   unnecessary, cost is a reversible local refactor; no scientific thresholds
   or original evidence change. One later real cold gate must still validate
   the end-to-end path. Separate aggregate preflight remains read-only.
+- Complete-row owner66017 finalcheck/release exited0: scratch209432576,
+  logs1228800, othercategories unchanged. Report-only correctiond1e509d;
+  milestone/next-status plan committedd9bd3fe. No further source changes to
+  reviewed cold-row code. Initial docscommit whitespacecheck rejected trailing
+  blankline in newmain evidence; corrected then commitpassed; no source change.
+- Next shared Task5 status/auth owner51477 PID49087@1789771167.628309 admitted
+  token464a2a4fabaf30a12dab71308cfa4501; scratch50331648/metadata33562624/
+  logs2097152. Before scratch209432576/logs1232896/retained6195077120. Initial
+  launcher quoting caused PythonSyntaxError before any imports/ledger action;
+  corrected single-quoted literal command then fresh admission succeeded.
+  No baseline/prefix/quota reset. Status-only implementer task5_gate_status
+  admitted4tiny pytest commands<=1MiB each/4MiB total, max64files/128dirs incl
+  administration, <=4KiB testpayload; no cache, neural fixture or provider.
+  Remaining grant is NOT blanket testpermission for authentication: its exact
+  source/fixture/publication bound must be established before execution.
+- Status correction implementationc72bdc7/report8994690: RED1failed11passed
+  (expected unavailable-only currentpass), GREEN14passed; stable25passed0.83s.
+  Main independent fresh25passed0.80s; no-cacheRuff/format/diff checks passed.
+  Implementer12KiB+main4KiB=16KiB output, no neural/provider work. Source/tests
+  stopped. Independent task review and full51477 accounting check now underway.
+  Additional whitespace-only verification stage was admitted against measured
+  8KiB growth, not by resetting4MiB cumulative statuscap. Earlier outputs kept.
