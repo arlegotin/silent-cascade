@@ -1030,3 +1030,16 @@ open. The Phase 4 production pilot has not started.
   retained6195077120 unchanged. No newprovider/IPC/MPS/fullgateclaim. This slice
   is complete; wholeTask5/Phase4 remain incomplete. Nextplanner identifies direct
   numericsemanticreads beyond aggregateforwarding; avoidclaimingclosurefromstubs.
+- Owner80995 finalcheck/release exited0: spool219099136/cache67153920/
+  metadata52965376/scratch235225088/logs1474560/pinned0/emergency0;
+  retained6195077120 unchanged. No numerical/source writer remains active.
+- Ruling: continue approved Task5 with artifact-only continuation/offline
+  semantic readers, separately from numerical and aggregate callers. Frozen
+  historical inputs remain read-only and retain original identity; tests may
+  write only bounded new controls. No fit/provider/replay execution admitted.
+  Cost if this grouping misses a dependency is another reviewed integration
+  slice, never a weakened validation or a premature complete-gate claim.
+  Interface scan: both validators consume evidence_context and run_dir; the
+  existing scanner consumes the same context relative to the run root. Shared
+  runtime weights need explicit materialization without changing runtime
+  semantics. Numeric verifier and later aggregate callers remain unchanged.

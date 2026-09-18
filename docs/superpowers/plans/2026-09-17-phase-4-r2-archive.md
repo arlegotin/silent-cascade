@@ -1612,6 +1612,65 @@ strict path context isolates consumer lifetime/verification behavior without
 introducing another provider ledger. Full real archival/recovery and local gates
 remain mandatory; the cost of this narrower test is that it cannot certify them.
 
+#### Artifact-only continuation and offline semantic readers
+
+Completed-run authentication/reuse is implemented in `e46e2b7` and reviewed.
+Continue Task5 with `verify_continuation_records` and `verify_offline_evidence`
+in `train/pilot_evidence.py`; add `tests/pilot/test_pilot_cold_semantics.py`
+and one adjacent fixture helper if necessary. A narrowly scoped optional
+materialized shared-weight input in `eventflow/neural_checkpoint.py` is allowed
+only if needed to preserve the existing referenced-weight validation while
+releasing each cold file before the next. Do not change runtime execution.
+
+- [ ] Add optional `evidence_context=None`; reject a context/root mismatch
+  before input reads. Discover expected members from the fully consumed,
+  authenticated inventory plus resident files. Retain only relevant names.
+  Missing unindexed members retain the existing unavailable labels. Advertised
+  members with corrupt bytes, failed leases or invalid semantics raise errors;
+  unavailable evidence must never hide independently available corruption.
+- [ ] Consume continuation checkpoints and replay JSON within scoped reads;
+  preserve all identity, trace, boundary, coverage and comparison checks.
+  Materialize data, not released cache paths. Shared-weight dependencies remain
+  validated against their recorded hash and metadata without hydrating a tree.
+- [ ] Consume offline source, update, replay, weights and report files through
+  `evidence_path`. Forward the context to the existing `load_evaluation` scanner,
+  preserving its metadata and one-episode lease contract and all comparisons.
+
+  ```python
+  with evidence_path(run_dir, name, evidence_context=evidence_context) as local:
+      raw = read_bytes(local, limit=MAX_BYTES)
+  # Apply the existing semantic and identity comparisons to raw.
+  # Absence is determined before leasing; lease errors are not absence.
+  ```
+
+- [ ] RED: compare eager and cold results from genuine retained continuation
+  and offline records, preserving their original source/configuration and
+  recorded `debug_non_acceptance`. Use one matching compact primary row for
+  continuation. Explicitly show unavailable lists agree, not just booleans.
+  Before production edits, fail on missing cold discovery/read support rather
+  than merely on an unsupported keyword. Never run training, model forward,
+  event execution or replay execution; install tripwires for those boundaries.
+- [ ] GREEN: cover absent unindexed inputs; advertised missing/corrupt inputs;
+  missing-one/corrupt-another; wrong logical root; late inventory failure;
+  shared-weight dependencies; and final offline episode corruption. A strict
+  context must reject reads of undeclared backing paths outside their file or
+  episode lease and prove cleanup on success and failure.
+- [ ] Borrow original frozen fixtures read-only. Never move, modify or delete
+  them, rewrite identities, create a provider session, or copy the complete
+  evidence tree. Only bounded isolated corrupted controls and test metadata may
+  be written under new operational scratch. Establish their file/count/byte/
+  directory bounds before execution under the same global ledger and local cap.
+- [ ] Run scoped local lint/format and tests, obtain independent review and
+  commit. Controller performs a fresh admitted artifact-only check. Numeric
+  semantics, aggregate/check caller integration, recovery, real provider tests
+  and full `make verify` remain separate required work, not implied by this slice.
+
+Ruling: split numerical readers from continuation/offline because they have an
+independently rejectable validation surface. This avoids another training fit
+and keeps new writes small; the cost is no claim of complete gate validation.
+Historical bytes test semantic-reader equivalence, not present-source scientific
+execution or provider transport.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
