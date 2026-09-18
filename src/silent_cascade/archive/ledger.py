@@ -216,24 +216,50 @@ class _StorageBudget:
             state["paths"].items(), key=lambda pair: len(Path(pair[0]).parts), reverse=True
         )
 
-        def category_for(relative):
+        def binding_for(relative):
             if relative.parts and relative.parts[0] == _STATE_DIRECTORY:
-                return "metadata"
+                return None, "metadata"
             return next(
-                (category for prefix, category in bindings if relative.is_relative_to(prefix)),
-                "scratch",
+                (
+                    (Path(prefix), category)
+                    for prefix, category in bindings
+                    if relative.is_relative_to(prefix)
+                ),
+                (None, "scratch"),
             )
 
+        def category_for(relative):
+            return binding_for(relative)[1]
+
+        def opaque_scratch_info(path, relative):
+            prefix, category = binding_for(relative)
+            if prefix is None or category != "scratch" or relative == prefix:
+                return None
+            self.require_path(path.parent)
+            info = path.lstat()
+            if info.st_dev != self.device:
+                raise StorageBlocked("storage_blocked: symlink or second volume in workspace")
+            return info
+
         for directory, directories, files in os.walk(self.workspace, followlinks=False):
-            for name in directories:
-                self.require_path(Path(directory) / name)
+            for name in tuple(directories):
+                path = Path(directory) / name
+                relative = path.relative_to(self.workspace)
+                info = opaque_scratch_info(path, relative)
+                if info is None:
+                    self.require_path(path)
+                elif not stat.S_ISDIR(info.st_mode):
+                    allocated["scratch"] += info.st_blocks * 512
+                    directories.remove(name)
             for name in (".", *files):
                 path = Path(directory) / name
-                self.require_path(path)
-                info = path.lstat()
-                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-                    raise StorageBlocked("storage_blocked: ambiguous hard-linked allocation")
                 relative = path.relative_to(self.workspace)
+                info = opaque_scratch_info(path, relative)
+                if info is None:
+                    self.require_path(path)
+                    info = path.lstat()
+                    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                        raise StorageBlocked("storage_blocked: ambiguous hard-linked allocation")
                 category = category_for(relative) if relative.parts else "metadata"
                 allocated[category] += info.st_blocks * 512
         head = self._state()["baseline"]
