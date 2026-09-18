@@ -301,6 +301,643 @@ def test_spawn_failure_is_sanitized_and_reaped(process_case):
             phase="resume",
         )
     assert "secret-token" not in str(raised.value)
+    failed = json.loads((unit.root.parent / "events/00-resume.json").read_bytes())
+    assert failed["summary"] == {"location": "archive", "type": "permission"}
+    assert "secret-token" not in json.dumps(failed)
+
+
+def test_explicit_phase_events_leave_original_attempt_unchanged(process_case):
+    from silent_cascade.archive._qualification import _spawn_archive_phase
+
+    budget, unit, transport = process_case
+    original = {
+        p.relative_to(unit.root.parent): p.read_bytes()
+        for p in unit.root.parent.rglob("*")
+        if p.is_file()
+    }
+    events = budget.workspace / "continuation/events"
+    budget.bind(events, category="logs")
+    result = _spawn_archive_phase(
+        run_dir=unit.root,
+        control_dir=unit.control,
+        ref=unit.ref,
+        policy=unit.policy,
+        transport=transport,
+        phase="resume",
+        transport_calls=10000,
+        observe_local=budget.check,
+        event_root=events,
+    )
+    assert result["downloads"] > 0
+    assert (events / "00-resume.json").is_file()
+    assert original == {
+        p.relative_to(unit.root.parent): p.read_bytes()
+        for p in unit.root.parent.rglob("*")
+        if p.is_file()
+    }
+
+
+def test_continuation_requires_provider_without_creating_output(process_case):
+    from silent_cascade.archive._qualification import continue_early_r2_qualification
+    from silent_cascade.archive.ledger import StorageBlocked
+
+    budget, unit, transport = process_case
+    destination = budget.workspace / "not-created"
+    with pytest.raises(StorageBlocked, match="provider"):
+        continue_early_r2_qualification(
+            budget=budget,
+            transport=transport,
+            output_root=destination,
+            failure_proof_path=unit.root,
+            failure_proof_sha256="a" * 64,
+            recovery_proof_path=unit.root,
+            recovery_proof_sha256="b" * 64,
+            probe_source_root=unit.root,
+            debug_source_root=unit.root,
+            probe_ref=unit.ref,
+            debug_ref=unit.ref,
+            interrupted_chunk_path=unit.root,
+            debug_commit=None,
+            debug_review_sha256="c" * 64,
+            protocol_sha256="d" * 64,
+            original_source_commit="0" * 40,
+            original_executable_sha256="e" * 64,
+            original_source_authority_sha256="f" * 64,
+            source_commit="1" * 40,
+            source_authority_sha256="2" * 64,
+        )
+    assert not destination.exists()
+    assert transport.create_calls == transport.download_calls == 0
+
+
+def test_continuation_history_requires_exact_order_and_raw_witnesses(task_scratch):
+    from silent_cascade.archive._qualification_continuation import _failure_phases
+
+    root = task_scratch / "events"
+    root.mkdir()
+    key = "7" * 64
+    values = [
+        ("00-admit.json", {"sequence": 0, "phase": "admit", "status": "complete"}),
+        ("01-seal.json", {"sequence": 1, "phase": "seal", "status": "complete"}),
+        (
+            "first-create.json",
+            {
+                "sequence": 2,
+                "phase": "interrupt",
+                "status": "blocked",
+                "summary": {"object_key_sha256": key},
+            },
+        ),
+        (
+            "03-interrupt.json",
+            {
+                "sequence": 3,
+                "phase": "interrupt",
+                "status": "complete",
+                "summary": {"object_key_sha256": key, "signal": 9},
+            },
+        ),
+        ("04-resume.json", {"sequence": 4, "phase": "resume", "status": "failed"}),
+        ("progress.json", {"phase": "resume", "status": "waiting"}),
+    ]
+    events = {}
+    for name, value in values:
+        raw = canonical_json_bytes(value) + b"\n"
+        (root / name).write_bytes(raw)
+        events[name] = {"raw_utf8": raw.decode(), "sha256": sha256_bytes(raw)}
+    phases, progress = _failure_phases(events, root, key)
+    assert len(phases) == 5 and phases[3].signal == 9
+    assert progress == events["progress.json"]["sha256"]
+    for name in events:
+        malformed = dict(events)
+        malformed.pop(name)
+        with pytest.raises(ValueError):
+            _failure_phases(malformed, root, key)
+    for mutation in (
+        {"sequence": 2, "phase": "resume", "status": "failed"},
+        {"sequence": 4, "phase": "resume", "status": "complete"},
+        {"sequence": 4, "phase": "resume", "status": "failed", "unexpected": True},
+    ):
+        malformed = dict(events)
+        raw = canonical_json_bytes(mutation) + b"\n"
+        malformed["04-resume.json"] = {"raw_utf8": raw.decode(), "sha256": sha256_bytes(raw)}
+        (root / "04-resume.json").write_bytes(raw)
+        with pytest.raises(ValueError):
+            _failure_phases(malformed, root, key)
+    (root / "04-resume.json").write_text(events["04-resume.json"]["raw_utf8"])
+    (root / "progress.json").write_bytes(b"forged")
+    with pytest.raises(ValueError):
+        _failure_phases(events, root, key)
+    (root / "progress.json").write_text(events["progress.json"]["raw_utf8"])
+    (root / "05-resume.json").write_bytes(b'{"phase":"resume","status":"complete"}')
+    with pytest.raises(ValueError):
+        _failure_phases(events, root, key)
+
+
+@pytest.fixture
+def continuation_case(task_scratch, monkeypatch):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    from silent_cascade.archive import _qualification as q
+    from silent_cascade.archive import preflight
+    from silent_cascade.archive.catalog import seal_unit
+    from silent_cascade.archive.transport import (
+        archive_operation_lock,
+        initialize_remote_reservations,
+    )
+    from silent_cascade.archive.types import ArchivePolicy, EpisodeCommit, FileEntry
+
+    policy = ArchivePolicy(chunk_bytes=64, page_bytes=4096)
+    custody = task_scratch / "custody"
+    custody.mkdir()
+    revision = preflight._git_head(Path(__file__).parents[2])
+    budget = preflight.bootstrap_engineering_workspace(
+        custody_root=custody,
+        workspace=custody / "operational",
+        policy=policy,
+        source_commit=revision,
+    )
+    control = budget.workspace / "control"
+    for path, category in ((control, "metadata"), (control / "transfer-scratch", "scratch")):
+        budget.bind(path, category=category)
+    transport = DirectoryTransport(task_scratch / "remote")
+    initialize_remote_reservations(
+        control_dir=control,
+        transport_id=transport.transport_id,
+        accounted_bytes=0,
+        accounting_evidence_sha256="a" * 64,
+        policy=policy,
+    )
+    with archive_operation_lock(control):
+        pass
+    source = SimpleNamespace(
+        source_commit="5633b60cec153435c51346d4a3a73b84fa1fb8d3",
+        executable_sha256="e2d3f1372c8c390fbc1ec98aa0efa008443a67924e685f831fedf5770424322f",
+    )
+    anchor = budget._state()["engineering"]["authority_sha256"]
+    record = preflight._ReviewedSourceRecord(
+        anchor_authority_sha256=anchor,
+        source_commit=source.source_commit,
+        executable_sha256=source.executable_sha256,
+        policy_sha256=sha256_bytes(canonical_json_bytes(policy)),
+        review_sha256="b" * 64,
+    )
+    raw = canonical_json_bytes(record)
+    authority = (
+        budget.root
+        / "source-authorities"
+        / source.executable_sha256
+        / f"{source.source_commit}.json"
+    )
+    authority.parent.mkdir(parents=True)
+    authority.write_bytes(raw)
+    source.source_authority_sha256 = sha256_bytes(raw)
+    entry = FileEntry("debug/data.bin", sha256_bytes(b"debug"), 5)
+    commit = EpisodeCommit(
+        "phase4-evaluation-episode-commit-v1",
+        "1" * 64,
+        0,
+        "debug",
+        "2" * 64,
+        0,
+        1,
+        "3" * 64,
+        (entry,),
+        (),
+    )
+    identity = q._qualification_identity(
+        source=source,
+        protocol_sha256="4" * 64,
+        policy=policy,
+        debug_commit_sha256=sha256_bytes(canonical_json_bytes(asdict(commit))),
+        debug_review_sha256="5" * 64,
+    )
+    run_id = "qualification-" + sha256_bytes(canonical_json_bytes(identity))
+    unit_identity = dict(
+        run_id=run_id,
+        source_commit=source.source_commit,
+        config_sha256="4" * 64,
+        evidence_identity_sha256=identity["debug_commit_sha256"],
+        checkpoint_sha256=None,
+        writer_stopped=True,
+        checkpoint_committed=False,
+    )
+    old = budget.workspace / "failed"
+    probe_root, debug_root = old / "source-probe", old / "source-debug"
+    payload = bytes(range(160))
+    for root, path, data in (
+        (probe_root, "probe/probe.bin", payload),
+        (debug_root, entry.path, b"debug"),
+    ):
+        target = root / path
+        target.parent.mkdir(parents=True)
+        target.write_bytes(data)
+        budget.bind(root, category="spool")
+    budget.bind(old / "events", category="logs")
+    refs = []
+    for root, logical, paths, kind, groups in (
+        (probe_root, "probe", ("probe/probe.bin",), "diagnostic", ()),
+        (debug_root, "debug", (entry.path,), "episode_pack", ((entry.path,),)),
+    ):
+        refs.append(
+            seal_unit(
+                run_dir=root,
+                control_dir=control,
+                logical_root=logical,
+                paths=paths,
+                kind=kind,
+                identity=unit_identity,
+                policy=policy,
+                episode_groups=groups,
+            )
+        )
+    monkeypatch.setattr(q, "_PROBE_BYTES", len(payload))
+    monkeypatch.setattr(q, "_PROBE_SHA256", sha256_bytes(payload))
+    q._event(old / "events", phase="admit", status="complete")
+    q._event(old / "events", phase="seal", status="complete")
+    phase_args = dict(
+        run_dir=probe_root,
+        control_dir=control,
+        ref=refs[0],
+        policy=policy,
+        transport=transport,
+        transport_calls=10000,
+        observe_local=budget.check,
+    )
+    interrupted = q._spawn_archive_phase(**phase_args, phase="interrupt")
+    assert not (control / f"receipts/{refs[0].unit_id}.json").exists()
+    q._progress(old / "events", "resume")
+    q._event(old / "events", phase="resume", status="failed")
+    failure = dict(
+        schema_version="phase4-controller-qualification-failure-v1",
+        events={
+            p.name: {"raw_utf8": p.read_text(), "sha256": sha256_bytes(p.read_bytes())}
+            for p in (old / "events").iterdir()
+        },
+        result_absent=True,
+        source_authority_sha256=source.source_authority_sha256,
+        source_commit=source.source_commit,
+        unit=asdict(refs[0]),
+    )
+    failure_path = budget.workspace / "failure.json"
+    failure_path.write_bytes(canonical_json_bytes(failure))
+    snapshot_args = dict(control_dir=control, transport=transport, policy=policy)
+    before = q._remote_reservation_snapshot(**snapshot_args)
+    recovery_events = budget.workspace / "diagnostic/events"
+    budget.bind(recovery_events, category="logs")
+    resumed = q._spawn_archive_phase(**phase_args, phase="resume", event_root=recovery_events)
+    recovery = dict(
+        schema_version="phase4-controller-resume-diagnostic-v1",
+        status="original-unit-resume-completed-qualification-still-failed",
+        before=before.model_dump(),
+        after=q._remote_reservation_snapshot(**snapshot_args).model_dump(),
+        bounds={"logs": 262144, "metadata": 88466468, "scratch": 75497472},
+        provider_observations={
+            k: v for k, v in resumed.items() if k not in {"status", "receipt_sha256"}
+        },
+        receipt_sha256=resumed["receipt_sha256"],
+        seconds=1.0,
+        source_authority_sha256=source.source_authority_sha256,
+        source_commit=source.source_commit,
+        unit_id=refs[0].unit_id,
+    )
+    recovery_path = budget.workspace / "recovery.json"
+    recovery_path.write_bytes(canonical_json_bytes(recovery))
+    chunk = next((control / "transfer-scratch").rglob("chunk-00000.bin"))
+    assert interrupted["signal"] == 9
+
+    def arguments(name):
+        output = budget.workspace / name
+        for path, category in (
+            (output, "metadata"),
+            (output / "events", "logs"),
+            (output / "restore-probe", "cache"),
+            (output / "restore-debug", "cache"),
+        ):
+            budget.bind(path, category=category)
+        return dict(
+            budget=budget,
+            transport=transport,
+            output_root=output,
+            failure_proof_path=failure_path,
+            failure_proof_sha256=sha256_bytes(failure_path.read_bytes()),
+            recovery_proof_path=recovery_path,
+            recovery_proof_sha256=sha256_bytes(recovery_path.read_bytes()),
+            probe_source_root=probe_root,
+            debug_source_root=debug_root,
+            probe_ref=refs[0],
+            debug_ref=refs[1],
+            interrupted_chunk_path=chunk,
+            debug_commit=commit,
+            debug_review_sha256="5" * 64,
+            protocol_sha256="4" * 64,
+            original_source_commit=source.source_commit,
+            original_executable_sha256=source.executable_sha256,
+            original_source_authority_sha256=source.source_authority_sha256,
+            source_commit=revision,
+            source_authority_sha256=anchor,
+        )
+
+    return arguments, old, payload
+
+
+def test_continuation_rejects_preconditions_before_provider_or_output(continuation_case):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from silent_cascade.archive._qualification_continuation import _continue_qualification
+
+    arguments, old, _ = continuation_case
+    inputs = arguments("refused")
+    additional = [
+        {"original_source_commit": "9" * 40},
+        {"source_commit": "9" * 40},
+        {"probe_ref": inputs["debug_ref"]},
+        {"debug_ref": inputs["probe_ref"]},
+        {"debug_commit": replace(inputs["debug_commit"], row_sha256="9" * 64)},
+        {"transport": SimpleNamespace(transport_id="foreign")},
+    ]
+    for changed in additional:
+        with pytest.raises((ValueError, OSError)):
+            _continue_qualification(**(inputs | changed))
+        assert not inputs["output_root"].exists()
+    for field in (
+        "failure_proof_sha256",
+        "recovery_proof_sha256",
+        "original_executable_sha256",
+        "original_source_authority_sha256",
+        "source_authority_sha256",
+        "protocol_sha256",
+        "debug_review_sha256",
+    ):
+        transport = inputs["transport"]
+        before = (transport.create_calls, transport.download_calls)
+        with pytest.raises((ValueError, OSError)):
+            _continue_qualification(**(inputs | {field: "9" * 64}))
+        assert not inputs["output_root"].exists()
+        assert before == (transport.create_calls, transport.download_calls)
+    original = (old / "source-probe/probe/probe.bin").read_bytes()
+    (old / "source-probe/probe/probe.bin").write_bytes(b"X" * len(original))
+    with pytest.raises(ValueError):
+        _continue_qualification(**inputs)
+    assert not inputs["output_root"].exists()
+
+
+def test_continuation_completes_exact_original_inputs_and_preserves_failed_tree(
+    continuation_case, monkeypatch
+):
+    from silent_cascade.archive._qualification_continuation import _continue_qualification
+
+    arguments, old, payload = continuation_case
+    before = {p.relative_to(old): p.read_bytes() for p in old.rglob("*") if p.is_file()}
+    inputs = arguments("continued")
+    scans = []
+    retained_charge = inputs["budget"].retained_charge
+
+    def authenticated():
+        scans.append(bool(inputs["budget"]._state()["reservations"]))
+        return retained_charge()
+
+    monkeypatch.setattr(inputs["budget"], "retained_charge", authenticated)
+    result = _continue_qualification(**inputs)
+    output = inputs["output_root"]
+    assert (output / "restore-probe/tree/probe/probe.bin").read_bytes() == payload
+    assert (output / "restore-debug/tree/debug/data.bin").read_bytes() == b"debug"
+    assert before == {p.relative_to(old): p.read_bytes() for p in old.rglob("*") if p.is_file()}
+    assert result.inherited_interruption.signal == 9
+    assert result.predecessor.resume_failure_cause == "unknown"
+    assert result.collision_observation.conflicts == 1
+    assert result.repeat_observation.downloads > 0
+    assert result.local_bound.spool == 0
+    for name in ("spool", "cache", "metadata", "scratch", "logs", "pinned", "emergency"):
+        assert getattr(result.local_peak, name) - getattr(result.local_before, name) <= getattr(
+            result.local_bound, name
+        )
+    assert result.cumulative_campaign_remote_bytes == result.remote_after.reserved_bytes
+    assert (output / "qualification-continuation-result.json").is_file()
+    assert not (output / "qualification-result.json").exists()
+    assert scans == [False, True, True]
+
+
+def test_continuation_remaining_bounds_charge_history_and_every_remaining_tree(tiny_archive_policy):
+    from silent_cascade.archive._qualification import _RemoteReservationSnapshot
+    from silent_cascade.archive._qualification_continuation import (
+        _continuation_bounds,
+        _require_campaign,
+    )
+    from silent_cascade.archive.ledger import StorageBlocked
+    from silent_cascade.archive.types import FileEntry
+
+    bound = _continuation_bounds(
+        policy=tiny_archive_policy,
+        run_id="qualification-test",
+        probe=(FileEntry("probe/probe.bin", "a" * 64, 160),),
+        debug=(FileEntry("debug/data.bin", "b" * 64, 5),),
+        debug_logical_root="debug",
+        block=4096,
+        prior=20,
+        reservations=2,
+        completed=(),
+        receipt_object_bytes=(64, 800),
+    )
+    assert bound.local.spool == 0
+    assert bound.local.cache >= 2 * 4096
+    assert bound.local.scratch >= 800
+    for reserved, accounted in ((256 * 1024**2, 0), (512 * 1024**2, 512 * 1024**2)):
+        snapshot = _RemoteReservationSnapshot(
+            transport_id="test",
+            accounted_bytes=accounted,
+            reserved_bytes=reserved,
+            operational_publication_bytes=0,
+            reservation_pending=False,
+            operational_pending=False,
+        )
+        with pytest.raises(StorageBlocked):
+            _require_campaign(snapshot, bound.remote)
+    snapshot = snapshot.model_copy(update={"accounted_bytes": 0, "reserved_bytes": 0})
+    with pytest.raises(StorageBlocked):
+        _require_campaign(snapshot, bound.remote, remote_limit=bound.remote - 1)
+
+
+def test_continuation_admission_refuses_category_normal_global_and_physical_limits(
+    continuation_case, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from silent_cascade.archive import _qualification_continuation as c
+    from silent_cascade.archive import ledger
+    from silent_cascade.archive.ledger import StorageBlocked
+
+    arguments, _, _ = continuation_case
+    inputs = arguments("capacity-refused")
+    budget = inputs["budget"]
+    measured = budget.measure()
+    initial_calls = (inputs["transport"].create_calls, inputs["transport"].download_calls)
+    for boundary in (*ledger._CATEGORIES, "normal-global", "physical"):
+        with monkeypatch.context() as patch:
+            allocation = dict(measured)
+            if boundary in ledger._CATEGORIES:
+                allocation[boundary] = getattr(budget.policy, boundary + "_bytes") + (
+                    -1 if boundary in {"cache", "metadata", "scratch", "logs"} else 1
+                )
+            elif boundary == "normal-global":
+                allocation = {
+                    name: getattr(budget.policy, name + "_bytes") for name in ledger._CATEGORIES
+                }
+                patch.setattr(budget, "retained_charge", lambda: 1)
+            else:
+                actual_statvfs = ledger.os.statvfs
+
+                def volume(path, actual_statvfs=actual_statvfs):
+                    actual = actual_statvfs(path)
+                    return SimpleNamespace(
+                        f_bavail=0, f_frsize=actual.f_frsize, f_bsize=actual.f_bsize
+                    )
+
+                patch.setattr(ledger.os, "statvfs", volume)
+            patch.setattr(budget, "measure", lambda allocation=allocation: allocation)
+            with pytest.raises(StorageBlocked):
+                c._continue_qualification(**inputs)
+        assert not inputs["output_root"].exists()
+        assert not budget._state()["reservations"]
+        assert initial_calls == (
+            inputs["transport"].create_calls,
+            inputs["transport"].download_calls,
+        )
+
+
+def test_continuation_is_in_exact_gate_source_inventory():
+    from silent_cascade.train.pilot_evidence import REQUIRED_PACKAGE_FILES
+
+    package = Path(__file__).parents[2] / "src/silent_cascade"
+    actual = {
+        "src/silent_cascade/" + p.relative_to(package).as_posix() for p in package.rglob("*.py")
+    }
+    assert actual == set(REQUIRED_PACKAGE_FILES)
+
+
+def test_continuation_rejects_missing_new_checks_and_publication_failures(
+    continuation_case, monkeypatch
+):
+    from silent_cascade.archive import _qualification as q
+    from silent_cascade.archive import _qualification_continuation as c
+    from silent_cascade.archive.ledger import StorageBlocked
+
+    arguments, old, _ = continuation_case
+    old_bytes = {p.relative_to(old): p.read_bytes() for p in old.rglob("*") if p.is_file()}
+
+    def exercise(fault):
+        inputs = arguments("fault-" + fault)
+        with monkeypatch.context() as patch:
+            phase = q._spawn_archive_phase
+            restore = q._restore_receipted_unit
+            snapshot = q._remote_reservation_snapshot
+            observed_create = q._ObservedTransport.create
+            stop = q._stop_child
+            full = inputs["budget"].check
+            removed = []
+
+            def observed(self, key, source):
+                if fault == "collision":
+                    # A broken provider create which silently accepts an existing key.
+                    self.summary["creates"] += 1
+                    return None
+                value = observed_create(self, key, source)
+                return value
+
+            def run_phase(**kwargs):
+                if fault == "missing" and kwargs["phase"] == "repeat":
+                    key = next(inputs["transport"].root.rglob("*.bin"))
+                    removed.append((key, key.read_bytes()))
+                    key.unlink()
+                result = phase(**kwargs)
+                if kwargs["phase"] == "repeat":
+                    if fault == "downloads":
+                        result["downloads"] = 0
+                    if fault == "receipt":
+                        result["receipt_sha256"] = "9" * 64
+                    if fault in {"proof", "chunk"}:
+                        path = inputs[
+                            "failure_proof_path" if fault == "proof" else "interrupted_chunk_path"
+                        ]
+                        removed.append((path, path.read_bytes()))
+                        path.write_bytes(b"changed after authentication")
+                return result
+
+            def restore_unit(**kwargs):
+                if fault == "overwrite" and kwargs["destination"] == inputs["probe_source_root"]:
+                    return ()
+                entries = restore(**kwargs)
+                if fault == "inventory":
+                    return ()
+                if fault == "bytes":
+                    (kwargs["destination"] / entries[0].path).write_bytes(b"changed")
+                return entries
+
+            snapshots = 0
+
+            def remote_snapshot(**kwargs):
+                nonlocal snapshots
+                snapshots += 1
+                value = snapshot(**kwargs)
+                if fault == "reservation" and snapshots == 3:
+                    return value.model_copy(update={"reserved_bytes": value.reserved_bytes + 1})
+                return value
+
+            def record(self, operation, key, size, outcome):
+                value = original_record(self, operation, key, size, outcome)
+                return "9" * 64 if fault == "key" else value
+
+            def cleanup(child, **kwargs):
+                stop(child, **kwargs)
+                if fault == "cleanup":
+                    raise StorageBlocked("injected cleanup failure after reaping")
+
+            def authenticate():
+                if (
+                    fault == "authentication"
+                    and (inputs["output_root"] / ".qualification-result.part").exists()
+                ):
+                    raise StorageBlocked("injected final authentication failure")
+                return full()
+
+            original_record = q._ObservedTransport.record
+            patch.setattr(q._ObservedTransport, "create", observed)
+            patch.setattr(q._ObservedTransport, "record", record)
+            patch.setattr(q, "_spawn_archive_phase", run_phase)
+            patch.setattr(q, "_restore_receipted_unit", restore_unit)
+            patch.setattr(q, "_remote_reservation_snapshot", remote_snapshot)
+            patch.setattr(q, "_stop_child", cleanup)
+            patch.setattr(inputs["budget"], "check", authenticate)
+            try:
+                with pytest.raises((ValueError, StorageBlocked)):
+                    c._continue_qualification(**inputs)
+            finally:
+                for path, data in removed:
+                    path.write_bytes(data)
+        assert not (inputs["output_root"] / "qualification-continuation-result.json").exists()
+        assert old_bytes == {
+            p.relative_to(old): p.read_bytes() for p in old.rglob("*") if p.is_file()
+        }
+        assert not inputs["budget"]._state()["reservations"]
+
+    for fault in (
+        "collision",
+        "key",
+        "downloads",
+        "receipt",
+        "reservation",
+        "overwrite",
+        "inventory",
+        "bytes",
+        "cleanup",
+        "authentication",
+        "missing",
+        "proof",
+        "chunk",
+    ):
+        exercise(fault)
 
 
 def test_observed_transport_archive_checks_local_ledger(process_case):

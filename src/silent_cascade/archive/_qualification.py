@@ -374,32 +374,62 @@ class _ObservedTransport:
             self.observe()
 
 
-def _archive_child(run_dir, control_dir, ref, policy, transport, phase, reply, gate, scope=None):
+def _archive_child(
+    run_dir, control_dir, ref, policy, transport, phase, reply, gate, scope=None, event_root=None
+):
+    location = "session"
     try:
         os.setsid()
         reply.send_bytes(_bounded_record({"status": "ready"}, _REPLY_LIMIT))
         if gate.recv_bytes(3) != b"run":
             raise ValueError("qualification child start gate differs")
+        location = "budget"
         budget = _StorageBudget(workspace=control_dir.parent, policy=policy)
         if scope is not None:
             budget.check_scoped(scope)
         observed = _ObservedTransport(
-            transport, budget, phase, run_dir.parent / "events", reply, gate, scope
+            transport,
+            budget,
+            phase,
+            run_dir.parent / "events" if event_root is None else event_root,
+            reply,
+            gate,
+            scope,
         )
+        location = "archive"
         receipt = archive_unit(
             run_dir=run_dir, control_dir=control_dir, ref=ref, policy=policy, transport=observed
         )
+        location = "observe"
         observed.observe()
+        location = "reply"
         reply.send_bytes(
             _bounded_record(
                 {"status": "complete", "receipt_sha256": receipt, **observed.summary}, _REPLY_LIMIT
             )
         )
-    except BaseException:
+    except BaseException as error:
         # Never serialize exception text, provider output or source locations.
         with suppress(BaseException):
             reply.send_bytes(
-                _bounded_record({"status": "failed", "type": "archive_failure"}, _REPLY_LIMIT)
+                _bounded_record(
+                    {
+                        "status": "failed",
+                        "location": location,
+                        "type": (
+                            "permission"
+                            if isinstance(error, PermissionError)
+                            else "storage"
+                            if isinstance(error, StorageBlocked)
+                            else "validation"
+                            if isinstance(error, ValueError)
+                            else "io"
+                            if isinstance(error, OSError)
+                            else "other"
+                        ),
+                    },
+                    _REPLY_LIMIT,
+                )
             )
     finally:
         reply.close()
@@ -455,6 +485,7 @@ def _spawn_archive_phase(
     transport_calls,
     observe_local,
     scope=None,
+    event_root=None,
 ):
     if phase not in _PHASES or type(transport_calls) is not int or not 0 < transport_calls < 2**63:
         raise ValueError("invalid qualification child bound")
@@ -463,12 +494,24 @@ def _spawn_archive_phase(
     child_gate, gate = ctx.Pipe(duplex=False)
     child = ctx.Process(
         target=_archive_child,
-        args=(run_dir, control_dir, ref, policy, transport, phase, child_reply, child_gate, scope),
+        args=(
+            run_dir,
+            control_dir,
+            ref,
+            policy,
+            transport,
+            phase,
+            child_reply,
+            child_gate,
+            scope,
+            event_root,
+        ),
     )
-    events = run_dir.parent / "events"
+    events = run_dir.parent / "events" if event_root is None else event_root
     deadline = time.monotonic() + (5460 if phase == "interrupt" else 60 + transport_calls * 5400)
     started = False
     owns_group = False
+    failure = None
     try:
         observe_local()
         child.start()
@@ -510,12 +553,20 @@ def _spawn_archive_phase(
         else:
             child.join(60)
             if child.exitcode != 0 or value.get("status") != "complete":
+                if value.get("location") in {
+                    "session",
+                    "budget",
+                    "archive",
+                    "observe",
+                    "reply",
+                } and value.get("type") in {"permission", "storage", "validation", "io", "other"}:
+                    failure = {"location": value["location"], "type": value["type"]}
                 raise StorageBlocked("storage_blocked: qualification archive child failed")
         observe_local()
         _event(events, phase=phase, status="complete", summary=value)
         return value
     except BaseException:
-        _event(events, phase=phase, status="failed")
+        _event(events, phase=phase, status="failed", summary=failure)
         raise
     finally:
         if started:
@@ -646,6 +697,49 @@ def run_early_r2_qualification(
     except Exception:
         raise StorageBlocked(
             "storage_blocked: early qualification failed; preserve phase evidence"
+        ) from None
+
+
+def continue_early_r2_qualification(
+    *,
+    budget,
+    transport,
+    output_root,
+    failure_proof_path,
+    failure_proof_sha256,
+    recovery_proof_path,
+    recovery_proof_sha256,
+    probe_source_root,
+    debug_source_root,
+    probe_ref,
+    debug_ref,
+    interrupted_chunk_path,
+    debug_commit,
+    debug_review_sha256,
+    protocol_sha256,
+    original_source_commit,
+    original_executable_sha256,
+    original_source_authority_sha256,
+    source_commit,
+    source_authority_sha256,
+):
+    from silent_cascade.archive.transport import R2CliTransport
+
+    if type(transport) is not R2CliTransport:
+        raise StorageBlocked("storage_blocked: qualification requires provider transport")
+    from silent_cascade.archive._qualification_continuation import _continue_qualification
+    from silent_cascade.archive.preflight import _committed_source_identity
+
+    arguments = locals().copy()
+    for name in ("R2CliTransport", "_continue_qualification", "_committed_source_identity"):
+        arguments.pop(name)
+    if _committed_source_identity().source_commit != source_commit:
+        raise StorageBlocked("storage_blocked: qualification executor revision differs")
+    try:
+        return _continue_qualification(**arguments)
+    except Exception:
+        raise StorageBlocked(
+            "storage_blocked: qualification continuation failed; preserve phase evidence"
         ) from None
 
 
@@ -1015,7 +1109,9 @@ def _run_qualification(
             return _publish_result(output_root, result, observe, peak, budget.check)
 
 
-def _publish_result(root, result, observe, peak, authenticate):
+def _publish_result(
+    root, result, observe, peak, authenticate, *, result_name="qualification-result.json"
+):
     # Measure the actual final inode before create-only publication. Iterate only
     # the bounded record until its own allocation and recorded maxima agree.
     stage = root / ".qualification-result.part"
@@ -1039,7 +1135,7 @@ def _publish_result(root, result, observe, peak, authenticate):
                     update={"local_after": after, "local_peak": _LocalAllocation(**peak)}
                 )
                 if _bounded_record(updated, 65536) == raw:
-                    result = QualificationResult.model_validate(updated.model_dump())
+                    result = type(result).model_validate_json(raw)
                     break
                 result = updated
             else:
@@ -1051,7 +1147,7 @@ def _publish_result(root, result, observe, peak, authenticate):
         identity = _regular_identity(stage)
         os.link(
             stage.name,
-            "qualification-result.json",
+            result_name,
             src_dir_fd=directory,
             dst_dir_fd=directory,
             follow_symlinks=False,
