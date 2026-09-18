@@ -361,6 +361,45 @@ No full `make verify`, provider call or later pilot is implied by a unit-test
 pass. Full final gates remain unchanged. Do not bundle unrelated diagnostic
 improvements into the deterministic validator correction.
 
+#### Targeted canonical engineering discovery (2026-09-18)
+
+Actual first-batch discovery onb3a26ab reached only70eligible groups after
+693.5seconds, before any provider call, admission or eviction. The recorded
+process was active; interrupting the read-only operation showed repeated
+`_stored_records` scans inside recursive `candidates`. A separate one-pass
+diagnostic counted156,559retained records,62,000directories and2,102eligible
+groups; the audited runs subtree has619members. These diagnostic counts are not
+candidate, content-review, or admission authority.
+
+Ruling: add an optional exact `logical_root` selector to existing
+`iter_engineering_candidates`, and use it during `_validated_review`. The
+selector only prunes unrelated traversal; it must return exactly the candidate
+that default enumeration would return for that root, including all members and
+the identical identity. Authenticate the full retained history, committed source
+and reviewed-source authority as before. Check every ancestor's eligibility:
+if an ancestor is already a canonical candidate, a requested descendant is not
+a candidate. Reject unsafe paths and roots outside the existing closed `_TASKS`
+namespace. Do not synthesize candidates or expose arbitrary filesystem roots.
+
+Modify only `archive/preflight.py` and focused `tests/archive/test_preflight.py`,
+plus this plan/design and operational evidence. Keep default enumeration,
+identity hashes, content reviews, bounds, reservations, sibling preservation,
+custody and transport semantics unchanged. No index, page cache, new persisted
+state, broader authority, quota or scientific changes. This costs a small
+optional API seam but avoids enumerating thousands of unrelated groups twice
+per batch.
+
+- [ ] Tiny-fixture RED tests compare targeted/default candidates, reject unsafe
+  or noncanonical descendant roots, preserve rejection of corrupted unrelated
+  history, and prove bounded ancestor-only traversal by counters, not timing.
+- [ ] Minimal selector implementation and `_validated_review` caller threading;
+  run targeted GREEN plus existing stale/forged review and sequential-subset
+  coverage under one separately admitted finite test slice. Preserve all outputs.
+- [ ] Independent scoped review, current-branch commit and new exact source
+  authority; earlier provider qualification and interrupted discovery keep their
+  original source/status. Resume the same exact batch using the real filtered
+  iterator, not a diagnostic reconstruction. Full final gates remain mandatory.
+
 Native cleanup refinement: diagnostics for the exact launched process group
 observed EPERM after the known leader and descendant had exited, followed by
 ESRCH on a bounded read-only probe. Supervisor and qualification cleanup may

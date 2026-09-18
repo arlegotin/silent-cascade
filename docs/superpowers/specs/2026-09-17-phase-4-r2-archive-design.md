@@ -498,6 +498,16 @@ reviewed correction retains the earlier qualification's actual executor tuple;
 it cannot promote that historical result to new source. Final current-source
 local/resource/smoke gates remain prerequisites for the scientific pilot.
 
+Engineering discovery may accept an exact logical-root selector within the
+existing closed task namespace to prune unrelated candidate traversal. It must
+preserve default enumeration and canonical candidate partitioning: every
+ancestor is checked, and a descendant of an eligible ancestor is not a separate
+candidate. Full retained-history and exact source authentication remain mandatory,
+including unrelated retained bytes. The selected candidate's members and identity
+must equal default discovery; validation uses the same selector to avoid a second
+global enumeration. No new persisted index, cache, custody scope or synthesized
+candidate is permitted.
+
 If retained implementation tests exhaust an internal slice, preserve and report
 the failed admission separately from functional outcomes. A reviewed early
 provider continuation may use prior full-module functional evidence plus fresh
