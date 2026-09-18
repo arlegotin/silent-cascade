@@ -21,6 +21,199 @@ def _archive(sealed_unit, transport):
     )
 
 
+@pytest.mark.parametrize("kind", ["receipts", "evictions"])
+def test_r2_compound_operational_key_is_accepted_and_prefixed(kind):
+    from silent_cascade.archive.transport import R2CliTransport
+
+    client = R2CliTransport(
+        profile="silent-cascade-r2", bucket="silent-cascade", prefix="runs/archive"
+    )
+    key = f"operational/{kind}/{'a' * 64}-{'b' * 64}.json"
+    assert client._key(key) == f"runs/archive/{key}"
+
+
+@pytest.mark.parametrize("kind", ["receipts", "evictions"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        "operational/{kind}/{short}-{second}.json",
+        "operational/{kind}/{first}-{short}.json",
+        "operational/{kind}/{upper}-{second}.json",
+        "operational/{kind}/{first}-{upper}.json",
+        "operational/{kind}/{nonhex}-{second}.json",
+        "operational/{kind}/{first}-{nonhex}.json",
+        "operational/{kind}/{first}-{second}.json.bak",
+        "operational/{kind}/{first}-{second}.bin",
+        "operational/{kind}/{first}-{second}-{first}.json",
+        "operational/{kind}/{first}-{second}.json/extra",
+        "other/{kind}/{first}-{second}.json",
+        "operational/other/{first}-{second}.json",
+        "extra/operational/{kind}/{first}-{second}.json",
+        "operational/{kind}/../{first}-{second}.json",
+        "operational//{kind}/{first}-{second}.json",
+    ],
+)
+def test_r2_compound_operational_key_rejects_malformed_or_foreign_path(kind, template):
+    from silent_cascade.archive.transport import R2CliTransport
+
+    client = R2CliTransport(
+        profile="silent-cascade-r2", bucket="silent-cascade", prefix="runs/archive"
+    )
+    key = template.format(
+        kind=kind,
+        first="a" * 64,
+        second="b" * 64,
+        short="a" * 63,
+        upper="A" * 64,
+        nonhex="g" * 64,
+    )
+    with pytest.raises(ValueError):
+        client._key(key)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        f"objects/{'a' * 64}.bin",
+        f"catalog/nodes/{'a' * 64}.json",
+        f"units/{'a' * 64}/manifest.json",
+    ],
+)
+def test_r2_compound_extension_preserves_existing_single_hash_keys(key):
+    from silent_cascade.archive.transport import R2CliTransport
+
+    client = R2CliTransport(
+        profile="silent-cascade-r2", bucket="silent-cascade", prefix="runs/archive"
+    )
+    assert client._key(key) == f"runs/archive/{key}"
+    with pytest.raises(ValueError):
+        client._key("../" + key)
+
+
+class _KeyValidatingTransport:
+    """Apply the production key contract at both local-double transfer boundaries."""
+
+    def __init__(self, delegate):
+        self.delegate = delegate
+
+    @property
+    def transport_id(self):
+        return self.delegate.transport_id
+
+    def create(self, key, source):
+        from silent_cascade.archive.transport import _validate_key
+
+        self.delegate.create(_validate_key(key), source)
+
+    def download(self, key, destination, *, max_bytes):
+        from silent_cascade.archive.transport import _validate_key
+
+        self.delegate.download(_validate_key(key), destination, max_bytes=max_bytes)
+
+
+def test_archive_compound_receipt_uses_provider_key_contract_and_exact_readback(
+    sealed_unit, transport, task_scratch
+):
+    from silent_cascade.archive.operational import lookup_receipt_locator
+    from silent_cascade.archive.transport import (
+        _active_receipt_authorized,
+        _opened_ledger,
+        _operational_cold_reader,
+        _operational_ref,
+    )
+
+    checked = _KeyValidatingTransport(transport)
+    receipt = _archive(sealed_unit, checked)
+    assert _active_receipt_authorized(
+        control_dir=sealed_unit.control, ref=sealed_unit.ref, receipt_sha256=receipt
+    )
+    with _opened_ledger(
+        sealed_unit.control, transport_id=checked.transport_id, policy=sealed_unit.policy
+    ) as (state, _ledger, _objects):
+        head = _operational_ref(state)
+    locator = lookup_receipt_locator(
+        sealed_unit.control,
+        head,
+        unit_id=sealed_unit.ref.unit_id,
+        policy=sealed_unit.policy,
+        object_reader=_operational_cold_reader(control_dir=sealed_unit.control, transport=checked),
+    )
+    assert locator.receipt_sha256 == receipt
+    destination = task_scratch / "receipted-readback.json"
+    checked.download(locator.object_key, destination, max_bytes=locator.bytes)
+    assert sha256_bytes(destination.read_bytes()) == receipt
+    assert (
+        destination.read_bytes()
+        == (sealed_unit.control / f"receipts/{sealed_unit.ref.unit_id}.json").read_bytes()
+    )
+
+
+def test_archive_compound_eviction_reaches_cold_catalog_with_provider_key_contract(
+    sealed_unit, transport, task_scratch, archive_identity
+):
+    from silent_cascade.archive.catalog import seal_unit
+    from silent_cascade.archive.operational import iter_operational_records
+    from silent_cascade.archive.transport import (
+        _opened_ledger,
+        _operational_cold_reader,
+        _operational_ref,
+        archive_unit,
+        evict_unit,
+    )
+
+    checked = _KeyValidatingTransport(transport)
+    receipt = _archive(sealed_unit, checked)
+    evict_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        ref=sealed_unit.ref,
+        receipt_sha256=receipt,
+    )
+    intent = (sealed_unit.control / f"evictions/{sealed_unit.ref.unit_id}.json").read_bytes()
+    second_path = sealed_unit.root / "next/evidence.json"
+    second_path.parent.mkdir()
+    second_path.write_bytes(b"next")
+    second = seal_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        logical_root="next",
+        paths=("next/evidence.json",),
+        kind="diagnostic",
+        identity=archive_identity,
+        policy=sealed_unit.policy,
+    )
+    archive_unit(
+        run_dir=sealed_unit.root,
+        control_dir=sealed_unit.control,
+        ref=second,
+        transport=checked,
+        policy=sealed_unit.policy,
+    )
+    with _opened_ledger(
+        sealed_unit.control, transport_id=checked.transport_id, policy=sealed_unit.policy
+    ) as (state, _ledger, _objects):
+        head = _operational_ref(state)
+    records = tuple(
+        iter_operational_records(
+            sealed_unit.control,
+            head,
+            index="evictions",
+            policy=sealed_unit.policy,
+            object_reader=_operational_cold_reader(
+                control_dir=sealed_unit.control, transport=checked
+            ),
+        )
+    )
+    assert len(records) == 1
+    assert records[0].unit_id == sealed_unit.ref.unit_id
+    assert records[0].receipt_sha256 == receipt
+    assert records[0].intent_sha256 == sha256_bytes(intent)
+    assert records[0].completed
+    destination = task_scratch / "eviction-readback.json"
+    checked.download(records[0].object_key, destination, max_bytes=records[0].bytes)
+    assert destination.read_bytes() == intent
+
+
 def test_readback_corruption_never_authorizes_eviction(sealed_unit, transport):
     transport.corrupt_downloads = True
     before = sealed_unit.original_bytes()

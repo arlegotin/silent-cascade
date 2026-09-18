@@ -1771,6 +1771,11 @@ def evict_unit(
 
 def _validate_key(key: str) -> str:
     path = _safe_logical_path(key, field="transport object key")
+    if re.fullmatch(
+        r"operational/(?:receipts|evictions)/[0-9a-f]{64}-[0-9a-f]{64}\.json",
+        path.as_posix(),
+    ):
+        return path.as_posix()
     if not any(
         _HASH_RE.fullmatch(part.removesuffix(".bin").removesuffix(".json")) for part in path.parts
     ):
