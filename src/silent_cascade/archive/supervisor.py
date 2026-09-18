@@ -1329,6 +1329,26 @@ class _ArchiveServer:
             return {"receipt_sha256": receipt}
         if operation == "status" and not payload:
             return {"healthy": True}
+        if operation == "status" and set(payload) == {"episode_commit"}:
+            from silent_cascade.archive.session import _read_episode_binding
+
+            query = payload["episode_commit"]
+            if (
+                type(query) is not dict
+                or set(query) != {"logical_root", "ordinal"}
+                or type(query["ordinal"]) is not int
+                or query["ordinal"] < 0
+            ):
+                raise ValueError("invalid episode discovery payload")
+            _safe_logical_path(query["logical_root"], field="evaluation root")
+            binding = _read_episode_binding(
+                control_dir=self.control_dir,
+                run_id=self.run_id,
+                transport=self.io,
+                policy=self.policy,
+                **query,
+            )
+            return {"binding": binding.model_dump(mode="json")}
         if operation == "status" and set(payload) == {"before_work"}:
             from silent_cascade.archive.producer import before_work_bounds
 

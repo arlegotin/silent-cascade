@@ -77,14 +77,43 @@ def _check_artifact_consumer(root, name, digest, consumer):
     from silent_cascade.train.pilot_trainer import _journal, verify_journal
 
     if consumer == "journal":
+        attempt = "attempt-" + "a" * 32
         progress = _journal(
-            root, PilotProgress(), {"kind": "validation", "artifacts": {name: digest}}
+            root,
+            PilotProgress(global_step=1, batch_counter=1),
+            {"kind": "update", "attempt": attempt},
         )
-        assert verify_journal(root, progress) == {progress.journal_sha256}
+        update_head = progress.journal_sha256
+        progress = _journal(
+            root, progress, {"kind": "validation", "attempt": attempt, "artifacts": {name: digest}}
+        )
+        assert verify_journal(root, progress) == {update_head, progress.journal_sha256}
     else:
         from silent_cascade.train.pilot_trainer import _collect_artifact_hashes
 
         assert _collect_artifact_hashes(root)[name] == digest
+
+
+@pytest.mark.parametrize(
+    "malformed", [{"attempt": "attempt-test"}, {"global_step": 0}, {"kind": "unknown"}]
+)
+def test_journal_rejects_malformed_record_shape(tmp_path, malformed):
+    from silent_cascade.archive.readers import iter_journal_records
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    raw = canonical_json_bytes(
+        {
+            "kind": "update",
+            "attempt": "attempt-" + "a" * 32,
+            "global_step": 1,
+            "prior": None,
+        }
+        | malformed
+    )
+    head = sha256_bytes(raw)
+    (tmp_path / f"journal-{head}.json").write_bytes(raw)
+    with pytest.raises(ValueError, match="invalid recovery journal"):
+        list(iter_journal_records(tmp_path, head))
 
 
 @pytest.mark.parametrize("consumer", ["journal", "inventory"])
@@ -93,7 +122,7 @@ def _check_artifact_consumer(root, name, digest, consumer):
 def test_autonomous_hash_consumers_accept_larger_than_manifest_limit(
     tmp_path, consumer, leaf, size
 ):
-    name = "attempt-test/validation-0-one_hop/autonomous/" + leaf
+    name = "attempt-" + "a" * 32 + "/validation-1-one_hop/autonomous/" + leaf
     _, digest = _sparse_artifact(tmp_path, name, size)
     _check_artifact_consumer(tmp_path, name, digest, consumer)
 
@@ -102,8 +131,11 @@ def test_autonomous_hash_consumers_accept_larger_than_manifest_limit(
 @pytest.mark.parametrize(
     ("name", "size"),
     [
-        ("attempt-test/validation-0-one_hop/autonomous/rows.jsonl", 128 * 1024 * 1024 + 1),
-        ("attempt-test/validation-0-one_hop/validation.json", 64 * 1024 * 1024 + 1),
+        (
+            "attempt-" + "a" * 32 + "/validation-1-one_hop/autonomous/rows.jsonl",
+            128 * 1024 * 1024 + 1,
+        ),
+        ("attempt-" + "a" * 32 + "/validation-1-one_hop/validation.json", 64 * 1024 * 1024 + 1),
     ],
 )
 def test_artifact_consumers_keep_domain_byte_limits(tmp_path, consumer, name, size):
@@ -114,7 +146,7 @@ def test_artifact_consumers_keep_domain_byte_limits(tmp_path, consumer, name, si
 
 @pytest.mark.parametrize("consumer", ["journal", "inventory"])
 def test_artifact_consumers_reject_leaf_symlinks(tmp_path, consumer):
-    name = "attempt-test/validation-0-one_hop/autonomous/rows.jsonl"
+    name = "attempt-" + "a" * 32 + "/validation-1-one_hop/autonomous/rows.jsonl"
     path, digest = _sparse_artifact(tmp_path, name, 1)
     outside = tmp_path / "unrelated"
     path.rename(outside)
@@ -127,7 +159,7 @@ def test_artifact_consumers_reject_leaf_symlinks(tmp_path, consumer):
 def test_journal_artifact_hash_and_path_guards(tmp_path, kind):
     from silent_cascade.train.state import TrainingError
 
-    name = "attempt-test/validation-0-one_hop/autonomous/rows.jsonl"
+    name = "attempt-" + "a" * 32 + "/validation-1-one_hop/autonomous/rows.jsonl"
     path, digest = _sparse_artifact(tmp_path, name, 1)
     if kind == "changed":
         path.write_bytes(b"x")
@@ -138,9 +170,9 @@ def test_journal_artifact_hash_and_path_guards(tmp_path, kind):
     elif kind == "absolute":
         name = str(path)
     elif kind == "traversal":
-        name = "attempt-test/../" + name
+        name = "attempt-" + "a" * 32 + "/../" + name
     else:
-        name = "attempt-test/validation-0-one_hop/autonomous/frozen/rows.jsonl"
+        name = "attempt-" + "a" * 32 + "/validation-1-one_hop/autonomous/frozen/rows.jsonl"
         _sparse_artifact(tmp_path, name, 1)
     with pytest.raises((TrainingError, ValueError, OSError)):
         _check_artifact_consumer(tmp_path, name, digest, "journal")

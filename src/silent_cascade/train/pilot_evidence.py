@@ -271,6 +271,7 @@ STORAGE_PACKAGE_FILES = (
     "src/silent_cascade/archive/ledger.py",
     "src/silent_cascade/archive/operational.py",
     "src/silent_cascade/archive/producer.py",
+    "src/silent_cascade/archive/readers.py",
     "src/silent_cascade/archive/session.py",
     "src/silent_cascade/archive/supervisor.py",
     "src/silent_cascade/archive/transport.py",
@@ -468,15 +469,22 @@ def verify_evaluation_identity(
                 raise ValueError("delay parent/transform inventory differs")
 
 
-def compact_evaluation(directory):
-    identity, rows, _, hashes = load_evaluation(directory)
+def compact_evaluation(directory, *, evidence_context=None):
+    from silent_cascade.archive.readers import evaluation_header, iter_evaluation_episodes
 
-    return identity, _compact_rows(directory, rows), hashes
+    with evaluation_header(directory, evidence_context=evidence_context) as (header, _):
+        pass
+    episodes = iter_evaluation_episodes(
+        directory,
+        evidence_context=evidence_context,
+        expected_header=header,
+    )
+    return header.identity, _compact_rows(episodes), header.hashes
 
 
-def _compact_rows(directory, rows):
-    for row in rows:
-        sidecar = strict_json(child(directory, row.neural_trace_ref))
+def _compact_rows(episodes):
+    for episode in episodes:
+        row, sidecar = episode.row, episode.sidecar
         # Full semantic observations are hashed after excluding only measured telemetry.
         semantic = []
         for value in sidecar["events"]:

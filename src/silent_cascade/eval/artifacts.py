@@ -287,6 +287,7 @@ def _verify_evidence(root, row, *, retain):
             events=events,
             initialization_failed=(row.error is not None and row.causal_trace_sha256 is None),
         )
+    return sidecar
 
 
 def write_evaluation(

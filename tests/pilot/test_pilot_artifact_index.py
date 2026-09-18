@@ -14,6 +14,82 @@ def entries(count=9):
     ]
 
 
+@pytest.mark.parametrize("corrupt_tail", [False, True])
+def test_cold_index_consumes_each_original_shard_and_checks_tail(
+    tmp_path, monkeypatch, corrupt_tail
+):
+    from dataclasses import asdict
+
+    from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
+
+    from .test_pilot_archive_producer import producer_case
+
+    with producer_case(tmp_path, monkeypatch) as (_producer, session, server):
+        index = write_artifact_index(
+            root=session.run_dir,
+            prefix="attempt-fixture/index",
+            entries=iter(entries()),
+            max_rows=2,
+        )
+        for part in index.shards:
+            response = session._request(
+                "seal",
+                {
+                    "logical_root": "attempt-fixture",
+                    "paths": [part.path],
+                    "kind": "diagnostic",
+                    "identity": dict(
+                        run_id="task4",
+                        source_commit="b" * 40,
+                        config_sha256="a" * 64,
+                        evidence_identity_sha256="c" * 64,
+                        checkpoint_sha256=None,
+                        writer_stopped=False,
+                        checkpoint_committed=False,
+                    ),
+                    "episode_groups": [],
+                    "borrowed": [],
+                },
+            )
+            from silent_cascade.archive.types import FileEntry
+
+            retained = [
+                asdict(
+                    FileEntry(
+                        other.path, other.sha256, (session.run_dir / other.path).stat().st_size
+                    )
+                )
+                for other in index.shards
+                if other.path != part.path and (session.run_dir / other.path).exists()
+            ]
+            session._request(
+                "archive",
+                {
+                    "ref": response["ref"],
+                    "evict": True,
+                    "retained": sorted(retained, key=lambda item: item["path"]),
+                },
+            )
+        if corrupt_tail:
+            index = index.model_copy(
+                update={
+                    "shards": (
+                        *index.shards[:-1],
+                        index.shards[-1].model_copy(update={"sha256": "0" * 64}),
+                    )
+                }
+            )
+        stream = iter_artifact_index(session.run_dir, index, evidence_context=session)
+        if corrupt_tail:
+            assert next(stream) == entries()[0]
+            with pytest.raises(ValueError, match="hash"):
+                list(stream)
+        else:
+            assert list(stream) == entries()
+        assert not server.leases
+        assert not list(session.run_dir.rglob("*.jsonl.gz"))
+
+
 def test_index_roundtrip_is_streamed_byte_bounded_and_create_only(tmp_path):
     from silent_cascade.train.pilot_artifact_index import iter_artifact_index, write_artifact_index
 
@@ -197,6 +273,12 @@ def test_v2_and_unchanged_legacy_results_decode_to_same_public_map(tmp_path):
     assert "artifact_hashes" not in encoded and "artifact_index" in encoded
     current = tmp_path / "training-result.json"
     current.write_bytes(canonical_json_bytes(encoded))
+    from silent_cascade.archive import readers
+
+    assert hasattr(readers, "read_training_envelope"), "missing v2 envelope reader"
+    envelope = readers.read_training_envelope(tmp_path, current)
+    assert envelope.model_dump(mode="json") == encoded
+    readers.verify_training_inventory(run_dir=tmp_path, envelope=envelope, evidence_context=None)
     assert load_training_result(tmp_path, current) == payload
     legacy = tmp_path / "legacy-result.json"
     original = canonical_json_bytes(payload)

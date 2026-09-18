@@ -120,9 +120,11 @@ def write_artifact_index(*, root, prefix, entries, max_rows=MAX_ROWS, max_bytes=
     )
 
 
-def iter_artifact_index(root, index):
+def iter_artifact_index(root, index, *, evidence_context=None):
     """Validate every shard and entry, including global order and final totals."""
     index = PilotArtifactIndex.model_validate_json(canonical_json_bytes(index))
+    from silent_cascade.archive.readers import evidence_path
+
     previous, count = None, 0
     digest = hashlib.sha256()
     seen_shards = set()
@@ -131,8 +133,9 @@ def iter_artifact_index(root, index):
             if part.path in seen_shards:
                 raise ValueError("duplicate artifact index shard")
             seen_shards.add(part.path)
-            path = _path(root, part.path)
-            compressed = read_bytes(path, limit=MAX_FILE_BYTES)
+            _path(root, part.path)
+            with evidence_path(root, part.path, evidence_context=evidence_context) as path:
+                compressed = read_bytes(path, limit=MAX_FILE_BYTES)
             if sha256_bytes(compressed) != part.sha256:
                 raise ValueError("artifact index shard hash differs")
             rows, size = 0, 0
@@ -190,13 +193,15 @@ def training_result_payload(result, *, run_dir):
     ).model_dump(mode="json")
 
 
-def expand_training_result(run_dir, payload):
+def expand_training_result(run_dir, payload, *, evidence_context=None):
     """Compatibility boundary: returns the historical materialized dictionary."""
     if set(payload) == LEGACY_KEYS:
         return dict(payload)
     envelope = parse_training_envelope(payload)
     value = envelope.model_dump(mode="json", exclude={"schema_version", "artifact_index"})
-    value["artifact_hashes"] = dict(iter_artifact_index(run_dir, envelope.artifact_index))
+    value["artifact_hashes"] = dict(
+        iter_artifact_index(run_dir, envelope.artifact_index, evidence_context=evidence_context)
+    )
     return value
 
 

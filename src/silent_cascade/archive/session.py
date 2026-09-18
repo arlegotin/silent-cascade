@@ -169,6 +169,20 @@ def lookup_episode_binding(
     transport,
     policy: ArchivePolicy,
 ):
+    binding = _read_episode_binding(
+        control_dir=control_dir,
+        run_id=run_id,
+        logical_root=logical_root,
+        ordinal=ordinal,
+        transport=transport,
+        policy=policy,
+    )
+    if binding.commit_sha256 != commit_sha256:
+        raise ValueError("episode binding absent or commit identity differs")
+    return binding
+
+
+def _read_episode_binding(*, control_dir, run_id, logical_root, ordinal, transport, policy):
     from silent_cascade.archive.catalog import _CatalogStore, _lookup
     from silent_cascade.archive.transport import _cold_reader
     from silent_cascade.archive.types import EpisodeBindingEntry
@@ -183,12 +197,11 @@ def lookup_episode_binding(
         control_dir=control_dir / "episode-bindings", policy=policy, reader=reader
     )
     entry = _lookup(store, root, _episode_key(run_id, logical_root, ordinal), index="episodes")
-    if (
-        not isinstance(entry, EpisodeBindingEntry)
-        or entry.binding.commit_sha256 != commit_sha256
-        or (entry.binding.run_id, entry.binding.logical_root, entry.binding.ordinal)
-        != (run_id, logical_root, ordinal)
-    ):
+    if not isinstance(entry, EpisodeBindingEntry) or (
+        entry.binding.run_id,
+        entry.binding.logical_root,
+        entry.binding.ordinal,
+    ) != (run_id, logical_root, ordinal):
         raise ValueError("episode binding absent or commit identity differs")
     return entry.binding
 
@@ -207,6 +220,7 @@ class EvidenceContext(Protocol):
     def evaluation_roots(self) -> tuple[str, ...]: ...
     def lease(self, ref: UnitRef) -> AbstractContextManager[EvidenceLease]: ...
     def metadata(self, logical_root: str) -> AbstractContextManager[EvidenceLease]: ...
+    def episode_commit(self, logical_root: str, ordinal: int): ...
     def episode(
         self, logical_root: str, ordinal: int, *, commit_sha256: str
     ) -> AbstractContextManager[EvidenceLease]: ...
@@ -323,6 +337,27 @@ class LocalArchiveSession:
 
     def metadata(self, logical_root: str):
         return self._leased({"metadata_root": logical_root})
+
+    def episode_commit(self, logical_root: str, ordinal: int):
+        from silent_cascade.archive.catalog import _safe_logical_path
+        from silent_cascade.archive.types import EpisodeBinding
+
+        _safe_logical_path(logical_root, field="evaluation root")
+        if type(ordinal) is not int or ordinal < 0:
+            raise ValueError("invalid episode ordinal")
+        response = self._request(
+            "status", {"episode_commit": {"logical_root": logical_root, "ordinal": ordinal}}
+        )
+        if set(response) != {"binding"}:
+            raise ValueError("invalid episode discovery response")
+        binding = EpisodeBinding.model_validate_json(canonical_json_bytes(response["binding"]))
+        if (binding.run_id, binding.logical_root, binding.ordinal) != (
+            self._identity["run_id"],
+            logical_root,
+            ordinal,
+        ):
+            raise ValueError("episode discovery identity differs")
+        return binding.commit
 
     def episode(self, logical_root: str, ordinal: int, *, commit_sha256: str):
         if type(ordinal) is not int or ordinal < 0:

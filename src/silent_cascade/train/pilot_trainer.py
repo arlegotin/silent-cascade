@@ -166,13 +166,11 @@ def _journal(run_dir, progress, value, *, archive_producer=None):
 
 @contextmanager
 def _evidence_path(run_dir, name, evidence_context=None):
-    path = run_dir / name
-    _check_path(path)
-    if path.exists() or evidence_context is None:
+    from silent_cascade.archive.readers import evidence_path
+
+    with evidence_path(run_dir, name, evidence_context=evidence_context) as path:
+        _check_path(path)
         yield path
-    else:
-        with evidence_context._leased({"path": name}) as lease:
-            yield lease.local_root / name
 
 
 def _artifact_sha256(run_dir, name, *, evidence_context=None):
@@ -204,16 +202,11 @@ def _collect_artifact_hashes(run_dir, *, evidence_context=None):
 
 
 def verify_journal(run_dir, progress, *, evidence_context=None):
+    from silent_cascade.archive.readers import iter_journal_records
+
     cursor, seen, steps = progress.journal_sha256, set(), []
-    while cursor is not None:
-        if cursor in seen:
-            raise TrainingError("cyclic pilot journal")
+    for record in iter_journal_records(run_dir, cursor, evidence_context=evidence_context):
         seen.add(cursor)
-        with _evidence_path(run_dir, f"journal-{cursor}.json", evidence_context) as path:
-            raw = _read_pilot_bytes(path)
-        if sha256_bytes(raw) != cursor:
-            raise TrainingError("pilot journal hash mismatch")
-        record = json.loads(raw)
         if record["kind"] == "update":
             steps.append(record["global_step"])
         for name, digest in record.get("artifacts", {}).items():

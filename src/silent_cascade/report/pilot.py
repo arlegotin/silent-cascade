@@ -1,25 +1,20 @@
 """Regenerate pilot tables and figures solely from verified retained artifacts."""
 
-import gzip
 import io
-import json
 from collections import Counter
 from pathlib import Path
 
-from silent_cascade.eval.artifacts import read_evaluation_artifact
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.report.pilot_artifacts import (
     evaluation_directories,
     load_abandoned_evaluation,
-    load_evaluation,
     load_training_result,
-    read_json,
     training_evaluation_status,
 )
 from silent_cascade.train.pilot_data import _check_path, _publish_pilot_bytes
 
 
-def _figures(root, rows):
+def _figures(examples, errors):
     import matplotlib
     from matplotlib.backends.backend_svg import FigureCanvasSVG
     from matplotlib.figure import Figure
@@ -27,12 +22,12 @@ def _figures(root, rows):
     figure = Figure(figsize=(10, 8), layout="constrained")
     axes = figure.subplots(2, 2)
     for axis, positive in zip(axes[0], (True, False), strict=True):
-        candidates = [r for r in rows if r.is_positive == positive and r.full_trace_ref]
+        selected = examples.get(positive)
         axis.set_title("Positive timeline" if positive else "Negative timeline")
         axis.set_xlabel("time since activation (seconds)")
-        if candidates:
-            row = candidates[0]
-            events = read_json(root / row.neural_trace_ref)["events"]
+        if selected is not None:
+            row = selected.row
+            events = selected.sidecar["events"]
             kinds = sorted({event["kind"] for event in events})
             for kind in kinds:
                 axis.scatter(
@@ -53,7 +48,6 @@ def _figures(root, rows):
                 )
         else:
             axis.text(0.05, 0.5, "No retained example in this corpus", transform=axis.transAxes)
-    errors = [a.timestamp - r.truth.action_target for r in rows if r.is_positive for a in r.actions]
     axes[1, 0].set_title("Action timing error (all positive actions)")
     axes[1, 0].set_xlabel("action time minus target (seconds)")
     if errors:
@@ -61,12 +55,10 @@ def _figures(root, rows):
     else:
         axes[1, 0].text(0.05, 0.5, "No positive actions", transform=axes[1, 0].transAxes)
     axes[1, 1].set_title("Retained positive guard accumulators (anchors)")
-    positives = [r for r in rows if r.is_positive and r.full_trace_ref]
-    if positives:
-        row = positives[0]
-        anchors = json.loads(gzip.decompress(read_evaluation_artifact(root / row.full_trace_ref)))[
-            "anchors"
-        ]
+    selected = examples.get(True)
+    if selected is not None:
+        row = selected.row
+        anchors = selected.trajectory["anchors"]
         for index, kind in enumerate(("RECALL", "COMPOSE", "ACT")):
             axes[1, 1].plot(
                 [anchor["time"] - row.truth.activation_time for anchor in anchors],
@@ -86,15 +78,17 @@ def _figures(root, rows):
     return target.getvalue()
 
 
-def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
+def build_pilot_report(*, run_dir: Path, output_dir: Path, evidence_context=None) -> Path:
     """Verify every raw input before publishing any artifact-derived report."""
     _check_path(run_dir)
     _check_path(output_dir)
-    evaluations = evaluation_directories(run_dir)
+    from silent_cascade.archive.readers import evaluation_header, iter_evaluation_episodes
+
+    evaluations = evaluation_directories(run_dir, evidence_context=evidence_context)
     training = None
     result_path = run_dir / "training-result.json"
     if result_path.exists():
-        training = load_training_result(run_dir, result_path)
+        training = load_training_result(run_dir, result_path, evidence_context=evidence_context)
     required, abandoned = (
         training_evaluation_status(run_dir, training) if training is not None else (set(), set())
     )
@@ -154,7 +148,9 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
                 ]
             )
             continue
-        identity, rows, metrics, hashes = load_evaluation(root)
+        with evaluation_header(root, evidence_context=evidence_context) as (header, _):
+            pass
+        identity, metrics, hashes = header.identity, header.metrics, header.hashes
         identities[str(root.relative_to(run_dir))] = identity.sha256
         variants, classes, events, misses, action_diagnostics = (
             {},
@@ -163,7 +159,28 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
             Counter(),
             Counter(),
         )
-        for row in rows:
+        compute_fields = (
+            "forward_macs",
+            "backward_macs",
+            "records_scored",
+            "flow_evaluations",
+            "jump_applications",
+            "foundation_model_calls",
+        )
+        compute, examples, action_errors = Counter(), {}, []
+        event_total = 0
+        for episode in iter_evaluation_episodes(
+            root, evidence_context=evidence_context, expected_header=header, plot_examples=True
+        ):
+            row = episode.row
+            event_total += row.event_count
+            compute.update({field: getattr(row.compute, field) for field in compute_fields})
+            if row.is_positive:
+                action_errors.extend(
+                    action.timestamp - row.truth.action_target for action in row.actions
+                )
+            if episode.trajectory is not None:
+                examples[row.is_positive] = episode
             variant = row.truth.recipe.variant.value
             counts = variants.setdefault(variant, dict(episodes=0, timed_success=0, errors=0))
             counts["episodes"] += 1
@@ -176,23 +193,12 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
             counts["timed_success"] += row.timed_success
             events.update(dict(row.event_counts))
             misses.update([row.miss_category or "success"])
-            observed = read_json(root / row.neural_trace_ref)["events"]
+            observed = episode.sidecar["events"]
             for event in observed:
                 if event["raw_action_argmax"] is not None:
                     action_diagnostics["raw_class_" + str(event["raw_action_argmax"])] += 1
                     action_diagnostics["legal_class_" + str(event["legal_action_argmax"])] += 1
                     action_diagnostics["status_disagreements"] += event["status_disagrees"]
-        compute_fields = (
-            "forward_macs",
-            "backward_macs",
-            "records_scored",
-            "flow_evaluations",
-            "jump_applications",
-            "foundation_model_calls",
-        )
-        compute = {
-            field: sum(getattr(row.compute, field) for row in rows) for field in compute_fields
-        }
         table = dict(
             metrics.model_dump(mode="json"),
             variants=variants,
@@ -211,7 +217,7 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
         if (
             sum(v["episodes"] for v in variants.values()) != metrics.episode_count
             or sum(v["timed_success"] for v in variants.values()) != metrics.timed_success_count
-            or sum(events.values()) != sum(row.event_count for row in rows)
+            or sum(events.values()) != event_total
             or sum(misses.values()) != metrics.episode_count
         ):
             raise ValueError("report table denominator mismatch")
@@ -223,7 +229,8 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
                 f"Experiment: {identity.experiment}; "
                 f"purpose: {identity.purpose}; split: {identity.split}; stage: {identity.stage}.",
                 f"Source: `{identity.execution_source_revision}`; config: "
-                f"`{rows[0].config_sha256}`; manifest: `{identity.manifest_sha256}`; "
+                f"`{sha256_bytes(identity.evaluation_config_canonical_json.encode())}`; "
+                f"manifest: `{identity.manifest_sha256}`; "
                 f"checkpoint: `{identity.checkpoint_sha256}`; model seed: 11.",
                 "",
                 "| Outcome | Count / denominator |",
@@ -252,7 +259,7 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path) -> Path:
             lines.extend(f"| {name} | {count} |" for name, count in sorted(counts.items()))
             lines.append("")
         name = f"trajectories-{number}.svg"
-        plots[name] = _figures(root, rows)
+        plots[name] = _figures(examples, action_errors)
         lines.extend([f"![Retained trajectories and timing diagnostics]({name})", ""])
     table_bytes = canonical_json_bytes(
         {"evaluations": tables, "incomplete_evaluations": incomplete}
