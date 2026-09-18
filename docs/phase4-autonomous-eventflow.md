@@ -562,9 +562,11 @@ readers have not acquired remote-storage support, and the historical preflight
 has not been relaxed. The owner approved the
 [bounded R2 implementation plan](superpowers/plans/2026-09-17-phase-4-r2-archive.md)
 on 2026-09-17 with a 10 GiB total local ceiling, including protected headroom.
-As of 2026-09-18, the bounded bundle/catalog and transport tasks are reviewed
-through `de88d0b`; supervisor, scientific integration and real-provider
-qualification work remain outstanding. **Task 12 remains unstarted** until
+As of 2026-09-18, the bounded bundle/catalog, transport and offline-supervisor
+tasks are reviewed through `4d2e031`; scientific producer/reader integration,
+CLI/preflight and real-provider qualification remain outstanding. These scoped
+checks do not replace a complete local `make verify` on the integrated source.
+**Task 12 remains unstarted** until
 the reviewed storage integration demonstrates bounded local space, verified
 archival and recovery while preserving offline scientific execution and every
 retention gate.

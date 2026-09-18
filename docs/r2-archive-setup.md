@@ -105,9 +105,16 @@ durable remote-byte reservations and conservative local eviction. Transport
 tests used local doubles; the native macOS descriptor-safety test ran separately
 because the managed sandbox denies the required descriptor reopen.
 
-Task 3 is implementing the finite supervisor, offline child boundary,
-single-episode leases and shared local-allocation ledger. Producer integration,
-streaming scientific readers, CLI/preflight integration and the real R2 storage
+Task 3 passed its scoped reviews through `4d2e031`: finite supervisor, offline
+child boundary, single-episode leases and shared local-allocation ledger.
+The final correction passed 22 supervisor/offline covering tests; the preceding
+53-test covering run checked ledger, supervisor, session and offline behavior.
+These focused runs are not a complete local quality-gate pass. Offline provenance
+requires trusted Git >=2.45 with native no-lazy-fetch support; the executable is
+pinned privately before child launch. Older Apple Git is not a fallback.
+
+Producer integration, streaming scientific readers, CLI/preflight integration
+and the real R2 storage
 qualification remain pending in Tasks 4–7. No experiment evidence has been
 uploaded or deleted during this implementation. The new source has not yet
 passed a complete local `make verify` run or the production storage gate.
