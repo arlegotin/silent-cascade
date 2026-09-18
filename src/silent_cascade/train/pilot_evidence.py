@@ -270,6 +270,7 @@ STORAGE_PACKAGE_FILES = (
     "src/silent_cascade/archive/catalog.py",
     "src/silent_cascade/archive/ledger.py",
     "src/silent_cascade/archive/operational.py",
+    "src/silent_cascade/archive/preflight.py",
     "src/silent_cascade/archive/producer.py",
     "src/silent_cascade/archive/readers.py",
     "src/silent_cascade/archive/session.py",

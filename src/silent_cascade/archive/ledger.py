@@ -56,6 +56,9 @@ def _hash_file(root: Path, entry: FileEntry) -> int:
 def initialize_workspace_ledger(*, workspace_root: Path, policy: ArchivePolicy, baseline):
     """Create one durable shared ledger; baseline is explicit, exact and immutable."""
     workspace_root = workspace_root.absolute()
+    from silent_cascade.archive.preflight import _require_single_authority
+
+    _require_single_authority(workspace_root)
     workspace_root.mkdir(parents=True, exist_ok=True)
     root = workspace_root / _STATE_DIRECTORY
     policy = ArchivePolicy.model_validate(policy.model_dump())
@@ -135,7 +138,7 @@ class _StorageBudget:
 
     def _state(self):
         state = json.loads(_control_reader(self.root)("workspace.json", self.policy.page_bytes))
-        if set(state) != {
+        expected_keys = {
             "schema_version",
             "workspace",
             "device",
@@ -143,8 +146,11 @@ class _StorageBudget:
             "baseline",
             "reservations",
             "paths",
-        } or (
-            state["schema_version"] != "phase4-r2-workspace-v1"
+        }
+        if state.get("schema_version") == "phase4-r2-workspace-v2":
+            expected_keys.add("engineering")
+        if set(state) != expected_keys or (
+            state["schema_version"] not in {"phase4-r2-workspace-v1", "phase4-r2-workspace-v2"}
             or state["workspace"] != str(self.workspace)
             or state["device"] != self.device
             or state["policy_sha256"] != sha256_bytes(canonical_json_bytes(self.policy))
@@ -156,6 +162,12 @@ class _StorageBudget:
         ):
             raise StorageBlocked("storage_blocked: invalid category paths")
         return state
+
+    def retained_charge(self) -> int:
+        """Authenticate frozen engineering bytes without changing category semantics."""
+        from silent_cascade.archive.preflight import _retained_charge
+
+        return _retained_charge(self)
 
     def bind(self, path: Path, *, category: str):
         self.require_path(path)
@@ -244,6 +256,7 @@ class _StorageBudget:
 
     def check(self) -> dict[str, int]:
         allocated = self.measure()
+        retained = self.retained_charge()
         reservations = dict.fromkeys(_CATEGORIES, 0)
         for record in self._state()["reservations"].values():
             for name, amount in record["amounts"].items():
@@ -261,8 +274,14 @@ class _StorageBudget:
                     f"storage_blocked: {name} category exhausted; retain pending files"
                 )
         reserved = sum(reservations.values())
+        normal = sum(allocated.values()) + reserved - allocated["emergency"]
+        normal -= reservations["emergency"]
+        if normal + retained > (
+            self.policy.workspace_bytes - self.policy.reserve_bytes - self.policy.emergency_bytes
+        ):
+            raise StorageBlocked("storage_blocked: normal allocation exhausted by retained history")
         if (
-            sum(allocated.values()) + reserved + self.policy.reserve_bytes
+            sum(allocated.values()) + reserved + retained + self.policy.reserve_bytes
             > self.policy.workspace_bytes
         ):
             raise StorageBlocked(
@@ -352,5 +371,7 @@ class _StorageBudget:
                 control_dir=self.root, relative=("workspace.lock",), shared=False, blocking=True
             ):
                 state = self._state()
-                del state["reservations"][token]
+                # A closed engineering completion may atomically release its
+                # own reservation together with the verified residual charge.
+                state["reservations"].pop(token, None)
                 self._store(state)

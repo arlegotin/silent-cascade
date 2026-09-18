@@ -178,6 +178,23 @@ class JobOutputBounds(StrictModel):
     emergency_bytes: Count
 
 
+class EngineeringContentReview(StrictModel):
+    """Controller's exact positive producer-format/privacy audit; never a byte grant."""
+
+    candidate_id: Hash
+    executable_sha256: Hash
+    paths: tuple[Annotated[str, StringConstraints(min_length=1, max_length=4096)], ...] = Field(
+        min_length=1, max_length=1000
+    )
+    producer_evidence_sha256: Hash
+
+    @model_validator(mode="after")
+    def validate_paths(self):
+        if self.paths != tuple(sorted(set(self.paths))):
+            raise ValueError("content review paths must be ordered and unique")
+        return self
+
+
 class UnitIdentity(StrictModel):
     run_id: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     source_commit: Revision
