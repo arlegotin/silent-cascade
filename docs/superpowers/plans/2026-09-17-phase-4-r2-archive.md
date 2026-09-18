@@ -467,6 +467,20 @@ Tasks4/5 thread producer/context hooks through those entrypoints. Do not claim
 cold scientific execution readiness before that integration, or expose an
 arbitrary-command runner to bridge the phased dependency.
 
+Preserve required source-provenance subprocesses through a pinned trusted Git
+at least version 2.45, requiring native `--no-lazy-fetch`. Resolve the real binary,
+version and content identity in the operational parent before environment
+scrubbing; fresh children validate and capture the immutable pin once. Nested
+offline diagnostics receive the same captured pin through a dedicated sealed
+environment field, not their retained scientific intent. Permit only the exact
+existing provenance invocation forms, including plain `ls-files`, full-SHA
+`rev-list --topo-order`, and the validated `cat-file --batch` stream. Constrain
+cwd and environment, disable executable configuration features and deny all
+transports. Only the pipe created for the validated batch invocation may serve
+its input; do not exempt arbitrary file descriptors. Reject unsupported Git,
+mutated pins/environments and extra arguments. Keep executable paths out of
+scientific config, reports and archives. Task6 doctor diagnoses this prerequisite.
+
 `JobOutputBounds` is a closed typed admission input binding job, canonical strict
 request hash, policy hash, trusted executing-package source fingerprint and
 per-category maximum bytes. Verify these bindings and durably reserve the complete
@@ -546,6 +560,7 @@ operation. Scientific child code never invokes the network transport.
 `logging/crash_bundle.py` (descriptor types and scoped publication bound),
 `logging/neural_trace.py` (existing decoded/compressed format bounds),
 `train/{pilot_data,pilot_trainer,pilot_workflow,pilot_provenance,pilot_checks}.py`,
+`archive/supervisor.py` (closed producer dispatch wiring only),
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
@@ -845,6 +860,10 @@ with retained failure evidence, not a partial passing quality-gate receipt.
   entrypoints. Local-only `status` must work without AWS installed. Network is
   explicit in help text. No generic shell runner, credential-print command,
   remote delete, sync-delete or automatically enabled archive mode.
+  `doctor` also validates the trusted Git >=2.45 prerequisite used by the offline
+  subprocess boundary. Resolve supported installed Git without hardcoded machine
+  paths; reject unsupported versions rather than weakening the boundary. Keep
+  the executable pin private and report only non-sensitive capability evidence.
 - [ ] **Step 4 — Operational config stays separate.** Store private machine
   settings under the existing protected user configuration directory: profile,
   bucket, prefix, durable workspace and policy values. No keys in this file;

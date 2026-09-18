@@ -95,6 +95,18 @@ explicit `archive run` wrapper supplies the operational supervisor. It supports
 only the closed pilot/checks/verify/report/replay jobs and joins all children on
 exit. It is not a persistent system service.
 
+The offline subprocess boundary requires a trusted Git version at least 2.45,
+with native `--no-lazy-fetch` support. The operational parent resolves and pins
+the real executable, version and content identity before launching a child.
+The fresh child validates and captures that immutable pin once; nested offline
+diagnostics inherit the captured pin through a dedicated sealed environment
+field, never through scientific diagnostic intent or published configuration.
+Only exact existing provenance command forms are allowed, with a sealed
+environment, trusted working directory, all transports denied and executable
+configuration features disabled. Unsupported Git fails closed; there is no
+fallback to older Apple Git. Executable paths remain private operational state,
+not archive or report content. The archive doctor diagnoses this prerequisite.
+
 The `verify` job means existing artifact-only gate verification, not the local
 quality-gate recorder. Each job has a strict closed request schema and a fixed
 package entrypoint; callers cannot select a command, module or repository root.
