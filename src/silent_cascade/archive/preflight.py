@@ -1273,7 +1273,9 @@ def _prelude_bounds(budget, candidate, selected):
         min(policy.page_bytes, max(manifest, receipt, run_catalog, operational_catalog)),
     )
     rounded = ((largest + block - 1) // block) * block
-    scratch = 2 * (2 * rounded + block)
+    readback = max(largest, policy.page_bytes)
+    rounded_readback = ((readback + block - 1) // block) * block
+    scratch = (2 * rounded + block) + (2 * rounded_readback + block)
     # Catalog staging shares scratch with the one upload/readback buffer.
     scratch += run_catalog + operational_catalog
     staging_directories = (
