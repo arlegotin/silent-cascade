@@ -228,7 +228,13 @@ def supervise_job(
             policy=policy,
             output_bounds=output_bounds,
         )
-    except (RuntimeError, OSError, ValueError):
+    except (
+        RuntimeError,
+        OSError,
+        ValueError,
+        subprocess.TimeoutExpired,
+        subprocess.CalledProcessError,
+    ):
         _report_storage_blocked(
             workspace_root=workspace_root, control_dir=control_dir, policy=policy
         )

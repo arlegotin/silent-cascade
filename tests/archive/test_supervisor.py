@@ -151,12 +151,16 @@ def test_supervisor_binds_existing_run_before_reservation_snapshot(tmp_path, mon
     assert existing.read_bytes() == bytes(range(256)) * 512
 
 
-@pytest.mark.parametrize("failure", ["admission", "corrupt", "missing", "startup", "no-space"])
+@pytest.mark.parametrize(
+    "failure",
+    ["admission", "corrupt", "missing", "startup", "no-space", "git-timeout", "git-nonzero"],
+)
 def test_admission_and_startup_return_blocked_without_losing_evidence(
     tmp_path, monkeypatch, capsys, failure
 ):
     import json
     import os
+    import subprocess
 
     from silent_cascade.archive import supervisor
     from silent_cascade.archive.ledger import initialize_workspace_ledger
@@ -181,6 +185,20 @@ def test_admission_and_startup_return_blocked_without_losing_evidence(
         values = list(os.statvfs(tmp_path))
         values[4] = 0
         monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+    elif failure in {"git-timeout", "git-nonzero"}:
+        from silent_cascade.train import pilot_offline
+
+        def failed_git_probe():
+            command = ["private-executable-secret", "--version"]
+            if failure == "git-timeout":
+                raise subprocess.TimeoutExpired(
+                    command, 5, output=b"private-output-secret", stderr=b"private-error-secret"
+                )
+            raise subprocess.CalledProcessError(
+                1, command, output=b"private-output-secret", stderr=b"private-error-secret"
+            )
+
+        monkeypatch.setattr(pilot_offline, "resolve_offline_git", failed_git_probe)
     bounds = JobOutputBounds(
         job="report",
         request_sha256=sha256_bytes(canonical_json_bytes({})),
@@ -211,16 +229,22 @@ def test_admission_and_startup_return_blocked_without_losing_evidence(
         == 75
     )
     assert pending.read_bytes() == b"never remove pending evidence"
-    message = json.loads(capsys.readouterr().err.strip())
+    captured = capsys.readouterr()
+    assert "secret" not in captured.out + captured.err
+    message = json.loads(captured.err.strip())
     assert message["status"] == "storage_blocked" and "retain" in message["action"]
-    if failure in {"admission", "startup"}:
-        assert json.loads((control / "blocked.json").read_bytes())["status"] == "storage_blocked"
+    if failure in {"admission", "startup", "git-timeout", "git-nonzero"}:
+        blocked = (control / "blocked.json").read_bytes()
+        assert json.loads(blocked)["status"] == "storage_blocked"
+        assert b"secret" not in blocked
     else:
         assert not (control / "blocked.json").exists()
     if failure == "corrupt":
         assert state.read_bytes() == b"{corrupt history"
     if failure == "missing":
         assert not state.exists() and state.with_name("retained-history.json").exists()
+    if failure not in {"corrupt", "missing"}:
+        assert json.loads(state.read_bytes())["reservations"] == {}
 
 
 def test_supervisor_abort_stops_nested_diagnostic_without_touching_other_processes(
