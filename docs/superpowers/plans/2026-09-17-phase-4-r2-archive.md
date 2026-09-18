@@ -1447,6 +1447,20 @@ The full source-bound local gate, final storage gate and scientific pilot gates
 remain mandatory after all implementation changes. A prelude failure leaves
 evidence intact and blocks unadmitted growth; it never permits a larger quota.
 
+**Execution ordering ruling (2026-09-18):** the actual early qualification and
+the first 13,488,540-byte engineering unit now passed, including readback,
+receipt-authorized eviction and final residual accounting. Compact committed
+evidence is in `docs/phase4-autonomous-eventflow.md`. Retained allocation is
+6,195,077,120bytes; operational scratch is202,186,752bytes. Resume bounded Task5
+slices only after their own source-derived finite admission. Do not require
+all eight remaining audited batches to finish before a small integration slice
+that fits: those batches remain local, charged and queued for further reclamation
+when needed. Candidate identity and exact reviewed-source authority must be
+refreshed before any later archival on changed source. No provider work or source
+mutation may overlap an in-progress engineering eviction. The second batch was
+stopped at its read-only preflight, without upload or a reservation, to preserve
+that exclusion. This changes execution order, not retention or final gates.
+
 **Early qualification execution refinement (2026-09-18):** implement and review
 the narrow private `archive/_qualification.py` driver before the first real
 engineering bootstrap, adding it only to the current executing source inventory.

@@ -570,3 +570,47 @@ checks do not replace a complete local `make verify` on the integrated source.
 the reviewed storage integration demonstrates bounded local space, verified
 archival and recovery while preserving offline scientific execution and every
 retention gate.
+
+## Bounded storage prelude evidence (2026-09-18)
+
+The early real R2 composite qualification passed on
+`275050100b7eca0785dfcc90b9de3e4eead450b6`: create-only collision/readback,
+interrupted-upload retry, exact 64 MiB probe and debug-unit restores, rejection
+of an occupied restore destination, and final retained-history authentication.
+Its typed result SHA-256 is
+`9c8e6ffa135a11ffd6bd74b26f5bbcc26659a2b8cc3237dd2e527703e6d4ab17`.
+This is early provider evidence on that revision, not the final integrated gate.
+
+Native-write/cold-catalog bounds and exact-root candidate discovery were then
+corrected through scoped RED/GREEN and independent reviews. Discovery on the
+corrected source checked the exact first pair in 87.47 seconds; the previous
+global traversal was interrupted after 693.50 seconds without reaching it.
+Full retained-history authentication remains required; the selector only avoids
+unrelated candidate traversal.
+
+One real engineering unit completed on
+`3f7e51bab253a64db938cccd71adf0f2a4b3b739`, executable digest
+`436ab3366ddcf17d1376c82b8cf5eb56f665ff469d1214f30cc32dc5ff5bbc0a`:
+
+- Two previously audited synthetic test artifacts, one numerical capture and
+  its inseparable JSON sidecar: 13,488,540 logical bytes.
+- Unit `9039e90d9a08c55060c9028769b23907f25c52f83d4d45045eabd0897856b211`;
+  verified receipt
+  `30b84bb6ef3f3afa3f27d1766c84b7cdb9eb66f3d74094640daee5cbad7a72fa`.
+- Upload/readback and receipt-authorized local eviction succeeded. The files
+  remain recoverable from R2; unselected siblings were retained and verified.
+- Retained allocation decreased from 6,208,569,344 to 6,195,077,120 bytes.
+  Final operational allocation was 457,584,640 bytes, with no live reservation
+  or pending eviction. Including the unchanged 2 GiB protected reserve, this is
+  8,800,145,408 bytes, below the 10 GiB ceiling.
+- The complete discovery/archive/accounting call took 632.17 seconds. Its
+  remote ledger total was 147,808,433 bytes, including earlier qualification.
+
+The other eight audited batches remain queued and locally charged. Their next
+preflight completed, but was deliberately stopped before upload so bounded
+Task 5 integration can resume once its own finite admission succeeds. No quota,
+retention, baseline, scientific setting, or acceptance gate was relaxed.
+
+Remaining reader/recovery integration, final CLI/preflight, full current-source
+local verification and storage/smoke gates still precede the production pilot.
+**Phase 4 and Task 12 remain incomplete; the production fit has not started.**
