@@ -564,6 +564,7 @@ operation. Scientific child code never invokes the network transport.
 `archive/transport.py` (exact retained-file custody during partial-unit eviction),
 `archive/catalog.py` (targeted checkpoint-snapshot proof semantics),
 `archive/session.py` (lease-scoped authenticated inventory metadata only),
+`archive/bundles.py` (bounded singleton restore of non-episode owners),
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
@@ -644,6 +645,17 @@ whole episode packs. Release the lease before eviction and suppress later
 candidate groups already covered by the completed owner. No new protocol or
 manifest schema is required. Cover split-owner boundaries, corrupted inventory
 tails and existing lease lifetime/ref checks.
+
+Path lookup keeps whole authenticated episode groups, but selects a singleton
+for non-episode owners. The existing restore selector accepts exactly one
+authenticated path for evaluation_metadata, journal, control_snapshot and partial
+units, bounded by the existing policy.episode_bytes source-file ceiling. Exhaust
+full inventory membership before outputs; preserve kind-specific unit bounds,
+selected-plus-chunk cache checks and held remaining admission. Diagnostic subsets
+retain their separate page_entries/logs_bytes limits; episode subsets must still
+equal one declared group. Cover a partly cold owner whose complete payload exceeds
+cache while its selected file fits, and reject missing/multiple/oversized selections.
+No new schema, size constant, protocol operation or parallel restore implementation.
 
 Before evicting finalized shared inputs, complete the supervisor's cold-borrowed
 lease path. Authenticate exact shared-owner entries through bounded sparse
