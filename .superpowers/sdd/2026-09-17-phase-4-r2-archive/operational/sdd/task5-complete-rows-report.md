@@ -129,10 +129,13 @@ G: tests/pilot/test_pilot_archive_readers.py::test_cold_partial_rejects_unbound_
 H: tests/pilot/test_pilot_archive_readers.py::test_cold_root_training_result_is_discovered_from_authenticated_inventory
 ```
 
-Total retained scratch: 2,826,240 allocated bytes (2,760 KiB), measured with
+Total retained scratch: 2,805,760 allocated bytes (2,740 KiB), measured with
 `du -sk` and independently summed filesystem blocks. No test process identity
 was exposed by the synchronous runner; all commands exited normally except the
 two expected RED commands.
+
+Independent review corrected the original total's arithmetic overstatement of
+20 KiB. The per-stage table is unchanged; no retained output was deleted.
 
 The first feature test failed at the explicit refusal before production edits.
 The second RED was a targeted mutation check: temporarily replace the closure's
