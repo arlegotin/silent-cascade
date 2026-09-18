@@ -481,6 +481,20 @@ native-write allowance for downloads and full restored files, alongside exact
 logical serializer/coexistence bounds and live allocation checks. Do not describe
 this operational cushion as a universal filesystem allocation proof.
 
+Apply the same allowance to engineering archival's coexisting generated payload
+and provider readback: its pair term is twice `2 * rounded(largest) + block`,
+with existing catalog/directory additions retained. A complete group that no
+longer fits must use the existing exact reviewed-path subset interface, not a
+smaller allowance. For the first audited group use at most14MiB logical batches,
+keep every tensor/capture sidecar pair inseparable, and start with the largest
+pair. This ceiling is only a grouping rule; freshly authenticated candidate,
+exact positive content review and full native/category/global/physical/remote
+admission remain mandatory for every batch. Refresh candidate identity after
+each receipt-authorized eviction and preserve all unselected siblings. A later
+reviewed correction retains the earlier qualification's actual executor tuple;
+it cannot promote that historical result to new source. Final current-source
+local/resource/smoke gates remain prerequisites for the scientific pilot.
+
 If retained implementation tests exhaust an internal slice, preserve and report
 the failed admission separately from functional outcomes. A reviewed early
 provider continuation may use prior full-module functional evidence plus fresh

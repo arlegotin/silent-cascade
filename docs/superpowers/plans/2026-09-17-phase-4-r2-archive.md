@@ -266,6 +266,74 @@ not waive Task7's complete current-source local verification before the pilot:
    `make verify` obligations before claiming final storage readiness or starting
    Phase4 Task12. No scientific gate, test manifest, quota or retention rule changes.
 
+#### Engineering native-allocation correction and exact batching (2026-09-18)
+
+The actual same-campaign continuation on2750501 passed with typed result SHA256
+`9c8e6ffa135a11ffd6bd74b26f5bbcc26659a2b8cc3237dd2e527703e6d4ab17`.
+The earlier stdin-launched continuation failed at multiprocessing startup; its
+separate output stays failed and retained. The successful attempt used a `-c`
+launcher, repeated the provider checks, restored both inputs exactly, and passed
+final authentication. This unlocks the engineering path, not final storage or
+scientific acceptance. Never relabel this result as a later executor's result.
+
+A read-only next-step audit found the same logical/native underbound in
+`preflight._prelude_bounds`: generated payload and provider readback coexist,
+but its pair term still uses twice the logical maximum. Correct this before
+engineering transfer. This is a bounded maintenance change within the approved
+storage plan; no transport, custody, public API, quota or science changes.
+
+**Files:** modify `src/silent_cascade/archive/preflight.py` and
+`tests/archive/test_preflight.py` only, plus this plan/design and operational
+evidence. Keep the pure `_archive_unit_bounds` serializer unchanged.
+
+- [ ] Add descriptor-only native-pair regression using the existing tiny
+  `prepared_candidate` fixture, with a synthetic32MiB `FileEntry` passed only
+  to the sizing function. At4KiB blocks the pair term must be at least134,225,920
+  bytes, before unchanged catalog/directory additions. Do not write a32MiB fixture.
+- [ ] Exercise the real engineering reservation with injected measured scratch
+ 199,651,328 and that computed bound: admission must refuse before yielding to
+  sealing/provider work, preserve all source bytes, and leave no reservation.
+  Also cover a14MiB descriptor and the existing two-successive-subset behavior.
+- [ ] Observe RED before changing the implementation. Replace only the native
+  pair calculation, retaining all existing metadata and stage accounting:
+
+  ```python
+  largest = max(
+      min(expanded, policy.chunk_bytes),
+      min(policy.page_bytes, max(manifest, receipt, run_catalog, operational_catalog)),
+  )
+  rounded = ((largest + block - 1) // block) * block
+  scratch = 2 * (2 * rounded + block)
+  # Existing catalog staging and directory terms are added unchanged below.
+  ```
+
+- [ ] Run the new tests and existing allocation-geometry, actual atomic-peak,
+  and fresh-subset/shared-history tests under one separately admitted finite
+  slice, with unique retained roots, no bytecode/cache and recorded owner IDs.
+  Size the slice before running; preserve RED/GREEN evidence and scoped quality
+  checks. Complete independent task review and a meaningful current-branch commit.
+- [ ] Publish the new exact reviewed-source authority. Bind prior qualification
+  as historical provider evidence, not qualification on the changed source.
+  The change only increases engineering admission; all final current-source
+  local/resource/smoke gates remain mandatory after implementation is complete.
+- [ ] Use existing `EngineeringContentReview.paths` for batches of at most14MiB
+  logical data; this ceiling is not admission. Start with the largest capture
+  pair (13,488,540bytes), then the other three inseparable tensor/sidecar pairs.
+  Put the17portable weights into four groups of four and one singleton. Never
+  split a capture pair, synthesize a candidate, or include unreviewed siblings.
+- [ ] Before each batch, rediscover the authenticated current candidate, check
+  exact paths/hashes against the positive content audit, remeasure allocation,
+  and recompute complete native/catalog/metadata/global/physical/remote bounds.
+  Candidate identity changes after eviction. Refuse if the indivisible pair
+  cannot fit; reduce weight batches when needed, never increase a limit.
+  Upload/readback/receipt-authorized eviction and residual authentication remain
+  unchanged. Report exactly which local bytes were archived and are recoverable.
+
+The104,817,273-byte group cannot be transferred as one unit: its corrected pair
+term plus existing scratch alone exceeds256MiB. Exact batching uses already
+reviewed subset/retained-sibling semantics and costs additional catalog work;
+it does not reduce evidence retention or create another allowance.
+
 Each implementation slice gets RED/GREEN evidence, bounded local covering tests,
 an independent task review and a meaningful current-branch commit. The scoped
 briefs give exact tests/interfaces and finite output admission before dispatch.
