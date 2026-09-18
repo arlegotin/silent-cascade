@@ -148,6 +148,16 @@ No full `make verify`, provider call or later pilot is implied by a unit-test
 pass. Full final gates remain unchanged. Do not bundle unrelated diagnostic
 improvements into the deterministic validator correction.
 
+Native cleanup refinement: diagnostics for the exact launched process group
+observed EPERM after the known leader and descendant had exited, followed by
+ESRCH on a bounded read-only probe. Supervisor and qualification cleanup may
+continue disappearance polling after group-signal/probe PermissionError within
+their existing deadlines. EPERM is never termination proof: only ESRCH permits
+successful group cleanup, and persistent uncertainty must fail-stop while
+retaining durable ownership. Preserve direct-child reap, other error handling
+and transient/persistent regression tests; do not introduce broader signals,
+process scans or longer deadlines.
+
 #### Adversarial scratch accounting correction
 
 The first maintenance admission's final check found two deliberately preserved

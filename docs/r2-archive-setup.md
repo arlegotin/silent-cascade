@@ -16,8 +16,9 @@ this is **not** a claim that the pilot supports remote artifact storage yet.
 | Credential scope | Object Read & Write on this bucket only |
 | Credential expiry | March 17, 2027 |
 
-No existing bucket was modified. No experiment artifacts were uploaded, moved,
-deleted or pruned. No training, hosted computation or CI/CD was started.
+At provisioning, no existing bucket was modified and no experiment artifacts
+were uploaded, moved, deleted or pruned. Later qualification activity is recorded
+below. No training, hosted computation or CI/CD was started.
 
 ## Credentials and local access
 
@@ -146,18 +147,34 @@ against 2.35 GB of potentially reclaimable payload. This removes the measured
 negative-reclamation problem for that subset, but excludes other archival costs
 and is not actual admission. Another 67 candidate files remain unadmitted.
 
-The narrow early-provider qualification driver is being implemented before the
-first real bootstrap. It will share the existing finite sizing calculations and
-exercise the fixed probe, interrupted upload, create-only collision/readback and
-exact restore under one local/remote history. Independent driver review, actual
-shared-workspace admission and provider qualification still precede real
-engineering archival and verified-before-eviction. No cleanup, larger quota or
-scientific change is authorized by these engineering checks.
+The early-provider driver passed independent review at `22cb611`. The real
+shared-workspace bootstrap then succeeded, charging 6,208,569,344 retained bytes.
+Its first R2 qualification attempt confirmed an upload, a real SIGKILL and
+fresh-process resume. Both 32 MiB probe chunks reached R2, but receipt publication
+failed because the transport validator rejected the publisher's compound receipt
+key. **That qualification failed:** neither restore nor the copied-debug phase
+completed. Its original files, pending transaction and 67,119,597 reserved remote
+bytes remain preserved; no engineering evidence has been evicted.
 
-CLI/preflight integration and the remaining real R2 storage qualification are
-pending. No experiment evidence has been uploaded or deleted during this
-implementation. The new source has not yet passed a complete local `make verify`
-run or the production storage gate.
+The exact key-contract fix passed independent review at `283fff1`. Subsequent
+reviewed fixes cover safe accounting of preserved adversarial scratch fixtures
+(`270c780`) and explicit, immutable authorization of later reviewed source
+revisions (`02c1d43`). They do not replace the original bootstrap, rename pending
+objects or reset local/remote accounting.
+
+Repeated full authentication of roughly 6.2 GB of retained history dominated the
+first attempt's runtime. The bounded-operation correction at `c74f73d` keeps full
+authentication at entry and after all writers stop, while retaining live disk,
+reservation and headroom checks during the operation. Its local ledger,
+qualification and supervisor covering run passed 137 tests; independent review
+is pending. Native diagnostics also exposed a transient macOS group-cleanup
+permission error after process exit. Cleanup still requires confirmed group
+absence within the existing deadline; persistent errors fail safely.
+
+Same-ledger recovery of the failed transaction, a fresh successful qualification,
+verified engineering archival, remaining reader/CLI/preflight integration and
+the full local `make verify` gate are still pending. The passing focused tests
+are not a provider-qualification or production-storage-gate pass.
 
 This is implementation progress, not a Phase 4 result: the seed-11 production
 pilot remains unstarted. The 10 GiB ceiling includes test output, temporary
