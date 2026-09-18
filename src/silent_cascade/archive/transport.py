@@ -1207,26 +1207,32 @@ def _publish_operational_batch(
     control_dir: Path,
     transport: ObjectTransport,
     policy: ArchivePolicy,
-    receipt_unit_id: str,
-    receipt_sha256: str,
+    receipt_unit_id: str | None = None,
+    receipt_sha256: str | None = None,
 ) -> None:
+    if (receipt_unit_id is None) != (receipt_sha256 is None):
+        raise ValueError("operational receipt identity requires both fields")
     transport_id = _transport_identity(transport)
-    receipt_path = f"receipts/{receipt_unit_id}.json"
-    receipt_raw = _control_reader(control_dir)(receipt_path, policy.metadata_bytes)
-    receipt_object_key = _operational_object_key(
-        f"receipts/{receipt_unit_id}-{receipt_sha256}.json"
-    )
-    receipt_record = ReceiptLocatorEntry(
-        key=receipt_key(receipt_unit_id),
-        unit_id=receipt_unit_id,
-        receipt_sha256=receipt_sha256,
-        object_key=receipt_object_key,
-        bytes=len(receipt_raw),
-    )
+    receipts, extras = (), []
+    if receipt_unit_id is not None:
+        receipt_path = f"receipts/{receipt_unit_id}.json"
+        receipt_raw = _control_reader(control_dir)(receipt_path, policy.metadata_bytes)
+        receipt_object_key = _operational_object_key(
+            f"receipts/{receipt_unit_id}-{receipt_sha256}.json"
+        )
+        receipts = (
+            ReceiptLocatorEntry(
+                key=receipt_key(receipt_unit_id),
+                unit_id=receipt_unit_id,
+                receipt_sha256=receipt_sha256,
+                object_key=receipt_object_key,
+                bytes=len(receipt_raw),
+            ),
+        )
+        extras.append((receipt_object_key, receipt_path, receipt_raw))
     reservations = _local_reservation_records(control_dir)
     completed = _completed_intents(control_dir)
     evictions = tuple(item[0] for item in completed)
-    extras = [(receipt_object_key, receipt_path, receipt_raw)]
     extras.extend((entry.object_key, source, raw) for entry, source, raw, _ in completed)
     with _opened_ledger(control_dir, transport_id=transport_id, policy=policy) as (
         state,
@@ -1250,7 +1256,7 @@ def _publish_operational_batch(
         new_head = publish_operational_catalog(
             control_dir=stage,
             reservations=reservations,
-            receipts=(receipt_record,),
+            receipts=receipts,
             evictions=evictions,
             publication_bytes=candidate,
             policy=policy,
@@ -1297,12 +1303,16 @@ def _publish_operational_batch(
     for _entry, intent_path, _raw, receipt_cleanup in completed:
         cleanup.extend((intent_path, receipt_cleanup, f"active-receipts/{_entry.unit_id}.json"))
         cleanup_trees.append(f"catalog-proofs/{_entry.unit_id}")
-    authorization = {
-        "schema_version": "phase4-r2-active-receipt-v1",
-        "unit_id": receipt_unit_id,
-        "receipt_sha256": receipt_sha256,
-        "operational_head": _catalog_ref_payload(new_head),
-    }
+    authorization = (
+        None
+        if receipt_unit_id is None
+        else {
+            "schema_version": "phase4-r2-active-receipt-v1",
+            "unit_id": receipt_unit_id,
+            "receipt_sha256": receipt_sha256,
+            "operational_head": _catalog_ref_payload(new_head),
+        }
+    )
     pending = {
         "schema_version": "phase4-r2-operational-pending-v1",
         "transport_id": transport_id,

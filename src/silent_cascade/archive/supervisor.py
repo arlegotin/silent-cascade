@@ -99,13 +99,20 @@ def _decode_job(*, job: str, request: dict, run_dir: Path):
     return decoded
 
 
-def _execute_job(job, request, run_dir):
+def _execute_job(job, request, run_dir, *, session=None):
     values = _decode_job(job=job, request=request, run_dir=run_dir)
     if job == "pilot":
+        from silent_cascade.archive.producer import ArchiveProducer
         from silent_cascade.train.pilot_workflow import run_pilot
 
-        run_pilot(run_dir=run_dir, **values)
+        run_pilot(
+            run_dir=run_dir,
+            **values,
+            archive_producer=ArchiveProducer(session=session) if session is not None else None,
+            evidence_context=session,
+        )
     elif job == "checks":
+        from silent_cascade.archive.producer import ArchiveProducer
         from silent_cascade.train.pilot_checks import run_pilot_checks
         from silent_cascade.train.pilot_workflow import resolve_pilot_path
 
@@ -113,6 +120,8 @@ def _execute_job(job, request, run_dir):
             run_dir=run_dir,
             config=resolve_pilot_path(values["config_path"]),
             output_path=run_dir / "phase4-gate.json",
+            archive_producer=ArchiveProducer(session=session) if session is not None else None,
+            evidence_context=session,
         )
     elif job == "verify":
         from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
@@ -170,7 +179,10 @@ def _child_main():
     watcher = threading.Thread(target=watch_parent, daemon=True)
     watcher.start()
     try:
-        _execute_job(job["job"], job["request"], run_dir)
+        if job["job"] in {"pilot", "checks"}:
+            _execute_job(job["job"], job["request"], run_dir, session=session)
+        else:
+            _execute_job(job["job"], job["request"], run_dir)
     finally:
         finished.set()
         watcher.join(timeout=2)
@@ -350,6 +362,7 @@ def _supervise_bound_job(
                     stderr=subprocess.PIPE,
                     start_new_session=True,
                 )
+                server.child_pid = child.pid
                 selector.register(child.stdout, selectors.EVENT_READ, stdout)
                 selector.register(child.stderr, selectors.EVENT_READ, stderr)
                 logged = 0
@@ -446,6 +459,8 @@ class _ArchiveServer:
         self.transport = transport
         self.io = _ObservedTransport(self)
         self.run_id = run_id
+        self.child_pid = None
+        self._prior_pilot_owner = self._pilot_owner_snapshot()
         self.budget = _StorageBudget(workspace=workspace_root, policy=policy)
         self.budget.require_path(self.run_dir)
         self.budget.require_path(self.control_dir)
@@ -488,6 +503,163 @@ class _ArchiveServer:
         self.progress = 0
         self.operation_time = time.monotonic()
         self.inventory_cursor = None
+
+    def _pilot_owner_snapshot(self):
+        from pathlib import PurePosixPath
+
+        from silent_cascade.archive.catalog import _source_file
+
+        name = "." + self.run_dir.name + ".owner.json"
+        try:
+            with _source_file(self.run_dir.parent, PurePosixPath(name)) as (descriptor, info):
+                raw = os.read(descriptor, 65537)
+                if len(raw) > 65536:
+                    raise ValueError("oversized pilot owner")
+                final = os.fstat(descriptor)
+                if (info.st_dev, info.st_ino, info.st_mtime_ns) != (
+                    final.st_dev,
+                    final.st_ino,
+                    final.st_mtime_ns,
+                ):
+                    raise ValueError("pilot owner changed during custody capture")
+                return raw, info.st_dev, info.st_ino
+        except FileNotFoundError:
+            return None
+
+    def _authenticate_stopped_custody(self, payload):
+        from silent_cascade.archive.producer import StoppedPilotCustody
+        from silent_cascade.train.pilot_state import PilotCheckpointDescriptor
+        from silent_cascade.train.pilot_workflow import process_identity
+
+        custody = StoppedPilotCustody.model_validate_json(canonical_json_bytes(payload["custody"]))
+        if custody.attempt_root is None and payload["stopped_control_sha256"] is not None:
+            raise ValueError("unscoped stopped custody cannot preserve a control")
+        raw = canonical_json_bytes(custody)
+        prior = self._prior_pilot_owner
+        current = self._pilot_owner_snapshot()
+        if prior is None or current is None or prior[1:] != current[1:]:
+            raise ValueError("stopped custody permanent owner inode differs")
+        if prior[0] != custody.prior_owner_canonical_json.encode():
+            raise ValueError("stopped custody prior owner differs from parent bootstrap")
+        old = json.loads(prior[0])
+        owner = json.loads(current[0])
+        if (
+            self.child_pid is None
+            or self.request is None
+            or self.request["pid"] != self.child_pid
+            or owner.get("pid") != self.child_pid
+            or owner.get("run_identity") != custody.run_identity
+            or owner.get("active") is not True
+            or process_identity(self.child_pid) != owner.get("process_start")
+        ):
+            raise ValueError("stopped custody current writer session differs")
+        if old.get("active") is not False and process_identity(old["pid"]) == old["process_start"]:
+            raise ValueError("live prior writer cannot grant stopped custody")
+        latest = PilotCheckpointDescriptor.model_validate_json(
+            canonical_json_bytes(
+                json.loads(_control_reader(self.run_dir)("checkpoint-index.json", 64 * 1024**2))[
+                    "latest"
+                ]
+            )
+        )
+        if latest != custody.checkpoint:
+            raise ValueError("stopped custody durable checkpoint differs")
+        checkpoint_raw = _control_reader(self.run_dir)(latest.path, 128 * 1024**2)
+        if sha256_bytes(checkpoint_raw) != latest.sha256:
+            raise ValueError("stopped custody durable checkpoint hash differs")
+        if (
+            payload["logical_root"] != custody.attempt_root
+            or tuple(payload["paths"]) != tuple(entry.path for entry in custody.entries)
+            or len(raw) > min(65536, self.policy.page_bytes)
+            or payload["identity"]["evidence_identity_sha256"] != sha256_bytes(raw)
+            or payload["identity"]["checkpoint_sha256"] != latest.sha256
+            or payload["identity"]["writer_stopped"] is not True
+        ):
+            raise ValueError("stopped custody sealed ownership differs")
+        for entry in custody.entries:
+            _hash_file(self.run_dir, entry)
+        return custody
+
+    def _publish_stopped_custody(self, custody):
+        from silent_cascade.archive.transport import _put_verified, _remove_verified_control_object
+
+        raw = canonical_json_bytes(custody)
+        digest = sha256_bytes(raw)
+        logical = f"stopped-custody/{digest}.json"
+        with self.budget.reserve(metadata=2 * len(raw) + 65536):
+            _create_control_object(self.control_dir, logical, raw)
+            _put_verified(
+                control_dir=self.control_dir,
+                transport=self.io,
+                key=_object_key(self.run_id, logical),
+                source=self.control_dir / logical,
+                expected_bytes=len(raw),
+                expected_sha256=digest,
+                policy=self.policy,
+            )
+            _remove_verified_control_object(self.control_dir, logical, raw)
+        return digest
+
+    def _preserve_stopped_control(self, custody, expected):
+        if expected is None:
+            return None
+        from silent_cascade.archive.operational import lookup_remote_reservation
+        from silent_cascade.archive.producer import COMMIT_BYTES, stopped_control_record
+        from silent_cascade.archive.transport import (
+            _opened_ledger,
+            _operational_cold_reader,
+            _operational_ref,
+            _publish_operational_batch,
+            _put_verified,
+            _remove_verified_control_object,
+            _resume_operational_pending,
+            archive_operation_lock,
+        )
+
+        raw = _control_reader(self.control_dir)("episode-pending.json", COMMIT_BYTES)
+        if sha256_bytes(raw) != expected:
+            raise ValueError("stopped pending control changed before publication")
+        preserved = canonical_json_bytes(stopped_control_record(raw, custody))
+        digest = sha256_bytes(preserved)
+        logical = f"stopped-controls/{digest}.json"
+        key = _object_key(self.run_id, logical)
+        with (
+            self.budget.reserve(metadata=2 * len(preserved) + 65536),
+            archive_operation_lock(self.control_dir),
+        ):
+            _resume_operational_pending(
+                control_dir=self.control_dir, transport=self.io, policy=self.policy
+            )
+            _create_control_object(self.control_dir, logical, preserved)
+            _put_verified(
+                control_dir=self.control_dir,
+                transport=self.io,
+                key=key,
+                source=self.control_dir / logical,
+                expected_bytes=len(preserved),
+                expected_sha256=digest,
+                policy=self.policy,
+            )
+            _publish_operational_batch(
+                control_dir=self.control_dir, transport=self.io, policy=self.policy
+            )
+            with _opened_ledger(
+                self.control_dir, transport_id=self.transport.transport_id, policy=self.policy
+            ) as (state, _, _objects):
+                head = _operational_ref(state)
+            record = lookup_remote_reservation(
+                self.control_dir,
+                head,
+                object_key=key,
+                policy=self.policy,
+                object_reader=_operational_cold_reader(
+                    control_dir=self.control_dir, transport=self.io
+                ),
+            )
+            if record is None or record.sha256 != digest or record.bytes != len(preserved):
+                raise ValueError("stopped control lacks committed operational authority")
+            _remove_verified_control_object(self.control_dir, logical, preserved)
+        return digest
 
     def _quarantine_staging(self):
         stages = (("lease-cache", "cache"), ("lease-metadata", "metadata"))
@@ -551,8 +723,9 @@ class _ArchiveServer:
     def close(self):
         if self.inventory_cursor is not None:
             self.inventory_cursor.close()
-        for token in tuple(self.leases):
-            self._release(token)
+        for token in reversed(tuple(self.leases)):
+            if token in self.leases:
+                self._release(token)
 
     def _verified_progress(self):
         self.progress += 1
@@ -830,7 +1003,7 @@ class _ArchiveServer:
             raise ValueError("catalog ownership is absent from its authenticated unit")
         raise _OwnerAbsent("evidence path has no authenticated owner")
 
-    def _lease(self, ref, *, selected_paths=None):
+    def _lease(self, ref, *, selected_paths=None, borrowed_owner=False):
         if ref.kind == "episode_pack" and any(
             value["ref"].kind == "episode_pack" for value in self.leases.values()
         ):
@@ -838,6 +1011,7 @@ class _ArchiveServer:
         stack = ExitStack()
         token = secrets.token_hex(16)
         cached = False
+        dependencies = []
         try:
             stack.enter_context(unit_reader_lease(control_dir=self.control_dir, ref=ref))
             metadata_root, manifest = stack.enter_context(self._metadata(ref))
@@ -856,15 +1030,55 @@ class _ArchiveServer:
             borrowed = tuple(
                 FileEntry(entry.path, entry.sha256, entry.bytes) for entry in manifest.borrowed
             )
+            if borrowed_owner and (ref.kind != "diagnostic" or borrowed):
+                raise ValueError("shared input owner must be a primitive diagnostic unit")
+            if borrowed and ref.kind != "episode_pack":
+                raise ValueError("only episode units may acquire shared input dependencies")
+            if self.budget.active_reservation is not None:
+                allocated = self.budget.check()
+                active = self.budget._state()["reservations"][self.budget.active_reservation]
+                needed = (
+                    sum(entry.bytes for entry in entries)
+                    + 2 * sum(entry.bytes for entry in borrowed)
+                    + 131072
+                )
+                remaining = active["amounts"].get("cache", 0) - max(
+                    0, allocated["cache"] - active["before"]["cache"]
+                )
+                if active["admission"] is not None and needed > remaining:
+                    raise StorageBlocked(
+                        "storage_blocked: episode and shared-source caches "
+                        "exceed remaining admission"
+                    )
+            borrowed_roots = {}
             for entry in borrowed:
                 try:
                     owner, _ = self._find_owner(entry.path)
                 except _OwnerAbsent:
                     owner = None
                 if owner is not None:
+                    if owner.kind != "diagnostic" or owner.unit_id == ref.unit_id:
+                        raise ValueError("invalid or cyclic shared input owner")
                     stack.enter_context(unit_reader_lease(control_dir=self.control_dir, ref=owner))
-                _hash_file(self.run_dir, entry)
-            resident = all((self.run_dir / entry.path).exists() for entry in entries)
+                source_root = self.run_dir
+                if not (self.run_dir / entry.path).exists():
+                    if owner is None:
+                        raise ValueError("cold shared input lacks authenticated owner")
+                    dependency = self._lease(
+                        owner, selected_paths=(entry.path,), borrowed_owner=True
+                    )
+                    dependencies.append(dependency["token"])
+                    source_root = Path(dependency["local_root"])
+                _hash_file(source_root, entry)
+                borrowed_roots[entry.path] = source_root
+            # Snapshots bind historical versions of mutable control files, not
+            # exclusive ownership of whatever occupies their source paths now.
+            owned_resident = ref.kind != "control_snapshot" and all(
+                (self.run_dir / entry.path).exists() for entry in entries
+            )
+            resident = owned_resident and all(
+                root == self.run_dir for root in borrowed_roots.values()
+            )
             if resident:
                 local_root = self.run_dir
             else:
@@ -905,17 +1119,26 @@ class _ArchiveServer:
                     + 65536,
                     scratch=self.policy.chunk_bytes,
                 ):
-                    restore_unit(
-                        control_dir=metadata_root,
-                        ref=ref,
-                        chunks=chunks(),
-                        destination=local_root,
-                        policy=self.policy,
-                        selected_paths=selected_paths,
-                    )
+                    if owned_resident:
+                        for entry in entries:
+                            _hash_file(self.run_dir, entry)
+                            _create_control_object(
+                                local_root,
+                                entry.path,
+                                _control_reader(self.run_dir)(entry.path, entry.bytes),
+                            )
+                    else:
+                        restore_unit(
+                            control_dir=metadata_root,
+                            ref=ref,
+                            chunks=chunks(),
+                            destination=local_root,
+                            policy=self.policy,
+                            selected_paths=selected_paths,
+                        )
                     cached = True
                     for entry in borrowed:
-                        raw = _control_reader(self.run_dir)(entry.path, entry.bytes)
+                        raw = _control_reader(borrowed_roots[entry.path])(entry.path, entry.bytes)
                         if sha256_bytes(raw) != entry.sha256:
                             raise ValueError("borrowed dependency changed")
                         _create_control_object(local_root, entry.path, raw)
@@ -927,6 +1150,7 @@ class _ArchiveServer:
                 "root": local_root,
                 "cached": cached,
                 "borrowed": borrowed,
+                "dependencies": dependencies,
             }
             return {
                 "token": token,
@@ -937,12 +1161,16 @@ class _ArchiveServer:
             }
         except BaseException:
             stack.close()
+            for dependency in reversed(dependencies):
+                self._release(dependency)
             # Preserve a failed restored tree; it remains charged and unexposed.
             raise
 
     def _release(self, token):
         value = self.leases.pop(token)
         value["stack"].close()
+        for dependency in reversed(value.get("dependencies", ())):
+            self._release(dependency)
         if value["cached"]:
             with _unit_writer_lock(control_dir=self.control_dir, ref=value["ref"]):
                 _remove_control_tree(self.control_dir, "lease-cache/" + token)
@@ -972,8 +1200,49 @@ class _ArchiveServer:
             from silent_cascade.archive.catalog import seal_unit
 
             expected = {"logical_root", "paths", "kind", "identity", "episode_groups", "borrowed"}
-            if set(payload) != expected or payload["identity"].get("run_id") != self.run_id:
+            partial = payload.get("kind") == "partial"
+            if (
+                set(payload)
+                != (expected | {"custody", "stopped_control_sha256"} if partial else expected)
+                or payload["identity"].get("run_id") != self.run_id
+            ):
                 raise ValueError("invalid unit seal request")
+            if partial:
+                custody = self._authenticate_stopped_custody(payload)
+                unowned, owners = [], {}
+                for entry in custody.entries:
+                    try:
+                        owner, _ = self._find_owner(entry.path)
+                    except _OwnerAbsent:
+                        unowned.append(entry)
+                    else:
+                        with self._metadata(owner) as (metadata_root, _):
+                            if entry not in tuple(iter_unit_files(metadata_root, owner)):
+                                raise ValueError(
+                                    "stopped candidate differs from authenticated owner"
+                                )
+                        group = owners.setdefault(
+                            owner.unit_id, {"ref": asdict(owner), "entries": []}
+                        )
+                        group["entries"].append(asdict(entry))
+                retained_owned = [owners[key] for key in sorted(owners)]
+                stopped_control = self._preserve_stopped_control(
+                    custody, payload["stopped_control_sha256"]
+                )
+                if not unowned:
+                    return {
+                        "ref": None,
+                        "custody_sha256": None,
+                        "retained_owned": retained_owned,
+                        "stopped_control_sha256": stopped_control,
+                    }
+                custody = custody.model_copy(update={"entries": tuple(unowned)})
+                proof_digest = self._publish_stopped_custody(custody)
+                payload = {
+                    **payload,
+                    "paths": [entry.path for entry in unowned],
+                    "identity": {**payload["identity"], "evidence_identity_sha256": proof_digest},
+                }
             ref = seal_unit(
                 run_dir=self.run_dir,
                 control_dir=self.control_dir,
@@ -985,6 +1254,13 @@ class _ArchiveServer:
                 borrowed=tuple(FileEntry(**value) for value in payload["borrowed"]),
                 policy=self.policy,
             )
+            if partial:
+                return {
+                    "ref": asdict(ref),
+                    "custody_sha256": proof_digest,
+                    "retained_owned": retained_owned,
+                    "stopped_control_sha256": stopped_control,
+                }
             return {"ref": asdict(ref)}
         if operation == "lease":
             if set(payload) == {"ref"}:

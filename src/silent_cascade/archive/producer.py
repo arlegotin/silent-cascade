@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import TypeAdapter, model_validator
 
 from silent_cascade.archive.catalog import _pinned_directory, _safe_logical_path
 from silent_cascade.archive.ledger import StorageBlocked
@@ -21,6 +21,7 @@ from silent_cascade.archive.types import (
 )
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.io import atomic_create_bytes
+from silent_cascade.train.pilot_state import PilotCheckpointDescriptor
 from silent_cascade.validation import StrictModel
 
 EVALUATION_BYTES = 128 * 1024**2
@@ -46,6 +47,58 @@ class JournalSegmentCommit(StrictModel):
         ):
             raise ValueError("journal segment heads or unique record order differ")
         return self
+
+
+class StoppedPilotCustody(StrictModel):
+    schema_version: Literal["phase4-stopped-pilot-custody-v1"] = "phase4-stopped-pilot-custody-v1"
+    run_identity: Hash
+    prior_owner_canonical_json: str
+    prior_owner_sha256: Hash
+    checkpoint: PilotCheckpointDescriptor
+    attempt_root: str | None
+    entries: tuple[FileEntry, ...]
+
+    @model_validator(mode="after")
+    def validate_custody(self):
+        prior = json.loads(self.prior_owner_canonical_json)
+        if (
+            set(prior) != {"pid", "process_start", "run_identity", "active"}
+            or prior["run_identity"] != self.run_identity
+            or canonical_json_bytes(prior).decode() != self.prior_owner_canonical_json
+            or sha256_bytes(self.prior_owner_canonical_json.encode()) != self.prior_owner_sha256
+            or (
+                self.attempt_root is not None
+                and not re.fullmatch(r"attempt-[0-9a-f]{32}", self.attempt_root)
+            )
+            or (self.attempt_root is None and self.entries)
+        ):
+            raise ValueError("stopped pilot custody identity differs")
+        previous = ""
+        for entry in self.entries:
+            path = _safe_logical_path(entry.path, field="stopped attempt member")
+            if entry.path <= previous or not path.is_relative_to(self.attempt_root):
+                raise ValueError("stopped custody scope/order differs")
+            previous = entry.path
+        return self
+
+
+def stopped_control_record(raw, custody):
+    """Preserve an operational envelope, without registering an episode outcome."""
+    commit = TypeAdapter(EpisodeCommit).validate_json(raw)
+    if (
+        len(raw) > COMMIT_BYTES
+        or canonical_json_bytes(asdict(commit)) != raw
+        or any(not Path(entry.path).is_relative_to(custody.attempt_root) for entry in commit.owned)
+    ):
+        raise ValueError("stopped pending control scope or canonical bytes differ")
+    return {
+        "schema_version": "phase4-stopped-pilot-control-v1",
+        "run_id": custody.run_identity,
+        "attempt_root": custody.attempt_root,
+        "prior_owner_sha256": custody.prior_owner_sha256,
+        "control_sha256": sha256_bytes(raw),
+        "control_canonical_json": raw.decode(),
+    }
 
 
 def seal_journal_segments(
@@ -134,8 +187,10 @@ def before_work_bounds(operation):
     bounds = ArtifactOutputBounds()
     if operation == "episode":
         return {
-            "spool": bounds.episode_owned + bounds.episode_row + ALLOCATION_OVERHEAD,
-            "pinned": bounds.shared_weights + ALLOCATION_OVERHEAD,
+            "spool": bounds.episode_owned
+            + bounds.episode_row
+            + bounds.shared_weights
+            + ALLOCATION_OVERHEAD,
             "metadata": bounds.commit + ALLOCATION_OVERHEAD,
         }
     if operation == "update":
@@ -230,11 +285,210 @@ class ArchiveProducer:
         self._evaluations = {}
         self._resident = {}
         self._metadata = {}
+        self._shared = {}
         self._training_identity = None
         self._journal_base = None
         self._journal_head = None
         self._journal_pending = []
         self._journal_bytes = 0
+        self.stopped_checkpoint = None
+
+    def adopt_stopped(self, stopped, *, source_commit, config_sha256):
+        """Take custody of unknown stopped-attempt bytes without manufacturing outcomes."""
+        import stat
+
+        self.bind_training(source_commit=source_commit, config_sha256=config_sha256)
+        prior = json.loads(stopped.prior_owner_canonical_json)
+        handoff = StoppedPilotCustody(
+            run_identity=prior["run_identity"],
+            prior_owner_canonical_json=stopped.prior_owner_canonical_json,
+            prior_owner_sha256=stopped.prior_owner_sha256,
+            checkpoint=stopped.checkpoint,
+            attempt_root=None,
+            entries=(),
+        )
+        response = self.session._request(
+            "seal",
+            {
+                "logical_root": None,
+                "paths": [],
+                "kind": "partial",
+                "identity": self._training_identity.model_copy(
+                    update={
+                        "writer_stopped": True,
+                        "checkpoint_committed": True,
+                        "checkpoint_sha256": stopped.checkpoint.sha256,
+                        "evidence_identity_sha256": sha256_bytes(canonical_json_bytes(handoff)),
+                    }
+                ).model_dump(mode="json"),
+                "episode_groups": [],
+                "borrowed": [],
+                "custody": handoff.model_dump(mode="json"),
+                "stopped_control_sha256": None,
+            },
+        )
+        if response != {
+            "ref": None,
+            "custody_sha256": None,
+            "retained_owned": [],
+            "stopped_control_sha256": None,
+        }:
+            raise ValueError("empty stopped custody handoff differs")
+        # The workflow has authenticated the old writer and durable scientific
+        # checkpoint under its permanent lock. A filesystem walk now inventories
+        # custody only; these records are deliberately never EpisodeCommits.
+        for attempt in sorted(self.run_dir.iterdir()):
+            if not re.fullmatch(r"attempt-[0-9a-f]{32}", attempt.name):
+                continue
+            if not stat.S_ISDIR(attempt.lstat().st_mode):
+                raise ValueError("stopped attempt must be a regular directory")
+            candidates = []
+            for directory, directories, files in os.walk(attempt, followlinks=False):
+                for name in directories:
+                    if not stat.S_ISDIR((Path(directory) / name).lstat().st_mode):
+                        raise ValueError("stopped custody refuses directory links")
+                for name in files:
+                    path = Path(directory) / name
+                    if not stat.S_ISREG(path.lstat().st_mode):
+                        raise ValueError("stopped custody refuses special files")
+                    entry = self.track_file(path)
+                    candidates.append(entry)
+            # Preserve current model-weight inputs locally; they remain in exact
+            # retained custody and are not attributed to any episode.
+            candidates = sorted(candidates, key=lambda entry: entry.path)
+            group, total = [], 0
+
+            def publish(entries, attempt=attempt):
+                if not entries:
+                    return
+                custody = StoppedPilotCustody(
+                    run_identity=prior["run_identity"],
+                    prior_owner_canonical_json=stopped.prior_owner_canonical_json,
+                    prior_owner_sha256=stopped.prior_owner_sha256,
+                    checkpoint=stopped.checkpoint,
+                    attempt_root=attempt.name,
+                    entries=tuple(entries),
+                )
+                raw = canonical_json_bytes(custody)
+                if len(raw) > min(COMMIT_BYTES, self.policy.page_bytes):
+                    raise StorageBlocked("storage_blocked: stopped custody metadata bound")
+                bound = self._training_identity.model_copy(
+                    update={
+                        "writer_stopped": True,
+                        "evidence_identity_sha256": sha256_bytes(raw),
+                        "checkpoint_sha256": stopped.checkpoint.sha256,
+                        "checkpoint_committed": True,
+                    }
+                )
+                from silent_cascade.archive.catalog import _control_reader
+                from silent_cascade.archive.transport import _remove_verified_control_object
+
+                pending = None
+                try:
+                    candidate = _control_reader(self.control_dir)(
+                        "episode-pending.json", COMMIT_BYTES
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    commit = TypeAdapter(EpisodeCommit).validate_json(candidate)
+                    if all(Path(entry.path).is_relative_to(attempt.name) for entry in commit.owned):
+                        pending = candidate
+                response = self.session._request(
+                    "seal",
+                    {
+                        "logical_root": attempt.name,
+                        "paths": [entry.path for entry in entries],
+                        "kind": "partial",
+                        "identity": bound.model_dump(mode="json"),
+                        "episode_groups": [],
+                        "borrowed": [],
+                        "custody": custody.model_dump(mode="json"),
+                        "stopped_control_sha256": None
+                        if pending is None
+                        else sha256_bytes(pending),
+                    },
+                )
+                if set(response) != {
+                    "ref",
+                    "custody_sha256",
+                    "retained_owned",
+                    "stopped_control_sha256",
+                }:
+                    raise ValueError("stopped custody partition response differs")
+                expected = (
+                    None
+                    if pending is None
+                    else sha256_bytes(
+                        canonical_json_bytes(stopped_control_record(pending, custody))
+                    )
+                )
+                if response["stopped_control_sha256"] != expected:
+                    raise ValueError("stopped control publication binding differs")
+                if pending is not None and not _remove_verified_control_object(
+                    self.control_dir, "episode-pending.json", pending
+                ):
+                    raise ValueError("stopped pending control changed before slot rotation")
+                original = {entry.path: entry for entry in entries}
+                retained_paths = set()
+                for group in response["retained_owned"]:
+                    if set(group) != {"ref", "entries"}:
+                        raise ValueError("stopped owner group differs")
+                    owner = UnitRef(**group["ref"])
+                    group_paths = []
+                    for value in group["entries"]:
+                        entry = FileEntry(**value)
+                        if entry.path in retained_paths or original.get(entry.path) != entry:
+                            raise ValueError("stopped custody partition overlaps or changes bytes")
+                        retained_paths.add(entry.path)
+                        group_paths.append(entry.path)
+                    self._archive(owner, evict=True, owned=tuple(group_paths))
+                remaining = tuple(entry for entry in entries if entry.path not in retained_paths)
+                if remaining:
+                    proof = custody.model_copy(update={"entries": remaining})
+                    if response["custody_sha256"] != sha256_bytes(canonical_json_bytes(proof)):
+                        raise ValueError("stopped custody partition digest differs")
+                    ref = UnitRef(**response["ref"])
+                    if (
+                        ref.kind != "partial"
+                        or ref.file_count != len(remaining)
+                        or ref.logical_root != attempt.name
+                    ):
+                        raise ValueError("stopped partial unit differs")
+                    self._archive(ref, evict=True, owned=tuple(entry.path for entry in remaining))
+                elif response["ref"] is not None or response["custody_sha256"] is not None:
+                    raise ValueError("all-owned stopped custody cannot mint partial ownership")
+
+            for entry in candidates:
+                if len(Path(entry.path).parts) == 2 and Path(entry.path).suffix == ".safetensors":
+                    continue
+                if group and (
+                    len(group) >= min(32, self.policy.page_entries)
+                    or total + entry.bytes > self.policy.episode_bytes
+                ):
+                    publish(group)
+                    group, total = [], 0
+                if entry.bytes > self.policy.episode_bytes:
+                    raise StorageBlocked("storage_blocked: stopped file exceeds partial bound")
+                group.append(entry)
+                total += entry.bytes
+            publish(group)
+
+        # Root checkpoint/journal controls have distinct scientific authorities.
+        index = json.loads((self.run_dir / "checkpoint-index.json").read_bytes())
+        self.track_file(self.run_dir / "checkpoint-index.json")
+        for value in index["history"]:
+            descriptor = PilotCheckpointDescriptor.model_validate_json(canonical_json_bytes(value))
+            if (self.run_dir / descriptor.path).exists():
+                self.track_file(self.run_dir / descriptor.path, descriptor.sha256)
+        for entry in self.session.entries():
+            if (
+                "/" not in entry.path
+                and re.fullmatch(r"journal-[0-9a-f]{64}\.json", entry.path)
+                and (self.run_dir / entry.path).exists()
+            ):
+                self.track_file(self.run_dir / entry.path, entry.sha256)
+        self.stopped_checkpoint = stopped.checkpoint
 
     def bind_training(self, *, source_commit, config_sha256, journal_head=None):
         self._training_identity = UnitIdentity(
@@ -331,7 +585,9 @@ class ArchiveProducer:
             kind="diagnostic",
             identity=self._identity(evaluation_root),
         )
-        self._archive(ref, evict=False)
+        self._archive(ref, evict=True, owned=paths)
+        metadata_ref, metadata_paths = self._metadata[evaluation_root]
+        self._archive(metadata_ref, evict=True, owned=metadata_paths)
 
     def logical_root(self, directory):
         logical = directory.absolute().relative_to(self.run_dir).as_posix()
@@ -477,6 +733,9 @@ class ArchiveProducer:
             self.track_file(self.run_dir / logical_root / name)
         for entry in (*commit.owned, *commit.borrowed):
             self._resident[entry.path] = entry
+        self._shared.setdefault(logical_root, {}).update(
+            {entry.path: entry for entry in commit.borrowed}
+        )
         ref = self._seal(
             logical_root=logical_root,
             paths=paths,
@@ -529,3 +788,25 @@ class ArchiveProducer:
         for path in paths:
             self.track_file(self.run_dir / path)
         self._metadata[logical_root] = (ref, tuple(paths))
+        shared = tuple(sorted(self._shared.get(logical_root, {})))
+        if shared:
+            shared_ref = self._seal(
+                logical_root=logical_root,
+                paths=shared,
+                kind="diagnostic",
+                identity=self._identity(logical_root),
+            )
+            self._archive(shared_ref, evict=True, owned=shared)
+
+    def after_execution(self, logical_root):
+        path = str(Path(logical_root) / "execution.json")
+        self.track_file(self.run_dir / path)
+        ref = self._seal(
+            logical_root=logical_root,
+            paths=(path,),
+            kind="diagnostic",
+            identity=self._identity(logical_root),
+        )
+        self._archive(ref, evict=True, owned=(path,))
+        metadata_ref, metadata_paths = self._metadata[logical_root]
+        self._archive(metadata_ref, evict=True, owned=metadata_paths)

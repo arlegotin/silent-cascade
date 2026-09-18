@@ -144,7 +144,11 @@ def task_scratch():
     try:
         yield root
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        if not (
+            os.environ.get("SILENT_CASCADE_ARCHIVE_TEST_SCRATCH")
+            and os.environ.get("SILENT_CASCADE_ARCHIVE_TEST_PRESERVE_SCRATCH") == "1"
+        ):
+            shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest.fixture

@@ -31,6 +31,8 @@ from silent_cascade.train.pilot_evidence_types import (
 )
 from silent_cascade.train.pilot_provenance import (
     PLAN,
+    R2_PLAN,
+    R2_SPEC,
     SPEC,
     _blobs,
     authenticate_pilot_source,
@@ -259,6 +261,22 @@ REQUIRED_PACKAGE_FILES = (
     "src/silent_cascade/train/verification.py",
     "src/silent_cascade/validation.py",
 )
+
+# Preserve the historical source inventory while adding the current storage closure.
+HISTORICAL_REQUIRED_PACKAGE_FILES = REQUIRED_PACKAGE_FILES
+STORAGE_PACKAGE_FILES = (
+    "src/silent_cascade/archive/__init__.py",
+    "src/silent_cascade/archive/bundles.py",
+    "src/silent_cascade/archive/catalog.py",
+    "src/silent_cascade/archive/ledger.py",
+    "src/silent_cascade/archive/operational.py",
+    "src/silent_cascade/archive/producer.py",
+    "src/silent_cascade/archive/session.py",
+    "src/silent_cascade/archive/supervisor.py",
+    "src/silent_cascade/archive/transport.py",
+    "src/silent_cascade/archive/types.py",
+)
+REQUIRED_PACKAGE_FILES = tuple(sorted((*HISTORICAL_REQUIRED_PACKAGE_FILES, *STORAGE_PACKAGE_FILES)))
 
 
 def acceptance_failures(
@@ -1300,6 +1318,8 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
     ):
         raise ValueError("required independent source inventory differs")
     required_nonpackage = {
+        R2_PLAN,
+        R2_SPEC,
         "configs/base.yaml",
         "configs/data/primary.yaml",
         "configs/model/event_flow.yaml",

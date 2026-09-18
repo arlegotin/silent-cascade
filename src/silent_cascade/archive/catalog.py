@@ -1361,6 +1361,16 @@ def verify_run_catalog_unit(
     ):
         raise ValueError("unit is not authenticated by run catalog")
     for entry in _iter_inventory_records(manifest, read_shard):
+        if manifest.kind == "control_snapshot":
+            if (
+                manifest.identity.checkpoint_sha256 is None
+                or not manifest.identity.checkpoint_committed
+            ):
+                raise ValueError("control snapshot lacks committed checkpoint identity")
+            # Snapshots authenticate immutable versions of mutable/pinned source
+            # paths. The catalog deliberately grants them no exclusive ownership.
+            # Exhaust the inventory iterator so final shard/count closure still runs.
+            continue
         owner = OwnershipCatalogEntry(
             record_type="file",
             key=_ownership_key("file", entry.path),

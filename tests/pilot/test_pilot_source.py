@@ -52,6 +52,11 @@ import json
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 audit_path = root / 'pilot-data/audits/one_hop/report.json'
 original = audit_path.read_bytes()
+current_source = authenticate_pilot_source(repo_root=root, source_commit=source, config=config)
+for required in ('src/silent_cascade/archive/producer.py',
+                 'docs/superpowers/plans/2026-09-17-phase-4-r2-archive.md',
+                 'docs/superpowers/specs/2026-09-17-phase-4-r2-archive-design.md'):
+    assert required in current_source.source_files, required
 for mutation in ('omitted', 'additional', 'unsafe', 'substituted'):
     report = json.loads(original)
     if mutation == 'omitted':

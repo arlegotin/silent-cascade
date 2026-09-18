@@ -24,6 +24,8 @@ from silent_cascade.validation import StrictModel
 
 PLAN = "docs/superpowers/plans/2026-09-16-phase-4-autonomous-eventflow.md"
 SPEC = "docs/superpowers/specs/2026-08-30-silent-cascade-design.md"
+R2_PLAN = "docs/superpowers/plans/2026-09-17-phase-4-r2-archive.md"
+R2_SPEC = "docs/superpowers/specs/2026-09-17-phase-4-r2-archive-design.md"
 PILOT_ENTRYPOINTS = (
     "scripts/run_pilot.py",
     "scripts/check_phase4_pilot.py",
@@ -142,6 +144,8 @@ def authenticate_pilot_source(
         ".python-version",
         PLAN,
         SPEC,
+        R2_PLAN,
+        R2_SPEC,
     )
     source_blobs = _blobs(root, source_commit, paths)
     head_blobs = source_blobs if head == source_commit else _blobs(root, head, paths)

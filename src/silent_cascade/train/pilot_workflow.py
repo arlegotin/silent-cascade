@@ -6,6 +6,7 @@ import math
 import os
 import stat
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import psutil
@@ -132,8 +133,15 @@ def process_identity(pid: int):
         raise ValueError(f"cannot inspect process identity for PID {pid}") from error
 
 
+@dataclass(frozen=True)
+class StoppedPilotOwner:
+    prior_owner_canonical_json: str
+    prior_owner_sha256: str
+    checkpoint: PilotCheckpointDescriptor
+
+
 @contextmanager
-def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None):
+def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None, capture_stopped=False):
     """A permanent inode lock prevents unlink/recreate races; records survive crashes."""
     _check_path(run_dir)
     lock = run_dir.parent / ("." + run_dir.name + ".owner.json")
@@ -160,6 +168,8 @@ def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None):
             if len(raw) > 65536:
                 raise ValueError("oversized ownership record")
             existing = json.loads(raw)
+            stopped = None
+            recovered = False
             if not isinstance(existing, dict):
                 raise ValueError("invalid ownership record")
             if existing:
@@ -187,6 +197,20 @@ def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None):
                                 "stale ownership requires verified last durable checkpoint"
                             )
                         recover()
+                        recovered = True
+                if capture_stopped and run_dir.exists():
+                    if recover is None:
+                        raise ValueError("stopped custody requires durable recovery")
+                    if not recovered:
+                        recover()
+                    checkpoint_descriptor = PilotCheckpointDescriptor.model_validate_json(
+                        canonical_json_bytes(read_json(run_dir / "checkpoint-index.json")["latest"])
+                    )
+                    if raw != canonical_json_bytes(existing):
+                        raise ValueError("prior pilot owner is not canonical")
+                    stopped = StoppedPilotOwner(
+                        raw.decode(), sha256_bytes(raw), checkpoint_descriptor
+                    )
             record = dict(
                 pid=os.getpid(),
                 process_start=process_identity(os.getpid()),
@@ -202,7 +226,7 @@ def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None):
 
             write(record)
             try:
-                yield
+                yield stopped
             finally:
                 write(record | {"active": False})
         finally:
@@ -211,7 +235,7 @@ def pilot_ownership(run_dir: Path, *, run_identity: str, recover=None):
             os.close(descriptor)
 
 
-def _durable(run_dir, config, source, device, *, result=None):
+def _durable(run_dir, config, source, device, *, result=None, evidence_context=None):
     index = read_json(run_dir / "checkpoint-index.json")
     descriptor = PilotCheckpointDescriptor.model_validate_json(
         canonical_json_bytes(index["latest"])
@@ -220,7 +244,7 @@ def _durable(run_dir, config, source, device, *, result=None):
     session = load_pilot_checkpoint(
         path, expected_sha256=descriptor.sha256, config=config, source=source, device=device
     )
-    verify_journal(run_dir, session.progress)
+    verify_journal(run_dir, session.progress, evidence_context=evidence_context)
     if (
         session.progress.global_step != descriptor.global_step
         or NeuralModelIdentity.from_model(
@@ -254,15 +278,28 @@ def _restore_result(payload):
     return PilotTrainingResult(**values)
 
 
-def _train(config, manifests, run_dir, device, source_commit, source, resume):
+def _train(
+    config,
+    manifests,
+    run_dir,
+    device,
+    source_commit,
+    source,
+    resume,
+    *,
+    archive_producer=None,
+    evidence_context=None,
+):
     if (run_dir / "training-result.json").exists():
         payload = load_training_result(run_dir, run_dir / "training-result.json")
-        durable = _durable(run_dir, config, source, device, result=payload)
+        durable = _durable(
+            run_dir, config, source, device, result=payload, evidence_context=evidence_context
+        )
         if resume is not None and resume.absolute() != durable.absolute():
             raise ValueError("resume must name the last durable checkpoint")
         return _restore_result(payload)
-    if run_dir.exists():
-        durable = _durable(run_dir, config, source, device)
+    if run_dir.exists() and (archive_producer is None or any(run_dir.iterdir())):
+        durable = _durable(run_dir, config, source, device, evidence_context=evidence_context)
         if resume is not None and resume.absolute() != durable.absolute():
             raise ValueError("resume must name the last durable checkpoint")
         # Recover publication interrupted after the trainer's final result.
@@ -280,12 +317,20 @@ def _train(config, manifests, run_dir, device, source_commit, source, resume):
                 device=device,
                 source_commit=source_commit,
                 resume=durable,
+                archive_producer=archive_producer,
+                evidence_context=evidence_context,
             )
     else:
         if resume is not None:
             raise ValueError("resume requires its existing run directory")
         result = run_pilot_training(
-            config, manifests=manifests, run_dir=run_dir, device=device, source_commit=source_commit
+            config,
+            manifests=manifests,
+            run_dir=run_dir,
+            device=device,
+            source_commit=source_commit,
+            archive_producer=archive_producer,
+            evidence_context=evidence_context,
         )
     _publish_pilot_bytes(
         run_dir / "training-result.json",
@@ -302,14 +347,35 @@ def train_pilot(
     device: str,
     seed: int = 11,
     resume: Path | None = None,
+    archive_producer=None,
+    evidence_context=None,
 ):
     config = resolve_pilot_path(config_path)
     if seed != 11:
         raise ValueError("pilot model seed must be 11")
-    return _workflow(config, manifest_dir, run_dir, device, resume=resume, complete=False)
+    return _workflow(
+        config,
+        manifest_dir,
+        run_dir,
+        device,
+        resume=resume,
+        complete=False,
+        archive_producer=archive_producer,
+        evidence_context=evidence_context,
+    )
 
 
-def _workflow(config, manifest_dir, run_dir, device, *, resume=None, complete):
+def _workflow(
+    config,
+    manifest_dir,
+    run_dir,
+    device,
+    *,
+    resume=None,
+    complete,
+    archive_producer=None,
+    evidence_context=None,
+):
     if device not in {"cpu", "mps"}:
         raise ValueError("pilot device must be cpu or mps")
     _check_path(manifest_dir)
@@ -328,10 +394,19 @@ def _workflow(config, manifest_dir, run_dir, device, *, resume=None, complete):
 
     def recover():
         _, authenticated, _, _ = _inputs(config, manifest_dir, prepare=False)
-        _durable(run_dir, config, authenticated, device)
+        _durable(run_dir, config, authenticated, device, evidence_context=evidence_context)
 
-    with pilot_ownership(run_dir, run_identity=identity, recover=recover):
+    with pilot_ownership(
+        run_dir,
+        run_identity=identity,
+        recover=recover,
+        capture_stopped=archive_producer is not None,
+    ) as stopped:
         source_commit, source, manifests, loaded = _inputs(config, manifest_dir, prepare=complete)
+        if stopped is not None:
+            archive_producer.adopt_stopped(
+                stopped, source_commit=source_commit, config_sha256=config.sha256
+            )
         metadata = dict(
             schema_version="phase4-pilot-workflow-v1",
             config_sha256=config.sha256,
@@ -342,23 +417,51 @@ def _workflow(config, manifest_dir, run_dir, device, *, resume=None, complete):
                 stage: sha256_bytes(canonical_json_bytes(m)) for stage, m in loaded.items()
             },
         )
-        result = _train(config, manifests, run_dir, device, source_commit, source, resume)
+        result = _train(
+            config,
+            manifests,
+            run_dir,
+            device,
+            source_commit,
+            source,
+            resume,
+            archive_producer=archive_producer,
+            evidence_context=evidence_context,
+        )
         _publish_pilot_bytes(run_dir / "workflow.json", canonical_json_bytes(metadata))
         if complete:
             from silent_cascade.report.pilot import build_pilot_report
             from silent_cascade.train.pilot_checks import _run_pilot_checks_owned
 
             _run_pilot_checks_owned(
-                run_dir=run_dir, config=config, output_path=run_dir / "phase4-gate.json"
+                run_dir=run_dir,
+                config=config,
+                output_path=run_dir / "phase4-gate.json",
+                archive_producer=archive_producer,
+                evidence_context=evidence_context,
             )
             build_pilot_report(run_dir=run_dir, output_dir=run_dir / "report")
         return result
 
 
 def run_pilot(
-    *, config_path: Path, manifest_dir: Path, run_dir: Path, device: str
+    *,
+    config_path: Path,
+    manifest_dir: Path,
+    run_dir: Path,
+    device: str,
+    archive_producer=None,
+    evidence_context=None,
 ) -> PilotTrainingResult:
-    return _workflow(resolve_pilot_path(config_path), manifest_dir, run_dir, device, complete=True)
+    return _workflow(
+        resolve_pilot_path(config_path),
+        manifest_dir,
+        run_dir,
+        device,
+        complete=True,
+        archive_producer=archive_producer,
+        evidence_context=evidence_context,
+    )
 
 
 def evaluate_pilot(*, checkpoint: Path, manifest: Path, output: Path, device: str):

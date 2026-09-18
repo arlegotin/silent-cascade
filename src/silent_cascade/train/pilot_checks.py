@@ -100,7 +100,18 @@ def _publish(path, value):
     _publish_pilot_bytes(path, canonical_json_bytes(value))
 
 
-def _evaluate(*, run_dir, config, source, result, manifests, weights, name):
+def _evaluate(
+    *,
+    run_dir,
+    config,
+    source,
+    result,
+    manifests,
+    weights,
+    name,
+    archive_producer=None,
+    evidence_context=None,
+):
     stage = name if name in {"two_hop", "robustness"} else "primary"
     manifest = manifests[stage]
     descriptor = result.selected_weights or result.latest_weights
@@ -160,7 +171,10 @@ def _evaluate(*, run_dir, config, source, result, manifests, weights, name):
         episodes=bundles,
         output_dir=output,
         device="cpu",
+        archive_producer=archive_producer,
+        evidence_context=evidence_context,
     )
+
     _publish(
         output / "execution.json",
         dict(
@@ -174,6 +188,8 @@ def _evaluate(*, run_dir, config, source, result, manifests, weights, name):
             source_commit=source.source_commit,
         ),
     )
+    if archive_producer is not None:
+        archive_producer.after_execution(archive_producer.logical_root(output))
 
 
 def _terminal(session):
@@ -322,7 +338,9 @@ def _continuations(*, run_dir, config, source, result, manifests, weights):
     _publish(path, {"schema_version": "phase4-continuation-evidence-v1", "records": records})
 
 
-def _run_pilot_checks_owned(*, run_dir, config, output_path):
+def _run_pilot_checks_owned(
+    *, run_dir, config, output_path, archive_producer=None, evidence_context=None
+):
     """Called only under the workflow's existing permanent run ownership."""
     root, source, result, manifests, weights, archive = authenticate_run(run_dir, config)
     if output_path.exists():
@@ -340,6 +358,8 @@ def _run_pilot_checks_owned(*, run_dir, config, output_path):
                 manifests=manifests,
                 weights=weights,
                 name=name,
+                archive_producer=archive_producer,
+                evidence_context=evidence_context,
             )
         _continuations(
             run_dir=run_dir,
@@ -359,7 +379,9 @@ def _run_pilot_checks_owned(*, run_dir, config, output_path):
     return collect_pilot_evidence(run_dir=run_dir, config=config, output_path=output_path)
 
 
-def run_pilot_checks(*, run_dir: Path, config, output_path: Path) -> Phase4GateArtifact:
+def run_pilot_checks(
+    *, run_dir: Path, config, output_path: Path, archive_producer=None, evidence_context=None
+) -> Phase4GateArtifact:
     from silent_cascade.train.pilot_workflow import pilot_ownership
 
     owner = strict_json(run_dir.parent / ("." + run_dir.name + ".owner.json"))
@@ -383,7 +405,13 @@ def run_pilot_checks(*, run_dir: Path, config, output_path: Path) -> Phase4GateA
         )
         if identity != owner["run_identity"]:
             raise ValueError("standalone ownership identity differs")
-        return _run_pilot_checks_owned(run_dir=run_dir, config=config, output_path=output_path)
+        return _run_pilot_checks_owned(
+            run_dir=run_dir,
+            config=config,
+            output_path=output_path,
+            archive_producer=archive_producer,
+            evidence_context=evidence_context,
+        )
 
 
 def recover_pilot_checks(

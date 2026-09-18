@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -103,7 +104,12 @@ def publish_json(path, value):
 
 
 def _write_index(parent, value):
-    _publish_bytes_at(parent, "checkpoint-index.json", canonical_json_bytes(value), replace=True)
+    from silent_cascade.train.pilot_data import MAX_PILOT_MANIFEST_BYTES
+
+    raw = canonical_json_bytes(value)
+    if len(raw) > MAX_PILOT_MANIFEST_BYTES:
+        raise ValueError("pilot checkpoint index exceeds format bound")
+    _publish_bytes_at(parent, "checkpoint-index.json", raw, replace=True)
 
 
 def _publish_selected(run_dir, progress, config):
@@ -148,15 +154,28 @@ def _publish_checkpoint(run_dir, pending, step, digest):
     return name
 
 
-def _journal(run_dir, progress, value):
+def _journal(run_dir, progress, value, *, archive_producer=None):
     record = {"prior": progress.journal_sha256, "global_step": progress.global_step, **value}
     raw = canonical_json_bytes(record)
     digest = sha256_bytes(raw)
     _publish_pilot_bytes(run_dir / f"journal-{digest}.json", raw)
+    if archive_producer is not None:
+        archive_producer.after_journal(f"journal-{digest}.json", digest)
     return progress.model_copy(update={"journal_sha256": digest})
 
 
-def _artifact_sha256(run_dir, name):
+@contextmanager
+def _evidence_path(run_dir, name, evidence_context=None):
+    path = run_dir / name
+    _check_path(path)
+    if path.exists() or evidence_context is None:
+        yield path
+    else:
+        with evidence_context._leased({"path": name}) as lease:
+            yield lease.local_root / name
+
+
+def _artifact_sha256(run_dir, name, *, evidence_context=None):
     relative = Path(name)
     if relative.is_absolute() or ".." in relative.parts:
         raise TrainingError("unsafe journal artifact path")
@@ -170,10 +189,13 @@ def _artifact_sha256(run_dir, name):
         and parts[2] == "autonomous"
     )
     reader = read_evaluation_artifact if autonomous else _read_pilot_bytes
-    return sha256_bytes(reader(path))
+    with _evidence_path(run_dir, name, evidence_context) as path:
+        return sha256_bytes(reader(path))
 
 
-def _collect_artifact_hashes(run_dir):
+def _collect_artifact_hashes(run_dir, *, evidence_context=None):
+    if evidence_context is not None:
+        return {entry.path: entry.sha256 for entry in evidence_context.entries()}
     return {
         str(p.relative_to(run_dir)): _artifact_sha256(run_dir, str(p.relative_to(run_dir)))
         for p in sorted(run_dir.rglob("*"))
@@ -181,20 +203,21 @@ def _collect_artifact_hashes(run_dir):
     }
 
 
-def verify_journal(run_dir, progress):
+def verify_journal(run_dir, progress, *, evidence_context=None):
     cursor, seen, steps = progress.journal_sha256, set(), []
     while cursor is not None:
         if cursor in seen:
             raise TrainingError("cyclic pilot journal")
         seen.add(cursor)
-        raw = _read_pilot_bytes(run_dir / f"journal-{cursor}.json")
+        with _evidence_path(run_dir, f"journal-{cursor}.json", evidence_context) as path:
+            raw = _read_pilot_bytes(path)
         if sha256_bytes(raw) != cursor:
             raise TrainingError("pilot journal hash mismatch")
         record = json.loads(raw)
         if record["kind"] == "update":
             steps.append(record["global_step"])
         for name, digest in record.get("artifacts", {}).items():
-            if _artifact_sha256(run_dir, name) != digest:
+            if _artifact_sha256(run_dir, name, evidence_context=evidence_context) != digest:
                 raise TrainingError("pilot journal artifact mismatch")
         cursor = record["prior"]
     if steps != list(range(progress.global_step, 0, -1)):
@@ -243,7 +266,19 @@ def retain_checkpoints(run_dir, descriptors, latest):
     return best
 
 
-def _validation(model, manifest, *, step, config, identity, weights_sha, directory, device):
+def _validation(
+    model,
+    manifest,
+    *,
+    step,
+    config,
+    identity,
+    weights_sha,
+    directory,
+    device,
+    archive_producer=None,
+    evidence_context=None,
+):
     manifest_sha = sha256_bytes(canonical_json_bytes(manifest))
     artifacts = {}
     if manifest.stage == "one_hop":
@@ -280,6 +315,8 @@ def _validation(model, manifest, *, step, config, identity, weights_sha, directo
         ),
         output_dir=directory / "autonomous",
         device=device,
+        archive_producer=archive_producer,
+        evidence_context=evidence_context,
     )
     artifacts.update({"autonomous/" + p: h for p, h in evaluation.artifact_hashes})
     timed_rows = tuple(
@@ -306,6 +343,8 @@ def _validation(model, manifest, *, step, config, identity, weights_sha, directo
         evidence_kind=kind,
     )
     artifacts["validation.json"] = publish_json(directory / "validation.json", record)
+    if archive_producer is not None:
+        archive_producer.after_validation(archive_producer.logical_root(directory))
     return record, {str(directory / p): h for p, h in artifacts.items()}
 
 
@@ -329,6 +368,8 @@ def run_pilot_training(
     device: str,
     source_commit: str,
     resume: Path | None = None,
+    archive_producer=None,
+    evidence_context=None,
 ) -> PilotTrainingResult:
     root = Path(__file__).resolve().parents[3]
     source = authenticate_pilot_source(repo_root=root, source_commit=source_commit, config=config)
@@ -340,14 +381,16 @@ def run_pilot_training(
     hashes = {stage: sha256_bytes(canonical_json_bytes(m)) for stage, m in loaded.items()}
     descriptors = []
     if resume is None:
-        if run_dir.exists():
+        if run_dir.exists() and (archive_producer is None or any(run_dir.iterdir())):
             raise TrainingError("fresh pilot attempt requires a new directory")
-        run_dir.mkdir(parents=True)
+        run_dir.mkdir(parents=True, exist_ok=archive_producer is not None)
         seed_all(11)
         model = EventFlowModel(config.config.neural).to(device)
         optimizer = make_optimizer(model, config.config.pilot)
         progress = PilotProgress(manifest_hashes=hashes)
     else:
+        if archive_producer is not None and archive_producer.stopped_checkpoint is None:
+            raise TrainingError("archive resume requires authenticated stopped-writer custody")
         index = json.loads(_read_pilot_bytes(run_dir / "checkpoint-index.json"))
         latest = PilotCheckpointDescriptor.model_validate_json(
             canonical_json_bytes(index["latest"])
@@ -370,16 +413,28 @@ def run_pilot_training(
         progress = progress.model_copy(update={"latest": latest})
         if progress.manifest_hashes != hashes:
             raise TrainingError("resume manifests differ")
-        committed = verify_journal(run_dir, progress)
-        abandoned = sorted(
-            p.name
-            for p in run_dir.glob("journal-*.json")
-            if p.name.removeprefix("journal-").removesuffix(".json") not in committed
+        committed = verify_journal(run_dir, progress, evidence_context=evidence_context)
+        journal_names = (
+            (
+                entry.path
+                for entry in evidence_context.entries()
+                if entry.path.startswith("journal-") and "/" not in entry.path
+            )
+            if evidence_context is not None
+            else (p.name for p in run_dir.glob("journal-*.json"))
         )
+        abandoned = sorted(
+            name
+            for name in journal_names
+            if name.removeprefix("journal-").removesuffix(".json") not in committed
+        )
+        restart_path = run_dir / f"restart-{uuid.uuid4().hex}.json"
         publish_json(
-            run_dir / f"restart-{uuid.uuid4().hex}.json",
+            restart_path,
             {"last_durable_step": progress.global_step, "uncommitted_journal_tail": abandoned},
         )
+        if archive_producer is not None:
+            archive_producer.track_file(restart_path)
         descriptors = [
             PilotCheckpointDescriptor.model_validate_json(canonical_json_bytes(d))
             for d in index["history"]
@@ -387,8 +442,16 @@ def run_pilot_training(
     attempt = "attempt-" + uuid.uuid4().hex
     attempt_dir = run_dir / attempt
     attempt_dir.mkdir()
+    if archive_producer is not None:
+        archive_producer.bind_training(
+            source_commit=source_commit,
+            config_sha256=config.sha256,
+            journal_head=progress.journal_sha256,
+        )
 
     def durable(rank=(), eligible=False, evaluated_stage=None):
+        if archive_producer is not None:
+            archive_producer._before("checkpoint")
         current = authenticate_pilot_source(
             repo_root=root, source_commit=source_commit, config=config
         )
@@ -417,12 +480,16 @@ def run_pilot_training(
         )
         descriptors.append(descriptor)
         retain_checkpoints(run_dir, descriptors, descriptor)
+        if archive_producer is not None:
+            archive_producer.after_checkpoint(descriptor, progress)
         return descriptor
 
     if resume is None:
         durable()
     try:
         while progress.status == "running" and progress.global_step < config.config.pilot.max_steps:
+            if archive_producer is not None:
+                archive_producer.before_update(progress.global_step)
             batch = next_pilot_batch(
                 config.config, stage=progress.stage, batch_counter=progress.batch_counter
             ).to(device)
@@ -445,6 +512,7 @@ def run_pilot_training(
                     "config": config.sha256,
                     "result": _json(result),
                 },
+                archive_producer=archive_producer,
             )
             scheduled = progress.global_step % config.config.pilot.validation_every_steps == 0
             rank, eligible = (), False
@@ -452,6 +520,8 @@ def run_pilot_training(
                 identity = NeuralModelIdentity.from_model(model, source_revision=source_commit)
                 weights_path = attempt_dir / f"weights-{progress.global_step}.safetensors"
                 weights_sha = save_neural_weights(weights_path, model=model, identity=identity)
+                if archive_producer is not None:
+                    archive_producer.track_file(weights_path, weights_sha)
                 progress = progress.model_copy(
                     update={
                         "evaluation_weights": PilotCheckpointDescriptor(
@@ -472,6 +542,8 @@ def run_pilot_training(
                     weights_sha=weights_sha,
                     directory=attempt_dir / f"validation-{progress.global_step}-{old_stage}",
                     device=device,
+                    archive_producer=archive_producer,
+                    evidence_context=evidence_context,
                 )
                 primary = None
                 if old_stage == "robustness":
@@ -484,6 +556,8 @@ def run_pilot_training(
                         weights_sha=weights_sha,
                         directory=attempt_dir / f"validation-{progress.global_step}-primary",
                         device=device,
+                        archive_producer=archive_producer,
+                        evidence_context=evidence_context,
                     )
                     artifacts.update(more)
                 prior = progress
@@ -502,6 +576,8 @@ def run_pilot_training(
                     certificate = {"validation": record, "primary": primary}
                     cert_path = attempt_dir / f"promotion-{progress.global_step}.json"
                     artifacts[str(cert_path)] = publish_json(cert_path, certificate)
+                    if archive_producer is not None:
+                        archive_producer.track_file(cert_path, artifacts[str(cert_path)])
                 progress = _journal(
                     run_dir,
                     progress,
@@ -512,6 +588,7 @@ def run_pilot_training(
                             str(Path(p).relative_to(run_dir)): h for p, h in artifacts.items()
                         },
                     },
+                    archive_producer=archive_producer,
                 )
                 if old_stage == "robustness" and eligible:
                     progress = progress.model_copy(
@@ -558,7 +635,7 @@ def run_pilot_training(
         stage=progress.stage,
     )
     _publish_selected(run_dir, progress, config)
-    artifacts = _collect_artifact_hashes(run_dir)
+    artifacts = _collect_artifact_hashes(run_dir, evidence_context=evidence_context)
     result = PilotTrainingResult(
         progress.status,
         progress,
