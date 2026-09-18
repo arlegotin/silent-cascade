@@ -562,6 +562,7 @@ operation. Scientific child code never invokes the network transport.
 `train/{pilot_data,pilot_trainer,pilot_workflow,pilot_provenance,pilot_checks}.py`,
 `archive/supervisor.py` (closed producer dispatch wiring only),
 `archive/transport.py` (exact retained-file custody during partial-unit eviction),
+`archive/catalog.py` (targeted checkpoint-snapshot proof semantics),
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
@@ -638,6 +639,15 @@ Charge source cache, copied shared bytes and atomic overhead simultaneously.
 Preserve the one-public-episode limit, reject corrupt/missing owners and cycles,
 and never recurse through episode packs as shared-input owners. Test cold/cold
 and resident/cold combinations, live-borrower eviction refusal and safe release.
+
+Align targeted catalog verification with checkpoint-snapshot publication:
+authenticate the run root, exact unit membership/manifest and committed checkpoint
+identity, and exhaust the complete snapshot inventory/shards, but do not demand
+exclusive file/directory ownership for `control_snapshot`. Such snapshots version
+mutable source controls and deliberately have no active path ownership. All other
+kinds retain their ownership proofs; snapshot source eviction remains forbidden.
+Test real archive/readback of two versions, corrupt final shards/proofs, invalid
+checkpoint binding and unchanged rejection of non-snapshot ownership mismatches.
 
 Before-work admission reuses the supervisor's held source-bound job reservation;
 it must not reserve the same capacity twice. Add one strict `status` payload
