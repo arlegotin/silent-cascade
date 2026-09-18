@@ -921,3 +921,50 @@ open. The Phase 4 production pilot has not started.
   stopped. Independent task review and full51477 accounting check now underway.
   Additional whitespace-only verification stage was admitted against measured
   8KiB growth, not by resetting4MiB cumulative statuscap. Earlier outputs kept.
+- Status slice review PASS/APPROVE with0blockingfindings and1minor report-command
+  wording finding. Original implementer expanding exact2commandlines only; no
+  test/code rerun required. Main full51477check passed scratch209448960/
+  logs1282048, othercategoriesunchanged. Functional status correction complete,
+  full Task5 stillopen. Checkpoint-prerequisite plan/brief committedfafda13.
+- Fresh task5_durable_reader spawn failed threadlimit; no new writer started.
+  Ruling: reuse the bounded read-only task5_aggregate_preflight agent for sole
+  checkpoint implementation, with explicit role transition and complete brief.
+  This preserves isolation of source files and avoids waiting on unavailable
+  spawn capacity; cost is retained preflight context, not a missing review.
+  Independent review remains required after commit. No test command admitted
+  until that implementer supplies fixed payload/count bounds.
+- Minor report-command finding addressed in56e544b, main verified report-only
+  diff and both literalinvocations. No source/test rerun. Checkpoint implementer
+  proposed one module fixture percommand: real guardedcheckpoint<=4MiB,
+  <=128KiBroundedcontrols,<=128dirs*4KiB,384KiBadmin=5MiB. Admitted REDsingle,
+  GREEN4casefile, and final cover onlyifneeded in uniquetask5-durable-reader
+  roots. Conditional cumulative(status+checkpoint)+5MiB+2MiBadmin<=48MiB.
+  No sourcecopies/audits/training fit; supplied unit source identity never
+  claims a completed authenticated run. Real decode/model/optimizer retained.
+- Checkpoint RED: eager actual decode succeeded, cold _durable failed missing
+  localcheckpoint-index.json as expected,1failed1.87s. Actual generatedunit
+  checkpoint3127474B under4MiBguard, onecopy. Retained red3068KiB+status16KiB;
+  +GREEN5MiB+2MiBadmin fits shared48MiB. Exact two sequential scopedreads
+  implemented; approved4caseGREEN proceeding. No fullrun authentication claim.
+- Checkpoint initialGREEN1passed3failed in1.85s exposed test-only nested
+  Pydantic serialization error before production; model_dump(mode=json) fixed.
+  All output retained. Scoped formatting corrected before frozen cover4passed
+ 1.97s and Ruff/format/diffpass. Scoped implementation/report committed9f5047c.
+  Main fresh4passed1.88s,3076KiB output, freshRuff/format/diffpass. Durable total
+ 12312KiB +status16KiB =12623872B sharedscratchgrowth. Independent new reviewer
+  task5_durable_reader_review dispatched;51477 fullcheck running, no tests active.
+  Read-only gate_status_review agent separately examines legitimate category
+  separation for later real debug scientific outputs; no next run admitted.
+- Checkpoint prerequisite review PASS/APPROVE, no findings. Controller fresh
+  four-case evidence already passed; no redundant rerun. Full51477check passed
+  scratch222056448/logs1355776, othercategoriesunchanged, retained6195077120.
+  Owner release requested before any next reservation; no writer is active.
+- Ruling: new genuine debug scientific output belongs in existing spool from
+  inception, restored input in cache, checkout/test administration in scratch.
+  Read-only category review confirms spec126-156 and plan1683-1691/1812-1825.
+  This never reclassifies old evidence or creates another ledger/allowance.
+  Existing four-update producer fixture creates a nested ledger and cannot run
+  unchanged. Separate bounded read-only agents now derive checkout and SINGLE
+  completed-fit output bounds; no numerical command is yet admitted. Cost if
+  the bound is insufficient: preserve partial outputs and stop before further
+  writes; never shrink scientific semantics or fabricate a completed result.

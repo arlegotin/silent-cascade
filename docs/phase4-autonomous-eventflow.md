@@ -647,3 +647,23 @@ This completes the bounded complete-row reader slice, not Task5 or Phase4.
 Aggregate/check caller integration, unavailable-evidence status, cold recovery,
 CPU replay/resume equality and the remaining full local gates are still required.
 No production training or additional R2 archival was started for this slice.
+
+### Incomplete verification status
+
+Commit `c72bdc7` fixes current verification status when semantic checks are
+unavailable: an internally consistent historical pass no longer implies a
+current pass. Recorded outcomes remain intact, and available corrupt evidence
+still raises an error. Fresh local verification passed 25 focused cases; scoped
+lint/format checks and independent code review passed. This is not a complete
+cold-gate run; aggregate integration and the Phase 4 production fit remain open.
+
+### Cold durable checkpoint reads
+
+Commit `9f5047c` reads the checkpoint index and actual checkpoint through
+sequential scoped leases, retaining the original logical path and all existing
+journal, progress and model-identity checks. Four fresh local cases passed,
+covering restoration and digest, step and model mismatches. Scoped lint and
+formatting passed; independent review found no issues, and the same global
+storage ledger check passed. This is a real initial-checkpoint reader test,
+not authentication of a completed fit. Completed-run authentication, recovery
+and the full local gates still precede the production pilot.
