@@ -98,6 +98,11 @@ exit. It is not a persistent system service.
 The `verify` job means existing artifact-only gate verification, not the local
 quality-gate recorder. Each job has a strict closed request schema and a fixed
 package entrypoint; callers cannot select a command, module or repository root.
+Before child launch, require an explicit typed output bound tied to that closed
+request, policy and executing package bytes. The preflight derives its category
+maxima from source-defined output limits; callers cannot grant arbitrary extra
+space. Persist the admission binding in the shared durable reservation rather
+than maintaining another per-job certificate history. Missing bounds block launch.
 Scientific schema authorities remain in the producer/readers. The lease layer
 checks their exact expected inventories against transport and resident bytes.
 An authenticated paged episode binding embeds the canonical typed episode commit,

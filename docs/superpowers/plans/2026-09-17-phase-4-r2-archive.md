@@ -436,7 +436,7 @@ class LocalArchiveSession:
 
 def supervise_job(*, job: str, request: dict, workspace_root: Path, run_dir: Path,
                   control_dir: Path, transport: ObjectTransport,
-                  policy: ArchivePolicy) -> int: ...
+                  policy: ArchivePolicy, output_bounds: JobOutputBounds) -> int: ...
 ```
 
 `entries()` merges resident original files with active catalog ownership; never
@@ -466,6 +466,16 @@ recorder. Task3 implements closed decoding, process isolation and the IPC runner
 Tasks4/5 thread producer/context hooks through those entrypoints. Do not claim
 cold scientific execution readiness before that integration, or expose an
 arbitrary-command runner to bridge the phased dependency.
+
+`JobOutputBounds` is a closed typed admission input binding job, canonical strict
+request hash, policy hash, trusted executing-package source fingerprint and
+per-category maximum bytes. Verify these bindings and durably reserve the complete
+possible in-flight allocation before spawning a child. Missing or mismatched
+bounds fail closed; there is no nominal fallback. Task6 derives scientifically
+justified bounds from `ArtifactOutputBounds` and constructs this input, rather
+than accepting arbitrary CLI maxima. Retain admission metadata in the durable
+reservation, not a separate permanent per-job certificate history. Categories
+with no output may be zero; the total must cover all actual permitted outputs.
 
 Implement create-only `initialize_workspace_ledger` in `archive/ledger.py`.
 One workspace-global descriptor lives at
