@@ -1110,6 +1110,13 @@ evidence intact and blocks unadmitted growth; it never permits a larger quota.
 the narrow private `archive/_qualification.py` driver before the first real
 engineering bootstrap, adding it only to the current executing source inventory.
 Use `tests/archive/test_qualification.py` for local-double helper/process tests.
+Extract only the common pure unit/catalog/receipt sizing core from
+`preflight._prelude_bounds` when needed by the two qualification units. Its
+private frozen result carries exact finite byte/count terms; engineering ledger,
+retained-inventory, eviction and allocation-rounding work stays in the existing
+caller. Include actual run-identity widths and episode groups. Focused tests must
+preserve or conservatively increase engineering maxima; do not duplicate the
+whole estimator or introduce a general sizing framework.
 Do not construct the archive supervisor for this diagnostic: its persistent
 run-directory binding would conflict with the later pilot. Do not add a public
 API, CLI, provider registry, new configuration reader or new allowance.
