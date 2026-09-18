@@ -433,6 +433,58 @@ and later smoke are distinct gates, and local doubles cannot certify R2 behavior
 
 ## 8. Acceptance and execution boundary
 
+### Reviewed maintenance after the first bootstrap
+
+The first live qualification exposed an adapter contract error: the publisher's
+compound receipt/eviction keys were rejected by the R2 key validator. Preserve
+those already-recorded keys and the failed run; correct the validator, never
+rename pending objects or reset the remote ledger. Recover the original pending
+publication with the existing `archive_unit` path under bounded admission. Its
+manifest retains its original source identity; recovery evidence names the
+distinct reviewed executor. A new qualification uses a fresh output/run identity
+on the same workspace, transport namespace and charged remote history.
+
+Bootstrap source identity is immutable historical provenance, not a permanent
+ban on reviewed maintenance. After independent review, a controller may publish
+one create-only, at-most-16-KiB reviewed-source record for an exact committed
+revision and actual package digest. Store it in the counted local ledger at
+`source-authorities/<executable_sha256>/<source_commit>.json`. It binds the
+bootstrap authority hash, policy hash, exact revision/digest, closure schema,
+review evidence hash and optional failed-operation evidence hash. Callers supply
+its content hash explicitly; no mutable "latest" pointer, authority replacement,
+budget reset or automatic approval of changed source is permitted. The unchanged
+bootstrap tuple remains usable without such a record. Independent review is a
+controller obligation; a hash-shaped string alone does not prove that review.
+
+Qualification identity and engineering candidate identity retain the exact
+reviewed-source hash. Recheck it before sealing or resuming engineering work.
+Old records and source tuples are never promoted to a later executable. Reject
+dirty/uncommitted package code, mismatched source/hash/policy/anchor, absent or
+changed records, and source adoption while an engineering eviction is pending.
+Different reviewed releases may coexist without rewriting earlier evidence.
+
+### Bounded retained-history verification cadence
+
+Live qualification also showed repeated full scans of approximately 6.2 GB of
+frozen history around each provider operation. The default `budget.check()` must
+continue fully authenticating retained history. A finite owned qualification or
+supervisor job may instead authenticate that history at entry, use its unchanged
+charged amount for frequent live accounting, and fully authenticate again after
+all owned writers are stopped and before accepting success. Live checks still
+measure actual operational allocation, reservation growth, every category,
+normal/global caps, root identity and protected physical headroom. A pending
+engineering eviction cannot use this optimization because it changes custody.
+
+Any reusable accounting snapshot is process/operation-scoped, bound to the live
+reservation and exact authority/snapshot identity, and cannot become a persistent
+cache or a restart grant. A qualification child may inherit only that explicit
+live parent's scope; a new independent process defaults to full authentication.
+Full verification failures prevent successful qualification/job acceptance. The
+tradeoff is explicit: unexpected edits to otherwise frozen history may be
+detected at the finite boundary rather than every polling iteration. They never
+become baseline exclusions or uncharged bytes. This storage-only cadence change
+does not alter scientific observations, events, metrics, artifacts or gates.
+
 Required before changing production preflight: local TDD/failure-injection tests,
 exact all-local versus archive-backed semantic equivalence, real bounded R2
 round-trip/conflict/recovery checks, a fresh local `make verify` receipt, measured

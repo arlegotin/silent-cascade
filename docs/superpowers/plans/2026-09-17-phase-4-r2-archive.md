@@ -106,6 +106,48 @@ the existing Task 12 preflight and the new storage gate both pass.
 
 ## 3. File map and task dependencies
 
+### Live-qualification correction sequence (2026-09-18)
+
+This is a bounded storage-only refinement of the approved Tasks 2/6/7 under the
+standing autonomous-delivery instruction, not a new scientific protocol. The
+first live attempt failed after confirmed create/SIGKILL/resume, at the compound
+receipt-key validator. Preserve that failed result and all pending state. Keep
+the original frozen SDD tree unchanged; subsequent counted coordination artifacts
+live only in its existing `operational/sdd` subtree.
+
+1. **Receipt-key contract:** RED-test both exact emitted compound key forms,
+   malformed paths and real publisher integration through the production
+   validator; minimally correct `archive/transport.py`; review the full fix.
+2. **Reviewed source continuation:** add bounded create-only reviewed-release
+   records/resolution in `archive/preflight.py`, carry the authority hash through
+   `EngineeringCandidate` and the private qualification identity/result, and
+   retain bootstrap compatibility. Test source/hash/anchor/policy corruption,
+   revision-only changes, idempotent publication, historical preservation and
+   engineering candidate/resume binding. Do not introduce a mutable authority
+   pointer or change the original artifact source during transport recovery.
+3. **Finite-operation accounting:** retain full `budget.check()` semantics;
+   factor unchanged accounting inequalities into a private fast path using a
+   freshly authenticated retained charge within one owned reservation. Wire it
+   into qualification and supervisor hot paths only. Test all caps, live-owner
+   and snapshot invalidation, full boundary authentication, child inheritance,
+   no restart reuse, and bounded full-scan counts across repeated opportunities.
+   Finish/reap writers before final authentication and success acceptance.
+4. **Same-ledger recovery and retry:** after source review/commit, publish the
+   exact reviewed-source record, pre-admit recovery from existing descriptors,
+   authenticate preserved pending evidence, and call existing `archive_unit`
+   for the original probe ref/source. Log original artifact and recovery-executor
+   tuples separately. Verify the pending state is resolved without changing the
+   charged history. Bind a fresh qualification root and rerun create/readback,
+   real interruption, collision, idempotence and restore under the same transport
+   and shared qualification/smoke allowance. The old failed run stays failed.
+
+Each implementation slice gets RED/GREEN evidence, bounded local covering tests,
+an independent task review and a meaningful current-branch commit. The scoped
+briefs give exact tests/interfaces and finite output admission before dispatch.
+No full `make verify`, provider call or later pilot is implied by a unit-test
+pass. Full final gates remain unchanged. Do not bundle unrelated diagnostic
+improvements into the deterministic validator correction.
+
 All paths below are repository-relative. New modules are focused local archive
 utilities, not a general storage framework. Tasks are sequential; independent
 read-only reviews may run alongside tests. Only one source/test writer and one
