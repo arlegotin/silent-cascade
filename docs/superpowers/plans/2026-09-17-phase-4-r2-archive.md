@@ -566,6 +566,10 @@ operation. Scientific child code never invokes the network transport.
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
+The archive fixture may add an explicit opt-in scratch-preservation flag paired
+with its existing scratch-root override; keep default cleanup unchanged. Use the
+flag during this plan's covering checks and charge retained fixtures to the same
+workspace budget. Do not replace the fixture with an external cleanup monkeypatch.
 Do not change model/loss/generator code, engine scheduling or checkpoint wire formats.
 
 **Interfaces produced:**
@@ -754,6 +758,33 @@ payloads; new controls live outside the scientific artifact inventory.
   rows, episode commits or DONE. Keep checkpoints/controls/journal authorities
   separate; unclassifiable outside-attempt files remain retained and blocking.
   Reject links, special files and escaped paths, and keep custody metadata bounded.
+  The parent seal-partial variant partitions candidate custody against authenticated
+  active and pending-sealed owners. Validate exact candidate hashes first; only
+  authenticated owner absence permits new partial ownership. Return exhaustive,
+  disjoint new and retained-owned FileEntry groups with authenticated UnitRefs and
+  a rederivable new-proof digest. The child verifies the partition and inventories.
+  All-owned candidates create no new partial unit/proof or deletion authority;
+  existing owners may finish their already-authorized pending lifecycle.
+  Preserve an interrupted episode-pending control as exact content-addressed
+  stopped-controls metadata before rotating its local slot, including all-owned
+  cases. Require reserved upload, verified readback and an authenticated,
+  discoverable durable operational reference before exact hash-checked removal.
+  Neither a successful upload nor an unreachable blob is sufficient. Do not
+  manufacture an EpisodeCommit, outcome, scientific artifact or protocol operation.
+  The existing operational-batch helper may accept an optional all-or-none receipt
+  pair: absent receipt means no receipt object/locator or active authorization.
+  Preserve schema, accounting fixed point, staged verification, recovery and exact
+  cleanup under archive_operation_lock. Cover fresh cold reservation lookup and
+  interrupted reservation-only publication as well as existing receipt callers.
+  Even a resume with no attempt payload must authenticate prior/current writer and
+  durable checkpoint before exposing stopped_checkpoint or starting neural work.
+  Use the same custody variant with attempt_root=null only when entries/paths are
+  empty, logical_root=null and no pending-control hash is supplied. Return an empty
+  partition without manifest, catalog, proof, control or eviction publication.
+  A valid non-null attempt root may also have empty candidates but gains no new
+  ownership. Set stopped_checkpoint only after every required handoff succeeds.
+  Test no-attempt/no-payload resume, forged/stale authority, null scope with entries
+  or control, changed pending-control bytes and upload/readback/publication failures.
 - [ ] **Step 8 — GREEN/review/commit:** run
   `uv run pytest -q tests/pilot/test_pilot_archive_producer.py tests/pilot/test_pilot_trainer.py tests/pilot/test_pilot_workflow.py tests/pilot/test_pilot_source.py`
   plus `uv run pytest -q tests/pilot/test_neural_crashes.py tests/pilot/test_pilot_artifacts.py tests/pilot/test_timed_runner.py`. Prove unchanged
