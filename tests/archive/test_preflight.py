@@ -53,6 +53,21 @@ def _source_authority_path(budget, revision, executable):
     return budget.root / "source-authorities" / executable / f"{revision}.json"
 
 
+def _git_package(root):
+    repository = root / "repository"
+    package = repository / "src/silent_cascade"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    return repository, package
+
+
 def test_reviewed_source_requires_explicit_hash_and_preserves_bootstrap(tmp_path, monkeypatch):
     from silent_cascade.archive import preflight
 
@@ -206,17 +221,7 @@ def test_publication_rejects_mismatching_source_argument_before_output(tmp_path,
 def test_committed_source_identity_rejects_dirty_python_closure(tmp_path, mutation):
     from silent_cascade.archive import preflight
 
-    repository = tmp_path / "repository"
-    package = repository / "src/silent_cascade"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("VALUE = 1\n")
-    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
-    )
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
-    subprocess.run(["git", "add", "."], cwd=repository, check=True)
-    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    repository, package = _git_package(tmp_path)
     clean = preflight._committed_source_identity(repo_root=repository, package=package)
     if mutation == "modified":
         (package / "__init__.py").write_text("VALUE = 2\n")
@@ -227,6 +232,72 @@ def test_committed_source_identity_rejects_dirty_python_closure(tmp_path, mutati
     with pytest.raises(ledger.StorageBlocked, match="committed"):
         preflight._committed_source_identity(repo_root=repository, package=package)
     assert len(clean.source_commit) == 40 and len(clean.executable_sha256) == 64
+
+
+def test_publication_rejects_python_added_during_authentication_before_output(
+    tmp_path, monkeypatch
+):
+    from silent_cascade.archive import preflight
+
+    repository, package = _git_package(tmp_path)
+    clean = preflight._committed_source_identity(repo_root=repository, package=package)
+    custody = tmp_path / "custody"
+    custody.mkdir()
+    budget = bootstrap(custody)
+    authenticate = preflight._committed_source_identity
+    read_at = preflight._read_at
+    added = False
+
+    def add_after_source_read(directory, name, *, max_bytes):
+        nonlocal added
+        raw = read_at(directory, name, max_bytes=max_bytes)
+        if name == "__init__.py" and not added:
+            (package / "added.py").write_text("VALUE = 2\n")
+            added = True
+        return raw
+
+    with monkeypatch.context() as authentication:
+        authentication.setattr(
+            preflight,
+            "_committed_source_identity",
+            lambda: authenticate(repo_root=repository, package=package),
+        )
+        authentication.setattr(preflight, "_read_at", add_after_source_read)
+        with pytest.raises(ledger.StorageBlocked, match="changed during authentication"):
+            preflight.publish_reviewed_source(
+                budget=budget,
+                source_commit=clean.source_commit,
+                executable_sha256=clean.executable_sha256,
+                review_sha256="3" * 64,
+            )
+    assert added
+    assert not (budget.root / "source-authorities").exists()
+
+
+def test_committed_source_identity_rejects_head_change_during_authentication(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    repository, package = _git_package(tmp_path)
+    read_at = preflight._read_at
+    changed = False
+
+    def commit_after_source_read(directory, name, *, max_bytes):
+        nonlocal changed
+        raw = read_at(directory, name, max_bytes=max_bytes)
+        if name == "__init__.py" and not changed:
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-qm", "new head"],
+                cwd=repository,
+                check=True,
+            )
+            changed = True
+        return raw
+
+    with monkeypatch.context() as authentication:
+        authentication.setattr(preflight, "_read_at", commit_after_source_read)
+        with pytest.raises(ledger.StorageBlocked, match="changed during authentication"):
+            preflight._committed_source_identity(repo_root=repository, package=package)
+    assert changed
 
 
 def test_reviewed_candidate_binds_release_and_sealed_executor_identity(tmp_path, monkeypatch):
