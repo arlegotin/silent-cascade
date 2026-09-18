@@ -674,6 +674,60 @@ def test_prelude_bounds_ignore_io_hint_but_preserve_allocation_geometry(tmp_path
     assert all(larger_allocation[name] > large_io[name] for name in ("metadata", "scratch"))
 
 
+@pytest.mark.parametrize(
+    ("logical_bytes", "native_pair_bytes"),
+    [
+        (32 * 1024**2, 134_225_920),
+        (14 * 1024**2, 58_728_448),
+    ],
+)
+def test_prelude_native_pair_accounts_for_both_allocated_writes(
+    tmp_path, monkeypatch, logical_bytes, native_pair_bytes
+):
+    from silent_cascade.archive import preflight
+    from silent_cascade.archive.types import FileEntry
+
+    budget, _transport, candidate, review = prepared_candidate(tmp_path)
+    original = next(member for member in candidate.members if member.path in review.paths)
+    selected = (FileEntry(original.path, original.sha256, logical_bytes),)
+    values = list(os.statvfs(tmp_path))
+    values[1] = 4096
+    monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+
+    bounds = preflight._prelude_bounds(budget, candidate, selected)
+
+    assert bounds["scratch"] >= native_pair_bytes
+
+
+def test_prelude_native_pair_refuses_inflated_measured_scratch_before_yield(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+    from silent_cascade.archive.types import FileEntry
+
+    budget, _transport, candidate, review = prepared_candidate(tmp_path)
+    source = tmp_path / review.paths[0]
+    original_bytes = source.read_bytes()
+    original = next(member for member in candidate.members if member.path in review.paths)
+    selected = (FileEntry(original.path, original.sha256, 32 * 1024**2),)
+    values = list(os.statvfs(tmp_path))
+    values[1] = 4096
+    monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(values))
+    bounds = preflight._prelude_bounds(budget, candidate, selected)
+    measured = budget.measure()
+    measured["scratch"] = 199_651_328
+    monkeypatch.setattr(budget, "measure", lambda: dict(measured))
+    yielded = False
+
+    with (
+        pytest.raises(ledger.StorageBlocked, match="scratch category exhausted"),
+        preflight._engineering_reservation(budget, candidate.candidate_id, bounds),
+    ):
+        yielded = True
+
+    assert not yielded
+    assert source.read_bytes() == original_bytes
+    assert budget._state()["reservations"] == {}
+
+
 @pytest.mark.parametrize("fragment", [0, -4096, 1000])
 def test_bootstrap_rejects_unusable_allocation_geometry_without_output(
     tmp_path, monkeypatch, fragment

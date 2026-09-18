@@ -1268,10 +1268,12 @@ def _prelude_bounds(budget, candidate, selected):
     )
     file_count = shards + run_nodes + objects + retained_pages + len(fixed_files)
     metadata += (file_count * 2 + len(fixed_directories) + 1) * block
-    scratch = 2 * max(
+    largest = max(
         min(expanded, policy.chunk_bytes),
         min(policy.page_bytes, max(manifest, receipt, run_catalog, operational_catalog)),
     )
+    rounded = ((largest + block - 1) // block) * block
+    scratch = 2 * (2 * rounded + block)
     # Catalog staging shares scratch with the one upload/readback buffer.
     scratch += run_catalog + operational_catalog
     staging_directories = (
