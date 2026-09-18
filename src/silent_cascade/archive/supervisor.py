@@ -996,7 +996,7 @@ class _ArchiveServer:
                                 for group in manifest.episode_groups
                                 if path in group.paths
                             ),
-                            None,
+                            (path,),
                         )
                         return ref, selected
         if catalog_owned:

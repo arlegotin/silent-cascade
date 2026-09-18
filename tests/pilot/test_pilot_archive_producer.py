@@ -600,19 +600,23 @@ def test_empty_stopped_handoff_requires_parent_authority(tmp_path, monkeypatch, 
                 assert producer.stopped_checkpoint is None
 
 
-@pytest.mark.parametrize("kind", ["episode_pack", "evaluation_metadata"])
+@pytest.mark.parametrize(
+    "kind,partly_cold",
+    [("episode_pack", False), ("evaluation_metadata", False), ("evaluation_metadata", True)],
+)
 def test_stopped_partition_finishes_whole_owner_across_candidate_boundary(
-    tmp_path, monkeypatch, kind
+    tmp_path, monkeypatch, kind, partly_cold
 ):
-    from silent_cascade.archive.catalog import seal_unit
+    from silent_cascade.archive.catalog import iter_unit_files, seal_unit
     from silent_cascade.train.pilot_workflow import pilot_ownership
 
     with producer_case(tmp_path, monkeypatch, stopped=True) as (producer, session, server):
         attempt = session.run_dir / ("attempt-" + "1" * 32)
         attempt.mkdir()
         paths = tuple(f"{attempt.name}/{index:03d}.bin" for index in range(40))
+        payload = b"bounded metadata payload" * 1024 if partly_cold else None
         for path in paths:
-            (session.run_dir / path).write_bytes(path.encode())
+            (session.run_dir / path).write_bytes(payload or path.encode())
         ref = seal_unit(
             run_dir=session.run_dir,
             control_dir=session.control_dir,
@@ -631,6 +635,41 @@ def test_stopped_partition_finishes_whole_owner_across_candidate_boundary(
             episode_groups=(paths[:20], paths[20:]) if kind == "episode_pack" else (),
             policy=session.policy,
         )
+        if partly_cold:
+            from silent_cascade.archive import transport as module
+
+            unlink = module._unlink_recorded_member
+
+            def interrupt(*args, **kwargs):
+                unlink(*args, **kwargs)
+                raise OSError("stopped metadata eviction interruption")
+
+            with monkeypatch.context() as cut:
+                cut.setattr(module, "_unlink_recorded_member", interrupt)
+                with pytest.raises(OSError, match="interruption"):
+                    producer._archive(ref, evict=True, owned=paths)
+            assert not (session.run_dir / paths[0]).exists()
+            assert all((session.run_dir / path).exists() for path in paths[1:])
+            state = server.budget._state()
+            active = state["reservations"][server.budget.active_reservation]
+            growth = max(0, server.budget.measure()["cache"] - active["before"]["cache"])
+            active["amounts"]["cache"] = growth + 256 * 1024
+            server.budget._store(state)
+            assert ref.expanded_bytes > 256 * 1024 > len(payload) + 131072
+            with session._leased({"path": paths[0]}) as lease:
+                assert lease.ref == ref
+                assert (lease.local_root / paths[0]).read_bytes() == payload
+                assert {
+                    path.relative_to(lease.local_root).as_posix()
+                    for path in lease.local_root.rglob("*")
+                    if path.is_file()
+                } == {paths[0]}
+                assert (
+                    tuple(entry.path for entry in iter_unit_files(lease.metadata_root, ref))
+                    == paths
+                )
+            assert not lease.local_root.exists()
+            assert not server.leases
         with pilot_ownership(
             session.run_dir, run_identity="a" * 64, recover=lambda: None, capture_stopped=True
         ) as custody:
@@ -641,7 +680,7 @@ def test_stopped_partition_finishes_whole_owner_across_candidate_boundary(
             paths
         )
         with session._leased({"path": paths[-1]}) as lease:
-            assert (lease.local_root / paths[-1]).read_bytes() == paths[-1].encode()
+            assert (lease.local_root / paths[-1]).read_bytes() == (payload or paths[-1].encode())
 
 
 def test_old_checkpoint_snapshot_reads_its_original_index_after_replacement(tmp_path, monkeypatch):

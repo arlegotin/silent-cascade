@@ -137,10 +137,18 @@ def _selection(
             if selected_paths == group.paths:
                 return set(selected_paths), group.expanded_bytes
         raise ValueError("selected paths are not one authenticated episode ownership group")
-    if manifest.kind != "diagnostic":
-        raise ValueError("sparse restore is permitted only for episodes or diagnostics")
-    if len(selected_paths) > policy.page_entries:
-        raise ValueError("diagnostic selection exceeds its entry bound")
+    if manifest.kind == "diagnostic":
+        if len(selected_paths) > policy.page_entries:
+            raise ValueError("diagnostic selection exceeds its entry bound")
+        byte_limit = policy.logs_bytes
+        selection_kind = "diagnostic"
+    elif manifest.kind in {"evaluation_metadata", "journal", "control_snapshot", "partial"}:
+        if len(selected_paths) != 1:
+            raise ValueError("non-episode sparse restore requires a singleton selection")
+        byte_limit = policy.episode_bytes
+        selection_kind = "singleton"
+    else:
+        raise ValueError("unit kind does not permit sparse restore")
     wanted = set(selected_paths)
     found: set[str] = set()
     expanded = 0
@@ -148,8 +156,8 @@ def _selection(
         if entry.path in wanted:
             found.add(entry.path)
             expanded += entry.bytes
-    if found != wanted or expanded > policy.logs_bytes:
-        raise ValueError("diagnostic selection is missing or exceeds its byte bound")
+    if found != wanted or expanded > byte_limit:
+        raise ValueError(f"{selection_kind} selection is missing or exceeds its byte bound")
     return wanted, expanded
 
 

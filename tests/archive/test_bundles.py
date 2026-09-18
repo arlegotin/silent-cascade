@@ -307,6 +307,113 @@ def test_restore_refuses_existing_destination(tmp_path, tiny_archive_policy, arc
         )
 
 
+@pytest.mark.parametrize("kind", ["evaluation_metadata", "journal", "control_snapshot", "partial"])
+def test_sparse_non_episode_restore_selects_exactly_one_member(
+    tmp_path, tiny_archive_policy, archive_identity, kind
+):
+    from silent_cascade.archive.bundles import restore_unit
+
+    if kind == "control_snapshot":
+        archive_identity = archive_identity | {
+            "checkpoint_sha256": "3" * 64,
+            "checkpoint_committed": True,
+        }
+    run, ref = _seal(
+        tmp_path, tiny_archive_policy, archive_identity, {"unit/a": b"a", "unit/b": b"b"}, kind=kind
+    )
+    chunks = _chunks(tmp_path, run, ref, tiny_archive_policy)
+    destination = tmp_path / "selected"
+    restore_unit(
+        control_dir=tmp_path / "control",
+        ref=ref,
+        chunks=chunks,
+        destination=destination,
+        policy=tiny_archive_policy,
+        selected_paths=("unit/a",),
+    )
+    assert (destination / "unit/a").read_bytes() == b"a"
+    assert not (destination / "unit/b").exists()
+
+
+@pytest.mark.parametrize("case", ["valid", "unknown", "multiple", "duplicate", "tail", "oversized"])
+def test_sparse_metadata_restore_authenticates_full_inventory_before_output(
+    tmp_path, tiny_archive_policy, archive_identity, case
+):
+    import json
+    from dataclasses import replace
+
+    from silent_cascade.archive.bundles import restore_unit
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    policy = tiny_archive_policy.model_copy(
+        update={
+            "chunk_bytes": 256,
+            "page_entries": 1,
+            "cache_bytes": 4096 if case == "oversized" else 3072,
+        }
+    )
+    seal_policy = (
+        policy.model_copy(update={"episode_bytes": 3072}) if case == "oversized" else policy
+    )
+    files = {"unit/a": b"a" * 512, "unit/b": b"b" * 1536, "unit/c": b"c" * 1536}
+    if case == "oversized":
+        files = {"unit/a": b"a" * 3072, "unit/b": b"b"}
+    run, ref = _seal(tmp_path, seal_policy, archive_identity, files, kind="evaluation_metadata")
+    chunks = _chunks(tmp_path, run, ref, seal_policy)
+    manifest_path = tmp_path / "control" / ref.manifest_path
+    manifest = json.loads(manifest_path.read_bytes())
+    if case == "oversized":
+        # Rebind a larger source artifact to the smaller policy, preserving a
+        # valid manifest/hash/inventory so the singleton byte ceiling must reject it.
+        manifest["policy_sha256"] = sha256_bytes(canonical_json_bytes(policy))
+        raw = canonical_json_bytes(manifest)
+        digest = sha256_bytes(raw)
+        parent = tmp_path / "control/units" / digest
+        parent.mkdir()
+        (parent / "manifest.json").write_bytes(raw + b"\n")
+        for shard in manifest["inventory_shards"]:
+            (parent / shard["path"]).write_bytes(
+                (manifest_path.parent / shard["path"]).read_bytes()
+            )
+        ref = replace(ref, unit_id=digest, manifest_path=f"units/{digest}/manifest.json")
+    if case == "tail":
+        (manifest_path.parent / manifest["inventory_shards"][-1]["path"]).write_bytes(b"bad tail")
+    selected = {
+        "unknown": ("unit/missing",),
+        "multiple": ("unit/a", "unit/b"),
+        "duplicate": ("unit/a", "unit/a"),
+    }.get(case, ("unit/a",))
+    destination = tmp_path / "new-parent/selected"
+
+    def restore():
+        return restore_unit(
+            control_dir=tmp_path / "control",
+            ref=ref,
+            chunks=chunks[: len(files["unit/a"]) // policy.chunk_bytes],
+            destination=destination,
+            policy=policy,
+            selected_paths=selected,
+        )
+
+    if case == "valid":
+        assert ref.expanded_bytes > policy.cache_bytes > len(files["unit/a"]) + policy.chunk_bytes
+        restore()
+        assert (destination / "unit/a").read_bytes() == files["unit/a"]
+        assert not (destination / "unit/b").exists()
+        assert not (destination / "unit/c").exists()
+    else:
+        message = {
+            "unknown": "missing",
+            "multiple": "singleton",
+            "duplicate": "unique",
+            "tail": "inventory",
+            "oversized": "byte bound",
+        }[case]
+        with pytest.raises(ValueError, match=message):
+            restore()
+        assert not destination.parent.exists()
+
+
 def test_restore_never_materializes_borrowed_shared_inputs(
     tmp_path, tiny_archive_policy, archive_identity
 ):
