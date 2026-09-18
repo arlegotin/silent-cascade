@@ -125,12 +125,21 @@ integration, broader caller coverage and replay/continuation checks are still du
 Two minor review findings remain tracked for that integration: duplicated metric
 finalization rules and a stronger same-binding mutation regression.
 
-The next prerequisite is same-ledger accounting and verified archival of retained
-engineering output. It must charge existing test files against the same 10 GiB
-ceiling and preserve unsupported fixtures locally. This is an approved ordering
-adjustment within Task 6, not a new storage allowance or a completed storage gate.
-Real archival operations require independent implementation review and bounded
-provider qualification first.
+The Task 6 engineering-accounting prelude is implemented through `0515d9c`.
+Its latest focused run passed 65 checks; independent review closed the initial
+bootstrap admission, repeated-scan, page-serialization and allocation-geometry
+findings. These are scoped local checks, not provider qualification or a complete
+quality-gate pass. Existing test files remain charged to the same 10 GiB ceiling,
+and unsupported fixtures stay local.
+
+Real use is still blocked on a measured metadata-lifecycle issue: repeatedly
+rewriting the full retained inventory can consume more space than small archived
+groups free. The approved correction uses stable immutable leaves and a bounded
+authenticated index, retaining and charging earlier generations. It preserves
+the existing single-unit receipt/recovery boundary; it does not authorize cleanup,
+larger quotas or scientific changes. The correction, full-workspace admission
+proof and bounded provider qualification must pass before real engineering
+archival and verified-before-eviction begin.
 
 CLI/preflight integration and the remaining real R2 storage qualification are
 pending. No experiment evidence has been uploaded or deleted during this
