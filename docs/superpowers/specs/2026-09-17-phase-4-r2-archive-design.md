@@ -184,6 +184,13 @@ evaluations. Do not invent validation resume or silently rerun in a new seed.
 For a live process, bounded waits between safe boundaries preserve current state;
 supervisor failure does not grant permission to delete its pending output.
 
+Before each operation, verify that the supervisor's existing source-bound job
+reservation still has room for the complete permitted output and publication
+overhead. Use a strict local status/admission exchange, not a second reservation
+of the same capacity or a health-only acknowledgment. Drain verified pending
+packs or stop before further neural work when the remaining allowance is too
+small; all materialized bytes and protected physical headroom stay charged.
+
 The remote byte limit is a client-side stop, not a Cloudflare spending cap. R2
 continues charging for retained storage until its owner removes it. Do not add
 automatic deletion/lifecycle policies or expand the budget automatically.
@@ -203,6 +210,12 @@ borrowers pin their inputs. Partial evidence is sealed only after its writer is
 confirmed stopped, never relabeled `DONE` or passing. Include crash files without
 a durable row, preserving bytes while leaving outcome unknown. Preserve restart
 and abandonment bindings.
+
+Journal units bind a reconstructible `phase4-journal-segment-commit-v1` descriptor
+through their existing evidence-identity digest: predecessor head, sealed end
+head and ordered record hashes. Verify the complete exact raw-record chain and
+member count when sealing and reading. This adds no scientific artifact or
+permanent local locator and preserves the canonical unit schema and old hashes.
 
 ### Durable episode publication
 

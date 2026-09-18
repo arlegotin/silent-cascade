@@ -609,6 +609,30 @@ def seal_journal_segments(*, run_dir: Path, control_dir: Path,
                           policy: ArchivePolicy) -> tuple[UnitRef, ...]: ...
 ```
 
+Before-work admission reuses the supervisor's held source-bound job reservation;
+it must not reserve the same capacity twice. Add one strict `status` payload
+variant for operation-specific, source-derived additional category maxima. The
+parent validates the active admission, current allocated growth, remaining
+allowance and protected physical headroom before acknowledging. If the full
+next operation plus required publication overhead cannot fit, drain verified
+pending packs or stop before neural work. Plain healthy status is not an admission
+check. Keep the empty health request unchanged; no new protocol operation or
+caller-granted capacity is introduced.
+
+For journal units, bind canonical `JournalSegmentCommit` bytes through the
+existing `UnitIdentity.evidence_identity_sha256`. Its fields are `schema_version`
+(literal `phase4-journal-segment-commit-v1`), nullable SHA-256 `base_head`, SHA-256
+`sealed_head` and `record_sha256s` in newest-to-oldest chain order. Derive the
+descriptor from exact bounded immutable journal records, verifying filenames,
+hashes, unique predecessor coverage, first record equal to `sealed_head`, final
+prior equal to `base_head` and manifest file count equal to record count. Reject
+gaps, cycles and extra members. The manifest authenticates original owned files;
+the descriptor is reconstructible, so no extra scientific file or permanent
+locator is needed. Preserve the existing canonical unit schema and old hashes.
+Task5 verifies the same descriptor on read. A cold journal uses an authenticated
+path lease and the existing 64 MiB pilot reader within that lease; the 16 MiB
+metadata `read_record` limit remains unchanged.
+
 Use the shared `EpisodeCommit` introduced by Task3 in `archive/types.py`; validate exact scalar types, sorted
 ownership, row binding and borrowed references. Define `PublishedCrashFile` and
 `PublishedCrash` beside existing crash publication types; convert their safe
@@ -692,6 +716,8 @@ payloads; new controls live outside the scientific artifact inventory.
 `tests/pilot/test_pilot_archive_readers.py`. Modify
 `report/{pilot_artifacts,pilot}.py`, `eval/artifacts.py`,
 `train/{pilot_artifact_index,pilot_trainer,pilot_workflow,pilot_evidence,pilot_checks}.py`.
+Narrowly extend `archive/supervisor.py` for the remaining fixed
+verify/report/replay reader dispatch using the already-created local session.
 Extend `tests/pilot/{test_pilot_artifact_index,test_pilot_checks,test_pilot_report,test_pilot_gate_verifier}.py`.
 
 **Interfaces produced:**
