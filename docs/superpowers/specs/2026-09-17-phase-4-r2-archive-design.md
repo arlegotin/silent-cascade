@@ -155,6 +155,15 @@ Account for actual allocated bytes, directory metadata, atomic copies, partial
 downloads and outstanding write reservations. Both the ledger and physical-free-
 space checks must pass. Logs/tests cannot bypass accounting through TMPDIR.
 
+Adversarial test fixtures below an explicitly bound real scratch directory are
+opaque accounting data, not authorized I/O paths. Measurement counts symlink
+inode blocks without following targets or descending symlinked directories,
+and conservatively counts hard-linked scratch files once per name. Root and
+non-scratch path protections remain strict; actual artifact reads/writes still
+reject unsafe links and ambiguous ownership. This permits preserving attack-test
+evidence without an exception to the byte budget or permission to access its
+targets. Unknown paths do not gain this explicit-scratch treatment.
+
 Additional bounds: one episode writer, one episode reader and one network operation
 at a time; chunks at most 32 MiB; target packs at most 128 MiB or 256 episode commits,
 with a larger single episode allowed only within a 1 GiB admission bound; journal

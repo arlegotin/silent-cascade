@@ -148,6 +148,43 @@ No full `make verify`, provider call or later pilot is implied by a unit-test
 pass. Full final gates remain unchanged. Do not bundle unrelated diagnostic
 improvements into the deterministic validator correction.
 
+#### Adversarial scratch accounting correction
+
+The first maintenance admission's final check found two deliberately preserved
+symlink-attack fixtures below the real scratch category. The old counter rejects
+them before counting, preventing further admission although they occupy only
+their own inode blocks. Do not delete or rewrite these fixtures, move them out
+of the ledger, or weaken safe artifact I/O. This correction precedes source
+continuation and performance work.
+
+Modify only `archive/ledger.py` and focused `tests/archive/test_ledger.py` cases:
+
+- Keep `require_path` strict: a symlink anywhere on an actual requested path is
+  still an error. Explicit category roots, workspace roots, metadata controls
+  and non-scratch categories retain existing rejection behavior.
+- During physical measurement only, opaque descendants of an explicitly bound
+  real scratch directory may contain adversarial symlinks/special files. Count
+  their `lstat().st_blocks * 512` without opening/following them. Never recurse
+  into a symlinked directory. Reject second-device entries. A bound scratch root
+  itself may not be a symlink. Unknown default-category paths gain no exemption.
+- Count scratch hard links conservatively once per name; do not subtract or
+  credit deduplicated/external aliases. Actual archive/download/input APIs retain
+  their single-link ownership checks. Non-scratch hard-link rejection remains.
+- Add tests proving symlink inode blocks are included, targets are never read or
+  walked, links to directories are not traversed, scratch-root/non-scratch links
+  still fail, actual `require_path` still rejects fixture paths, and hard links
+  consume their full conservative per-name charge. Existing physical/cap and
+  baseline authentication tests must keep their meaning.
+- Start with a zero-output RED reproduction: mock the filesystem boundary for
+  real `measure()` using literal lstat/walk records and an in-memory state, not
+  its result. Disable bytecode and every test cache. No tmp_path, temporary file,
+  provider, real ledger write or generated report is permitted until the fixed
+  counter passes a read-only check on the existing workspace. Then main obtains
+  a fresh finite same-ledger admission for real-filesystem and covering tests.
+- Use TDD, scoped lint/format, independent review and a separate commit. This
+  deliberately distinguishes measuring opaque retained test bytes from granting
+  access to an unsafe path; it is not an artifact format/codec or custody reset.
+
 All paths below are repository-relative. New modules are focused local archive
 utilities, not a general storage framework. Tasks are sequential; independent
 read-only reviews may run alongside tests. Only one source/test writer and one
