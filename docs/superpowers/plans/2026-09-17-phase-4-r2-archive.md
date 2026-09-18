@@ -1106,6 +1106,44 @@ The full source-bound local gate, final storage gate and scientific pilot gates
 remain mandatory after all implementation changes. A prelude failure leaves
 evidence intact and blocks unadmitted growth; it never permits a larger quota.
 
+**Early qualification execution refinement (2026-09-18):** implement and review
+the narrow private `archive/_qualification.py` driver before the first real
+engineering bootstrap, adding it only to the current executing source inventory.
+Use `tests/archive/test_qualification.py` for local-double helper/process tests.
+Do not construct the archive supervisor for this diagnostic: its persistent
+run-directory binding would conflict with the later pilot. Do not add a public
+API, CLI, provider registry, new configuration reader or new allowance.
+
+The controller entry accepts the established workspace budget, bounded output
+root, an exactly reviewed completed debug EpisodeCommit and source root, review
+and protocol hashes, source commit and the fixed R2 transport. It derives the
+shared control directory and policy from the existing budget. Its only new
+archive compositions are a canonical locked remote-reservation snapshot and
+receipt-authorized one-chunk-at-a-time restore. The lock hierarchy and remote
+ledger must already be admitted and created; a snapshot may not create them.
+
+Keep the prescribed 64 MiB probe and real copied episode. Reserve all local
+sources, restores, interrupted scratch, metadata, atomic peaks and bounded logs
+before publication. Use one parent-owned reservation across spawned archive
+children, a real SIGKILL after the first successful provider create, an observed
+provider collision on retry, exact readback, stable completed retry and fresh
+no-overwrite restores. Stop at an additional 256 MiB remote qualification bound
+inside the shared 512 MiB qualification-plus-smoke allowance. This stop limit is
+not a serializer maximum or proof that the later smoke fits; prove that fit
+separately against retained qualification usage. Reap every child before releasing
+local planned capacity; all actual files and remote reservations remain charged.
+
+Persist at most 32 bounded 4,096-byte phase summaries, a bounded progress record
+and a 65,536-byte result; per-call evidence uses fixed-size counters, observed
+category maxima and a rolling digest, not an unbounded event log. A success result
+requires the real R2 transport; local doubles cannot issue it. Source/policy,
+unit/receipt/inventory hashes, signal/collision/restore checks and local/remote
+measurements are recorded without credentials, destination configuration or
+machine paths. Small real files test process and restore behavior; the full fixed
+probe recipe is also checked as a streamed digest without retaining duplicate
+64 MiB test copies. Real provider execution still requires independent review,
+positive content custody and exact shared-workspace admission.
+
 For prospective full-verification bounds, distinguish source-bound fixture roles:
 explicit acceptance/debug/failed scientific runs remain retained; mutable parser,
 corruption and fake-transport test inputs and reconstructible tool state follow

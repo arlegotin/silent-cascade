@@ -405,6 +405,18 @@ batch eviction, rebaselining or changes to scientific/public catalog schemas.
 Admission includes changed leaves, index publication and atomic coexistence;
 the single-unit pending receipt remains the recovery and charge-update boundary.
 
+Early provider qualification uses a narrow private driver, implemented and
+reviewed before the first real bootstrap. It composes existing remote-ledger,
+receipt and streaming-restore validators rather than constructing the pilot
+supervisor or introducing another control history. One parent reservation spans
+the real interrupted child upload, collision/readback retry and restored copies.
+The fixed 64 MiB probe and one positively reviewed copied debug episode have a
+256 MiB additional remote stop limit within the unchanged 512 MiB combined
+qualification/smoke allowance; neither number substitutes for source-derived
+output bounds. Bounded diagnostic records contain hashes and measured counters,
+not credentials, destination settings or private paths. Actual provider checks
+and later smoke are distinct gates, and local doubles cannot certify R2 behavior.
+
 - Archive policy, source, manifests, transfer receipts and control snapshots have
   separate hashes. They do not masquerade as unchanged historical scientific data.
 - Include the approved amendment and new executable files in both pilot source
