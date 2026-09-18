@@ -313,6 +313,201 @@ def test_observed_transport_archive_checks_local_ledger(process_case):
     assert observer.summary["creates"] > 0
 
 
+def _scoped_only_archive_child(boundary, *args):
+    from conftest import _hide_host_authorities
+
+    from silent_cascade.archive import _qualification
+    from silent_cascade.archive.ledger import _StorageBudget
+
+    def forbidden_full_check(self):
+        raise AssertionError("qualification child attempted full retained authentication")
+
+    _StorageBudget.retained_charge = forbidden_full_check
+    with _hide_host_authorities(boundary):
+        _qualification._archive_child(*args)
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_qualification_child_rejects_noninheritable_or_expired_scope(process_case, expired):
+    from silent_cascade.archive._qualification import _spawn_archive_phase
+    from silent_cascade.archive.ledger import StorageBlocked
+
+    budget, unit, transport = process_case
+
+    def attempt(scope):
+        with pytest.raises(StorageBlocked, match="child failed"):
+            _spawn_archive_phase(
+                run_dir=unit.root,
+                control_dir=unit.control,
+                ref=unit.ref,
+                policy=unit.policy,
+                transport=transport,
+                phase="resume",
+                transport_calls=10,
+                observe_local=lambda: None,
+                scope=scope,
+            )
+        assert not (unit.control / f"receipts/{unit.ref.unit_id}.json").exists()
+        assert not tuple(transport.root.rglob("*.bin"))
+
+    with budget._scoped_reservation(
+        admission={}, child_inheritable=expired, metadata=1024**2, logs=1024**2, scratch=1024**2
+    ) as admitted:
+        if not expired:
+            attempt(admitted.retained)
+    if expired:
+        attempt(admitted.retained)
+
+
+def _abandon_scoped_parent(workspace, policy, reply):
+    from silent_cascade.archive.ledger import _StorageBudget
+
+    budget = _StorageBudget(workspace=workspace, policy=policy)
+    with budget._scoped_reservation(
+        admission={}, child_inheritable=True, metadata=1024**2, logs=1024**2, scratch=1024**2
+    ) as admitted:
+        reply.send(admitted.retained)
+        reply.close()
+        os._exit(0)
+
+
+def test_qualification_child_rejects_dead_scope_owner(process_case, isolated_archive_authorities):
+    import multiprocessing
+
+    from silent_cascade.archive._qualification import _spawn_archive_phase
+    from silent_cascade.archive.ledger import StorageBlocked
+
+    budget, unit, transport = process_case
+    context = multiprocessing.get_context("spawn")
+    reply, child_reply = context.Pipe(duplex=False)
+    parent = context.Process(
+        target=isolated_archive_authorities.target(
+            _abandon_scoped_parent, budget.workspace, unit.policy, child_reply
+        )
+    )
+    parent.start()
+    child_reply.close()
+    assert reply.poll(10)
+    scope = reply.recv()
+    reply.close()
+    parent.join(10)
+    assert parent.exitcode == 0
+    assert scope.owner_pid == parent.pid
+    assert scope.reservation_token in budget._state()["reservations"]
+    parent.close()
+    with pytest.raises(StorageBlocked, match="child failed"):
+        _spawn_archive_phase(
+            run_dir=unit.root,
+            control_dir=unit.control,
+            ref=unit.ref,
+            policy=unit.policy,
+            transport=transport,
+            phase="resume",
+            transport_calls=10,
+            observe_local=lambda: None,
+            scope=scope,
+        )
+    assert not (unit.control / f"receipts/{unit.ref.unit_id}.json").exists()
+
+
+@pytest.mark.parametrize("final_failure", [False, True])
+def test_qualification_scans_only_at_owned_entry_and_staged_final_boundary(
+    process_case, monkeypatch, isolated_archive_authorities, final_failure
+):
+    import functools
+
+    from silent_cascade.archive import _qualification
+    from silent_cascade.archive.ledger import StorageBlocked
+    from silent_cascade.archive.preflight import _ReviewedSource
+    from silent_cascade.archive.transport import _lock
+    from silent_cascade.archive.types import EpisodeCommit, FileEntry
+
+    budget, unit, transport = process_case
+    output = budget.workspace / "scoped-qualification"
+    from silent_cascade.archive.transport import archive_operation_lock
+
+    with archive_operation_lock(unit.control):
+        pass
+    for root, category in {
+        output: "metadata",
+        output / "source-probe": "spool",
+        output / "source-debug": "spool",
+        output / "restore-probe": "cache",
+        output / "restore-debug": "cache",
+        output / "events": "logs",
+    }.items():
+        budget.bind(root, category=category)
+    with _lock(
+        control_dir=budget.root, relative=("engineering.lock",), shared=False, blocking=True
+    ):
+        pass
+    probe = bytes(range(160))
+    monkeypatch.setattr(_qualification, "_PROBE_BYTES", len(probe))
+    monkeypatch.setattr(_qualification, "_PROBE_SHA256", sha256_bytes(probe))
+    monkeypatch.setattr(_qualification, "_probe_blocks", lambda: iter((probe,)))
+    monkeypatch.setattr(
+        _qualification,
+        "_reviewed_source",
+        lambda **_: _ReviewedSource("6" * 40, "7" * 64, "8" * 64),
+    )
+    monkeypatch.setattr(
+        _qualification,
+        "_archive_child",
+        functools.partial(_scoped_only_archive_child, isolated_archive_authorities.boundary),
+    )
+    entry = FileEntry("debug/probe.bin", sha256_bytes(probe), len(probe))
+    commit = EpisodeCommit(
+        "phase4-evaluation-episode-commit-v1",
+        "1" * 64,
+        0,
+        "debug",
+        "2" * 64,
+        0,
+        1,
+        "3" * 64,
+        (entry,),
+        (),
+    )
+    scans = []
+    authenticate = budget.retained_charge
+
+    def full_check():
+        scans.append(True)
+        if len(scans) == 2:
+            assert budget._state()["reservations"]
+            assert (output / ".qualification-result.part").exists()
+            assert not (output / "qualification-result.json").exists()
+            if final_failure:
+                raise StorageBlocked("injected retained mutation")
+        return authenticate()
+
+    monkeypatch.setattr(budget, "retained_charge", full_check)
+    arguments = dict(
+        budget=budget,
+        output_root=output,
+        debug_source_root=unit.root / "probe",
+        debug_logical_root="debug",
+        debug_commit=commit,
+        debug_review_sha256="4" * 64,
+        protocol_sha256="5" * 64,
+        source_commit="6" * 40,
+        transport=transport,
+    )
+    if final_failure:
+        with pytest.raises(StorageBlocked, match="retained mutation"):
+            _qualification._run_qualification(**arguments)
+        assert not (output / "qualification-result.json").exists()
+        assert (output / ".qualification-result.part").exists()
+    else:
+        result = _qualification._run_qualification(**arguments)
+        assert result.interruption.signal == 9
+        assert result.retry.exact_readback and result.retry.stable_reserved_bytes
+        assert result.local_after.model_dump(exclude={"retained_bytes"}) == budget.measure()
+        assert (output / "qualification-result.json").exists()
+    assert len(scans) == 2
+    assert not budget._state()["reservations"]
+
+
 def test_two_unit_bound_includes_retained_copies_extra_killed_chunk_and_prior_run(
     process_case, monkeypatch
 ):
@@ -667,6 +862,9 @@ def _unreapable_parent(workspace, policy, fault):
     owns_group = fault in {"group-kill", "group-probe"}
     if owns_group:
         _qualification.os.killpg = group_signal
+    if fault == "group-probe":
+        ticks = iter((0, 61))
+        _qualification.time.monotonic = lambda: next(ticks)
     if fault == "evidence":
         _qualification._event = failed_evidence
 
@@ -706,3 +904,34 @@ def test_unreapable_child_fail_stop_preserves_durable_reservation(
     assert next(iter(reservations.values()))["pid"] == parent.pid
     assert not (unit.root.parent / "qualification-result.json").exists()
     parent.close()
+
+
+@pytest.mark.parametrize("stage", ["kill", "probe"])
+def test_qualification_waits_for_esrch_after_transient_group_eperm(tmp_path, monkeypatch, stage):
+    import signal
+    from types import SimpleNamespace
+
+    from silent_cascade.archive import _qualification
+
+    probes = []
+
+    def signal_group(pid, signum):
+        assert pid == 123456
+        if signum == 0:
+            probes.append(signum)
+            if len(probes) == 1:
+                raise PermissionError("transient empty group")
+            raise ProcessLookupError
+        assert signum == signal.SIGKILL
+        if stage == "kill":
+            raise PermissionError("transient empty group")
+
+    def fail_stop(*_args):
+        pytest.fail("transient group EPERM prevented bounded ESRCH proof")
+
+    monkeypatch.setattr(_qualification.os, "killpg", signal_group)
+    monkeypatch.setattr(_qualification, "_fail_stop", fail_stop)
+    monkeypatch.setattr(_qualification.time, "sleep", lambda _: None)
+    child = SimpleNamespace(pid=123456, join=lambda _: None, is_alive=lambda: False)
+    _qualification._stop_child(child, owns_group=True, events=tmp_path, phase="resume")
+    assert len(probes) == 2

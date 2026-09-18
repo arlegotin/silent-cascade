@@ -284,8 +284,9 @@ def _progress(root, phase):
 
 
 class _ObservedTransport:
-    def __init__(self, delegate, budget, phase, events, reply, gate):
+    def __init__(self, delegate, budget, phase, events, reply, gate, scope=None):
         self.delegate, self.budget, self.phase = delegate, budget, phase
+        self.scope = scope
         self.events, self.reply, self.gate = events, reply, gate
         self.summary = {
             "creates": 0,
@@ -311,7 +312,9 @@ class _ObservedTransport:
             shared=False,
             blocking=True,
         ):
-            measured = self.budget.check()
+            measured = (
+                self.budget.check() if self.scope is None else self.budget.check_scoped(self.scope)
+            )
         for name in _CATEGORIES:
             self.summary["local_peak"][name] = max(self.summary["local_peak"][name], measured[name])
 
@@ -371,15 +374,17 @@ class _ObservedTransport:
             self.observe()
 
 
-def _archive_child(run_dir, control_dir, ref, policy, transport, phase, reply, gate):
+def _archive_child(run_dir, control_dir, ref, policy, transport, phase, reply, gate, scope=None):
     try:
         os.setsid()
         reply.send_bytes(_bounded_record({"status": "ready"}, _REPLY_LIMIT))
         if gate.recv_bytes(3) != b"run":
             raise ValueError("qualification child start gate differs")
         budget = _StorageBudget(workspace=control_dir.parent, policy=policy)
+        if scope is not None:
+            budget.check_scoped(scope)
         observed = _ObservedTransport(
-            transport, budget, phase, run_dir.parent / "events", reply, gate
+            transport, budget, phase, run_dir.parent / "events", reply, gate, scope
         )
         receipt = archive_unit(
             run_dir=run_dir, control_dir=control_dir, ref=ref, policy=policy, transport=observed
@@ -412,7 +417,7 @@ def _fail_stop(events, phase):
 def _stop_child(child, *, owns_group, events, phase):
     try:
         if owns_group:
-            with suppress(ProcessLookupError):
+            with suppress(ProcessLookupError, PermissionError):
                 os.killpg(child.pid, signal.SIGKILL)
         elif child.is_alive():
             child.kill()
@@ -426,6 +431,10 @@ def _stop_child(child, *, owns_group, events, phase):
                     os.killpg(child.pid, 0)
                 except ProcessLookupError:
                     break
+                except PermissionError:
+                    # An empty/zombie-only group can transiently report EPERM.
+                    # Only ESRCH proves disappearance, within the same deadline.
+                    pass
                 if time.monotonic() >= deadline:
                     _fail_stop(events, phase)
                 time.sleep(0.05)
@@ -445,6 +454,7 @@ def _spawn_archive_phase(
     phase,
     transport_calls,
     observe_local,
+    scope=None,
 ):
     if phase not in _PHASES or type(transport_calls) is not int or not 0 < transport_calls < 2**63:
         raise ValueError("invalid qualification child bound")
@@ -453,7 +463,7 @@ def _spawn_archive_phase(
     child_gate, gate = ctx.Pipe(duplex=False)
     child = ctx.Process(
         target=_archive_child,
-        args=(run_dir, control_dir, ref, policy, transport, phase, child_reply, child_gate),
+        args=(run_dir, control_dir, ref, policy, transport, phase, child_reply, child_gate, scope),
     )
     events = run_dir.parent / "events"
     deadline = time.monotonic() + (5460 if phase == "interrupt" else 60 + transport_calls * 5400)
@@ -747,20 +757,23 @@ def _run_qualification(
                     or digest.hexdigest() != entry.sha256
                 ):
                     raise ValueError("qualification debug source differs from commit")
-        before = _LocalAllocation(**budget.check(), retained_bytes=budget.retained_charge())
-        peak = before.model_dump()
-
-        def observe():
-            measured = budget.check()
-            for name in _CATEGORIES:
-                peak[name] = max(peak[name], measured[name])
-            return measured
-
         # The only parent reservation spans writes, every child, and both restores.
-        with budget.reserve(
+        with budget._scoped_reservation(
             admission={"early_qualification": run_id},
+            child_inheritable=True,
             **{name: getattr(bound.local, name) for name in _CATEGORIES},
-        ):
+        ) as admitted:
+            before = _LocalAllocation(
+                **admitted.before, retained_bytes=admitted.retained.retained_bytes
+            )
+            peak = before.model_dump()
+
+            def observe():
+                measured = budget.check_scoped(admitted.retained)
+                for name in _CATEGORIES:
+                    peak[name] = max(peak[name], measured[name])
+                return measured
+
             with _pinned_directory(output_root, create=True):
                 pass
             events = output_root / "events"
@@ -857,6 +870,7 @@ def _run_qualification(
                     phase=mode,
                     transport_calls=bound.transport_calls,
                     observe_local=observe,
+                    scope=admitted.retained,
                 )
                 for name, amount in result.get("local_peak", {}).items():
                     peak[name] = max(peak[name], amount)
@@ -998,10 +1012,10 @@ def _run_qualification(
                 local_after=after,
                 event_log_sha256=log.hexdigest(),
             )
-            return _publish_result(output_root, result, observe, peak)
+            return _publish_result(output_root, result, observe, peak, budget.check)
 
 
-def _publish_result(root, result, observe, peak):
+def _publish_result(root, result, observe, peak, authenticate):
     # Measure the actual final inode before create-only publication. Iterate only
     # the bounded record until its own allocation and recorded maxima agree.
     stage = root / ".qualification-result.part"
@@ -1032,6 +1046,8 @@ def _publish_result(root, result, observe, peak):
                 raise ValueError("qualification result allocation did not converge")
         finally:
             os.close(descriptor)
+        if authenticate() != result.local_after.model_dump(exclude={"retained_bytes"}):
+            raise StorageBlocked("storage_blocked: final qualification allocation changed")
         identity = _regular_identity(stage)
         os.link(
             stage.name,

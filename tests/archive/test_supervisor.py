@@ -3,6 +3,273 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_supervisor_ledger(tmp_path):
+    from conftest import _authority_boundary, _hide_host_authorities
+
+    with _hide_host_authorities(_authority_boundary(tmp_path)):
+        yield
+
+
+def _run_test_bound_job(workspace, monkeypatch, script):
+    import os
+    import sys
+
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.ledger import initialize_workspace_ledger
+    from silent_cascade.archive.types import ArchivePolicy, JobOutputBounds
+    from silent_cascade.train import pilot_offline
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
+    original = supervisor.subprocess.Popen
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "Popen",
+        lambda _command, **kwargs: original([sys.executable, "-B", "-c", script], **kwargs),
+    )
+    monkeypatch.setattr(pilot_offline, "resolve_offline_git", lambda: None)
+    monkeypatch.setattr(
+        pilot_offline, "offline_environment", lambda *_args, **_kwargs: dict(os.environ)
+    )
+    bounds = JobOutputBounds(
+        job="report",
+        request_sha256="1" * 64,
+        policy_sha256="2" * 64,
+        source_sha256="3" * 64,
+        spool_bytes=65536,
+        cache_bytes=65536,
+        pinned_bytes=0,
+        metadata_bytes=1024**2,
+        scratch_bytes=65536,
+        logs_bytes=65536,
+        emergency_bytes=0,
+    )
+    return supervisor._supervise_bound_job(
+        job="report",
+        request={},
+        decoded={},
+        source="3" * 64,
+        workspace_root=workspace,
+        run_dir=workspace / "run",
+        control_dir=workspace / "control",
+        transport=None,
+        policy=policy,
+        output_bounds=bounds,
+    )
+
+
+def test_supervisor_scoped_final_check_follows_cleanup_while_owned(tmp_path, monkeypatch):
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.ledger import _StorageBudget
+
+    scans, cleaned = [], []
+    authenticate = _StorageBudget.retained_charge
+    close = supervisor._ArchiveServer.close
+    serve = supervisor._ArchiveServer.serve_once
+
+    def full_check(budget):
+        scans.append(True)
+        assert budget._state()["reservations"]
+        if len(scans) == 2:
+            assert cleaned == [True]
+        return authenticate(budget)
+
+    def cleanup(server):
+        close(server)
+        cleaned.append(True)
+
+    def repeated_requests(server):
+        from silent_cascade.archive.session import _publish
+
+        _publish(
+            server.control_dir,
+            "request.json",
+            {
+                "schema_version": "phase4-r2-request-v1",
+                "run_id": server.run_id,
+                "session_id": server.identity["session_id"],
+                "sequence": server.sequence + 1,
+                "operation": "stop",
+                "policy_sha256": server.identity["policy_sha256"],
+                "unit_id": None,
+                "payload": {},
+                "pid": server.child_pid,
+            },
+            max_bytes=server.policy.page_bytes,
+        )
+        with server.budget.reserve(_scope=server.scope, scratch=1):
+            return serve(server)
+
+    monkeypatch.setattr(_StorageBudget, "retained_charge", full_check)
+    monkeypatch.setattr(supervisor._ArchiveServer, "close", cleanup)
+    monkeypatch.setattr(supervisor._ArchiveServer, "serve_once", repeated_requests)
+    assert _run_test_bound_job(tmp_path, monkeypatch, "import time; time.sleep(0.2)") == 0
+    assert len(scans) == 2
+
+
+@pytest.mark.parametrize("fault", ["final-authentication", "context-exit", "live-growth"])
+def test_supervisor_cannot_accept_failed_finite_boundary(tmp_path, monkeypatch, fault):
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.ledger import StorageBlocked, _StorageBudget
+
+    scans = []
+    authenticate = _StorageBudget.retained_charge
+    store = _StorageBudget._store
+    serve = supervisor._ArchiveServer.serve_once
+
+    def full_check(budget):
+        scans.append(True)
+        if len(scans) == 2 and fault == "final-authentication":
+            raise StorageBlocked("retained mutation")
+        return authenticate(budget)
+
+    def release(budget, state):
+        if scans and not state["reservations"] and fault == "context-exit":
+            raise OSError("reservation exit failed")
+        return store(budget, state)
+
+    def growth(server):
+        if fault == "live-growth":
+            (server.budget.workspace / "scratch/overflow").write_bytes(b"x" * 65537)
+        return serve(server)
+
+    monkeypatch.setattr(_StorageBudget, "retained_charge", full_check)
+    monkeypatch.setattr(_StorageBudget, "_store", release)
+    monkeypatch.setattr(supervisor._ArchiveServer, "serve_once", growth)
+    with pytest.raises((StorageBlocked, OSError)):
+        _run_test_bound_job(tmp_path, monkeypatch, "import time; time.sleep(0.2)")
+    assert len(scans) == (1 if fault == "live-growth" else 2)
+
+
+@pytest.mark.parametrize("stage", ["term", "kill", "probe"])
+def test_supervisor_waits_for_esrch_after_transient_group_eperm(tmp_path, monkeypatch, stage):
+    import signal
+    from types import SimpleNamespace
+
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.types import ArchivePolicy
+
+    probes = []
+    target = {"term": signal.SIGTERM, "kill": signal.SIGKILL, "probe": 0}[stage]
+
+    def signal_group(pid, signum):
+        assert pid == 123456
+        if signum == 0:
+            probes.append(signum)
+            if len(probes) == 1:
+                raise PermissionError("transient empty group")
+            raise ProcessLookupError
+        if signum == target:
+            raise PermissionError("transient empty group")
+
+    def fail_stop(*_args):
+        pytest.fail("transient group EPERM prevented bounded ESRCH proof")
+
+    monkeypatch.setattr(supervisor.os, "killpg", signal_group)
+    monkeypatch.setattr(supervisor, "_supervisor_fail_stop", fail_stop)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _: None)
+    child = SimpleNamespace(pid=123456, wait=lambda **_: 0)
+    supervisor._stop_supervised_child(child, tmp_path, ArchivePolicy())
+    assert len(probes) == 2
+
+
+def test_supervisor_stops_private_descendant_after_leader_exit(tmp_path, monkeypatch):
+    import os
+    import signal
+    from contextlib import suppress
+
+    from silent_cascade.archive import supervisor
+    from silent_cascade.archive.ledger import _StorageBudget
+    from silent_cascade.archive.types import ArchivePolicy
+
+    def unexpected_fail_stop(*_args):
+        raise AssertionError("owned-group cleanup failed in native process test")
+
+    monkeypatch.setattr(supervisor, "_supervisor_fail_stop", unexpected_fail_stop)
+    signal_group = supervisor.os.killpg
+    stopped_groups = set()
+
+    def signal_owned_group(pid, signum):
+        assert pid not in stopped_groups, "do not signal an already retired group ID"
+        try:
+            return signal_group(pid, signum)
+        except ProcessLookupError:
+            if signum == 0:
+                stopped_groups.add(pid)
+            raise
+
+    monkeypatch.setattr(supervisor.os, "killpg", signal_owned_group)
+
+    pid_file = tmp_path / "descendant-pid"
+    script = (
+        "import subprocess, sys; from pathlib import Path; "
+        "child = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(60)'], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        f"Path({str(pid_file)!r}).write_text(str(child.pid))"
+    )
+    try:
+        assert _run_test_bound_job(tmp_path, monkeypatch, script) == 0
+        pid = int(pid_file.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        assert not _StorageBudget(workspace=tmp_path, policy=ArchivePolicy())._state()[
+            "reservations"
+        ]
+    finally:
+        if pid_file.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
+
+def _supervisor_cleanup_failure_parent(workspace, boundary, fault):
+    import os
+
+    from conftest import _hide_host_authorities
+
+    from silent_cascade.archive import supervisor
+
+    with _hide_host_authorities(boundary), pytest.MonkeyPatch.context() as patch:
+
+        def fail_signal(_pid, _signal):
+            raise PermissionError("injected owned group cleanup failure")
+
+        if fault == "signal":
+            patch.setattr(supervisor.os, "killpg", fail_signal)
+        else:
+            patch.setattr(
+                supervisor._ArchiveServer,
+                "close",
+                lambda _: (_ for _ in ()).throw(OSError("cleanup")),
+            )
+        try:
+            _run_test_bound_job(workspace, patch, "pass")
+        except BaseException:
+            os._exit(71)
+
+
+@pytest.mark.parametrize("fault", ["signal", "server"])
+def test_supervisor_cleanup_failure_preserves_owned_reservation(tmp_path, fault):
+    import multiprocessing
+
+    from conftest import _authority_boundary
+
+    from silent_cascade.archive.ledger import _StorageBudget
+    from silent_cascade.archive.types import ArchivePolicy
+
+    parent = multiprocessing.get_context("spawn").Process(
+        target=_supervisor_cleanup_failure_parent,
+        args=(tmp_path, _authority_boundary(tmp_path), fault),
+    )
+    parent.start()
+    parent.join(15)
+    assert parent.exitcode == 70
+    records = _StorageBudget(workspace=tmp_path, policy=ArchivePolicy())._state()["reservations"]
+    assert len(records) == 1
+    assert next(iter(records.values()))["pid"] == parent.pid
+    parent.close()
+
+
 @pytest.mark.parametrize(
     "job,job_request",
     [
@@ -290,7 +557,7 @@ def test_supervisor_abort_stops_nested_diagnostic_without_touching_other_process
         emergency_bytes=0,
     )
     original_popen = subprocess.Popen
-    original_check = _StorageBudget.check
+    original_check = _StorageBudget.check_scoped
     direct = []
     descendants = []
     deadline = time.monotonic() + 40
@@ -321,8 +588,8 @@ s._child_main()
         direct.append(process)
         return process
 
-    def exhaust_after_nested_spawn(budget):
-        result = original_check(budget)
+    def exhaust_after_nested_spawn(budget, scope):
+        result = original_check(budget, scope)
         assert time.monotonic() < deadline, "nested diagnostic did not start"
         marker = control / "test-nested.pid"
         if not descendants and marker.exists() and (pid := marker.read_text()).isdigit():
@@ -337,7 +604,7 @@ s._child_main()
         stderr=subprocess.DEVNULL,
     )
     monkeypatch.setattr(supervisor.subprocess, "Popen", child_fixture)
-    monkeypatch.setattr(_StorageBudget, "check", exhaust_after_nested_spawn)
+    monkeypatch.setattr(_StorageBudget, "check_scoped", exhaust_after_nested_spawn)
     try:
         result = supervisor.supervise_job(
             job="report",

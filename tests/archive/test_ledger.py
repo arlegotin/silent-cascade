@@ -10,11 +10,231 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_unit_ledgers_from_an_outer_workspace_authority(monkeypatch):
-    from silent_cascade.archive import preflight
+def _isolate_unit_ledgers_from_an_outer_workspace_authority(tmp_path):
+    from conftest import _authority_boundary, _hide_host_authorities
 
-    monkeypatch.setattr(preflight, "_require_single_authority", lambda _: None)
-    monkeypatch.setattr(preflight, "_authority", lambda _: None)
+    with _hide_host_authorities(_authority_boundary(tmp_path)):
+        yield
+
+
+def test_scoped_checks_authenticate_once_and_expire_with_owned_reservation(tmp_path, monkeypatch):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    full = budget.retained_charge
+    scans = []
+
+    def authenticate():
+        scans.append(True)
+        return full()
+
+    monkeypatch.setattr(budget, "retained_charge", authenticate)
+    before = budget.measure()
+    with budget._scoped_reservation(admission={"job": "test"}, scratch=65536) as admitted:
+        assert admitted.before == before
+        assert admitted.retained.retained_bytes == 0
+        budget.inherit_reservations = True
+        for _ in range(4):
+            budget.check_scoped(admitted.retained)
+            with budget.reserve(_scope=admitted.retained, scratch=1024):
+                pass
+        assert len(scans) == 1
+        budget.check()
+        budget.check()
+        assert len(scans) == 3
+        with pytest.raises(ValueError), budget.reserve(_scope=admitted.retained, scratch=-1):
+            pass
+        fresh = _StorageBudget(workspace=tmp_path, policy=policy)
+        monkeypatch.setattr(fresh, "retained_charge", authenticate)
+        fresh.check()
+        assert len(scans) == 4
+        with (
+            pytest.raises(StorageBlocked, match="not owned"),
+            fresh.reserve(_scope=admitted.retained, scratch=1),
+        ):
+            pass
+    with pytest.raises(StorageBlocked):
+        budget.check_scoped(admitted.retained)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("workspace", "/elsewhere"),
+        ("workspace_device", -1),
+        ("policy_sha256", "f" * 64),
+        ("authority_sha256", "f" * 64),
+        ("snapshot_sha256", "f" * 64),
+        ("retained_bytes", -1),
+        ("retained_bytes", 1),
+        ("reservation_token", "unknown"),
+        ("admission_sha256", "f" * 64),
+        ("owner_pid", -1),
+        ("owner_create_time", 0.0),
+        ("child_inheritable", True),
+    ],
+)
+def test_scoped_checks_reject_copied_changed_capability(tmp_path, field, value):
+    from dataclasses import replace
+
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    with budget._scoped_reservation(admission={"job": "test"}, scratch=65536) as admitted:
+        with pytest.raises(StorageBlocked):
+            budget.check_scoped(replace(admitted.retained, **{field: value}))
+        with pytest.raises(StorageBlocked):
+            budget.check_scoped({"retained_bytes": 0})
+
+
+@pytest.mark.parametrize(
+    "category", ["spool", "cache", "pinned", "metadata", "scratch", "logs", "emergency"]
+)
+def test_scoped_checks_reject_live_admission_growth(tmp_path, category):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = _StorageBudget(workspace=tmp_path, policy=policy)
+    (tmp_path / category).mkdir()
+    with budget._scoped_reservation(admission={}, **{category: 0}) as admitted:
+        (tmp_path / category / "growth").write_bytes(b"new allocated blocks")
+        with pytest.raises(StorageBlocked, match=category):
+            budget.check_scoped(admitted.retained)
+
+
+@pytest.mark.parametrize("mutation", ["admission", "owner", "dead", "missing"])
+def test_scoped_checks_require_current_live_admission(tmp_path, monkeypatch, mutation):
+    from silent_cascade.archive import ledger
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    ledger.initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = ledger._StorageBudget(workspace=tmp_path, policy=policy)
+    with budget._scoped_reservation(admission={"job": "exact"}, scratch=65536) as admitted:
+        state = budget._state()
+        record = state["reservations"][admitted.token]
+        if mutation == "admission":
+            record["admission"]["job"] = "different"
+        elif mutation == "owner":
+            record["create_time"] += 1
+        elif mutation == "dead":
+            monkeypatch.setattr(ledger, "_process_identity", lambda _: None)
+        else:
+            del state["reservations"][admitted.token]
+        budget._store(state)
+        with pytest.raises(ledger.StorageBlocked):
+            budget.check_scoped(admitted.retained)
+
+
+@pytest.mark.parametrize(
+    "boundary", ["spool", "cache", "pinned", "metadata", "scratch", "logs", "emergency", "physical"]
+)
+def test_scoped_accounting_keeps_every_capacity_boundary(tmp_path, monkeypatch, boundary):
+    from silent_cascade.archive import ledger
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    ledger.initialize_workspace_ledger(workspace_root=tmp_path, policy=policy, baseline=())
+    budget = ledger._StorageBudget(workspace=tmp_path, policy=policy)
+    with budget._scoped_reservation(admission={}) as admitted:
+        measured = dict.fromkeys(ledger._CATEGORIES, 0)
+        if boundary in ledger._CATEGORIES:
+            measured[boundary] = getattr(policy, boundary + "_bytes") + 1
+        else:
+            monkeypatch.setattr(
+                ledger.os, "statvfs", lambda _: SimpleNamespace(f_bavail=0, f_frsize=4096)
+            )
+        monkeypatch.setattr(budget, "measure", lambda: measured)
+        with pytest.raises(ledger.StorageBlocked):
+            budget.check_scoped(admitted.retained)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["snapshot", "authority", "charge", "pending", "retained-file", "normal-global"]
+)
+def test_scoped_engineering_identity_and_final_full_authentication(tmp_path, monkeypatch, mutation):
+    import subprocess
+    from dataclasses import asdict, replace
+
+    from silent_cascade.archive import ledger, preflight
+    from silent_cascade.archive.types import ArchivePolicy
+
+    frozen = tmp_path / "frozen"
+    frozen.write_bytes(b"retained evidence")
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    budget = preflight.bootstrap_engineering_workspace(
+        custody_root=tmp_path,
+        workspace=tmp_path / "operational",
+        policy=ArchivePolicy(),
+        source_commit=revision,
+    )
+    with budget._scoped_reservation(admission={}) as admitted:
+        scope = admitted.retained
+        assert scope.retained_bytes >= frozen.stat().st_blocks * 512
+        if mutation == "normal-global":
+            # All category ceilings fit policy exactly; authenticated retained
+            # history pushes both normal and total allocation over the cap.
+            measured = {
+                name: getattr(budget.policy, name + "_bytes") for name in ledger._CATEGORIES
+            }
+            monkeypatch.setattr(budget, "measure", lambda: measured)
+            with pytest.raises(ledger.StorageBlocked, match="normal allocation"):
+                budget.check_scoped(scope)
+            return
+        if mutation == "retained-file":
+            frozen.write_bytes(b"modified evidence")
+            budget.check_scoped(scope)
+            with pytest.raises(ledger.StorageBlocked, match="retained inventory"):
+                budget.check()
+            return
+        if mutation == "authority":
+            authority = tmp_path / ".silent-cascade-engineering.json"
+            authority.write_bytes(authority.read_bytes() + b"\n")
+        elif mutation == "charge":
+            identity = asdict(scope)
+            identity.pop("admission_sha256")
+            identity["retained_bytes"] = 0
+            scope = replace(
+                scope, retained_bytes=0, admission_sha256=ledger._scope_commitment({}, identity)
+            )
+        else:
+            state = budget._state()
+            if mutation == "snapshot":
+                state["engineering"]["snapshot"]["encoded_bytes"] += 1
+            else:
+                state["engineering"]["pending"] = {}
+            budget._store(state)
+        with pytest.raises(ledger.StorageBlocked):
+            budget.check_scoped(scope)
+    if mutation == "pending":
+        with (
+            pytest.raises(ledger.StorageBlocked, match="pending"),
+            budget._scoped_reservation(admission={}),
+        ):
+            pass
+        assert not budget._state()["reservations"]
 
 
 def _inode(*, kind, blocks, device=41, links=1, inode=1):

@@ -6,6 +6,7 @@ import os
 import secrets
 import stat
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import psutil
@@ -28,6 +29,34 @@ class StorageBlocked(RuntimeError):
 
 _CATEGORIES = ("spool", "cache", "pinned", "metadata", "scratch", "logs", "emergency")
 _STATE_DIRECTORY = ".silent-cascade-storage"
+
+
+@dataclass(frozen=True, slots=True)
+class _RetainedHistoryScope:
+    workspace: str
+    workspace_device: int
+    policy_sha256: str
+    authority_sha256: str | None
+    snapshot_sha256: str | None
+    retained_bytes: int
+    reservation_token: str
+    admission_sha256: str
+    owner_pid: int
+    owner_create_time: float
+    child_inheritable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ScopedAdmission:
+    token: str
+    before: dict[str, int]
+    retained: _RetainedHistoryScope
+
+
+def _scope_commitment(admission, identity):
+    # An accidental-copy integrity binding inside the trusted fixed process graph,
+    # not a signature or a defense against arbitrary in-process code.
+    return sha256_bytes(canonical_json_bytes({"admission": admission, "scope": identity}))
 
 
 def _process_identity(pid: int) -> float | None:
@@ -320,8 +349,67 @@ class _StorageBudget:
         return allocated
 
     def check(self) -> dict[str, int]:
+        return self._check_accounting(retained_bytes=self.retained_charge())
+
+    def _retained_identity(self):
+        from silent_cascade.archive.preflight import _authority
+
+        engineering = _authority(self)
+        if engineering is not None and "pending" in engineering:
+            raise StorageBlocked("storage_blocked: pending engineering eviction forbids scope")
+        return {
+            "workspace": str(self.workspace),
+            "workspace_device": self.workspace.stat().st_dev,
+            "policy_sha256": sha256_bytes(canonical_json_bytes(self.policy)),
+            "authority_sha256": None if engineering is None else engineering["authority_sha256"],
+            "snapshot_sha256": None
+            if engineering is None
+            else sha256_bytes(canonical_json_bytes(engineering["snapshot"])),
+            "retained_bytes": 0 if engineering is None else engineering["snapshot"]["allocated"],
+        }
+
+    def check_scoped(self, scope) -> dict[str, int]:
+        try:
+            if type(scope) is not _RetainedHistoryScope:
+                raise ValueError("invalid scope type")
+            identity = asdict(scope)
+            commitment = identity.pop("admission_sha256")
+            for name in ("workspace", "policy_sha256", "reservation_token", "admission_sha256"):
+                if type(getattr(scope, name)) is not str:
+                    raise ValueError("invalid scope text")
+            for name in ("authority_sha256", "snapshot_sha256"):
+                if getattr(scope, name) is not None and type(getattr(scope, name)) is not str:
+                    raise ValueError("invalid scope digest")
+            for name in ("workspace_device", "retained_bytes", "owner_pid"):
+                if type(getattr(scope, name)) is not int or getattr(scope, name) < 0:
+                    raise ValueError("invalid scope number")
+            if (
+                type(scope.owner_create_time) is not float
+                or type(scope.child_inheritable) is not bool
+            ):
+                raise ValueError("invalid scope owner")
+            if any(identity[name] != value for name, value in self._retained_identity().items()):
+                raise ValueError("retained identity changed")
+            if scope.workspace_device != self.device:
+                raise ValueError("workspace device changed")
+            record = self._state()["reservations"][scope.reservation_token]
+            if (
+                record["pid"] != scope.owner_pid
+                or record["create_time"] != scope.owner_create_time
+                or _process_identity(scope.owner_pid) != scope.owner_create_time
+                or (os.getpid() != scope.owner_pid and not scope.child_inheritable)
+                or commitment != _scope_commitment(record["admission"], identity)
+            ):
+                raise ValueError("scope admission or owner changed")
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise StorageBlocked(
+                "storage_blocked: retained-history scope is invalid or expired"
+            ) from error
+        return self._check_accounting(retained_bytes=scope.retained_bytes)
+
+    def _check_accounting(self, *, retained_bytes: int) -> dict[str, int]:
         allocated = self.measure()
-        retained = self.retained_charge()
+        retained = retained_bytes
         reservations = dict.fromkeys(_CATEGORIES, 0)
         for record in self._state()["reservations"].values():
             for name, amount in record["amounts"].items():
@@ -358,17 +446,39 @@ class _StorageBudget:
         return allocated
 
     @contextmanager
-    def reserve(self, *, admission=None, **amounts: int):
+    def _scoped_reservation(self, *, admission, child_inheritable=False, **amounts):
+        if self.active_reservation is not None or type(child_inheritable) is not bool:
+            raise StorageBlocked("storage_blocked: scoped admission requires a fresh owner")
+        with self._reservation(
+            admission=admission, child_inheritable=child_inheritable, **amounts
+        ) as admitted:
+            yield admitted
+
+    @contextmanager
+    def reserve(self, *, admission=None, _scope=None, **amounts: int):
+        with self._reservation(admission=admission, _scope=_scope, **amounts) as token:
+            yield token
+
+    @contextmanager
+    def _reservation(self, *, admission=None, _scope=None, child_inheritable=None, **amounts):
         if any(
             name not in _CATEGORIES or type(value) is not int or value < 0
             for name, value in amounts.items()
         ):
             raise ValueError("invalid storage reservation")
+        if _scope is not None:
+            self.check_scoped(_scope)
+            if (
+                self.active_reservation != _scope.reservation_token
+                or _scope.owner_pid != os.getpid()
+            ):
+                raise StorageBlocked("storage_blocked: nested reservation is not owned")
+        check = self.check if _scope is None else lambda: self.check_scoped(_scope)
         if self.active_reservation is not None and self.inherit_reservations:
             active = self._state()["reservations"][self.active_reservation]
             if any(value > active["amounts"].get(name, 0) for name, value in amounts.items()):
                 raise StorageBlocked("storage_blocked: nested output exceeds job admission")
-            self.check()
+            check()
             yield self.active_reservation
             return
         if self.active_reservation is not None:
@@ -383,7 +493,7 @@ class _StorageBudget:
                     active["amounts"][name] = active["amounts"].get(name, 0) + value
                 self._store(state)
                 try:
-                    self.check()
+                    check()
                 except BaseException:
                     active["amounts"] = prior
                     self._store(state)
@@ -421,7 +531,22 @@ class _StorageBudget:
             }
             self._store(state)
             try:
+                retained_identity = None if child_inheritable is None else self._retained_identity()
                 self.check()
+                if retained_identity is not None:
+                    record = state["reservations"][token]
+                    identity = retained_identity | {
+                        "reservation_token": token,
+                        "owner_pid": record["pid"],
+                        "owner_create_time": record["create_time"],
+                        "child_inheritable": child_inheritable,
+                    }
+                    scope = _RetainedHistoryScope(
+                        **identity,
+                        admission_sha256=_scope_commitment(record["admission"], identity),
+                    )
+                    self.check_scoped(scope)
+                    admitted = _ScopedAdmission(token, dict(record["before"]), scope)
             except BaseException:
                 del state["reservations"][token]
                 self._store(state)
@@ -429,7 +554,7 @@ class _StorageBudget:
         try:
             previous_reservation = self.active_reservation
             self.active_reservation = token
-            yield token
+            yield token if child_inheritable is None else admitted
         finally:
             self.active_reservation = previous_reservation
             with _lock(

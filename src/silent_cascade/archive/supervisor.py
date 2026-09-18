@@ -305,8 +305,8 @@ def _supervise_bound_job(
             )
         )
         _bind_storage_paths(budget, run_dir.absolute(), control_dir.absolute())
-        ownership.enter_context(
-            budget.reserve(admission=output_bounds.model_dump(mode="json"), **amounts)
+        admitted = ownership.enter_context(
+            budget._scoped_reservation(admission=output_bounds.model_dump(mode="json"), **amounts)
         )
         budget.inherit_reservations = True
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -318,8 +318,9 @@ def _supervise_bound_job(
             transport=transport,
             policy=policy,
             run_id=run_id,
+            budget=budget,
+            scope=admitted.retained,
         )
-        server.budget = budget
         token = secrets.token_hex(16)
         scratch = workspace_root / "scratch" / token
         logs = workspace_root / "logs" / token
@@ -348,6 +349,7 @@ def _supervise_bound_job(
             str(control_dir.absolute()),
         ]
         child = None
+        group_stopped = False
         with (
             (logs / "stdout.log").open("xb") as stdout,
             (logs / "stderr.log").open("xb") as stderr,
@@ -382,7 +384,12 @@ def _supervise_bound_job(
                         key.data.write(raw)
                         key.data.flush()
                         logged += len(raw)
-                    budget.check()
+                    budget.check_scoped(admitted.retained)
+                    # A finished leader can leave descendants holding the pipe
+                    # writers. Stop the known private group before draining EOF.
+                    if child.poll() is not None and not group_stopped:
+                        _stop_supervised_child(child, control_dir, policy)
+                        group_stopped = True
                     if time.monotonic() - last_health >= 30:
                         _publish(
                             control_dir,
@@ -396,23 +403,65 @@ def _supervise_bound_job(
                             max_bytes=policy.page_bytes,
                         )
                         last_health = time.monotonic()
-                return child.wait(timeout=30)
+                status = child.wait(timeout=30)
             finally:
-                if child is not None and child.poll() is None:
-                    # The fresh child owns this otherwise-private process group.
-                    # No global process scan or unrelated process is targeted.
-                    with suppress(ProcessLookupError):
-                        os.killpg(child.pid, signal.SIGTERM)
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        with suppress(ProcessLookupError):
-                            os.killpg(child.pid, signal.SIGKILL)
-                        child.wait(timeout=5)
-                for pipe in () if child is None else (child.stdout, child.stderr):
-                    if pipe is not None:
-                        pipe.close()
-                server.close()
+                try:
+                    if child is not None and not group_stopped:
+                        _stop_supervised_child(child, control_dir, policy)
+                    for pipe in () if child is None else (child.stdout, child.stderr):
+                        if pipe is not None:
+                            pipe.close()
+                    server.close()
+                except BaseException:
+                    _supervisor_fail_stop(control_dir, policy)
+        budget.check()
+    return status
+
+
+def _supervisor_fail_stop(control_dir, policy):
+    try:
+        _publish(
+            control_dir,
+            "blocked.json",
+            {"status": "storage_blocked", "reason": "cleanup_unproven"},
+            max_bytes=policy.page_bytes,
+        )
+    finally:
+        # Cleanup has no termination proof; do not unwind durable ownership.
+        os._exit(70)
+
+
+def _stop_supervised_child(child, control_dir, policy):
+    try:
+        # Popen(start_new_session=True) created this otherwise-private group.
+        # Its identity stays ours even when the direct child has already exited.
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            child.wait(timeout=5)
+            return
+        except PermissionError:
+            # A transient empty/zombie-only group can report EPERM on macOS.
+            # It proves nothing; the bounded loop below still requires ESRCH.
+            pass
+        with suppress(subprocess.TimeoutExpired):
+            child.wait(timeout=5)
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.killpg(child.pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            if time.monotonic() >= deadline:
+                _supervisor_fail_stop(control_dir, policy)
+            time.sleep(0.05)
+    except BaseException:
+        _supervisor_fail_stop(control_dir, policy)
 
 
 class _ObservedTransport:
@@ -452,6 +501,8 @@ class _ArchiveServer:
         transport,
         policy: ArchivePolicy,
         run_id: str,
+        budget=None,
+        scope=None,
     ):
         self.run_dir = run_dir.absolute()
         self.control_dir = control_dir.absolute()
@@ -461,7 +512,12 @@ class _ArchiveServer:
         self.run_id = run_id
         self.child_pid = None
         self._prior_pilot_owner = self._pilot_owner_snapshot()
-        self.budget = _StorageBudget(workspace=workspace_root, policy=policy)
+        self.budget = (
+            budget
+            if budget is not None
+            else _StorageBudget(workspace=workspace_root, policy=policy)
+        )
+        self.scope = scope
         self.budget.require_path(self.run_dir)
         self.budget.require_path(self.control_dir)
         _bind_storage_paths(self.budget, self.run_dir, self.control_dir)
@@ -503,6 +559,9 @@ class _ArchiveServer:
         self.progress = 0
         self.operation_time = time.monotonic()
         self.inventory_cursor = None
+
+    def _check_budget(self):
+        return self.budget.check() if self.scope is None else self.budget.check_scoped(self.scope)
 
     def _pilot_owner_snapshot(self):
         from pathlib import PurePosixPath
@@ -586,7 +645,7 @@ class _ArchiveServer:
         raw = canonical_json_bytes(custody)
         digest = sha256_bytes(raw)
         logical = f"stopped-custody/{digest}.json"
-        with self.budget.reserve(metadata=2 * len(raw) + 65536):
+        with self.budget.reserve(_scope=self.scope, metadata=2 * len(raw) + 65536):
             _create_control_object(self.control_dir, logical, raw)
             _put_verified(
                 control_dir=self.control_dir,
@@ -624,7 +683,7 @@ class _ArchiveServer:
         logical = f"stopped-controls/{digest}.json"
         key = _object_key(self.run_id, logical)
         with (
-            self.budget.reserve(metadata=2 * len(preserved) + 65536),
+            self.budget.reserve(_scope=self.scope, metadata=2 * len(preserved) + 65536),
             archive_operation_lock(self.control_dir),
         ):
             _resume_operational_pending(
@@ -795,11 +854,11 @@ class _ArchiveServer:
         }
         response["request_sha256"] = sha256_bytes(raw)
         try:
-            self.budget.check()
+            self._check_budget()
             response.update(
                 status="ok", payload=self._dispatch(request["operation"], request["payload"])
             )
-            self.budget.check()
+            self._check_budget()
         except (OSError, ValueError, StorageBlocked) as error:
             _publish(
                 self.control_dir,
@@ -838,7 +897,7 @@ class _ArchiveServer:
         token = secrets.token_hex(16)
         root = self.control_dir / "lease-metadata" / token
         size = len(raw) + sum(shard.decoded_bytes for shard in manifest.inventory_shards) + 65536
-        with self.budget.reserve(metadata=size):
+        with self.budget.reserve(_scope=self.scope, metadata=size):
             _create_control_object(root, ref.manifest_path, raw)
             for shard in manifest.inventory_shards:
                 logical = f"units/{ref.unit_id}/{shard.path}"
@@ -1035,7 +1094,7 @@ class _ArchiveServer:
             if borrowed and ref.kind != "episode_pack":
                 raise ValueError("only episode units may acquire shared input dependencies")
             if self.budget.active_reservation is not None:
-                allocated = self.budget.check()
+                allocated = self._check_budget()
                 active = self.budget._state()["reservations"][self.budget.active_reservation]
                 needed = (
                     sum(entry.bytes for entry in entries)
@@ -1114,6 +1173,7 @@ class _ArchiveServer:
                             path.unlink(missing_ok=True)
 
                 with self.budget.reserve(
+                    _scope=self.scope,
                     cache=sum(entry.bytes for entry in entries)
                     + sum(entry.bytes for entry in borrowed)
                     + 65536,
@@ -1310,7 +1370,7 @@ class _ArchiveServer:
             pinned = {entry.path for value in self.leases.values() for entry in value["borrowed"]}
             if any(entry.path in pinned for entry in iter_unit_files(self.control_dir, ref)):
                 raise StorageBlocked("storage_blocked: borrowed shared file is pinned")
-            with self.budget.reserve(scratch=2 * self.policy.chunk_bytes):
+            with self.budget.reserve(_scope=self.scope, scratch=2 * self.policy.chunk_bytes):
                 receipt = archive_unit(
                     run_dir=self.run_dir,
                     control_dir=self.control_dir,
@@ -1353,7 +1413,7 @@ class _ArchiveServer:
             from silent_cascade.archive.producer import before_work_bounds
 
             maxima = before_work_bounds(payload["before_work"])
-            allocated = self.budget.check()
+            allocated = self._check_budget()
             token = self.budget.active_reservation
             if token is None:
                 raise StorageBlocked("storage_blocked: producer requires active job admission")
