@@ -111,6 +111,15 @@ utilities, not a general storage framework. Tasks are sequential; independent
 read-only reviews may run alongside tests. Only one source/test writer and one
 numerical execution owner at a time.
 
+Execution refinement: Task5 is delivered in two independently reviewed sequential
+slices: scanner/report/index/journal primitives, then remaining cold caller,
+partial-evidence and fresh-recovery integration. All original Task5 requirements
+remain binding. Between those slices, the narrowly scoped Task6 accounting/archive
+prelude below may run when retained engineering output would prevent safe further
+verification. It does not complete Task6/7 or waive their final stable-source gate.
+Only one source/test writer runs at a time; existing evidence is never discarded
+to fit another test run.
+
 | Task | New files | Main existing integration points |
 | --- | --- | --- |
 | 1 | `src/silent_cascade/archive/{__init__,types,catalog,bundles}.py`; `tests/archive/{conftest,test_catalog,test_bundles}.py` | existing safe I/O/hash/compact-index utilities, reused without weakening |
@@ -829,6 +838,10 @@ contract below, using the already-created local session. A narrow
 mutate the producer's private resident inventory.
 Extend `tests/archive/{test_session,test_supervisor}.py` for these exact interfaces.
 Extend `tests/pilot/{test_pilot_artifact_index,test_pilot_checks,test_pilot_report,test_pilot_gate_verifier}.py`.
+Narrowly correct `tests/pilot/test_pilot_trainer.py` byte/path-guard journal
+fixtures to a real-shaped update1/validation chain with a canonical attempt ID.
+Preserve exact byte boundaries and symlink/path/hash negative assertions; do not
+weaken unified journal validation to accommodate the old step0/noattempt fixture.
 
 **Interfaces produced:**
 
@@ -1008,6 +1021,64 @@ authorized merely because original gate verification could read them.
   `feat: verify and recover cold pilot evidence one episode at a time`.
 
 ## Task 6: Explicit local commands and measured storage preflight
+
+**Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
+Preserve completed engineering history remotely or locally without treating it
+as pre-existing baseline. Measured retained task/test output already exceeds the
+scratch category, while mixed roots contain real debug/failure evidence alongside
+synthetic inputs. A new operational directory may not make those bytes disappear
+from the global10GiB contract. No mounts, filesystem codec or general quota
+framework is added.
+
+Extend `archive/{ledger,types,preflight}.py` and focused tests with page-bounded
+authenticated frozen external-root charges in the same durable global ledger.
+This is an accounting line, not an independent allowance or a larger existing
+category. Preserve existing ledger identity, baseline, local/remote reservations
+and history through a compatible versioned transition; if no real ledger exists,
+bootstrap it once with old newoutput charges already present. Fixture ledgers
+are test data, not independent production allowances. Count all roots, live
+reservations, directories/control overhead and protected reserve; reject aliases,
+overlap, changed frozen members or caller-authoritative byte totals. Keep locators
+private and inspect links/sparse/special entries only for no-follow accounting,
+never archive permission.
+
+Prepare exact candidate inventories for completed old task roots only. Prefer
+safe ordinary single-link dense file subtrees, leaving unsupported candidates
+local and charged. Reuse existing bounded diagnostic sealing, upload/readback,
+receipt and safe eviction primitives; no replacement custody codec or deletion
+algorithm. Split large safe trees only through disjoint child roots or exact
+retained-sibling ownership. Preserve malformed fixture bytes as opaque engineering
+data, not valid scientific evidence. Do not modify original Phase4 evidence,
+active fixtures, review reports or another plan workspace.
+
+One unit's source allocation, sealed chunks, upload/readback buffers, exact
+metadata/catalog growth and bounded logs must fit simultaneous global admission.
+An external-root charge may decrease only after exact receipt-authorized eviction
+and verified residual accounting; interrupted operations retain their charge and
+resume without budget reset. Regressions cover authority/root changes, global
+double spend, unsupported files, retained siblings, every failure cut point and
+source+staging peak. Implementation/review use local transport doubles first.
+
+When this slice is independently reviewed, Task7's bounded real-provider
+qualification may precede the final full local gate. Its total512MiB allowance
+still covers qualification plus later smoke. Only after successful descriptor,
+create-only and readback qualification may eligible old engineering files be
+archived and verified-before-evicted. Engineering retention is separately labeled
+under the same4.5TB remote history, not hidden in qualification or a new budget.
+Commit compact custody/accounting evidence, then resume the remaining Task5 work.
+The full source-bound local gate, final storage gate and scientific pilot gates
+remain mandatory after all implementation changes. A prelude failure leaves
+evidence intact and blocks unadmitted growth; it never permits a larger quota.
+
+For prospective full-verification bounds, distinguish source-bound fixture roles:
+explicit acceptance/debug/failed scientific runs remain retained; mutable parser,
+corruption and fake-transport test inputs and reconstructible tool state follow
+their declared creator/lifetime. Passing a test is not cleanup authority. Derive
+finite bounds at shared trajectory/capture/checkpoint/checkout/build publishers
+using exact corpora, tensor layouts and invocation/fixture lifetimes, not observed
+sizes or thousands of unrelated format maxima. Retain already-preserved roots.
+Unknown output families fail admission. No arbitrary native-writer interception,
+per-test cloud framework or network-enabled ordinary make target is introduced.
 
 **Files:** Create `archive/{cli,preflight}.py` and matching tests. Modify
 `src/silent_cascade/cli.py`, `Makefile`, source/local-verification inventories and

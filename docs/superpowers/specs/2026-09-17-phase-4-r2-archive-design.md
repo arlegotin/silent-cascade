@@ -384,6 +384,17 @@ No new manifest schema, generic multi-run resolver or extra budget is introduced
 
 ## 7. Provenance, compatibility and security
 
+Completed engineering/test history created during this plan stays charged to the
+same global10GiB envelope, even outside the active operational directory. Frozen
+external-root charges are authenticated accounting, not baseline exclusions or
+additional allowances. Existing categories and protected reserve stay unchanged.
+An independently reviewed early archival prelude may qualify the provider and
+archive eligible ordinary regular-file history before remaining large verification
+runs. Use existing diagnostic custody/readback/eviction; unsupported sparse/link/
+special fixtures remain local. No mount or filesystem codec is added. Qualification
+keeps its512MiB total, engineering bytes share the existing4.5TB remote budget,
+and all final local/scientific gates still run after implementation is complete.
+
 - Archive policy, source, manifests, transfer receipts and control snapshots have
   separate hashes. They do not masquerade as unchanged historical scientific data.
 - Include the approved amendment and new executable files in both pilot source
