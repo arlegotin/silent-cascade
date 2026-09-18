@@ -522,9 +522,15 @@ def _continuation_bounds(
     def rounded(amount):
         return ((amount + block - 1) // block) * block
 
+    def native_write(amount):
+        # The preserved 32 MiB readback allocated 33,882,112 native bytes.
+        # This established operational cushion is not a filesystem theorem;
+        # allocated-byte checks and fail-stop still enforce the actual grant.
+        return 2 * rounded(amount) + block
+
     files = (*probe, *debug)
     cache = (
-        sum(rounded(e.bytes) for e in files)
+        sum(native_write(e.bytes) for e in files)
         + (sum(len(Path(e.path).parents) for e in files) + 12) * block
     )
     extras = sum(len(raw) for _, _, raw, _ in completed)
@@ -533,10 +539,10 @@ def _continuation_bounds(
     # additionally coexists with its payload and both complete catalog stages.
     scratch = (
         max(
-            rounded(max(receipt_object_bytes, default=0)),
-            rounded(min(sum(e.bytes for e in probe), policy.chunk_bytes)),
+            native_write(max(receipt_object_bytes, default=0)),
+            native_write(min(sum(e.bytes for e in probe), policy.chunk_bytes)),
             2
-            * rounded(
+            * native_write(
                 max(
                     maximum,
                     unit.manifest,

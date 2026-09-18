@@ -760,6 +760,74 @@ def test_continuation_remaining_bounds_charge_history_and_every_remaining_tree(t
         _require_campaign(snapshot, bound.remote, remote_limit=bound.remote - 1)
 
 
+def _native_continuation_bound(*, debug_bytes=5):
+    from silent_cascade.archive._qualification_continuation import _continuation_bounds
+    from silent_cascade.archive.types import ArchivePolicy, FileEntry
+
+    return _continuation_bounds(
+        policy=ArchivePolicy(),
+        run_id="qualification-native-allocation",
+        probe=(FileEntry("probe/probe.bin", "a" * 64, 67_108_864),),
+        debug=(FileEntry("debug/data.bin", "b" * 64, debug_bytes),),
+        debug_logical_root="debug",
+        block=4096,
+        prior=0,
+        reservations=0,
+        completed=(),
+        receipt_object_bytes=(33_554_432,),
+    )
+
+
+def test_continuation_native_allocation_covers_downloads_and_complete_restores():
+    bound = _native_continuation_bound()
+    # A real 32 MiB download used 33,882,112 allocated bytes. The approved
+    # operational cushion is two rounded payloads plus one allocation block.
+    assert bound.local.scratch >= 33_882_112
+    assert bound.local.scratch >= 67_112_960
+    # Complete 64 MiB and five-byte restored files both need native allowance;
+    # ancestor/staging directories are additional to these hand-derived values.
+    assert bound.local.cache >= 134_234_112
+    assert bound.local.spool == 0
+    # The debug upload can hold its generated payload and readback concurrently.
+    concurrent = _native_continuation_bound(debug_bytes=33_554_432)
+    assert concurrent.local.scratch >= 134_225_920
+
+
+def test_continuation_inflated_allocation_is_admitted_then_refuses_growth(tmp_path, monkeypatch):
+    from silent_cascade.archive.ledger import (
+        StorageBlocked,
+        _StorageBudget,
+        initialize_workspace_ledger,
+    )
+    from silent_cascade.archive.types import ArchivePolicy
+
+    policy = ArchivePolicy()
+    workspace = tmp_path / "native-ledger"
+    initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
+    budget = _StorageBudget(workspace=workspace, policy=policy)
+    bound = _native_continuation_bound()
+    measured = budget.measure()
+    measured["scratch"] = 188_784_640
+    monkeypatch.setattr(budget, "measure", lambda: dict(measured))
+    with budget._scoped_reservation(
+        admission={"native-allocation": "observed"}, scratch=bound.local.scratch
+    ) as admitted:
+        measured["scratch"] += 33_882_112
+        # Uses allocated bytes, not a claim that logical size equals allocation.
+        assert budget.check_scoped(admitted.retained)["scratch"] == 222_666_752
+        measured["scratch"] = 188_784_640 + bound.local.scratch + 1
+        with pytest.raises(StorageBlocked, match="exceeded admitted maximum"):
+            budget.check_scoped(admitted.retained)
+        measured["scratch"] = 188_784_640
+    measured["scratch"] = policy.scratch_bytes - bound.local.scratch + 1
+    with (
+        pytest.raises(StorageBlocked, match="scratch category exhausted"),
+        budget._scoped_reservation(admission={}, scratch=bound.local.scratch),
+    ):
+        pytest.fail("native allowance crossed the unchanged scratch ceiling")
+    assert not budget._state()["reservations"]
+
+
 def test_continuation_admission_refuses_category_normal_global_and_physical_limits(
     continuation_case, monkeypatch
 ):
