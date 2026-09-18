@@ -132,14 +132,27 @@ findings. These are scoped local checks, not provider qualification or a complet
 quality-gate pass. Existing test files remain charged to the same 10 GiB ceiling,
 and unsupported fixtures stay local.
 
-Real use is still blocked on a measured metadata-lifecycle issue: repeatedly
-rewriting the full retained inventory can consume more space than small archived
-groups free. The approved correction uses stable immutable leaves and a bounded
-authenticated index, retaining and charging earlier generations. It preserves
-the existing single-unit receipt/recovery boundary; it does not authorize cleanup,
-larger quotas or scientific changes. The correction, full-workspace admission
-proof and bounded provider qualification must pass before real engineering
-archival and verified-before-eviction begin.
+The metadata-lifecycle correction passed independent review at `1a28272`, with
+96 focused checks passing. Stable immutable leaves and a bounded authenticated
+index now preserve earlier generations without rewriting every surviving record
+after each small removal. The existing single-unit receipt/recovery boundary and
+all storage ceilings are unchanged.
+
+A subsequent read-only full-workspace snapshot measured 6,168,109,056 allocated
+bytes. Its prospective bootstrap bound was 85,363,646 bytes, leaving 725,849,154
+bytes below the normal ceiling at that instant. For an explicitly identified
+731-file subset, conservative retained-inventory publication was about 501 MB
+against 2.35 GB of potentially reclaimable payload. This removes the measured
+negative-reclamation problem for that subset, but excludes other archival costs
+and is not actual admission. Another 67 candidate files remain unadmitted.
+
+The narrow early-provider qualification driver is being implemented before the
+first real bootstrap. It will share the existing finite sizing calculations and
+exercise the fixed probe, interrupted upload, create-only collision/readback and
+exact restore under one local/remote history. Independent driver review, actual
+shared-workspace admission and provider qualification still precede real
+engineering archival and verified-before-eviction. No cleanup, larger quota or
+scientific change is authorized by these engineering checks.
 
 CLI/preflight integration and the remaining real R2 storage qualification are
 pending. No experiment evidence has been uploaded or deleted during this
