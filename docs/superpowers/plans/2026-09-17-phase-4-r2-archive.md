@@ -1363,6 +1363,32 @@ authorized merely because original gate verification could read them.
 
 ## Task 6: Explicit local commands and measured storage preflight
 
+### Task5 continuation slice ordering after verified reclamation
+
+The completed scanner/index/journal foundation remains unchanged. Start the
+remaining integration with cold evaluation-root discovery, authenticated
+committed/abandoned journal status and zero-complete-row partial reporting.
+Thread the existing evidence context through those report decisions; all reads
+stay inside existing leases, with no new session operation or catalog schema.
+Preserve eager behavior and unknown outcomes. New cold handling must reject
+newline-complete rows until their full row/crash semantics are implemented in
+the following slice; this limitation is not Task5 completion and cannot support
+a passed gate. Do not reconstruct a whole evaluation tree or invoke neural code.
+
+Scope the first slice to `archive/session.py`, `report/pilot_artifacts.py`,
+`report/pilot.py`, focused archive-reader tests and, only if required, a compact
+policy argument on the existing test producer fixture. A small canonical
+identity fixture may be versioned from already retained real debug evidence;
+do not generate neural weights merely to construct an identity. Tests cover
+cold partial discovery/reporting with a trailing row fragment and orphan bytes,
+abandoned predecessor corruption, complete-row refusal, committed coverage and
+stopped-custody behavior. Use deterministic payloads and explicit producer/control
+maxima to derive finite test admission, keeping remote-double files, directory
+overhead and failed outputs inside the same production ledger. Historical fixture
+sizes alone are not an admission proof. Get RED/GREEN, task review and a scoped
+commit; all remaining original obligations continue below and in the Task5
+integration brief, including complete cold rows, recovery and actual CPU equality.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
