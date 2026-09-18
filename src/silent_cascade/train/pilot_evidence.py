@@ -266,6 +266,7 @@ REQUIRED_PACKAGE_FILES = (
 HISTORICAL_REQUIRED_PACKAGE_FILES = REQUIRED_PACKAGE_FILES
 STORAGE_PACKAGE_FILES = (
     "src/silent_cascade/archive/__init__.py",
+    "src/silent_cascade/archive/_qualification.py",
     "src/silent_cascade/archive/_retained.py",
     "src/silent_cascade/archive/bundles.py",
     "src/silent_cascade/archive/catalog.py",

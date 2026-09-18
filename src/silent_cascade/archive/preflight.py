@@ -585,7 +585,37 @@ class EngineeringArchiveResult:
     run_id: str
 
 
-def _prelude_bounds(budget, candidate, selected):
+@dataclass(frozen=True)
+class _ArchiveUnitBounds:
+    inventory: int
+    manifest: int
+    run_catalog: int
+    operational_catalog: int
+    receipt: int
+    pending: int
+    objects: int
+    run_nodes: int
+    operational_nodes: int
+    operational_records: int
+    shards: int
+    record_bytes: int
+    node_bytes: int
+    remote: int
+
+
+def _archive_unit_bounds(
+    *,
+    policy,
+    logical_root,
+    selected,
+    run_id,
+    kind,
+    episode_groups,
+    prior_operational_records,
+    local_reservations,
+    completed_count,
+    prior_run_records=0,
+):
     """Finite serializer/cardinality bound, including both catalog generations.
 
     Binary catalog trees contain at most 2N-1 nodes. Changed-path publication
@@ -593,25 +623,46 @@ def _prelude_bounds(budget, candidate, selected):
     authenticated prior operational count, not a new prefix's empty run index.
     All field/string maxima below come from current strict schemas and readers.
     """
-    from silent_cascade.archive.transport import (
-        _completed_intents,
-        _local_reservation_records,
-        _opened_ledger,
-    )
+    from silent_cascade.archive.catalog import _validate_member
+    from silent_cascade.archive.types import MAX_INTEGER, EpisodeGroup, UnitIdentity
 
-    policy = budget.policy
-    control = budget.workspace / "control"
-    transport_id = json.loads(_control_reader(control)("remote-reservations/state.json", 32768))[
-        "transport_id"
-    ]
-    with _opened_ledger(control, transport_id=transport_id, policy=policy) as opened:
-        remote_state = opened[0]
-        prior = (
-            0
-            if remote_state["operational_head"] is None
-            else remote_state["operational_head"]["entry_count"]
+    policy = ArchivePolicy.model_validate(policy.model_dump())
+    UnitIdentity(
+        run_id=run_id,
+        source_commit="f" * 40,
+        config_sha256="f" * 64,
+        evidence_identity_sha256="f" * 64,
+        checkpoint_sha256=None,
+        writer_stopped=True,
+        checkpoint_committed=False,
+    )
+    if kind not in {"diagnostic", "episode_pack"} or not selected:
+        raise ValueError("invalid bounded archive unit")
+    if any(
+        type(value) is not int or not 0 <= value <= MAX_INTEGER
+        for value in (
+            prior_operational_records,
+            local_reservations,
+            completed_count,
+            prior_run_records,
         )
+    ):
+        raise ValueError("invalid bounded archive cardinality")
+    for item in selected:
+        _validate_member(item.path, logical_root)
+        if type(item.bytes) is not int or not 0 <= item.bytes <= MAX_INTEGER:
+            raise ValueError("invalid bounded archive member size")
+    paths = tuple(item.path for item in selected)
+    if paths != tuple(sorted(set(paths))):
+        raise ValueError("invalid bounded archive member order")
+    groups = tuple(EpisodeGroup(paths=group, expanded_bytes=1024**3) for group in episode_groups)
+    if (kind == "episode_pack") != bool(groups) or (
+        groups and tuple(sorted(path for group in groups for path in group.paths)) != paths
+    ):
+        raise ValueError("invalid bounded archive episode groups")
     expanded = sum(member.bytes for member in selected)
+    if expanded > MAX_INTEGER:
+        raise ValueError("bounded archive size overflow")
     chunks = (expanded + policy.chunk_bytes - 1) // policy.chunk_bytes
     ancestors = {
         parent.as_posix()
@@ -619,7 +670,7 @@ def _prelude_bounds(budget, candidate, selected):
         for parent in Path(member.path).parents
         if parent.as_posix() != "."
     }
-    run_records = 1 + len(selected) + len(ancestors)
+    run_records = prior_run_records + 1 + len(selected) + len(ancestors)
     run_nodes = 2 * run_records + 1  # two indexes and their root (conservative).
     integer = 2**63 - 1
     hash_value = "f" * 64
@@ -647,10 +698,10 @@ def _prelude_bounds(budget, candidate, selected):
             canonical_json_bytes(
                 {
                     "schema_version": "phase4-r2-unit-v1",
-                    "kind": "diagnostic",
-                    "logical_root": candidate.logical_root,
+                    "kind": kind,
+                    "logical_root": logical_root,
                     "identity": {
-                        "run_id": "engineering-" + hash_value,
+                        "run_id": run_id,
                         "source_commit": "f" * 40,
                         "config_sha256": hash_value,
                         "evidence_identity_sha256": hash_value,
@@ -672,7 +723,7 @@ def _prelude_bounds(budget, candidate, selected):
                     ]
                     * shards,
                     "chunks": [{"index": integer, "sha256": hash_value, "bytes": integer}] * chunks,
-                    "episode_groups": [],
+                    "episode_groups": [group.model_dump(mode="json") for group in groups],
                     "borrowed": [],
                 }
             )
@@ -739,9 +790,9 @@ def _prelude_bounds(budget, candidate, selected):
     )
     run_catalog = run_nodes * node_bytes + run_records * record_bytes
     objects = chunks + shards + 1 + run_nodes
-    local_reservations = len(_local_reservation_records(control))
-    completed = _completed_intents(control)
-    operational_records = prior + local_reservations + objects + 1 + len(completed)
+    operational_records = (
+        prior_operational_records + local_reservations + objects + 1 + completed_count
+    )
     operational_nodes = 2 * operational_records + 3
     operational_catalog = operational_nodes * node_bytes + operational_records * record_bytes
     # Transfer object descriptors, receipt proof, pending publication and cleanup
@@ -761,8 +812,8 @@ def _prelude_bounds(budget, candidate, selected):
     )
     receipt = objects * object_descriptor + run_nodes * (object_descriptor + node_bytes)
     receipt += len(canonical_json_bytes(policy)) + node_bytes
-    pending = (operational_nodes + len(completed) + 1) * object_descriptor
-    pending += (local_reservations + objects + 4 * len(completed)) * len(
+    pending = (operational_nodes + completed_count + 1) * object_descriptor
+    pending += (local_reservations + objects + 4 * completed_count) * len(
         canonical_json_bytes({"path": max_path})
     )
     pending += 4 * node_bytes
@@ -770,6 +821,64 @@ def _prelude_bounds(budget, candidate, selected):
         raise StorageBlocked(
             "storage_blocked: derived prelude controls exceed existing reader limits"
         )
+    remote = expanded + inventory + manifest + run_catalog + operational_catalog + receipt
+    return _ArchiveUnitBounds(
+        inventory,
+        manifest,
+        run_catalog,
+        operational_catalog,
+        receipt,
+        pending,
+        objects,
+        run_nodes,
+        operational_nodes,
+        operational_records,
+        shards,
+        record_bytes,
+        node_bytes,
+        remote,
+    )
+
+
+def _prelude_bounds(budget, candidate, selected):
+    from silent_cascade.archive.transport import (
+        _completed_intents,
+        _local_reservation_records,
+        _opened_ledger,
+    )
+
+    policy = budget.policy
+    control = budget.workspace / "control"
+    transport_id = json.loads(_control_reader(control)("remote-reservations/state.json", 32768))[
+        "transport_id"
+    ]
+    with _opened_ledger(control, transport_id=transport_id, policy=policy) as opened:
+        remote_state = opened[0]
+        prior = (
+            0
+            if remote_state["operational_head"] is None
+            else remote_state["operational_head"]["entry_count"]
+        )
+    local_reservations = len(_local_reservation_records(control))
+    completed = _completed_intents(control)
+    sizing = _archive_unit_bounds(
+        policy=policy,
+        logical_root=candidate.logical_root,
+        selected=selected,
+        run_id="engineering-" + "f" * 64,
+        kind="diagnostic",
+        episode_groups=(),
+        prior_operational_records=prior,
+        local_reservations=local_reservations,
+        completed_count=len(completed),
+    )
+    inventory, manifest = sizing.inventory, sizing.manifest
+    run_catalog, operational_catalog = sizing.run_catalog, sizing.operational_catalog
+    receipt, pending, objects = sizing.receipt, sizing.pending, sizing.objects
+    run_nodes, operational_nodes = sizing.run_nodes, sizing.operational_nodes
+    node_bytes, shards = sizing.node_bytes, sizing.shards
+    expanded = sum(member.bytes for member in selected)
+    integer, hash_value = 2**63 - 1, "f" * 64
     eviction = (
         sum(
             len(
