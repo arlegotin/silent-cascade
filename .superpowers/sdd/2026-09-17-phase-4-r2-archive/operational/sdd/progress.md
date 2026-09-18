@@ -968,3 +968,12 @@ open. The Phase 4 production pilot has not started.
   completed-fit output bounds; no numerical command is yet admitted. Cost if
   the bound is insufficient: preserve partial outputs and stop before further
   writes; never shrink scientific semantics or fabricate a completed result.
+- Owner51477 finalcheck/release exited0: scratch222056448/logs1359872,
+  othercategoriesunchanged. Next completed-authentication subsection specifies
+  a real single4update debug fit per RED/GREEN, then fresh read-only reuse of
+  immutableGREEN evidence; no unnecessary duplicate reference fits. Static
+  training audit derives exact tensor/count bounds but natural production file
+  ceilings exceed available space. Ruling: test-only fail-before-write live
+  allocation guard may bound a fixture to64MiB, not promise every outcome fits;
+  a guard breach is a failed retained prefix, never fabricated completion. Exact
+  writer/rowappend/directory coverage and checkout bound required before admission.

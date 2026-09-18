@@ -1537,6 +1537,81 @@ CPU next-batch/resume/recovery gates. Keeping the primitive test separate avoids
 fabricating terminal status to fit storage; the cost is later end-to-end work,
 which remains explicit and mandatory.
 
+#### Completed-run authentication and workflow reuse
+
+The checkpoint primitive is implemented in `9f5047c` and independently reviewed.
+Continue the existing Task5 reader contract in `train/pilot_evidence.py` and
+`train/pilot_workflow.py`; add focused
+`tests/pilot/test_pilot_cold_authentication.py` and a test-only helper if the
+source-authenticated subprocess/bounds need separation. This is not the full
+gate, recovery authority or production fit.
+
+- [ ] Add `evidence_context=None` to `authenticate_run`. Forward it to
+  `load_training_result` and `_durable`. Decode checkpoint metadata, load the
+  real CPU checkpoint and load portable weights inside separate `evidence_path`
+  leases. Preserve source/data authentication, RNG restoration, every identity
+  comparison and eligibility rule. Return the original logical archive path;
+  no released cache path may escape.
+
+  ```python
+  with evidence_path(run_dir, descriptor.path, evidence_context=evidence_context) as local:
+      metadata, _ = decode_archive(
+          read_bytes(local, limit=1024**3), descriptor.sha256, PilotCheckpoint, "pilot_training"
+      )
+  # Authenticate source/data exactly as before, then close each later tensor
+  # input lease before acquiring another. The return remains archive_path.
+  ```
+
+- [ ] In `_train`, use the context's validated inventory for cold completed-root
+  and `attempt-<32 lowercase hex>/result.json` discovery, unioned with legitimate
+  resident candidates. Validate context/root agreement before discovery. Keep
+  eager behavior when context is absent, and retain existing result/last-durable
+  checks and resume-path rules. Forward context to every `load_training_result`
+  and `_durable` call. A completed archived fit must return without invoking
+  `run_pilot_training`; an interrupted root-result publication may be restored
+  from its actual completed attempt result. No synthetic completion is allowed.
+- [ ] Forward the already available workflow context to `build_pilot_report`.
+  Other gate/continuation/numeric/offline callers remain the next Task5 grouping;
+  do not claim they are complete or widen this change into recovery authority.
+- [ ] Construct one genuine CPU `phase4_smoke` fit per RED/GREEN fixture using
+  the current exact copied source and its real three-commit data-introduction
+  history. Run all four updates and both 16-episode validations unchanged. Compare
+  eager authentication with cold authentication and completed `_train` reuse:
+  source, progress, descriptors, actual tensors, logical path and lease cleanup.
+  A neural execution tripwire must catch accidental retraining during reuse.
+- [ ] A strict test path context may move only newly generated fixture inputs
+  into a backing directory and expose one requested file by rename at a time.
+  Leave real journal records resident: authenticated cold journal segments have
+  separate coverage. Checkpoint/index/weights, result/index shards and inventory
+  evidence must actually be absent at their original cold paths. This is a
+  reader-integration test, not provider publication, IPC or recovery evidence.
+- [ ] Cover cold attempt-result discovery, wrong logical root, late inventory
+  corruption, checkpoint/portable digest failures and released-lease behavior.
+  Preserve genuine fixture bytes; use bounded altered control copies or return
+  a deliberately wrong test input through the strict context. Never modify old
+  retained artifacts, expected hashes to hide corruption, or source identities.
+- [ ] Run RED before production edits. Run GREEN against a new immutable source
+  checkout. For fresh controller verification, reread the same completed GREEN
+  fixture using its own authenticated source rather than performing another fit
+  or relabeling evidence to a newer revision. Keep all failed prefixes and logs.
+  Independently review the scoped code and test-bound implementation.
+- [ ] Before any checkout/test/model execution, derive and record exact root,
+  file/count/payload/directory/atomic-coexistence bounds. Use the same global
+  ledger: new scientific debug artifacts in spool, leased materializations in
+  cache, source/Git/data/test administration in scratch, controls in metadata,
+  diagnostics in logs. No nested ledger, rebinding, quota increase or old-root
+  reclassification is permitted. Guard every test publication before its real
+  writer, including row appends and failure output; exceedance fails the fixture
+  before writing and never counts as a completed fit. Observed output sizes are
+  not admission bounds. Admit RED and GREEN individually and retain both.
+
+Ruling: a real completed smoke fixture is necessary here, unlike the initial
+checkpoint prerequisite. Separate its scientific output from checkout scratch
+from inception, under the existing categories and global allowance. A bounded
+strict path context isolates consumer lifetime/verification behavior without
+introducing another provider ledger. Full real archival/recovery and local gates
+remain mandatory; the cost of this narrower test is that it cannot certify them.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
