@@ -45,6 +45,7 @@ from silent_cascade.archive.types import (
     ArchivePolicy,
     CatalogRef,
     EvictionLocatorEntry,
+    FileEntry,
     ReceiptLocatorEntry,
     RemoteReservationEntry,
     UnitRef,
@@ -1662,7 +1663,14 @@ def _write_intent(control_dir: Path, ref: UnitRef, intent: dict, *, replace: boo
             os.close(parent)
 
 
-def evict_unit(*, run_dir: Path, control_dir: Path, ref: UnitRef, receipt_sha256: str) -> None:
+def evict_unit(
+    *,
+    run_dir: Path,
+    control_dir: Path,
+    ref: UnitRef,
+    receipt_sha256: str,
+    retained: tuple[FileEntry, ...] = (),
+) -> None:
     """Unlink only unchanged owned members under a durable, resumable intent."""
     _validate_ref(ref)
     if ref.kind == "control_snapshot":
@@ -1691,9 +1699,29 @@ def evict_unit(*, run_dir: Path, control_dir: Path, ref: UnitRef, receipt_sha256
         with _opened_unit(control_dir, ref) as (unit, manifest):
             entries = tuple(_iter_inventory_records_from_unit(unit, manifest))
         expected_paths = {entry.path for entry in entries}
+        if type(retained) is not tuple:
+            raise ValueError("retained custody must be immutable")
+        previous = ""
+        for entry in retained:
+            if not isinstance(entry, FileEntry):
+                raise ValueError("invalid retained custody entry")
+            path = _safe_logical_path(entry.path, field="retained custody")
+            if (
+                entry.path <= previous
+                or entry.path in expected_paths
+                or (ref.logical_root != "." and not path.is_relative_to(ref.logical_root))
+                or type(entry.bytes) is not int
+                or entry.bytes < 0
+                or type(entry.sha256) is not str
+                or not _HASH_RE.fullmatch(entry.sha256)
+            ):
+                raise ValueError("retained custody ownership differs")
+            previous = entry.path
+        retained_records = _inventory_snapshot(run_dir, retained)
+        retained_paths = {entry.path for entry in retained}
         if intent_raw is None:
             resident = _resident_files(run_dir, ref.logical_root)
-            if resident != expected_paths:
+            if resident != expected_paths | retained_paths:
                 raise ValueError("unknown or missing files stop eviction")
             records = _inventory_snapshot(run_dir, entries)
             intent = {
@@ -1703,6 +1731,8 @@ def evict_unit(*, run_dir: Path, control_dir: Path, ref: UnitRef, receipt_sha256
                 "members": records,
                 "completed": False,
             }
+            if retained:
+                intent["retained"] = retained_records
             _write_intent(control_dir, ref, intent, replace=False)
         else:
             if not intent_raw.endswith(b"\n"):
@@ -1715,8 +1745,12 @@ def evict_unit(*, run_dir: Path, control_dir: Path, ref: UnitRef, receipt_sha256
                 or intent.get("unit_id") != ref.unit_id
                 or intent.get("receipt_sha256") != receipt_sha256
                 or {record.get("path") for record in intent.get("members", ())} != expected_paths
+                or intent.get("retained", []) != list(retained_records)
             ):
                 raise ValueError("eviction intent differs from receipt")
+            resident = _resident_files(run_dir, ref.logical_root)
+            if not retained_paths <= resident or not resident <= expected_paths | retained_paths:
+                raise ValueError("unknown or missing retained files stop eviction")
             if intent.get("completed") is True:
                 return
         for record in intent["members"]:

@@ -121,18 +121,20 @@ def write_full_neural_trace(path: Path, *, identity_sha256, episode_sha256, traj
     ):
         raise ValueError("trajectory requires one uniform native origin device")
     origin_device = next(iter(devices)) if devices else None
-    raw = gzip.compress(
-        canonical_json_bytes(
-            {
-                "schema": "phase4-neural-trajectory-v2",
-                "origin_device": origin_device,
-                "identity_sha256": identity_sha256,
-                "episode_sha256": episode_sha256,
-                "anchors": [_host(state) for state in snapshots],
-            }
-        ),
-        mtime=0,
+    decoded = canonical_json_bytes(
+        {
+            "schema": "phase4-neural-trajectory-v2",
+            "origin_device": origin_device,
+            "identity_sha256": identity_sha256,
+            "episode_sha256": episode_sha256,
+            "anchors": [_host(state) for state in snapshots],
+        }
     )
+    if len(decoded) > MAX_TRAJECTORY_JSON_BYTES:
+        raise ValueError("decoded trajectory exceeds format bound")
+    raw = gzip.compress(decoded, mtime=0)
+    if len(raw) > MAX_TRAJECTORY_JSON_BYTES:
+        raise ValueError("compressed trajectory exceeds format bound")
     atomic_create_bytes(path, raw)
     return sha256_bytes(raw)
 

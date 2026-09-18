@@ -16,6 +16,7 @@ from silent_cascade.io import atomic_create_bytes
 from silent_cascade.validation import JsonValue, StrictModel
 
 _BUNDLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+MAX_NEURAL_CRASH_BYTES = 128 * 1024 * 1024
 
 
 class CrashContext(StrictModel):
@@ -49,6 +50,19 @@ class CrashBundleArtifact:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class PublishedCrashFile:
+    path: Path
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedCrash:
+    manifest: PublishedCrashFile
+    checkpoint: PublishedCrashFile | None
+    shared_weights: PublishedCrashFile | None
+
+
 def write_crash_bundle(
     root: Path,
     *,
@@ -57,6 +71,7 @@ def write_crash_bundle(
     bundle_id: str | None = None,
     now: datetime | None = None,
     sanitize_diagnostics: bool = False,
+    neural_publication: bool = False,
 ) -> CrashBundleArtifact:
     resolved_id = bundle_id or uuid4().hex
     if not _BUNDLE_ID.fullmatch(resolved_id):
@@ -88,6 +103,8 @@ def write_crash_bundle(
         context=bounded_context,
     )
     payload = canonical_json_bytes(manifest) + b"\n"
+    if neural_publication and len(payload) > MAX_NEURAL_CRASH_BYTES:
+        raise CrashBundleError("neural crash publication exceeds format bound")
     destination = root / f"{resolved_id}.json"
     try:
         atomic_create_bytes(destination, payload, mode=0o600)

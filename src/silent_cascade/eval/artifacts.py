@@ -4,6 +4,7 @@ import json
 import os
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
@@ -23,9 +24,29 @@ from silent_cascade.eventflow.archive_io import archive_parent, read_archive_at
 from silent_cascade.eventflow.neural import NeuralModelIdentity
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.io import atomic_create_bytes
-from silent_cascade.logging.crash_bundle import CrashBundleManifest
+from silent_cascade.logging.crash_bundle import (
+    CrashBundleManifest,
+    PublishedCrash,
+    PublishedCrashFile,
+)
 from silent_cascade.train.pilot_config import parse_phase4_canonical
 from silent_cascade.validation import StrictModel
+
+MAX_EVALUATION_BYTES = 128 * 1024 * 1024
+
+
+def publish_evaluation_bytes(path, payload):
+    if len(payload) > MAX_EVALUATION_BYTES:
+        raise ValueError("evaluation publication exceeds format bound")
+    atomic_create_bytes(path, payload)
+
+
+@dataclass(frozen=True)
+class PublishedEpisode:
+    row: TimedEpisodeRow
+    telemetry_ref: str
+    crash: PublishedCrash | None
+    shared_weights: PublishedCrashFile | None
 
 
 class DelayTransform(StrictModel):
@@ -269,7 +290,12 @@ def _verify_evidence(root, row, *, retain):
 
 
 def write_evaluation(
-    *, identity: EvaluationIdentity, rows: Iterable[TimedEpisodeRow], output_dir: Path
+    *,
+    identity: EvaluationIdentity,
+    rows: Iterable[TimedEpisodeRow],
+    output_dir: Path,
+    archive_producer=None,
+    evidence_context=None,
 ) -> PilotEvaluation:
     """Stream rows immediately; DONE authenticates completion, separately from the gate.
 
@@ -277,9 +303,9 @@ def write_evaluation(
     A fresh destination is required; no previous artifact is replaced.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    atomic_create_bytes(output_dir / "identity.json", canonical_json_bytes(identity))
+    publish_evaluation_bytes(output_dir / "identity.json", canonical_json_bytes(identity))
     selected = identity.retained_public_ids()
-    atomic_create_bytes(
+    publish_evaluation_bytes(
         output_dir / "retention.json",
         canonical_json_bytes(
             {
@@ -291,9 +317,16 @@ def write_evaluation(
         ),
     )
     collected, index = [], []
+    commits, publications = [], []
+    logical_root = None if archive_producer is None else archive_producer.logical_root(output_dir)
     pending = output_dir / ".rows.pending.jsonl"
     with pending.open("xb") as handle:
         for number, row in enumerate(rows):
+            publication = row if isinstance(row, PublishedEpisode) else None
+            if publication is not None:
+                row = publication.row
+            if archive_producer is not None and publication is None:
+                raise ValueError("archive evaluation requires explicit publication ownership")
             if number >= len(identity.episodes):
                 raise ValueError("extra episode in evaluation inventory")
             binding = identity.episodes[number]
@@ -324,6 +357,18 @@ def write_evaluation(
             ):
                 raise ValueError("row provenance differs from identity")
             payload = canonical_json_bytes(row) + b"\n"
+            if handle.tell() + len(payload) > MAX_EVALUATION_BYTES:
+                raise ValueError("evaluation row log exceeds format bound")
+            if archive_producer is not None:
+                _verify_evidence(
+                    output_dir,
+                    row,
+                    retain=(
+                        row.public_id in selected
+                        or row.public_id in identity.report_example_public_ids
+                        or identity.purpose == "delay_swap"
+                    ),
+                )
             index.append(
                 {
                     "public_id": row.public_id,
@@ -334,33 +379,77 @@ def write_evaluation(
             )
             handle.write(payload)
             handle.flush()
+            if archive_producer is not None:
+                os.fsync(handle.fileno())
+                commit = archive_producer.make_commit(
+                    logical_root=logical_root,
+                    ordinal=number,
+                    row=row,
+                    offset=index[-1]["offset"],
+                    payload=payload,
+                    publication=publication,
+                )
+                commits.append(commit)
+                publications.append(publication)
+                archive_producer.after_episode(logical_root, commit)
             collected.append(row)
         handle.flush()
         os.fsync(handle.fileno())
     if len(collected) != len(identity.episodes):
         raise ValueError("missing episodes in evaluation inventory")
-    _crash_index(output_dir, collected)
-    for row in collected:
-        _verify_evidence(
-            output_dir,
-            row,
-            retain=(
-                row.public_id in selected
-                or row.public_id in identity.report_example_public_ids
-                or identity.purpose == "delay_swap"
-            ),
+    if archive_producer is None:
+        _crash_index(output_dir, collected)
+        for row in collected:
+            _verify_evidence(
+                output_dir,
+                row,
+                retain=(
+                    row.public_id in selected
+                    or row.public_id in identity.report_example_public_ids
+                    or identity.purpose == "delay_swap"
+                ),
+            )
+        owned_inventory = None
+    else:
+        owned_inventory = _finalize_commits(
+            output_dir=output_dir,
+            identity=identity,
+            rows=collected,
+            commits=commits,
+            publications=publications,
+            producer=archive_producer,
+            context=evidence_context or archive_producer.session,
         )
     os.link(pending, output_dir / "rows.jsonl")
     pending.unlink()
     metrics = summarize_timed_rows(collected)
-    atomic_create_bytes(output_dir / "index.json", canonical_json_bytes({"rows": index}))
-    atomic_create_bytes(output_dir / "metrics.json", canonical_json_bytes(metrics))
-    artifacts = tuple(
+    publish_evaluation_bytes(output_dir / "index.json", canonical_json_bytes({"rows": index}))
+    publish_evaluation_bytes(output_dir / "metrics.json", canonical_json_bytes(metrics))
+    local_artifacts = tuple(
         (str(path.relative_to(output_dir)), sha256_bytes(read_evaluation_artifact(path)))
         for path in sorted(output_dir.rglob("*"))
         if path.is_file()
     )
-    atomic_create_bytes(
+    artifacts = local_artifacts
+    if owned_inventory is not None:
+        combined = dict(owned_inventory)
+        controls = {
+            "identity.json",
+            "retention.json",
+            "rows.jsonl",
+            "index.json",
+            "metrics.json",
+            "crashes/index.json",
+        }
+        for path, digest in local_artifacts:
+            if path in combined:
+                if combined[path] != digest:
+                    raise ValueError("local evidence differs from authenticated commit")
+            elif path not in controls:
+                raise ValueError("unclassified evaluation evidence")
+            combined[path] = digest
+        artifacts = tuple(sorted(combined.items()))
+    publish_evaluation_bytes(
         output_dir / "DONE",
         canonical_json_bytes(
             {
@@ -372,6 +461,84 @@ def write_evaluation(
             }
         ),
     )
+    if archive_producer is not None:
+        archive_producer.after_evaluation(logical_root)
     return PilotEvaluation(
         identity=identity, metrics=metrics, output_path=output_dir, artifact_hashes=artifacts
     )
+
+
+def _finalize_commits(*, output_dir, identity, rows, commits, publications, producer, context):
+    from dataclasses import asdict
+
+    from silent_cascade.archive.producer import verify_crash
+
+    logical_root = producer.logical_root(output_dir)
+    inventory, crashes, owned_paths = {}, {}, set()
+    selected = identity.retained_public_ids() | frozenset(identity.report_example_public_ids)
+    offset = 0
+    with (output_dir / ".rows.pending.jsonl").open("rb") as handle:
+        for ordinal, (row, commit, publication) in enumerate(
+            zip(rows, commits, publications, strict=True)
+        ):
+            raw = handle.read(commit.row_bytes)
+            if (
+                commit.ordinal != ordinal
+                or commit.row_offset != offset
+                or commit.identity_sha256 != identity.sha256
+                or commit.episode_public_id != row.public_id
+                or commit.episode_sha256 != row.episode_sha256
+                or raw != canonical_json_bytes(row) + b"\n"
+                or sha256_bytes(raw) != commit.row_sha256
+            ):
+                raise ValueError("episode commit row binding differs")
+            offset += len(raw)
+            digest = sha256_bytes(canonical_json_bytes(asdict(commit)))
+            with context.episode(logical_root, ordinal, commit_sha256=digest) as lease:
+                root = lease.local_root
+                _verify_evidence(
+                    root / logical_root,
+                    row,
+                    retain=(row.public_id in selected or identity.purpose == "delay_swap"),
+                )
+                crash = publication.crash
+                if crash is not None:
+
+                    def relocated(entry, root=root):
+                        return (
+                            None
+                            if entry is None
+                            else replace(
+                                entry, path=root / entry.path.relative_to(producer.run_dir)
+                            )
+                        )
+
+                    crash = replace(
+                        crash,
+                        manifest=relocated(crash.manifest),
+                        checkpoint=relocated(crash.checkpoint),
+                        shared_weights=relocated(crash.shared_weights),
+                    )
+                entry = verify_crash(
+                    root=root, logical_root=logical_root, row=row, crash=crash, identity=identity
+                )
+                if entry is not None:
+                    if row.public_id in crashes:
+                        raise ValueError("duplicate crash ownership")
+                    crashes[row.public_id] = entry
+                for owned in commit.owned:
+                    if owned.path in owned_paths:
+                        raise ValueError("duplicate episode ownership")
+                    owned_paths.add(owned.path)
+                for owned in (*commit.owned, *commit.borrowed):
+                    name = Path(owned.path).relative_to(logical_root).as_posix()
+                    if sha256_bytes(read_evaluation_artifact(root / owned.path)) != owned.sha256:
+                        raise ValueError("committed evidence differs")
+                    if name in inventory and inventory[name] != owned.sha256:
+                        raise ValueError("borrowed evidence disagrees")
+                    inventory[name] = owned.sha256
+        if handle.read(1) or len(commits) != len(identity.episodes):
+            raise ValueError("episode commit coverage incomplete")
+    if crashes:
+        publish_evaluation_bytes(output_dir / "crashes/index.json", canonical_json_bytes(crashes))
+    return inventory

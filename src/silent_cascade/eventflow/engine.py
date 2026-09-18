@@ -42,7 +42,12 @@ from silent_cascade.eventflow.state import (
     require_time,
 )
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.logging.crash_bundle import CrashContext, write_crash_bundle
+from silent_cascade.logging.crash_bundle import (
+    CrashContext,
+    PublishedCrash,
+    PublishedCrashFile,
+    write_crash_bundle,
+)
 from silent_cascade.logging.trace import (
     CausalTrace,
     SegmentSummary,
@@ -119,6 +124,7 @@ def _failure_boundary(function):
             if isinstance(context, RuntimeSession) and context.failure is not None:
                 raise context.failure
             if outer:
+                self.published_crash = None
                 self._checkpoint_stage = None
                 self._checkpoint_required = False
                 if self.crash_root is not None and isinstance(context, RuntimeSession):
@@ -200,6 +206,15 @@ class EventEngine:
         self._checkpoint_stage = None
         self._checkpoint_required = False
         self._operational_flow_evaluations = 0
+        self.published_crash: PublishedCrash | None = None
+
+    @property
+    def published_weights(self) -> PublishedCrashFile | None:
+        """Actual shared publication, independent of any failed episode ownership."""
+        if self._neural_weights_reference is None:
+            return None
+        _, name, digest = self._neural_weights_reference
+        return PublishedCrashFile(self.crash_root / name, digest)
 
     def operational_compute_snapshot(self) -> EngineOperationalCompute:
         """Snapshot cumulative causal work, including a subsequent failed callback."""
@@ -260,6 +275,8 @@ class EventEngine:
         try:
             bundle_id = uuid4().hex
             checkpoint_ref = None
+            checkpoint = None
+            neural_publication = self._experiment_config_canonical_json is not None
             if self._checkpoint_required:
                 from silent_cascade.eventflow.checkpoint import (
                     publish_runtime_checkpoint,
@@ -279,9 +296,10 @@ class EventEngine:
                     ):
                         from silent_cascade.eventflow.neural_checkpoint import publish_neural_crash
 
-                        publish_neural_crash(
+                        published = publish_neural_crash(
                             self.crash_root / checkpoint_ref, self._checkpoint_stage, engine=self
                         )
+                        checkpoint = PublishedCrashFile(published.path, published.sha256)
                     else:
                         artifact = snapshot_staged_runtime(
                             self._checkpoint_stage,
@@ -294,11 +312,12 @@ class EventEngine:
                     raise CrashBundleError(
                         "runtime crash checkpoint publication failed"
                     ) from publication_error
-            write_crash_bundle(
+            manifest = write_crash_bundle(
                 self.crash_root,
                 error=error,
                 bundle_id=bundle_id,
                 sanitize_diagnostics=True,
+                neural_publication=neural_publication,
                 context=CrashContext(
                     episode_public_id=public_id,
                     config_sha256=sha256_bytes(canonical_json_bytes(self.config)),
@@ -306,6 +325,11 @@ class EventEngine:
                     checkpoint_ref=checkpoint_ref,
                     last_events=last_events,
                 ),
+            )
+            self.published_crash = PublishedCrash(
+                manifest=PublishedCrashFile(manifest.path, manifest.sha256),
+                checkpoint=checkpoint,
+                shared_weights=self.published_weights if checkpoint is not None else None,
             )
         except CrashBundleError as publication_error:
             raise publication_error from error

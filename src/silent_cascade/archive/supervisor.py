@@ -1025,7 +1025,10 @@ class _ArchiveServer:
                 raise ValueError("invalid release payload")
             return self._release(payload["token"])
         if operation == "archive":
-            if set(payload) != {"ref", "evict"} or type(payload["evict"]) is not bool:
+            if (
+                set(payload) not in ({"ref", "evict"}, {"ref", "evict", "retained"})
+                or type(payload["evict"]) is not bool
+            ):
                 raise ValueError("invalid archive payload")
             ref = self._ref(payload["ref"])
             pinned = {entry.path for value in self.leases.values() for entry in value["borrowed"]}
@@ -1045,10 +1048,31 @@ class _ArchiveServer:
                     control_dir=self.control_dir,
                     ref=ref,
                     receipt_sha256=receipt,
+                    retained=tuple(FileEntry(**entry) for entry in payload.get("retained", ())),
                 )
             return {"receipt_sha256": receipt}
         if operation == "status" and not payload:
             return {"healthy": True}
+        if operation == "status" and set(payload) == {"before_work"}:
+            from silent_cascade.archive.producer import before_work_bounds
+
+            maxima = before_work_bounds(payload["before_work"])
+            allocated = self.budget.check()
+            token = self.budget.active_reservation
+            if token is None:
+                raise StorageBlocked("storage_blocked: producer requires active job admission")
+            active = self.budget._state()["reservations"][token]
+            if active["admission"] is None:
+                raise StorageBlocked("storage_blocked: producer requires source-bound admission")
+            for category, maximum in maxima.items():
+                remaining = active["amounts"].get(category, 0) - max(
+                    0, allocated[category] - active["before"][category]
+                )
+                if maximum > remaining:
+                    raise StorageBlocked(
+                        "storage_blocked: next producer output exceeds remaining admission"
+                    )
+            return {"admitted": True}
         if operation == "status" and payload in ({"inventory": "begin"}, {"inventory": "next"}):
             if payload["inventory"] == "begin":
                 if self.inventory_cursor is not None:

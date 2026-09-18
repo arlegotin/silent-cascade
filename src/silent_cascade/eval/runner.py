@@ -11,14 +11,19 @@ import torch
 
 from silent_cascade.env.episode import EpisodeBundle, episode_sha256
 from silent_cascade.errors import DynamicsError
-from silent_cascade.eval.artifacts import EvaluationIdentity, PilotEvaluation, write_evaluation
+from silent_cascade.eval.artifacts import (
+    EvaluationIdentity,
+    PilotEvaluation,
+    PublishedEpisode,
+    publish_evaluation_bytes,
+    write_evaluation,
+)
 from silent_cascade.eval.compute import NeuralComputeMeter, aggregate_runtime_compute
 from silent_cascade.eval.metrics import EvaluationError, TimedEpisodeRow
 from silent_cascade.eventflow.engine import EventEngine
 from silent_cascade.eventflow.neural import NeuralEventFlowAgent
 from silent_cascade.eventflow.state import ComputeCounters
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-from silent_cascade.io import atomic_create_bytes
 from silent_cascade.logging.neural_trace import observe_neural_event, write_full_neural_trace
 from silent_cascade.logging.runtime_diagnostics import runtime_diagnostic_identity
 from silent_cascade.models.event_flow import EventFlowModel
@@ -95,7 +100,7 @@ def _run_one(*, bundle, identity, agent, engine, output_dir, ordinal, retain):
             "causal_events": [e.to_payload() for e in trace.events] if trace else [],
         }
     )
-    atomic_create_bytes(output_dir / neural_ref, neural_raw)
+    publish_evaluation_bytes(output_dir / neural_ref, neural_raw)
     row = TimedEpisodeRow.from_outcome(
         identity=identity,
         bundle=bundle,
@@ -130,15 +135,17 @@ def _run_one(*, bundle, identity, agent, engine, output_dir, ordinal, retain):
         )
         row = row.model_copy(update={"full_trace_ref": full_ref, "full_trace_sha256": digest})
     # Timing is deliberately outside semantic rows, event hashes and decisions.
-    atomic_create_bytes(
-        output_dir / f"{stem}.telemetry.json",
-        canonical_json_bytes(
-            {
-                "elapsed_seconds": sum(s.elapsed_seconds for s in snapshots),
-            }
-        ),
+    telemetry = canonical_json_bytes(
+        {
+            "elapsed_seconds": sum(s.elapsed_seconds for s in snapshots),
+        }
     )
-    return row
+    if len(telemetry) > 128:
+        raise ValueError("fixed telemetry schema exceeds publication bound")
+    publish_evaluation_bytes(output_dir / f"{stem}.telemetry.json", telemetry)
+    return PublishedEpisode(
+        row, f"{stem}.telemetry.json", engine.published_crash, engine.published_weights
+    )
 
 
 def evaluate_episodes(
@@ -149,6 +156,8 @@ def evaluate_episodes(
     episodes: Iterable[EpisodeBundle],
     output_dir: Path,
     device: str,
+    archive_producer=None,
+    evidence_context=None,
 ) -> PilotEvaluation:
     """Own one frozen inference copy and stream each completed episode's evidence."""
     if os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "0") not in {"", "0"}:
@@ -159,6 +168,11 @@ def evaluate_episodes(
         raise ValueError("evaluation configuration differs from identity")
     # Deepcopy preserves shared non-owning module bindings without touching caller mode,
     # gradient flags, parameter identities, gradients, buffers, device or optimizer.
+    logical_root = None
+    if archive_producer is not None:
+        logical_root = archive_producer.logical_root(output_dir)
+        archive_producer.bind_evaluation(logical_root, identity)
+        archive_producer.before_evaluation(logical_root)
     inference = copy.deepcopy(model).to(device)
     agent = NeuralEventFlowAgent(inference, identity=identity.model_identity, device=device)
     if output_dir.exists():
@@ -191,6 +205,8 @@ def evaluate_episodes(
                 raise ValueError("episode differs from ordered evaluation inventory")
             if bundle.truth.key.split_namespace.value != identity.split:
                 raise ValueError("episode split differs from evaluation inventory")
+            if archive_producer is not None:
+                archive_producer.before_episode(logical_root, ordinal)
             yield _run_one(
                 bundle=bundle,
                 identity=identity,
@@ -201,4 +217,10 @@ def evaluate_episodes(
                 retain=binding.public_id in selected or identity.purpose == "delay_swap",
             )
 
-    return write_evaluation(identity=identity, rows=rows(), output_dir=output_dir)
+    return write_evaluation(
+        identity=identity,
+        rows=rows(),
+        output_dir=output_dir,
+        archive_producer=archive_producer,
+        evidence_context=evidence_context,
+    )

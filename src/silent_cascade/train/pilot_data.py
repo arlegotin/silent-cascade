@@ -145,6 +145,8 @@ def _read_pilot_bytes(path: Path) -> bytes:
 
 def _publish_pilot_bytes(path: Path, payload: bytes) -> None:
     """Create-only durable publication with pinned, no-follow directory FDs."""
+    if len(payload) > MAX_PILOT_MANIFEST_BYTES:
+        raise ValueError("pilot publication exceeds format bound")
     _check_path(path)
     absolute = path.absolute()
     descriptor = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
