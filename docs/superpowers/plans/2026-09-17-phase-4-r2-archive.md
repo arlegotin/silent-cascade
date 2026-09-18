@@ -303,7 +303,9 @@ evidence. Keep the pure `_archive_unit_bounds` serializer unchanged.
       min(policy.page_bytes, max(manifest, receipt, run_catalog, operational_catalog)),
   )
   rounded = ((largest + block - 1) // block) * block
-  scratch = 2 * (2 * rounded + block)
+  readback = max(largest, policy.page_bytes)
+  rounded_readback = ((readback + block - 1) // block) * block
+  scratch = (2 * rounded + block) + (2 * rounded_readback + block)
   # Existing catalog staging and directory terms are added unchanged below.
   ```
 
@@ -333,6 +335,24 @@ The104,817,273-byte group cannot be transferred as one unit: its corrected pair
 term plus existing scratch alone exceeds256MiB. Exact batching uses already
 reviewed subset/retained-sibling semantics and costs additional catalog work;
 it does not reduce evidence retention or create another allowance.
+
+**Review correction (2026-09-18):** commit5ce7b4a implemented the original
+same-sized native pair and passed its six scoped tests, but that term is not a
+complete bound for small units. While the generated payload remains live,
+`_reserve_object` can consult the cold operational root, whose reader accepts
+up to `policy.page_bytes`, independently of the current unit's smaller catalog
+size. The formula above therefore reserves the larger of same-object readback
+and the complete allowed cold-root read. Keep reader limits, native allowances,
+catalog/directory stages and all custody checks unchanged. Add descriptor-only
+14MiB and small-object regressions plus a real reservation refusal where the
+old pair would fit; observe RED and then GREEN under the existing finite test
+grant before provider work. The32MiB pair stays134,225,920bytes, while the14MiB
+pair is62,922,752bytes at4KiB blocks, before existing stage terms.
+
+Ruling: strengthen the approved bound rather than shrink a reader cap or bypass
+admission. The cost is fewer bytes available to a batch, not weakened retention,
+science, or a larger quota. The earlier passing test run and actual qualification
+retain their original source bindings and are not relabeled.
 
 Each implementation slice gets RED/GREEN evidence, bounded local covering tests,
 an independent task review and a meaningful current-branch commit. The scoped

@@ -482,8 +482,11 @@ logical serializer/coexistence bounds and live allocation checks. Do not describ
 this operational cushion as a universal filesystem allocation proof.
 
 Apply the same allowance to engineering archival's coexisting generated payload
-and provider readback: its pair term is twice `2 * rounded(largest) + block`,
-with existing catalog/directory additions retained. A complete group that no
+and provider readback. With `native(n) = 2 * rounded(n) + block`, the pair term
+is `native(largest) + native(max(largest, policy.page_bytes))`: the generated
+payload can coexist with a cold operational-root read accepting the full page
+limit, not merely a same-sized payload readback. Retain existing catalog and
+directory additions and reader limits. A complete group that no
 longer fits must use the existing exact reviewed-path subset interface, not a
 smaller allowance. For the first audited group use at most14MiB logical batches,
 keep every tensor/capture sidecar pair inseparable, and start with the largest
