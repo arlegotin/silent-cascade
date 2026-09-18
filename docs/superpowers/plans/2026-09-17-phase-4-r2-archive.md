@@ -876,6 +876,21 @@ reopening files after lease release. Report figures use only already-decoded
 selected positive/negative examples, or reopen an explicit selected episode lease.
 No entire evaluation hydration for finalization, reporting, gate, replay or recovery.
 
+Cold readers discover the original operational commitment through
+`EvidenceContext.episode_commit(logical_root, ordinal) -> EpisodeCommit`.
+Use a strict read-only variant of the existing `status` operation and the existing
+authenticated binding-tree key `(run_id, logical_root, ordinal)`. The parent
+returns the original typed binding; the child verifies run/root/ordinal and
+canonical commit digest before exposing its commit. Fetch metadata only within
+existing page limits. Discovery does not establish scientific validity: the
+scanner must compare identity, exact row offset/length/hash and ownership with
+the original DONE/index, then request the existing digest-required episode lease.
+Factor the authenticated lookup, but do not make actual lease digest checks
+optional. The recovery-source view uses its pinned source binding head. Test
+cold discovery, wrong root/run/ordinal/digest, corrupt binding leaf and changed
+binding between discovery and lease. No new tree, schema, operation or scientific
+file is needed; arbitrary caller authority remains forbidden.
+
 **Fresh-recovery authority and bounded import:** operational run IDs derive from
 absolute run paths; catalogs and remote chunks bind that identity. Never relocate
 source catalog heads to a new run or weaken membership checks. Use one fixed
