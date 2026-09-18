@@ -484,14 +484,23 @@ def evaluation_directories(run_dir: Path, *, evidence_context=None) -> tuple[Pat
     return tuple(sorted(roots))
 
 
-def training_evaluation_status(run_dir: Path, training):
+def training_evaluation_status(run_dir: Path, training, *, evidence_context=None):
     """Authenticate committed roots and abandoned attempts from retained journals."""
     hashes = training["artifact_hashes"]
 
     def bound(name):
         if name not in hashes:
             raise ValueError("unbound recovery artifact")
-        return _decode_json(verify_hashes(run_dir, {name: hashes[name]}, retain={name})[name])
+        if evidence_context is None:
+            raw = verify_hashes(run_dir, {name: hashes[name]}, retain={name})[name]
+        else:
+            from silent_cascade.archive.readers import evidence_path
+
+            with evidence_path(run_dir, name, evidence_context=evidence_context) as path:
+                raw = read_evaluation_artifact(path)
+            if sha256_bytes(raw) != hashes[name]:
+                raise ValueError("recovery artifact integrity mismatch")
+        return _decode_json(raw)
 
     def journal(name):
         match = re.fullmatch(r"journal-([0-9a-f]{64})\.json", name)
@@ -511,14 +520,33 @@ def training_evaluation_status(run_dir: Path, training):
             raise ValueError("invalid recovery journal")
         return record
 
-    cursor = training["progress"]["journal_sha256"]
     committed, required, steps = set(), set(), []
-    while cursor is not None:
-        name = f"journal-{cursor}.json"
+    if evidence_context is None:
+
+        def committed_records():
+            cursor = training["progress"]["journal_sha256"]
+            while cursor is not None:
+                name = f"journal-{cursor}.json"
+                record = journal(name)
+                yield name, record
+                cursor = record["prior"]
+
+    else:
+        from silent_cascade.archive.readers import iter_journal_records
+
+        def committed_records():
+            cursor = training["progress"]["journal_sha256"]
+            for record in iter_journal_records(run_dir, cursor, evidence_context=evidence_context):
+                name = f"journal-{cursor}.json"
+                if hashes.get(name) != cursor:
+                    raise ValueError("unbound recovery artifact")
+                yield name, record
+                cursor = record["prior"]
+
+    for name, record in committed_records():
         if name in committed:
             raise ValueError("cyclic recovery journal")
         committed.add(name)
-        record = journal(name)
         if record["kind"] == "update":
             steps.append(record["global_step"])
         else:
@@ -531,12 +559,23 @@ def training_evaluation_status(run_dir: Path, training):
                     raise ValueError("committed validation artifact mismatch")
                 if len(parts) >= 4 and parts[2] == "autonomous":
                     required.add(run_dir.joinpath(*parts[:3]))
-        cursor = record["prior"]
     if steps != list(range(training["progress"]["global_step"], 0, -1)):
         raise ValueError("missing or duplicate committed recovery updates")
     abandoned = set()
-    for path in sorted(run_dir.glob("restart-*.json")):
-        restart = bound(path.name)
+    if evidence_context is None:
+        restart_names = tuple(path.name for path in sorted(run_dir.glob("restart-*.json")))
+    else:
+        restart_names = tuple(
+            sorted(
+                entry.path
+                for entry in evidence_context.entries()
+                if "/" not in entry.path
+                and entry.path.startswith("restart-")
+                and entry.path.endswith(".json")
+            )
+        )
+    for name in restart_names:
+        restart = bound(name)
         if (
             set(restart) != {"last_durable_step", "uncommitted_journal_tail"}
             or type(restart["last_durable_step"]) is not int
@@ -547,18 +586,42 @@ def training_evaluation_status(run_dir: Path, training):
         tail = restart["uncommitted_journal_tail"]
         if any(not isinstance(name, str) for name in tail) or len(set(tail)) != len(tail):
             raise ValueError("invalid restart journal inventory")
+        records = {}
         for name in tail:
             if name in committed:
                 raise ValueError("restart labels committed journal abandoned")
             record = journal(name)
+            records[name] = record
             prior = record["prior"]
             if prior is not None and f"journal-{prior}.json" not in committed | set(tail):
                 raise ValueError("missing abandoned journal predecessor")
             abandoned.add(record["attempt"])
+        if evidence_context is not None and tail:
+            referenced = {
+                f"journal-{record['prior']}.json"
+                for record in records.values()
+                if record["prior"] is not None and f"journal-{record['prior']}.json" in records
+            }
+            heads = set(tail) - referenced
+            authenticated = set()
+            for head in sorted(heads):
+                cursor = head.removeprefix("journal-").removesuffix(".json")
+                for record in iter_journal_records(
+                    run_dir, cursor, evidence_context=evidence_context
+                ):
+                    current = f"journal-{cursor}.json"
+                    if hashes.get(current) != cursor:
+                        raise ValueError("unbound recovery artifact")
+                    authenticated.add(current)
+                    cursor = record["prior"]
+            if not set(tail) <= authenticated:
+                raise ValueError("abandoned journal authentication is incomplete")
     return required, abandoned
 
 
-def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned):
+def load_abandoned_evaluation(
+    root: Path, *, run_dir: Path, training, abandoned, evidence_context=None
+):
     """Describe retained partial evidence, never infer outcomes for unwritten rows."""
     relative = root.relative_to(run_dir)
     if (
@@ -568,14 +631,45 @@ def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned)
         or relative.parts[2] != "autonomous"
     ):
         raise ValueError("incomplete evaluation is not authenticated abandoned evidence")
-    hashes = {}
-    for path in root.rglob("*"):
-        if path.is_file():
-            name = str(path.relative_to(run_dir))
-            if name not in training["artifact_hashes"]:
-                raise ValueError("unbound abandoned evaluation artifact")
-            hashes[str(path.relative_to(root))] = training["artifact_hashes"][name]
-    raw = verify_hashes(root, hashes, retain={"identity.json", "rows.jsonl", ".rows.pending.jsonl"})
+    retain = {"identity.json", "rows.jsonl", ".rows.pending.jsonl"}
+    if evidence_context is None:
+        hashes = {}
+        for path in root.rglob("*"):
+            if path.is_file():
+                name = str(path.relative_to(run_dir))
+                if name not in training["artifact_hashes"]:
+                    raise ValueError("unbound abandoned evaluation artifact")
+                hashes[str(path.relative_to(root))] = training["artifact_hashes"][name]
+        raw = verify_hashes(root, hashes, retain=retain)
+    else:
+        from silent_cascade.archive.readers import evidence_path, logical_root
+
+        name = logical_root(root, evidence_context)
+        prefix = name + "/"
+        archived = {
+            entry.path.removeprefix(prefix): entry.sha256
+            for entry in evidence_context.entries()
+            if entry.path.startswith(prefix)
+        }
+        expected = {
+            path.removeprefix(prefix): digest
+            for path, digest in training["artifact_hashes"].items()
+            if path.startswith(prefix)
+        }
+        if archived != expected:
+            raise ValueError("unbound abandoned evaluation artifact")
+        hashes, raw = archived, {}
+        for relative_name, digest in hashes.items():
+            with evidence_path(
+                run_dir, prefix + relative_name, evidence_context=evidence_context
+            ) as path:
+                payload = read_evaluation_artifact(path)
+            if sha256_bytes(payload) != digest:
+                raise ValueError("artifact integrity mismatch")
+            if relative_name in retain or (
+                relative_name.startswith("crashes/") and relative_name.endswith(".json")
+            ):
+                raw[relative_name] = payload
     if "identity.json" not in raw:
         raise ValueError("missing abandoned evaluation identity")
     identity = EvaluationIdentity.model_validate_json(raw["identity.json"])
@@ -592,6 +686,8 @@ def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned)
         trailing = len(lines.pop())
     if len(lines) > len(identity.episodes):
         raise ValueError("extra abandoned evaluation rows")
+    if evidence_context is not None and lines:
+        raise ValueError("cold complete abandoned rows require semantic episode verification")
     errors, completed = set(), set()
     for line, binding in zip(lines, identity.episodes, strict=False):
         row = TimedEpisodeRow.model_validate_json(line)
@@ -618,7 +714,9 @@ def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned)
             or name == "crashes/index.json"
         ):
             continue
-        manifest = CrashBundleManifest.model_validate_json(read_evaluation_artifact(root / name))
+        manifest = CrashBundleManifest.model_validate_json(
+            raw[name] if evidence_context is not None else read_evaluation_artifact(root / name)
+        )
         public_id = manifest.context.episode_public_id
         if (
             public_id not in episode_ids
@@ -635,8 +733,14 @@ def load_abandoned_evaluation(root: Path, *, run_dir: Path, training, abandoned)
         crashes[public_id] = {"path": name, "sha256": hashes[name]}
     if not errors <= crashes.keys():
         raise ValueError("missing abandoned crash evidence")
-    if "crashes/index.json" in hashes and read_json(root / "crashes/index.json") != crashes:
-        raise ValueError("abandoned crash evidence index mismatch")
+    if "crashes/index.json" in hashes:
+        crash_index = (
+            _decode_json(raw["crashes/index.json"])
+            if evidence_context is not None
+            else read_json(root / "crashes/index.json")
+        )
+        if crash_index != crashes:
+            raise ValueError("abandoned crash evidence index mismatch")
     return dict(
         corpus=str(relative),
         status="abandoned_incomplete",

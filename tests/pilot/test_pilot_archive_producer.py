@@ -93,8 +93,42 @@ class DirectoryTransport:
         destination.write_bytes(raw)
 
 
+def compact_archive_policy(*, journal_records=1):
+    from silent_cascade.archive.types import ArchivePolicy
+
+    return ArchivePolicy(
+        workspace_bytes=8 * 1024**2,
+        spool_bytes=1024**2,
+        cache_bytes=1024**2,
+        pinned_bytes=512 * 1024,
+        metadata_bytes=1024**2,
+        scratch_bytes=512 * 1024,
+        logs_bytes=256 * 1024,
+        emergency_bytes=1280 * 1024,
+        reserve_bytes=1024**2,
+        episode_bytes=256 * 1024,
+        pack_target_bytes=128 * 1024,
+        pack_episodes=8,
+        journal_bytes=128 * 1024,
+        journal_records=journal_records,
+        chunk_bytes=64 * 1024,
+        page_bytes=64 * 1024,
+        page_entries=64,
+        remote_bytes=4 * 1024**2,
+    )
+
+
 @contextmanager
-def producer_case(tmp_path, monkeypatch, *, journal_records=128, stopped=False, restart=False):
+def producer_case(
+    tmp_path,
+    monkeypatch,
+    *,
+    journal_records=128,
+    stopped=False,
+    restart=False,
+    policy=None,
+    isolate_authority=False,
+):
     from silent_cascade.archive.ledger import initialize_workspace_ledger
     from silent_cascade.archive.producer import ArchiveProducer
     from silent_cascade.archive.session import LocalArchiveSession
@@ -102,8 +136,33 @@ def producer_case(tmp_path, monkeypatch, *, journal_records=128, stopped=False, 
     from silent_cascade.archive.transport import initialize_remote_reservations
     from silent_cascade.archive.types import ArchivePolicy
 
-    policy = ArchivePolicy(journal_records=journal_records)
+    policy = (
+        ArchivePolicy(journal_records=journal_records)
+        if policy is None
+        else ArchivePolicy.model_validate(policy.model_dump())
+    )
     workspace = tmp_path / "workspace"
+    if isolate_authority:
+        from silent_cascade.archive import preflight
+
+        authority_parents = {
+            (parent.stat().st_dev, parent.stat().st_ino)
+            for parent in workspace.parents
+            if (parent / ".silent-cascade-engineering.json").is_file()
+        }
+        original_read_at = preflight._read_at
+
+        def isolated_read_at(directory, name, *, max_bytes):
+            info = os.fstat(directory)
+            if (
+                name == ".silent-cascade-engineering.json"
+                and max_bytes == 16_384
+                and (info.st_dev, info.st_ino) in authority_parents
+            ):
+                raise FileNotFoundError(name)
+            return original_read_at(directory, name, max_bytes=max_bytes)
+
+        monkeypatch.setattr(preflight, "_read_at", isolated_read_at)
     workspace.mkdir(exist_ok=restart)
     if not restart:
         initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
@@ -557,7 +616,13 @@ def test_stopped_custody_is_yielded_only_after_durable_recovery(tmp_path):
 def test_stopped_unknown_bytes_are_partial_custody_not_episode_outcomes(tmp_path, monkeypatch):
     from silent_cascade.train.pilot_workflow import pilot_ownership
 
-    with producer_case(tmp_path, monkeypatch, stopped=True) as (producer, session, server):
+    with producer_case(
+        tmp_path,
+        monkeypatch,
+        stopped=True,
+        policy=compact_archive_policy(),
+        isolate_authority=True,
+    ) as (producer, session, server):
         attempt = session.run_dir / ("attempt-" + "1" * 32)
         attempt.mkdir()
         orphan = attempt / "orphan-crash.bin"

@@ -85,12 +85,24 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path, evidence_context=None
     from silent_cascade.archive.readers import evaluation_header, iter_evaluation_episodes
 
     evaluations = evaluation_directories(run_dir, evidence_context=evidence_context)
-    training = None
+    completed = None
     result_path = run_dir / "training-result.json"
-    if result_path.exists():
+    result_available = result_path.exists()
+    if evidence_context is not None:
+        completed = set()
+        for entry in evidence_context.entries():
+            path = Path(entry.path)
+            if path.name == "DONE":
+                completed.add(run_dir / str(path.parent))
+            if entry.path == "training-result.json":
+                result_available = True
+    training = None
+    if result_available:
         training = load_training_result(run_dir, result_path, evidence_context=evidence_context)
     required, abandoned = (
-        training_evaluation_status(run_dir, training) if training is not None else (set(), set())
+        training_evaluation_status(run_dir, training, evidence_context=evidence_context)
+        if training is not None
+        else (set(), set())
     )
     if not required <= set(evaluations):
         raise ValueError("missing committed evaluation corpus")
@@ -129,9 +141,14 @@ def build_pilot_report(*, run_dir: Path, output_dir: Path, evidence_context=None
             ]
         )
     for number, root in enumerate(evaluations):
-        if not (root / "DONE").exists() and training is not None and root not in required:
+        complete = (root / "DONE").exists() if completed is None else root in completed
+        if not complete and training is not None and root not in required:
             partial = load_abandoned_evaluation(
-                root, run_dir=run_dir, training=training, abandoned=abandoned
+                root,
+                run_dir=run_dir,
+                training=training,
+                abandoned=abandoned,
+                evidence_context=evidence_context,
             )
             incomplete.append(partial)
             lines.extend(

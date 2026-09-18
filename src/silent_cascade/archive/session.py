@@ -378,15 +378,22 @@ class LocalArchiveSession:
             action = "next"
 
     def evaluation_roots(self):
-        return tuple(
-            sorted(
-                {
-                    str(Path(entry.path).parent)
-                    for entry in self.entries()
-                    if Path(entry.path).name == "DONE"
-                }
-            )
-        )
+        completed, partial = set(), set()
+        partial_sentinels = {
+            "identity.json",
+            "rows.jsonl",
+            "metrics.json",
+            ".rows.pending.jsonl",
+        }
+        for entry in self.entries():
+            path = Path(entry.path)
+            if path.name == "DONE":
+                completed.add(path.parent)
+            elif path.name in partial_sentinels and (
+                path.parent.name == "autonomous" or "eval" in path.parent.parts
+            ):
+                partial.add(path.parent)
+        return tuple(sorted(path.as_posix() for path in completed | partial))
 
     def read_record(self, logical_path: str, *, expected_sha256: str, max_bytes: int):
         from silent_cascade.archive.catalog import _safe_logical_path
