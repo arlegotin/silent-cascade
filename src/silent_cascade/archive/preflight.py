@@ -27,6 +27,7 @@ from silent_cascade.archive.catalog import (
     _open_child_directory,
     _pinned_directory,
     _read_at,
+    _safe_logical_path,
     _verify_pinned_directory,
 )
 from silent_cascade.archive.ledger import StorageBlocked, _process_identity, _StorageBudget
@@ -761,7 +762,11 @@ class EngineeringCandidate:
 
 
 def iter_engineering_candidates(
-    budget, *, source_commit: str | None = None, source_authority_sha256: str | None = None
+    budget,
+    *,
+    source_commit: str | None = None,
+    source_authority_sha256: str | None = None,
+    logical_root: str | None = None,
 ):
     """Yield filesystem-safe children only; this does NOT authorize their upload.
 
@@ -781,7 +786,7 @@ def iter_engineering_candidates(
         authority_sha256=source_authority_sha256,
     )
 
-    def candidates(prefix):
+    def inspect(prefix):
         members, eligible, exists = [], True, False
         for record in _stored_records(budget, engineering["snapshot"]):
             if record["path"] == prefix:
@@ -805,7 +810,7 @@ def iter_engineering_candidates(
                 "source_authority": source.source_authority_sha256,
                 "members": [asdict(member) for member in members],
             }
-            yield EngineeringCandidate(
+            candidate = EngineeringCandidate(
                 sha256_bytes(canonical_json_bytes(identity)),
                 source.source_commit,
                 source.executable_sha256,
@@ -813,6 +818,13 @@ def iter_engineering_candidates(
                 prefix,
                 members,
             )
+            return candidate, exists
+        return None, exists
+
+    def candidates(prefix):
+        candidate, exists = inspect(prefix)
+        if candidate is not None:
+            yield candidate
         elif exists:
             # Retained records are already paged; never materialize a directory list.
             for record in _stored_records(budget, engineering["snapshot"]):
@@ -821,6 +833,26 @@ def iter_engineering_candidates(
                     and Path(record["path"]).parent.as_posix() == prefix
                 ):
                     yield from candidates(record["path"])
+
+    if logical_root is not None:
+        root = _safe_logical_path(logical_root, field="engineering logical root")
+        if (
+            len(logical_root.encode()) > 4096
+            or len(root.parts) < 2
+            or root.parts[0] != "tmp"
+            or root.parts[1] not in _TASKS
+        ):
+            raise ValueError("engineering logical root lies outside the closed task namespace")
+        for end in range(2, len(root.parts) + 1):
+            prefix = "/".join(root.parts[:end])
+            candidate, exists = inspect(prefix)
+            if candidate is not None:
+                if prefix == logical_root:
+                    yield candidate
+                return
+            if not exists:
+                return
+        return
 
     for task in _TASKS:
         yield from candidates(f"tmp/{task}")
@@ -851,6 +883,7 @@ def _validated_review(budget, candidate, review):
             budget,
             source_commit=candidate.source_commit,
             source_authority_sha256=candidate.source_authority_sha256,
+            logical_root=candidate.logical_root,
         )
     ):
         raise StorageBlocked("storage_blocked: stale or forged engineering candidate")

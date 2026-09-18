@@ -835,6 +835,90 @@ def test_actual_atomic_archive_peaks_fit_derived_bounds_with_shared_history(tmp_
         assert not (tmp_path / review.paths[0]).exists()
 
 
+def _targeted_candidate_budget(root):
+    canonical = root / "tmp/task-1/canonical"
+    canonical.mkdir(parents=True)
+    (canonical / "one.bin").write_bytes(b"one")
+    target = root / "tmp/task-2/target"
+    target.mkdir(parents=True)
+    (target / "a.bin").write_bytes(b"a")
+    (target / "b.bin").write_bytes(b"b")
+    (target.parent / "unsafe").symlink_to(target)
+    unrelated = root / "tmp/task-3/unrelated"
+    unrelated.mkdir(parents=True)
+    (unrelated / "history.bin").write_bytes(b"history")
+    return bootstrap(root)
+
+
+def test_targeted_discovery_preserves_canonical_partition_and_bounds_scans(tmp_path, monkeypatch):
+    from silent_cascade.archive import preflight
+
+    budget = _targeted_candidate_budget(tmp_path)
+    stored_records = preflight._stored_records
+    scans = 0
+
+    def counted_records(*args):
+        nonlocal scans
+        scans += 1
+        yield from stored_records(*args)
+
+    monkeypatch.setattr(preflight, "_stored_records", counted_records)
+    default = tuple(preflight.iter_engineering_candidates(budget))
+    default_scans = scans
+    expected = next(item for item in default if item.logical_root == "tmp/task-2/target")
+
+    scans = 0
+    targeted = tuple(
+        preflight.iter_engineering_candidates(budget, logical_root="tmp/task-2/target")
+    )
+    assert targeted == (expected,)
+    assert tuple(member.path for member in targeted[0].members) == (
+        "tmp/task-2/target/a.bin",
+        "tmp/task-2/target/b.bin",
+    )
+    assert scans == 2
+    assert default_scans > scans
+
+    assert not tuple(
+        preflight.iter_engineering_candidates(budget, logical_root="tmp/task-1/canonical")
+    )
+    for logical_root in (
+        "",
+        ".",
+        "/tmp/task-2/target",
+        "tmp/task-2/target/",
+        "tmp//task-2/target",
+        "tmp/task-2/../target",
+        "tmp\\task-2\\target",
+        "tmp/task-7/target",
+        "runs/task-2/target",
+    ):
+        with pytest.raises(ValueError, match="logical root"):
+            tuple(preflight.iter_engineering_candidates(budget, logical_root=logical_root))
+
+    review = preflight.EngineeringContentReview(
+        candidate_id=expected.candidate_id,
+        executable_sha256=expected.executable_sha256,
+        paths=("tmp/task-2/target/a.bin",),
+        producer_evidence_sha256="d" * 64,
+    )
+    scans = 0
+    selected = preflight._validated_review(budget, expected, review)
+    assert tuple((member.path, member.sha256, member.bytes) for member in selected) == (
+        ("tmp/task-2/target/a.bin", sha256_bytes(b"a"), 1),
+    )
+    assert scans == 2
+
+
+def test_targeted_discovery_authenticates_unrelated_retained_history(tmp_path):
+    from silent_cascade.archive import preflight
+
+    budget = _targeted_candidate_budget(tmp_path)
+    (tmp_path / "tmp/task-3/unrelated/history.bin").write_bytes(b"changed")
+    with pytest.raises(ledger.StorageBlocked):
+        tuple(preflight.iter_engineering_candidates(budget, logical_root="tmp/task-2/target"))
+
+
 def prepared_candidate(root, *, policy=None, extra=False):
     from conftest import DirectoryTransport
 
