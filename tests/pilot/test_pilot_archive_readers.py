@@ -1,5 +1,6 @@
 """Scientific closure across bounded, authenticated episode reads."""
 
+import base64
 import json
 from contextlib import contextmanager
 from dataclasses import replace
@@ -22,6 +23,22 @@ def _canonical_partial_identity():
     assert len(raw) == 7111
     assert sha256_bytes(raw) == "26583e594139ab8be066ad7144f0f1e0fc3586d5fdc133838626bfdce985e647"
     return raw
+
+
+def _retained_partial_members(case):
+    """Decode original retained evidence; no model fit or scientific execution."""
+    fixture = Path(__file__).parents[1] / "fixtures/pilot/retained_partial_evaluations.json"
+    members = {"identity.json": _canonical_partial_identity()}
+    for name, entry in json.loads(fixture.read_bytes())[case].items():
+        raw = (
+            base64.b64decode(entry["content"], validate=True)
+            if entry["encoding"] == "base64"
+            else entry["content"].encode()
+        )
+        assert len(raw) == entry["bytes"]
+        assert sha256_bytes(raw) == entry["sha256"]
+        members[name] = raw
+    return members
 
 
 class _StrictEvidenceContext:
@@ -108,7 +125,9 @@ def test_cold_partial_rejects_unbound_predecessor(tmp_path):
         training_evaluation_status(run, training, evidence_context=context)
 
 
-def test_cold_partial_refuses_newline_complete_row(tmp_path):
+def test_cold_partial_rejects_invalid_newline_complete_row(tmp_path):
+    from pydantic import ValidationError
+
     from silent_cascade.report.pilot_artifacts import load_abandoned_evaluation
 
     run = tmp_path / "run"
@@ -124,7 +143,7 @@ def test_cold_partial_refuses_newline_complete_row(tmp_path):
         path.write_bytes(raw)
     context = _StrictEvidenceContext(run, cold, payloads)
     training = {"artifact_hashes": {name: sha256_bytes(raw) for name, raw in payloads.items()}}
-    with pytest.raises(ValueError, match="cold complete abandoned rows"):
+    with pytest.raises(ValidationError):
         load_abandoned_evaluation(
             run / logical_root,
             run_dir=run,
@@ -133,6 +152,72 @@ def test_cold_partial_refuses_newline_complete_row(tmp_path):
             evidence_context=context,
         )
     assert context.maximum_leases == 1
+
+
+@pytest.mark.parametrize(
+    ("damage", "error"),
+    [
+        ("digest-reread", "artifact integrity mismatch"),
+        ("sidecar-semantics", "neural evidence event count mismatch"),
+        ("unbound-reference", "unbound abandoned runtime artifact"),
+        ("missing-crash", "missing abandoned crash evidence"),
+    ],
+)
+def test_cold_partial_rejects_invalid_retained_evidence(tmp_path, monkeypatch, damage, error):
+    # A transport hash alone cannot replace scientific checks or authorize a reread.
+    from silent_cascade.eval.metrics import TimedEpisodeRow
+
+    run, cold = tmp_path / "run", tmp_path / "cold"
+    attempt = "attempt-" + "2" * 32
+    logical_root = f"{attempt}/validation-1-primary/autonomous"
+    case = "success" if damage in {"digest-reread", "sidecar-semantics"} else "initialization-error"
+    members = _retained_partial_members(case)
+    row = TimedEpisodeRow.model_validate_json(members["rows.jsonl"])
+    if damage == "sidecar-semantics":
+        sidecar = json.loads(members[row.neural_trace_ref])
+        sidecar["events"].pop()
+        members[row.neural_trace_ref] = canonical_json_bytes(sidecar)
+        row = row.model_copy(
+            update={"neural_trace_sha256": sha256_bytes(members[row.neural_trace_ref])}
+        )
+        members["rows.jsonl"] = canonical_json_bytes(row) + b"\n"
+    elif damage == "unbound-reference":
+        row = row.model_copy(update={"neural_trace_ref": "episodes/./00000.neural.json"})
+        members["rows.jsonl"] = canonical_json_bytes(row) + b"\n"
+    elif damage == "missing-crash":
+        members.pop("crashes/68e9c3ddb4954b43897ea6416d94ceca.json")
+    payloads = {f"{logical_root}/{name}": raw for name, raw in members.items()}
+    for name, raw in payloads.items():
+        path = cold / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    context = _StrictEvidenceContext(run, cold, payloads)
+    training = {"artifact_hashes": {name: sha256_bytes(raw) for name, raw in payloads.items()}}
+    if damage == "digest-reread":
+        verify = pilot_artifacts._verify_evidence
+
+        def mutate_after_inventory(root, verified_row, **kwargs):
+            # Change only the staged copy after discovery and its initial hash read.
+            # Also update the row digest: the original training digest must reject it.
+            path = cold / logical_root / verified_row.neural_trace_ref
+            altered = path.read_bytes() + b" "
+            path.write_bytes(altered)
+            substituted = verified_row.model_copy(
+                update={"neural_trace_sha256": sha256_bytes(altered)}
+            )
+            return verify(root, substituted, **kwargs)
+
+        monkeypatch.setattr(pilot_artifacts, "_verify_evidence", mutate_after_inventory)
+    with pytest.raises(ValueError, match=error):
+        pilot_artifacts.load_abandoned_evaluation(
+            run / logical_root,
+            run_dir=run,
+            training=training,
+            abandoned={attempt},
+            evidence_context=context,
+        )
+    assert context.maximum_leases == 1
+    assert context._active == 0
 
 
 def test_cold_root_training_result_is_discovered_from_authenticated_inventory(tmp_path):
@@ -223,7 +308,8 @@ def test_cold_root_training_result_is_discovered_from_authenticated_inventory(tm
     assert context.maximum_leases == 1
 
 
-def test_cold_zero_row_partial_report_uses_authenticated_inventory(tmp_path, monkeypatch):
+@pytest.mark.parametrize("case", ["zero", "success", "initialization-error"])
+def test_cold_partial_report_uses_authenticated_inventory(tmp_path, monkeypatch, case):
     """Cold partial and journal evidence remains reportable with pinned controls."""
     from silent_cascade.report.pilot import build_pilot_report
     from silent_cascade.train.pilot_config import resolve_pilot_config
@@ -280,7 +366,12 @@ def test_cold_zero_row_partial_report_uses_authenticated_inventory(tmp_path, mon
             f"{logical_root}/.rows.pending.jsonl": pending_raw,
             f"{logical_root}/orphan-crash.bin": orphan_raw,
         }
+        if case != "zero":
+            retained = _retained_partial_members(case)
+            retained[".rows.pending.jsonl"] = retained.pop("rows.jsonl") + pending_raw
+            members = {f"{logical_root}/{name}": raw for name, raw in retained.items()}
         for name, raw in members.items():
+            (session.run_dir / name).parent.mkdir(parents=True, exist_ok=True)
             (session.run_dir / name).write_bytes(raw)
 
         restart_name = "restart-" + "3" * 32 + ".json"
@@ -331,6 +422,10 @@ def test_cold_zero_row_partial_report_uses_authenticated_inventory(tmp_path, mon
         result_name = "training-result.json"
         result_raw = canonical_json_bytes(training)
         (session.run_dir / result_name).write_bytes(result_raw)
+
+        eager = pilot_artifacts.load_abandoned_evaluation(
+            partial, run_dir=session.run_dir, training=training, abandoned={attempt}
+        )
 
         with pilot_ownership(
             session.run_dir,
@@ -396,15 +491,16 @@ def test_cold_zero_row_partial_report_uses_authenticated_inventory(tmp_path, mon
                 ),
                 "planned_episodes": 1,
                 "raw_rows": f"{logical_root}/.rows.pending.jsonl",
-                "retained_errors": 0,
-                "retained_rows": 0,
+                "retained_errors": int(case == "initialization-error"),
+                "retained_rows": int(case != "zero"),
                 "status": "abandoned_incomplete",
-                "unknown_episodes": 1,
+                "unknown_episodes": int(case == "zero"),
                 "unparsed_trailing_bytes": 16,
             }
         ]
+        assert tables["incomplete_evaluations"] == [eager]
         assert "abandoned incomplete" in report.read_text()
-        assert "unknown episodes: 1" in report.read_text()
+        assert f"unknown episodes: {int(case == 'zero')}" in report.read_text()
         assert maximum == 1
         assert not server.leases
         assert not (session.control_dir / "episode-bindings/head.json").exists()

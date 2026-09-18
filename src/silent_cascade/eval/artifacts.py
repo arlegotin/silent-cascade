@@ -213,7 +213,7 @@ def _crash_index(root, rows):
         atomic_create_bytes(root / "crashes/index.json", canonical_json_bytes(entries))
 
 
-def _verify_evidence(root, row, *, retain):
+def _verify_evidence(root, row, *, retain, raw_reader=None):
     from silent_cascade.logging.neural_trace import (
         NeuralEventObservation,
         validate_full_neural_trace,
@@ -230,7 +230,11 @@ def _verify_evidence(root, row, *, retain):
             if Path(reference).is_absolute() or ".." in Path(reference).parts:
                 raise ValueError("unsafe trace reference")
             if reference not in verified_bytes:
-                verified_bytes[reference] = read_evaluation_artifact(root / reference)
+                verified_bytes[reference] = (
+                    read_evaluation_artifact(root / reference)
+                    if raw_reader is None
+                    else raw_reader(reference)
+                )
             if sha256_bytes(verified_bytes[reference]) != digest:
                 raise ValueError("trace integrity mismatch")
     if row.neural_trace_ref is None or (

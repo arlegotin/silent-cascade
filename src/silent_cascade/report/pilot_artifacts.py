@@ -632,6 +632,7 @@ def load_abandoned_evaluation(
     ):
         raise ValueError("incomplete evaluation is not authenticated abandoned evidence")
     retain = {"identity.json", "rows.jsonl", ".rows.pending.jsonl"}
+    raw_reader = None
     if evidence_context is None:
         hashes = {}
         for path in root.rglob("*"):
@@ -659,13 +660,20 @@ def load_abandoned_evaluation(
         if archived != expected:
             raise ValueError("unbound abandoned evaluation artifact")
         hashes, raw = archived, {}
-        for relative_name, digest in hashes.items():
+
+        def raw_reader(relative_name):
+            if relative_name not in expected:
+                raise ValueError("unbound abandoned runtime artifact")
             with evidence_path(
                 run_dir, prefix + relative_name, evidence_context=evidence_context
             ) as path:
                 payload = read_evaluation_artifact(path)
-            if sha256_bytes(payload) != digest:
+            if sha256_bytes(payload) != expected[relative_name]:
                 raise ValueError("artifact integrity mismatch")
+            return payload
+
+        for relative_name in hashes:
+            payload = raw_reader(relative_name)
             if relative_name in retain or (
                 relative_name.startswith("crashes/") and relative_name.endswith(".json")
             ):
@@ -686,8 +694,6 @@ def load_abandoned_evaluation(
         trailing = len(lines.pop())
     if len(lines) > len(identity.episodes):
         raise ValueError("extra abandoned evaluation rows")
-    if evidence_context is not None and lines:
-        raise ValueError("cold complete abandoned rows require semantic episode verification")
     errors, completed = set(), set()
     for line, binding in zip(lines, identity.episodes, strict=False):
         row = TimedEpisodeRow.model_validate_json(line)
@@ -703,6 +709,7 @@ def load_abandoned_evaluation(
                 or row.public_id in identity.report_example_public_ids
                 or identity.purpose == "delay_swap"
             ),
+            raw_reader=raw_reader,
         )
         (errors if row.error is not None else completed).add(row.public_id)
     crashes = {}
