@@ -561,6 +561,7 @@ operation. Scientific child code never invokes the network transport.
 `logging/neural_trace.py` (existing decoded/compressed format bounds),
 `train/{pilot_data,pilot_trainer,pilot_workflow,pilot_provenance,pilot_checks}.py`,
 `archive/supervisor.py` (closed producer dispatch wiring only),
+`archive/transport.py` (exact retained-file custody during partial-unit eviction),
 the exact source inventory in `train/pilot_evidence.py`, and
 `tests/pilot/test_pilot_source.py`. Extend
 `tests/pilot/{test_neural_crashes,test_pilot_artifacts,test_timed_runner}.py`.
@@ -606,8 +607,27 @@ class ArchiveProducer:
 
 def seal_journal_segments(*, run_dir: Path, control_dir: Path,
                           base_head: str | None, sealed_head: str,
-                          policy: ArchivePolicy) -> tuple[UnitRef, ...]: ...
+                          policy: ArchivePolicy, session: LocalArchiveSession,
+                          identity: UnitIdentity) -> tuple[UnitRef, ...]: ...
 ```
+
+The journal helper uses the existing authenticated session to request parent-side
+sealing under its ledger/locks. Supply source/run identity explicitly; do not
+create another session, identity side file, or direct child `seal_unit` path.
+
+Extend `evict_unit` narrowly with `retained: tuple[FileEntry, ...] = ()`, also
+accepted by the closed archive request. This is an explicit custody snapshot of
+non-evicted siblings derived from producer-authoritative controls, row log,
+shared inputs, other episode commitments and authenticated catalog ownership.
+Never assign ownership by scanning a directory. Require sorted unique safe paths,
+no overlap with owned paths, matching logical scope, exact sizes/hashes and full
+resident coverage by owned plus retained entries. Unknown, missing or changed
+members still stop eviction. Bind retained custody in the durable intent and
+recheck on interrupted continuation. Unlink only unchanged owned records; retain
+all receipt/catalog/lock/borrower checks. Cover sibling episodes, active controls,
+shared weights, forged/changed retained entries and interrupted eviction. Journal
+segments sharing the run root use the same custody rule. Existing empty-retained
+calls keep their strict behavior; no whole-directory deletion is permitted.
 
 Before-work admission reuses the supervisor's held source-bound job reservation;
 it must not reserve the same capacity twice. Add one strict `status` payload

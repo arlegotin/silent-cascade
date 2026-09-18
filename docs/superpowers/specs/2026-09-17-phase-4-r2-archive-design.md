@@ -237,6 +237,12 @@ permanent local locator and preserves the canonical unit schema and old hashes.
 4. Pack committed episodes, upload/readback/receipt, then evict exact unchanged
    owned payloads. Keep active rows/controls. Backpressure is between episodes,
    not a change to neural computation.
+   Where units share a logical directory, supply an explicit producer-authoritative
+   retained-file custody snapshot for controls, shared inputs and sibling evidence.
+   Verify full resident coverage, exact retained hashes and disjoint ownership;
+   bind the snapshot to the eviction intent and recheck after interruption.
+   Unknown or changed members stop eviction; retained files are never deletion
+   targets. A directory scan cannot establish scientific ownership.
 5. Finalization leases each episode in turn, revalidates evidence/crash links,
    builds the original crash index and derives the full logical inventory from
    authenticated ownership plus controls, not resident `rglob`. Publish original
