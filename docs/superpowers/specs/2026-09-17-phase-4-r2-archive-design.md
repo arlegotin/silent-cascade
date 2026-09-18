@@ -95,7 +95,27 @@ explicit `archive run` wrapper supplies the operational supervisor. It supports
 only the closed pilot/checks/verify/report/replay jobs and joins all children on
 exit. It is not a persistent system service.
 
+The `verify` job means existing artifact-only gate verification, not the local
+quality-gate recorder. Each job has a strict closed request schema and a fixed
+package entrypoint; callers cannot select a command, module or repository root.
+Scientific schema authorities remain in the producer/readers. The lease layer
+checks their exact expected inventories against transport and resident bytes.
+An authenticated paged episode binding embeds the canonical typed episode commit,
+its digest, ordinal, logical root, run identity and containing unit reference.
+Lease selection validates that binding and one exact authenticated episode group;
+it never infers ownership from filenames. Bindings can become cold after verified
+publication and do not accumulate as permanent per-episode local files.
+
 ## 4. Bounded working set: at most 10 GiB
+
+An explicit workspace root owns one durable global budget/baseline descriptor
+and permanent lock under `.silent-cascade-storage/`. Per-run control descriptors
+only locate that state; a new run or recovery destination does not gain another
+allowance. All new outputs, including tests, caches and temporary files, stay on
+the same device inside that root. Exclude only authenticated unchanged pre-existing
+baseline entries, never a blanket snapshot that makes already-generated task or
+qualification output free. Missing/corrupt accounting fails closed. Baseline
+pages and operational state are themselves charged metadata.
 
 Initial operational limits, measured and enforced independently of ML config:
 

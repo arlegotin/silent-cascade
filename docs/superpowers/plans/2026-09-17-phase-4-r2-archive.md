@@ -115,7 +115,7 @@ numerical execution owner at a time.
 | --- | --- | --- |
 | 1 | `src/silent_cascade/archive/{__init__,types,catalog,bundles}.py`; `tests/archive/{conftest,test_catalog,test_bundles}.py` | existing safe I/O/hash/compact-index utilities, reused without weakening |
 | 2 | `archive/{transport,operational}.py`; `tests/archive/{test_transport,test_operational}.py` | Task1 typed catalog nodes; existing local AWS CLI profile only |
-| 3 | `archive/{session,supervisor}.py`; `tests/archive/{test_session,test_supervisor}.py` | `train/pilot_offline.py` denial hooks |
+| 3 | `archive/{session,supervisor,ledger}.py`; `tests/archive/{test_session,test_supervisor,test_ledger}.py` | `train/pilot_offline.py` denial hooks; closed archive types/index seams; private-state ignore rule |
 | 4 | `archive/producer.py`; `tests/pilot/test_pilot_archive_producer.py` | row publication, crash ownership descriptor, streaming finalizer, trainer/journals, provenance |
 | 5 | `archive/readers.py`; `tests/pilot/test_pilot_archive_readers.py` | episode scanner, report/evidence/index/journal/recovery readers |
 | 6 | `archive/{cli,preflight}.py`; `tests/archive/{test_cli,test_preflight}.py` | root CLI, Makefile, local verification inventory, setup/status docs |
@@ -405,8 +405,10 @@ large lazy histories; report the exact transaction and recovery interfaces.
 
 ## Task 3: Local evidence leases and finite supervisor
 
-**Files:** `archive/session.py`, `archive/supervisor.py`, corresponding tests;
+**Files:** `archive/{session,supervisor,ledger}.py`, corresponding tests;
 extend `train/pilot_offline.py` only to share/test the existing denial boundary.
+Narrowly extend archive types/catalog/operational/transport seams for the closed
+episode-binding index, and ignore private `.silent-cascade-storage/` state.
 
 **Interfaces produced:**
 
@@ -432,14 +434,68 @@ class LocalArchiveSession:
     def __init__(self, *, run_dir: Path, control_dir: Path,
                  policy: ArchivePolicy): ...
 
-def supervise_job(*, job: str, request: dict, run_dir: Path,
+def supervise_job(*, job: str, request: dict, workspace_root: Path, run_dir: Path,
                   control_dir: Path, transport: ObjectTransport,
                   policy: ArchivePolicy) -> int: ...
 ```
 
 `entries()` merges resident original files with active catalog ownership; never
-includes transport/control files in the scientific inventory. Match archive
-entries against authoritative journal/index/DONE hashes, not only each other.
+includes transport/control files in the scientific inventory. `verify_inventory`
+checks exact caller-supplied authoritative entries against authenticated transport
+and resident bytes. Tasks4/5 produce those entries from journal/index/DONE and
+episode-commit authorities; Task3 must not duplicate their scientific parsers or
+treat transport consistency as semantic correctness.
+
+The job set is closed. Strict per-job request models reject unknown keys,
+commands, import paths and caller-supplied repository roots. The trusted source
+repository is derived from the installed package. Resolve config/manifest inputs
+as safe repository-relative paths and artifact/output inputs as safe run-relative
+paths, rejecting traversal and symlinks through the existing safe-I/O rules.
+
+| Job | Request fields | Existing entrypoint |
+| --- | --- | --- |
+| `pilot` | `config_path`, `manifest_dir`, `device` | `train.pilot_workflow.run_pilot` |
+| `checks` | `config_path` | `train.pilot_checks.run_pilot_checks`; output `phase4-gate.json` |
+| `verify` | `artifact_path` (default `phase4-gate.json`) | `train.pilot_evidence.verify_phase4_gate_artifact`, with trusted repo and raw run |
+| `report` | `output_dir` (default `report`) | `report.pilot.build_pilot_report` |
+| `replay` | `replay_path`, `weights_path` | `eventflow.neural_replay.verify_neural_replay` |
+
+Use only the existing two pilot config overlays and `cpu`/`mps` device choices.
+`verify` is artifact-only verification, not the complete local `make verify`
+recorder. Task3 implements closed decoding, process isolation and the IPC runner;
+Tasks4/5 thread producer/context hooks through those entrypoints. Do not claim
+cold scientific execution readiness before that integration, or expose an
+arbitrary-command runner to bridge the phased dependency.
+
+Implement create-only `initialize_workspace_ledger` in `archive/ledger.py`.
+One workspace-global descriptor lives at
+`workspace_root/.silent-cascade-storage/workspace.json`, with bounded immutable
+baseline pages, durable reservations and a permanent lock. A
+`control_dir/storage-state.json` is only a locator binding run/control/policy to
+that shared state, never a second allowance. All run/control/test/temp/cache/log
+and recovery outputs must remain under the explicit workspace root on the same
+device. Only explicitly authenticated unchanged pre-existing baseline entries
+may be excluded from new-allocation charges; baseline pages/locks themselves are
+new metadata. Missing/corrupt history or another run cannot reset usage. Task7
+supplies measured production baseline evidence and counts all already-created
+task/test/qualification output; taking a blanket snapshot of existing files to
+declare them free is forbidden.
+
+Move the shared `EpisodeCommit` type declaration specified in Task4 into
+`archive/types.py` during Task3; Task4 still owns producing and fsyncing it.
+Freeze a closed `EpisodeBinding` record with fields `schema_version` (literal
+`phase4-archive-episode-binding-v1`), `run_id`, `logical_root`, `ordinal`,
+`commit_sha256`, `unit_ref`, and the full typed `commit`. The digest hashes
+canonical `EpisodeCommit` bytes. Require matching ordinal/evidence identity,
+owned entries exactly covering one authenticated unit episode group, and
+separately authenticated borrowed references. Store bindings in a bounded
+authenticated paged index with cold publication, not permanent per-episode
+files. Provide `register_episode_binding` as the producer/session seam: Task4
+calls it only after row fsync and seal, before eviction. The binding embeds its
+commit, so no filename inference or separate permanent commit filename is needed.
+Registration may take explicit transport/policy and runs only in the parent
+service; the producer sends typed registration through the existing `seal`
+operation. Scientific child code never invokes the network transport.
 
 - [ ] **Step 1 — RED:** real local-file request/response tests, including a stale
   response from another run, response-before-complete-restore, simultaneous episode
@@ -528,7 +584,7 @@ def seal_journal_segments(*, run_dir: Path, control_dir: Path,
                           policy: ArchivePolicy) -> tuple[UnitRef, ...]: ...
 ```
 
-Define `EpisodeCommit` in `archive/types.py`; validate exact scalar types, sorted
+Use the shared `EpisodeCommit` introduced by Task3 in `archive/types.py`; validate exact scalar types, sorted
 ownership, row binding and borrowed references. Define `PublishedCrashFile` and
 `PublishedCrash` beside existing crash publication types; convert their safe
 relative paths, verified hashes and measured sizes to `FileEntry` in the producer.
