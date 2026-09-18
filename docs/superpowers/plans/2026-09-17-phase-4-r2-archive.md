@@ -1389,6 +1389,15 @@ sizes alone are not an admission proof. Get RED/GREEN, task review and a scoped
 commit; all remaining original obligations continue below and in the Task5
 integration brief, including complete cold rows, recovery and actual CPU equality.
 
+The first local fixture invocation revealed that the retained engineering
+authority correctly rejects a second nested synthetic workspace. The focused
+test fixture may isolate only pre-existing ancestor authority directory identities
+at the exact authority-read boundary, matching the established archive-test
+technique. Fixture-created authorities remain visible and production checks are
+unchanged. Reuse one helper across affected producer cases; do not disable the
+single-authority rule or create an uncounted output location. Preserve this
+setup failure separately from the later expected feature RED.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
