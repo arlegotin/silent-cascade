@@ -1,6 +1,5 @@
 """Frozen engineering custody must consume the existing global allowance."""
 
-import hashlib
 import json
 import os
 import subprocess
@@ -76,7 +75,7 @@ def test_frozen_custody_or_inventory_change_blocks_new_admission(tmp_path, mutat
         old.mkdir()
         (old / "history").write_bytes(b"original")
     else:
-        page = next((budget.root / "retained").glob("*.json"))
+        page = next((budget.root / "retained/leaves").glob("*.json"))
         page.rename(page.with_suffix(".missing"))
     with pytest.raises(ledger.StorageBlocked), budget.reserve(scratch=1):
         pytest.fail("stale custody authorized new output")
@@ -255,66 +254,6 @@ def test_linked_inventory_fails_closed_on_ambiguous_custody(tmp_path, monkeypatc
         monkeypatch.setattr(preflight, "_inventory", corrupted)
     with pytest.raises(ledger.StorageBlocked):
         list(preflight._accounted_inventory(tmp_path, tmp_path / "operational"))
-
-
-@pytest.mark.parametrize(
-    ("page_bytes", "page_entries", "groups"),
-    [(95, 1000, [8, 1, 1, 1, 1]), (103, 1000, [9, 2, 1]), (103, 2, [2] * 6)],
-)
-def test_inventory_pages_preserve_exact_byte_and_entry_boundaries(page_bytes, page_entries, groups):
-    from silent_cascade.archive import preflight
-
-    # All rows deliberately have identical seven-byte encodings.
-    records = [{"n": index % 10} for index in range(12)]
-    pages = list(
-        preflight._pages(records, ArchivePolicy(page_bytes=page_bytes, page_entries=page_entries))
-    )
-    assert [len(page[2]) for page in pages] == groups
-    offset, previous = 0, None
-    for digest, raw, entries in pages:
-        expected_entries = records[offset : offset + len(entries)]
-        expected = json.dumps(
-            {"entries": expected_entries, "next": previous},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        assert raw == expected
-        assert digest == hashlib.sha256(expected).hexdigest()
-        assert entries == expected_entries
-        previous, offset = digest, offset + len(entries)
-
-
-def test_inventory_pages_escape_rows_and_refuse_oversize_after_head_changes():
-    from silent_cascade.archive import preflight
-
-    records = [{"x": 'é"\\\n'}, {"x": "another"}]
-    pages = list(preflight._pages(records, ArchivePolicy(page_entries=1, page_bytes=256)))
-    assert pages[0][1] == b'{"entries":[{"x":"\xc3\xa9\\"\\\\\\n"}],"next":null}'
-    assert pages[1][1] == (b'{"entries":[{"x":"another"}],"next":"' + pages[0][0].encode() + b'"}')
-    assert list(preflight._pages([], ArchivePolicy())) == []
-    with pytest.raises(ledger.StorageBlocked):
-        list(preflight._pages([{"n": 0}], ArchivePolicy(page_bytes=32)))
-    with pytest.raises(ledger.StorageBlocked):
-        list(preflight._pages([{"n": 0}, {"n": 1}], ArchivePolicy(page_bytes=33)))
-
-
-def test_inventory_page_serialization_work_is_linear_in_rows(monkeypatch):
-    from silent_cascade.archive import preflight
-
-    original = preflight.canonical_json_bytes
-    work = 0
-
-    def measured(value):
-        nonlocal work
-        work += len(value["entries"]) if "entries" in value else 1
-        return original(value)
-
-    monkeypatch.setattr(preflight, "canonical_json_bytes", measured)
-    records = [{"n": index} for index in range(512)]
-    pages = list(preflight._pages(records, ArchivePolicy(page_entries=128, page_bytes=4096)))
-    assert sum(len(page[2]) for page in pages) == 512
-    assert work <= 3 * len(records)
 
 
 def test_bootstrap_admits_allocation_blocks_not_preferred_io_size(tmp_path, monkeypatch):

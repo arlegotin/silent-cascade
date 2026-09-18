@@ -16,6 +16,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from silent_cascade.archive import _retained
 from silent_cascade.archive.catalog import (
     _control_reader,
     _create_at,
@@ -203,66 +204,28 @@ def _accounted_inventory(custody_root, workspace, *, reverse=False):
         raise StorageBlocked("storage_blocked: retained linked aliases changed")
 
 
-def _pages(records, policy):
-    head, page = None, []
-    encoded = len(canonical_json_bytes({"next": head, "entries": []}))
-    for record in records:
-        row_bytes = len(canonical_json_bytes(record))
-        if page and (
-            len(page) == policy.page_entries or encoded + 1 + row_bytes > policy.page_bytes
-        ):
-            raw = canonical_json_bytes({"next": head, "entries": page})
-            head = sha256_bytes(raw)
-            yield head, raw, page
-            page = []
-            encoded = len(canonical_json_bytes({"next": head, "entries": []}))
-        encoded += row_bytes + bool(page)
-        page.append(record)
-        if encoded > policy.page_bytes:
-            raise StorageBlocked("storage_blocked: retained record exceeds page bound")
-    if page:
-        raw = canonical_json_bytes({"next": head, "entries": page})
-        yield sha256_bytes(raw), raw, page
-
-
-def _snapshot(custody_root, workspace, policy, *, publish=None):
-    head, allocated, count, pages, encoded = None, 0, 0, 0, 0
-    for head, raw, entries in _pages(_accounted_inventory(custody_root, workspace), policy):
-        allocated += sum(entry["allocated"] for entry in entries)
-        count += len(entries)
-        pages += 1
-        encoded += len(raw)
-        if encoded > policy.metadata_bytes:
-            raise StorageBlocked("storage_blocked: retained inventory exceeds metadata cap")
-        if publish is not None:
-            _create_control_object(publish, f"retained/{head}.json", raw)
-    return {
-        "head": head,
-        "allocated": allocated,
-        "entries": count,
-        "pages": pages,
-        "encoded_bytes": encoded,
-    }
+def _snapshot(
+    custody_root,
+    workspace,
+    policy,
+    *,
+    publish=None,
+    control_dir=None,
+    previous=None,
+    removed_paths=(),
+):
+    return _retained.build_snapshot(
+        _accounted_inventory(custody_root, workspace),
+        policy,
+        control_dir=publish if publish is not None else control_dir,
+        previous=previous,
+        removed_paths=removed_paths,
+        publish=publish is not None,
+    )
 
 
 def _inventory_output_bound(records, policy):
-    """Bound repagination from finite rows, allowing directory stat widths to grow."""
-    count, encoded, maximum = 0, 0, 0
-    for source in records:
-        record = dict(source)
-        if stat.S_ISDIR(record["mode"]):
-            for key in ("links", "bytes", "allocated", "mtime_ns", "ctime_ns"):
-                record[key] = 10**20 - 1  # signed 64-bit textual width, including a sign
-        length = len(canonical_json_bytes(record)) + 1
-        count += 1
-        encoded += length
-        maximum = max(maximum, length)
-    header = len(canonical_json_bytes({"next": "f" * 64, "entries": []}))
-    capacity = min(policy.page_entries, (policy.page_bytes - header) // max(1, maximum))
-    if capacity < 1:
-        raise StorageBlocked("storage_blocked: inventory cannot fit its bounded page")
-    pages = (count + capacity - 1) // capacity
-    return encoded + pages * header, pages
+    return _retained.initial_bound(records, policy)
 
 
 def _authority(budget):
@@ -279,6 +242,14 @@ def _authority(budget):
         raw = _read_at(root, _AUTHORITY, max_bytes=16384)
         authority = json.loads(raw)
         if (
+            authority.get("schema_version") != "phase4-engineering-authority-v2"
+            or authority.get("inventory_schema") != "phase4-engineering-snapshot-v2"
+        ):
+            raise StorageBlocked(
+                "storage_blocked: legacy engineering authority requires "
+                "explicit same-ledger transition"
+            )
+        if (
             sha256_bytes(raw) != engineering["authority_sha256"]
             or authority["workspace"] != str(budget.workspace)
             or authority["custody_device"] != os.fstat(root).st_dev
@@ -287,6 +258,13 @@ def _authority(budget):
             or authority["workspace_inode"] != os.fstat(workspace).st_ino
         ):
             raise StorageBlocked("storage_blocked: engineering authority or root identity changed")
+    initial, current = engineering.get("initial_snapshot"), engineering.get("snapshot")
+    _retained._descriptor(initial, budget.policy)
+    _retained._descriptor(current, budget.policy)
+    if any(
+        initial[name] != current[name] for name in ("pages", "layout_sha256", "original_entries")
+    ):
+        raise StorageBlocked("storage_blocked: engineering original partition layout changed")
     return engineering
 
 
@@ -296,18 +274,16 @@ def _retained_charge(budget):
         if engineering is None:
             return 0
         expected = engineering["snapshot"]
-        head = expected["head"]
-        for _ in range(expected["pages"]):
-            raw = _control_reader(budget.root)(f"retained/{head}.json", budget.policy.page_bytes)
-            if sha256_bytes(raw) != head:
-                raise StorageBlocked("storage_blocked: retained inventory authentication failed")
-            head = json.loads(raw)["next"]
-        if head is not None:
-            raise StorageBlocked("storage_blocked: retained page chain differs")
         if "pending" in engineering:
             current = _validate_pending_residual(budget, engineering)
             return max(expected["allocated"], current)
-        observed = _snapshot(Path(engineering["custody_root"]), budget.workspace, budget.policy)
+        observed = _snapshot(
+            Path(engineering["custody_root"]),
+            budget.workspace,
+            budget.policy,
+            control_dir=budget.root,
+            previous=expected,
+        )
         if observed != expected:
             raise StorageBlocked("storage_blocked: frozen engineering inventory changed")
         return observed["allocated"]
@@ -368,8 +344,9 @@ def bootstrap_engineering_workspace(
         bootstrap_bytes = inventory_bytes + inventory_pages * 2 * block
         # Authority's existing reader cap; full compatible descriptor and its
         # atomic replacement use the policy cap, even for a large prior ledger.
-        # Four directories, four control leaves and two atomic directory slots.
-        bootstrap_bytes += 16384 + policy.page_bytes * 2 + 10 * block
+        # Seven directories, four control leaves and two atomic directory slots.
+        # Leaves/index/generations are separate private retained subdirectories.
+        bootstrap_bytes += 16384 + policy.page_bytes * 2 + 13 * block
         # The external authority leaf and its parent remain retained custody;
         # all other bootstrap output belongs to the existing metadata category.
         metadata_peak = bootstrap_bytes - 16384 - 2 * block
@@ -417,7 +394,8 @@ def bootstrap_engineering_workspace(
             if work_info.st_dev != root_info.st_dev:
                 raise StorageBlocked("storage_blocked: engineering workspace crosses device")
             authority = {
-                "schema_version": "phase4-engineering-authority-v1",
+                "schema_version": "phase4-engineering-authority-v2",
+                "inventory_schema": "phase4-engineering-snapshot-v2",
                 "workspace": str(workspace),
                 "source_commit": source_commit,
                 "custody_device": root_info.st_dev,
@@ -452,12 +430,15 @@ def bootstrap_engineering_workspace(
         ):
             state = budget._state()
             snapshot = _snapshot(custody_root, workspace, policy, publish=budget.root)
-            if snapshot != _snapshot(custody_root, workspace, policy):
+            if snapshot != _snapshot(
+                custody_root, workspace, policy, control_dir=budget.root, previous=snapshot
+            ):
                 raise StorageBlocked("storage_blocked: bootstrap inventory changed")
             state["schema_version"] = "phase4-r2-workspace-v2"
             state["engineering"] = {
                 "custody_root": str(custody_root),
                 "authority_sha256": sha256_bytes(raw),
+                "initial_snapshot": snapshot,
                 "snapshot": snapshot,
             }
             budget._store(state)
@@ -481,19 +462,7 @@ def _executable_digest():
 
 
 def _stored_records(budget, snapshot):
-    """Read the authenticated inventory backwards, using one bounded page."""
-    head = snapshot["head"]
-    for _ in range(snapshot["pages"]):
-        raw = _control_reader(budget.root)(f"retained/{head}.json", budget.policy.page_bytes)
-        if sha256_bytes(raw) != head:
-            raise StorageBlocked("storage_blocked: corrupt retained inventory")
-        page = json.loads(raw)
-        if len(page["entries"]) > budget.policy.page_entries:
-            raise StorageBlocked("storage_blocked: retained page entries exceed bound")
-        yield from reversed(page["entries"])
-        head = page["next"]
-    if head is not None:
-        raise StorageBlocked("storage_blocked: retained page chain differs")
+    yield from _retained.read_records(budget.root, snapshot, budget.policy, reverse=True)
 
 
 @dataclass(frozen=True)
@@ -821,8 +790,8 @@ def _prelude_bounds(budget, candidate, selected):
         + node_bytes
     )
     inventory_snapshot = budget._state()["engineering"]["snapshot"]
-    new_inventory, retained_pages = _inventory_output_bound(
-        _stored_records(budget, inventory_snapshot), policy
+    new_inventory, retained_pages = _retained.publication_bound(
+        budget.root, inventory_snapshot, policy, tuple(member.path for member in selected)
     )
     fixed_controls = 2 * policy.page_bytes  # ledger/pending state and their atomic replacement
     metadata = inventory + manifest + 2 * run_catalog + operational_catalog
@@ -873,6 +842,9 @@ def _prelude_bounds(budget, candidate, selected):
         "proof-nodes",
         "proof-roots",
         "retained",
+        "retained/leaves",
+        "retained/index",
+        "retained/generations",
         "engineering-recovery",
     )
     file_count = shards + run_nodes + objects + retained_pages + len(fixed_files)
@@ -987,8 +959,17 @@ def _finish_engineering_eviction(budget):
     _validate_pending_residual(budget, engineering)
     with _lock(control_dir=budget.root, relative=("workspace.lock",), shared=False, blocking=True):
         state = budget._state()
-        snapshot = _snapshot(custody, budget.workspace, budget.policy, publish=budget.root)
-        if snapshot != _snapshot(custody, budget.workspace, budget.policy):
+        snapshot = _snapshot(
+            custody,
+            budget.workspace,
+            budget.policy,
+            publish=budget.root,
+            previous=engineering["snapshot"],
+            removed_paths=tuple(pending["paths"]),
+        )
+        if snapshot != _snapshot(
+            custody, budget.workspace, budget.policy, control_dir=budget.root, previous=snapshot
+        ):
             raise StorageBlocked("storage_blocked: residual changed while publishing")
         _validate_pending_residual(budget, engineering)
         state["engineering"]["snapshot"] = snapshot
