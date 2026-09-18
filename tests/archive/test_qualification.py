@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from conftest import DirectoryTransport
@@ -411,22 +412,46 @@ def test_qualification_child_rejects_dead_scope_owner(process_case, isolated_arc
 
 
 @pytest.mark.parametrize("final_failure", [False, True])
-def test_qualification_scans_only_at_owned_entry_and_staged_final_boundary(
-    process_case, monkeypatch, isolated_archive_authorities, final_failure
+def test_qualification_scans_source_precondition_then_owned_entry_and_staged_final_boundary(
+    task_scratch, monkeypatch, isolated_archive_authorities, final_failure
 ):
     import functools
 
-    from silent_cascade.archive import _qualification
+    from silent_cascade.archive import _qualification, preflight
     from silent_cascade.archive.ledger import StorageBlocked
-    from silent_cascade.archive.preflight import _ReviewedSource
-    from silent_cascade.archive.transport import _lock
-    from silent_cascade.archive.types import EpisodeCommit, FileEntry
+    from silent_cascade.archive.transport import (
+        archive_operation_lock,
+        initialize_remote_reservations,
+    )
+    from silent_cascade.archive.types import ArchivePolicy, EpisodeCommit, FileEntry
 
-    budget, unit, transport = process_case
+    policy = ArchivePolicy(chunk_bytes=64, page_bytes=4096)
+    probe = bytes(range(160))
+    custody = task_scratch / "custody"
+    debug_source = custody / "debug-source"
+    debug_source.mkdir(parents=True)
+    (debug_source / "probe.bin").write_bytes(probe)
+    revision = preflight._git_head(Path(__file__).parents[2])
+    budget = preflight.bootstrap_engineering_workspace(
+        custody_root=custody,
+        workspace=custody / "operational",
+        policy=policy,
+        source_commit=revision,
+    )
+    control = budget.workspace / "control"
+    budget.bind(control, category="metadata")
+    budget.bind(control / "transfer-scratch", category="scratch")
+    transport = DirectoryTransport(task_scratch / "remote")
+    initialize_remote_reservations(
+        control_dir=control,
+        transport_id=transport.transport_id,
+        accounted_bytes=11,
+        accounting_evidence_sha256="a" * 64,
+        policy=policy,
+    )
     output = budget.workspace / "scoped-qualification"
-    from silent_cascade.archive.transport import archive_operation_lock
 
-    with archive_operation_lock(unit.control):
+    with archive_operation_lock(control):
         pass
     for root, category in {
         output: "metadata",
@@ -437,19 +462,9 @@ def test_qualification_scans_only_at_owned_entry_and_staged_final_boundary(
         output / "events": "logs",
     }.items():
         budget.bind(root, category=category)
-    with _lock(
-        control_dir=budget.root, relative=("engineering.lock",), shared=False, blocking=True
-    ):
-        pass
-    probe = bytes(range(160))
     monkeypatch.setattr(_qualification, "_PROBE_BYTES", len(probe))
     monkeypatch.setattr(_qualification, "_PROBE_SHA256", sha256_bytes(probe))
     monkeypatch.setattr(_qualification, "_probe_blocks", lambda: iter((probe,)))
-    monkeypatch.setattr(
-        _qualification,
-        "_reviewed_source",
-        lambda **_: _ReviewedSource("6" * 40, "7" * 64, "8" * 64),
-    )
     monkeypatch.setattr(
         _qualification,
         "_archive_child",
@@ -472,25 +487,27 @@ def test_qualification_scans_only_at_owned_entry_and_staged_final_boundary(
     authenticate = budget.retained_charge
 
     def full_check():
-        scans.append(True)
-        if len(scans) == 2:
+        scans.append(bool(budget._state()["reservations"]))
+        if (output / ".qualification-result.part").exists():
             assert budget._state()["reservations"]
             assert (output / ".qualification-result.part").exists()
             assert not (output / "qualification-result.json").exists()
             if final_failure:
                 raise StorageBlocked("injected retained mutation")
+        else:
+            assert not output.exists()
         return authenticate()
 
     monkeypatch.setattr(budget, "retained_charge", full_check)
     arguments = dict(
         budget=budget,
         output_root=output,
-        debug_source_root=unit.root / "probe",
+        debug_source_root=debug_source,
         debug_logical_root="debug",
         debug_commit=commit,
         debug_review_sha256="4" * 64,
         protocol_sha256="5" * 64,
-        source_commit="6" * 40,
+        source_commit=revision,
         transport=transport,
     )
     if final_failure:
@@ -504,7 +521,9 @@ def test_qualification_scans_only_at_owned_entry_and_staged_final_boundary(
         assert result.retry.exact_readback and result.retry.stable_reserved_bytes
         assert result.local_after.model_dump(exclude={"retained_bytes"}) == budget.measure()
         assert (output / "qualification-result.json").exists()
-    assert len(scans) == 2
+    assert len(scans) == 3
+    assert sum(scans) == 2
+    assert scans == [False, True, True]
     assert not budget._state()["reservations"]
 
 

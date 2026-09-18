@@ -404,6 +404,97 @@ def test_measure_counts_opaque_explicit_scratch_entries_without_following_links(
         budget.require_path(scratch / "linked-file")
 
 
+def test_measure_matches_whole_components_and_longest_prefix_without_reclassification(monkeypatch):
+    workspace = Path("/virtual/workspace")
+    directories = {
+        "": 1,
+        "zone": 2,
+        "zone/cache": 3,
+        "zone/scratch": 11,
+        "zone/scratch/secure": 19,
+        ".silent-cascade-storage": 37,
+    }
+    files = {
+        "zone/cache/item": 5,
+        "zone/cacheish": 7,
+        "zone/scratch/secure/item": 23,
+        "zone/scratchish": 29,
+        "unknown": 31,
+        ".silent-cascade-storage/item": 41,
+        "zoneish": 43,
+    }
+    records = {
+        workspace / name: _inode(kind=stat.S_IFDIR, blocks=blocks)
+        for name, blocks in directories.items()
+    }
+    records.update(
+        {
+            workspace / name: _inode(kind=stat.S_IFREG, blocks=blocks)
+            for name, blocks in files.items()
+        }
+    )
+    records[workspace / "zone/scratch/opaque"] = _inode(kind=stat.S_IFLNK, blocks=17)
+    children = {
+        workspace: ["zone", "unknown", "zoneish", ".silent-cascade-storage"],
+        workspace / "zone": ["cache", "cacheish", "scratch", "scratchish"],
+        workspace / "zone/cache": ["item"],
+        workspace / "zone/scratch": ["opaque", "secure"],
+        workspace / "zone/scratch/secure": ["item"],
+        workspace / ".silent-cascade-storage": ["item"],
+    }
+    budget = _memory_budget(
+        monkeypatch,
+        records=records,
+        children=children,
+        paths={
+            "zone": "spool",
+            "zone/cache": "cache",
+            "zone/scratch": "scratch",
+            "zone/scratch/secure": "metadata",
+        },
+    )
+    assert budget.measure() == {
+        "spool": 38 * 512,
+        "cache": 8 * 512,
+        "metadata": 121 * 512,
+        "scratch": 102 * 512,
+        "pinned": 0,
+        "logs": 0,
+        "emergency": 0,
+    }
+
+
+def test_measure_does_not_reconstruct_ancestors_for_each_entry_and_category(monkeypatch):
+    workspace = Path("/virtual/workspace")
+    records = {workspace: _inode(kind=stat.S_IFDIR, blocks=1)}
+    children = {}
+    parent = workspace
+    for index in range(24):
+        name = f"level{index}"
+        children[parent] = [name]
+        parent /= name
+        records[parent] = _inode(kind=stat.S_IFDIR, blocks=1)
+    children[parent] = [f"file{index}" for index in range(64)]
+    for name in children[parent]:
+        records[parent / name] = _inode(kind=stat.S_IFREG, blocks=1)
+    paths = {"/".join(["elsewhere"] * 23 + [f"binding{index}"]): "cache" for index in range(96)}
+    paths[parent.relative_to(workspace).as_posix()] = "scratch"
+    budget = _memory_budget(monkeypatch, records=records, children=children, paths=paths)
+    membership = Path.is_relative_to
+    repeated_ancestor_checks = []
+
+    def counted_membership(path, other):
+        if not path.is_absolute():
+            repeated_ancestor_checks.append((path, other))
+        return membership(path, other)
+
+    monkeypatch.setattr(Path, "is_relative_to", counted_membership)
+    assert budget.measure()["scratch"] == 88 * 512
+    # A per-prefix preparation cost is acceptable; prefix-by-entry ancestor
+    # reconstruction is the measured regression, independent of wall-clock time.
+    assert len(repeated_ancestor_checks) <= len(paths)
+
+
 @pytest.mark.parametrize(
     ("directory", "paths"),
     [

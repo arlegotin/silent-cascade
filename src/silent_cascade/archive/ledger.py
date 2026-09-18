@@ -249,17 +249,20 @@ class _StorageBudget:
         allocated = dict.fromkeys(_CATEGORIES, 0)
         state = self._state()
         bindings = sorted(
-            state["paths"].items(), key=lambda pair: len(Path(pair[0]).parts), reverse=True
+            ((Path(prefix).parts, category) for prefix, category in state["paths"].items()),
+            key=lambda pair: len(pair[0]),
+            reverse=True,
         )
 
         def binding_for(relative):
-            if relative.parts and relative.parts[0] == _STATE_DIRECTORY:
+            parts = relative.parts
+            if parts and parts[0] == _STATE_DIRECTORY:
                 return None, "metadata"
             return next(
                 (
-                    (Path(prefix), category)
+                    (prefix, category)
                     for prefix, category in bindings
-                    if relative.is_relative_to(prefix)
+                    if parts[: len(prefix)] == prefix
                 ),
                 (None, "scratch"),
             )
@@ -271,7 +274,7 @@ class _StorageBudget:
             prefix, category = binding_for(relative)
             if info.st_dev != self.device:
                 raise StorageBlocked("storage_blocked: symlink or second volume in workspace")
-            opaque = prefix is not None and category == "scratch" and relative != prefix
+            opaque = prefix is not None and category == "scratch" and relative.parts != prefix
             if not opaque and stat.S_ISLNK(info.st_mode):
                 raise StorageBlocked("storage_blocked: symlink or second volume in workspace")
             if not opaque and stat.S_ISREG(info.st_mode) and info.st_nlink != 1:

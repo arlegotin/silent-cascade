@@ -132,6 +132,18 @@ live only in its existing `operational/sdd` subtree.
    and snapshot invalidation, full boundary authentication, child inheritance,
    no restart reuse, and bounded full-scan counts across repeated opportunities.
    Finish/reap writers before final authentication and success acceptance.
+   Qualification requires three parent scans overall: the unchanged real
+   reviewed-source precondition before ownership, scoped admission, and final
+   staged-result authentication after cleanup. Assert three overall and two
+   while the reservation is owned through the real source resolver; children
+   require zero full scans. Supervisor still requires two overall. The previous
+   count test replaced the source resolver and concealed its precondition scan.
+   Keep source/custody authentication intact. The measured live-accounting
+   correction precomputes validated category-prefix component tuples once per
+   measurement and compares whole components in the existing longest-prefix
+   order. RED-test repeated ancestor work deterministically and exact allocation
+   for roots, overrides, prefix-like siblings, unknown paths and opaque scratch;
+   preserve traversal, baseline hashing, caps and polling cadence.
 4. **Same-ledger recovery and retry:** after source review/commit, publish the
    exact reviewed-source record, pre-admit recovery from existing descriptors,
    authenticate preserved pending evidence, and call existing `archive_unit`

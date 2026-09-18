@@ -484,6 +484,20 @@ measure actual operational allocation, reservation growth, every category,
 normal/global caps, root identity and protected physical headroom. A pending
 engineering eviction cannot use this optimization because it changes custody.
 
+Qualification performs three parent full scans overall: the real reviewed-source
+precondition before reservation ownership, scoped admission, and final staged-result
+authentication after cleanup. Two of those scans are inside the owned operation;
+children perform zero full scans. Supervisor jobs require two overall. These fixed
+counts are independent of provider-call and chunk counts. Preserve the fully
+authenticated source precondition; the earlier two-overall qualification test
+incorrectly hid it by substituting the source resolver.
+
+Each live measurement prepares validated category-prefix component tuples once
+and matches whole path components in longest-prefix order. This avoids repeated
+ancestor reconstruction without caching measured allocation or reducing checks.
+Exact roots, nested overrides and opaque scratch descendants retain their existing
+classification and descriptor-safety rules.
+
 Any reusable accounting snapshot is process/operation-scoped, bound to the live
 reservation and exact authority/snapshot identity, and cannot become a persistent
 cache or a restart grant. A qualification child may inherit only that explicit

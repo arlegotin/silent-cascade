@@ -167,11 +167,27 @@ first attempt's runtime. The bounded-operation correction at `c74f73d` keeps ful
 authentication at entry and after all writers stop, while retaining live disk,
 reservation and headroom checks during the operation. Its local ledger,
 qualification and supervisor covering run passed 137 tests; independent review
-is pending. Native diagnostics also exposed a transient macOS group-cleanup
+found that its qualification count test hid the reviewed-source precondition.
+The corrected requirement is three qualification parent full scans overall:
+source authentication before ownership, then admission and final publication
+inside the owned reservation. Supervisor requires two overall; qualification
+children perform zero. Focused coverage now exercises the real source resolver
+and an actual small engineering authority. The fully authenticated source
+precondition remains intact, and independent re-review is pending.
+
+A read-only measurement at `2650278` took 13.260 seconds over 32,038 entries.
+Profiling identified repeated category-prefix ancestor reconstruction as the
+dominant cost. The narrow correction prepares whole-component prefixes once per
+measurement while preserving longest-prefix classification, all live checks and
+descriptor safety; fresh real-workspace timing remains pending. Native diagnostics
+also exposed a transient macOS group-cleanup
 permission error after process exit. Cleanup still requires confirmed group
 absence within the existing deadline; persistent errors fail safely.
 
-Same-ledger recovery of the failed transaction, a fresh successful qualification,
+The later same-ledger recovery completed its catalog transaction but stopped
+during receipt readback when the controller's scratch reservation proved too
+small. The failed readback remains charged and preserved; no overall recovery or
+qualification pass exists. Completion of that recovery, a fresh successful qualification,
 verified engineering archival, remaining reader/CLI/preflight integration and
 the full local `make verify` gate are still pending. The passing focused tests
 are not a provider-qualification or production-storage-gate pass.
