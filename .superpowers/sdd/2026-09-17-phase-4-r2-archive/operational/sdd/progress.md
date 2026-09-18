@@ -996,3 +996,37 @@ open. The Phase 4 production pilot has not started.
   Implementer/newinstruction crossed; remove only prematurestickyimplementation,
   retain regression, obtainRED thenGREEN. Two unique tinyguard commands admitted
   <=1MiB each, guardgroup measuredgrowth+nextbound<=3MiB; no numericalrun yet.
+- Stickyguard RED observed DIDNOTRAISE after caughtfirstrejection, then6guard
+  casespassed0.67s. Guardgroup40960B incllogs, allprefixesretained. NumericalRED
+  then admitted: genuine4update/32episodefit andeagerauthentication succeeded;
+  cold authentication failedmissing training-result.json (notnewkeyword) in
+  28.44s. Alloriginalsrestored/cacheempty. Controller readexactlog/du evidence:
+  REDscratch6569984B, spool42381312B, cache0, log4096B; recomputedcheckoutbound
+  10788864B. Sourcefixturetraining3feb90269ba2c11a1848bb2bb62636845e3963fc,
+  sourcehashe89e7bdd847d52f67d987ed4ae303379a66b8526e876a95bbcdb1b55729e2c95.
+  Model92e724e6d11ed191438b8299625aa86a514287bf309c70bf6249f704981b3922;
+  step_ceiling isdebugcompletion, notscientificacceptance. Minimalproduction
+  contextpatchnowpermitted;GREENrequiresremaining-boundcheck, nootherfitstarted.
+- ParentmeasurementafterRED passed. GREENadmitted against measuredgrowth:
+  scratch6598656+14MiB=21278720<32MiB;spool42381312+64MiB=109490176<128MiB.
+  GREENpassed1case36.07s with genuine4updates/32validationepisodes; allcold/eager
+  tensors/RNG/source/results/logicalpaths equal, completedroot/attemptreuse no
+  training, adverseinputsrejected, originalsrestored/cacheempty, max1lease.
+  Prospectiveguardpeak58544128B<64MiB; no guardblocked flag. Scientific debug
+  outcomes retained:8timedsuccesses pervalidation,0errorsat2/1errorat4, allFMcalls0.
+  No scientificacceptanceclaim. Implementation+tests+report committede46e2b7.
+- Mainfull80995checkbeforefreshreuse passed spool219086848/cache67153920/
+  metadata52965376/scratch235225088/logs1400832; retainedunchanged. Recursive
+  current src/configs/docs-superpowers bytes matchedGREENfixture. Freshmain
+  SC_COLD_REUSE1 checkpassed1case16.32s, no thirdfit,0B newouter scratch,
+  12288B extra retainedrepaircontrols;GREENspool42409984/cache0. FreshRufflint/
+  format/diffpass. Exactcommand/evidence in task5-cold-authentication-main-evidence.md.
+  Independent reviewer task5_cold_authentication_review dispatched against5file
+  e46e2b7 diff; fullpostcheckrunning. Read-only next-gate-slice planner prepares
+  remainingcontextgroup, no newcommand/implementation admitted.
+- Completedcoldauthentication reviewer PASS/APPROVE with0findings. Main fresh
+  check already passed; postcheck80995passed spool219099136/cache67153920/
+  metadata52965376/scratch235225088/logs1470464/pinned0/emergency0,
+  retained6195077120 unchanged. No newprovider/IPC/MPS/fullgateclaim. This slice
+  is complete; wholeTask5/Phase4 remain incomplete. Nextplanner identifies direct
+  numericsemanticreads beyond aggregateforwarding; avoidclaimingclosurefromstubs.

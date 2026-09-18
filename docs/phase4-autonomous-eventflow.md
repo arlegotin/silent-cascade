@@ -667,3 +667,20 @@ formatting passed; independent review found no issues, and the same global
 storage ledger check passed. This is a real initial-checkpoint reader test,
 not authentication of a completed fit. Completed-run authentication, recovery
 and the full local gates still precede the production pilot.
+
+### Completed-run cold authentication and reuse
+
+Commit `e46e2b7` authenticates completed training inputs through sequential
+leases and discovers archived completed results without retraining. It preserves
+source/data identity checks, real checkpoint/portable tensors, RNG behavior and
+logical paths. A genuine four-update CPU debug fixture completed both 16-episode
+validations; local/cold equality, result reuse and corruption checks passed.
+Its adverse scientific outcomes remain recorded; debug completion is not a
+learning-gate pass.
+
+Independent review found no issues. Fresh controller verification passed in
+16.32 seconds using the retained fixture's own source, without another fit;
+scoped lint/format checks and full shared-ledger accounting passed. These are
+cold-path reader tests, not new provider/IPC qualification. Remaining gate,
+numeric/offline/continuation consumers, recovery, full local verification and
+storage qualification still precede the Phase 4 production fit.
