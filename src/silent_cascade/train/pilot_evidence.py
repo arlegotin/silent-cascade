@@ -333,8 +333,9 @@ def acceptance_failures(
     return tuple(failures)
 
 
-def authenticate_run(run_dir, config, *, repo_root=None):
+def authenticate_run(run_dir, config, *, repo_root=None, evidence_context=None):
     """Discover immutable inputs from the full archive; reconstruct actual CPU tensors."""
+    from silent_cascade.archive.readers import evidence_path
     from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
     from silent_cascade.eventflow.neural import NeuralModelIdentity
     from silent_cascade.eventflow.neural_weights import decode_archive, load_neural_weights
@@ -343,18 +344,21 @@ def authenticate_run(run_dir, config, *, repo_root=None):
     from silent_cascade.train.pilot_workflow import _durable, _restore_result
 
     root = repo_root or Path(__file__).resolve().parents[3]
-    payload = load_training_result(run_dir, run_dir / "training-result.json")
+    payload = load_training_result(
+        run_dir, run_dir / "training-result.json", evidence_context=evidence_context
+    )
     result = _restore_result(payload)
     descriptor = result.selected_checkpoint or result.progress.latest
     if descriptor is None:
         raise ValueError("missing full training archive")
     archive_path = child(run_dir, descriptor.path)
-    metadata, _ = decode_archive(
-        read_bytes(archive_path, limit=1024**3),
-        descriptor.sha256,
-        PilotCheckpoint,
-        "pilot_training",
-    )
+    with evidence_path(run_dir, descriptor.path, evidence_context=evidence_context) as local:
+        metadata, _ = decode_archive(
+            read_bytes(local, limit=1024**3),
+            descriptor.sha256,
+            PilotCheckpoint,
+            "pilot_training",
+        )
     source = authenticate_pilot_source(
         repo_root=root, source_commit=metadata.source.source_commit, config=config
     )
@@ -370,14 +374,15 @@ def authenticate_run(run_dir, config, *, repo_root=None):
         raise ValueError("training data introduction identity differs")
     before = snapshot_global_rng()
     try:
-        _durable(run_dir, config, source, "cpu", result=payload)
-        session = load_pilot_checkpoint(
-            archive_path,
-            expected_sha256=descriptor.sha256,
-            config=config,
-            source=source,
-            device="cpu",
-        )
+        _durable(run_dir, config, source, "cpu", result=payload, evidence_context=evidence_context)
+        with evidence_path(run_dir, descriptor.path, evidence_context=evidence_context) as local:
+            session = load_pilot_checkpoint(
+                local,
+                expected_sha256=descriptor.sha256,
+                config=config,
+                source=source,
+                device="cpu",
+            )
     finally:
         restore_rng_snapshot(before, restore_mps=False)
     model_identity = NeuralModelIdentity.from_model(
@@ -390,11 +395,14 @@ def authenticate_run(run_dir, config, *, repo_root=None):
     )
     weights = None
     if weights_descriptor is not None:
-        weights = load_neural_weights(
-            child(run_dir, weights_descriptor.path),
-            expected_sha256=weights_descriptor.sha256,
-            device="cpu",
-        )
+        with evidence_path(
+            run_dir, weights_descriptor.path, evidence_context=evidence_context
+        ) as local:
+            weights = load_neural_weights(
+                local,
+                expected_sha256=weights_descriptor.sha256,
+                device="cpu",
+            )
         if (
             weights.identity != model_identity
             or weights_descriptor.model_state_sha256 != descriptor.model_state_sha256

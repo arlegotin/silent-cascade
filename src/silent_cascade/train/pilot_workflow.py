@@ -4,6 +4,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -296,24 +297,48 @@ def _train(
     archive_producer=None,
     evidence_context=None,
 ):
-    if (run_dir / "training-result.json").exists():
-        payload = load_training_result(run_dir, run_dir / "training-result.json")
+    from silent_cascade.archive.readers import logical_root
+
+    candidates = set()
+    completed = (run_dir / "training-result.json").exists()
+    if evidence_context is not None:
+        if logical_root(run_dir, evidence_context) != ".":
+            raise ValueError("training context requires the session run root")
+        # Exhaust the validated inventory, retaining only completed result paths.
+        for entry in evidence_context.entries():
+            if entry.path == "training-result.json":
+                completed = True
+            elif re.fullmatch(r"attempt-[0-9a-f]{32}/result\.json", entry.path):
+                candidates.add(child(run_dir, entry.path))
+    candidates.update(
+        path
+        for path in run_dir.glob("attempt-*/result.json")
+        if re.fullmatch(r"attempt-[0-9a-f]{32}", path.parent.name)
+    )
+    if completed:
+        payload = load_training_result(
+            run_dir, run_dir / "training-result.json", evidence_context=evidence_context
+        )
         durable = _durable(
             run_dir, config, source, device, result=payload, evidence_context=evidence_context
         )
         if resume is not None and resume.absolute() != durable.absolute():
             raise ValueError("resume must name the last durable checkpoint")
         return _restore_result(payload)
-    if run_dir.exists() and (archive_producer is None or any(run_dir.iterdir())):
+    if candidates or (run_dir.exists() and (archive_producer is None or any(run_dir.iterdir()))):
         durable = _durable(run_dir, config, source, device, evidence_context=evidence_context)
         if resume is not None and resume.absolute() != durable.absolute():
             raise ValueError("resume must name the last durable checkpoint")
         # Recover publication interrupted after the trainer's final result.
-        candidates = list(run_dir.glob("attempt-*/result.json"))
         if candidates:
-            results = [(p, load_training_result(run_dir, p)) for p in candidates]
+            results = [
+                (p, load_training_result(run_dir, p, evidence_context=evidence_context))
+                for p in sorted(candidates)
+            ]
             payload = max(results, key=lambda item: item[1]["progress"]["global_step"])[1]
-            _durable(run_dir, config, source, device, result=payload)
+            _durable(
+                run_dir, config, source, device, result=payload, evidence_context=evidence_context
+            )
             result = _restore_result(payload)
         else:
             result = run_pilot_training(
@@ -446,7 +471,9 @@ def _workflow(
                 archive_producer=archive_producer,
                 evidence_context=evidence_context,
             )
-            build_pilot_report(run_dir=run_dir, output_dir=run_dir / "report")
+            build_pilot_report(
+                run_dir=run_dir, output_dir=run_dir / "report", evidence_context=evidence_context
+            )
         return result
 
 
