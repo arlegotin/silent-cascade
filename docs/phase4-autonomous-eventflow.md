@@ -620,8 +620,8 @@ local verification and storage/smoke gates still precede the production pilot.
 Commit `6c52d5d` adds authenticated discovery and reporting of archived interrupted
 evaluations with no complete rows. It preserves unfinished bytes, orphan hashes
 and unknown outcomes, while checking committed/abandoned journal history. Root
-controls remain pinned under the existing storage contract. Complete cold rows
-still fail closed until the next reader slice supplies their semantic checks.
+controls remain pinned under the existing storage contract. At this milestone,
+complete cold rows still failed closed pending their semantic reader checks.
 
 The controller's fresh six-test local check passed in 6.28 seconds; scoped lint
 and formatting checks passed, and independent review found no issues. All
@@ -631,3 +631,19 @@ binding that directory to the existing scratch category resolved it without
 deleting data, changing quota or resetting the baseline. The subsequent full
 accounting check passed. These are engineering checks, not pilot performance
 results or completion of the broader reader/recovery work.
+
+### Complete interrupted rows from cold storage
+
+Commit `fb3e051` extends the same reader to retained complete rows, using the
+existing sidecar, trajectory and crash validators. Each read checks the original
+training-inventory digest inside a single-file lease; partial evaluations remain
+incomplete, and unfinished rows do not acquire invented outcomes or commitments.
+Exact success and initialization-failure fixture bytes match their retained
+originals. Independent review found no issues. Fresh controller checks passed
+for both real-publication cases and seven adverse/compatibility cases; scoped
+lint and formatting passed. The same global storage ledger check also passed.
+
+This completes the bounded complete-row reader slice, not Task5 or Phase4.
+Aggregate/check caller integration, unavailable-evidence status, cold recovery,
+CPU replay/resume equality and the remaining full local gates are still required.
+No production training or additional R2 archival was started for this slice.

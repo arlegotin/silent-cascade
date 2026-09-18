@@ -1428,6 +1428,55 @@ unique roots below the existing `operational/scratch/` binding, TDD, scoped loca
 checks and independent review. Broader Task5 caller/gate/recovery/CPU obligations
 remain required after this slice.
 
+#### Next bounded correction: incomplete verification cannot pass
+
+The complete-row slice is implemented in `fb3e051` and independently reviewed.
+The next existing Task5 obligation is the current gate-verification status:
+`verify_phase4_gate_artifact` excludes missing raw attachments from `passed`,
+but does not exclude separately recorded unavailable semantic checks. Numeric,
+offline and continuation validators deliberately retain recorded comparisons
+when some raw evidence is absent; these recorded facts must not imply a current
+complete verification pass.
+
+Scope: `train/pilot_evidence.py` and focused
+`tests/pilot/test_pilot_gate_verifier.py` coverage. Extract only the final status
+projection into a small private helper used by the real verifier, initially
+preserving behavior; cover the current defect with TDD, then require:
+
+```python
+passed = outcome == "passed" and not missing and not unavailable
+```
+
+Preserve `recorded_outcome`, missing paths, sorted unique unavailable check names,
+`valid=True` for internally consistent recorded evidence,
+`verification_scope="recorded_evidence_integrity"`, and
+`neural_replay="not_rerun"`. Do not change acceptance thresholds, artifact
+schemas, recorded comparisons, validators, source identity or gate hashes.
+The helper is the production status projection, not a test-only hook or a mock
+full-gate success. Do not short-circuit semantic validators on unavailable data.
+
+- [ ] Test the production status projection for each recorded outcome (`passed`,
+  `failed`, `debug_non_acceptance`) crossed with missing and unavailable evidence;
+  only a recorded pass with both collections empty can currently pass. Preserve
+  labels and normalize unavailable names without mutating inputs.
+- [ ] Show expected RED when a recorded pass has no missing attachment but has
+  an unavailable semantic check; add the minimal predicate correction and GREEN.
+- [ ] Exercise the real offline-evidence validator with an explicitly untrusted
+  schema-valid unit declaration and no raw evidence; its returned historical
+  comparison may remain true but its unavailable checks prevent status passing.
+  With missing executed-source evidence and a present corrupt raw step, require
+  rejection rather than allowing unavailability to hide independent corruption.
+- [ ] Run existing inexpensive acceptance and unsupported-evidence tests, with
+  neural execution tripwires where relevant; no costly neural fixture, numerical
+  run, provider call or full-gate completion claim belongs to this unit correction.
+- [ ] Use unique retained roots under `operational/scratch/`, finite same-ledger
+  admission, scoped lint/format checks, a meaningful commit and independent review.
+
+Ruling: keep this conclusion-policy correction independent of broader cold
+reader threading. It closes a concrete fail-open status defect without changing
+scientific evidence or claiming that a full cold gate has been verified. The
+broader integration remains required and will supply end-to-end coverage.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
