@@ -1030,6 +1030,42 @@ synthetic inputs. A new operational directory may not make those bytes disappear
 from the global10GiB contract. No mounts, filesystem codec or general quota
 framework is added.
 
+**Measured inventory-lifecycle correction (2026-09-18):** the first prelude's
+linked inventory pages are republished after each small diagnostic unit. Removing
+one record shifts later page boundaries and hashes; retaining those generations
+can use more local space than the payload eviction frees. The read-only grouping
+audit found 798 positively classified files in 369 initial candidate groups,
+about 2.56 GB allocated payload versus approximately 4.81 GB of six-root suffix
+page churn if those groups were processed separately. These are prospective
+measurements, not authenticated custody or a final archival schedule.
+
+Correct the private retained-inventory representation before real bootstrap:
+use immutable leaves with stable original page partitions and a bounded,
+authenticated index. Residual publication changes only leaves containing exact
+receipt-authorized removals or changed ancestor directory records, plus the
+small index. Do not repack later surviving records across original leaf boundaries.
+Preserve every previous leaf/index generation locally and charge it; this is
+metadata reuse, not cleanup authority. Keep the existing single-unit pending
+receipt, retained-sibling validation and atomic charge/reservation transition.
+No multi-unit eviction transaction, generic registry or public remote-catalog
+schema change is needed. Version the private representation; existing scientific
+formats and source-bound historical artifacts remain unchanged. Legacy inventory
+reading must be explicit and must never silently rebaseline a real authority.
+
+Before implementation, specify the exact private leaf/index schema and finite
+reader limits. RED/GREEN regressions must cover unchanged-leaf identity,
+stable partitions through removals and empty leaves, exact full-residual
+validation, corrupt/missing/reordered/duplicate index entries, interrupted
+leaf/index/head publication, and restart with unchanged old charges. Derive
+admission from the exact affected leaves and bounded index publication, including
+old/new/atomic coexistence. A small many-leaf, repeated-eviction test must observe
+actual publication peaks and all historical generations remaining present.
+Recompute prospective full-workspace reclamation before granting real admission;
+do not rely on the six-root estimate or simply assume the new representation fits.
+Scope remains `archive/preflight.py`, its focused tests and source inventories;
+a narrowly extracted private inventory module is allowed only if it reduces
+that file's responsibilities and is included in exact source closure.
+
 Extend `archive/{ledger,types,preflight}.py` and focused tests with page-bounded
 authenticated frozen external-root charges in the same durable global ledger.
 This is an accounting line, not an independent allowance or a larger existing

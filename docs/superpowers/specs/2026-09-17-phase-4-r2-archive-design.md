@@ -395,6 +395,16 @@ special fixtures remain local. No mount or filesystem codec is added. Qualificat
 keeps its512MiB total, engineering bytes share the existing4.5TB remote budget,
 and all final local/scientific gates still run after implementation is complete.
 
+The private frozen-engineering inventory must also remain space-efficient across
+small evictions. Use stable immutable leaf partitions and a bounded authenticated
+index so unchanged records do not cause a new whole-inventory generation. Only
+receipt-authorized removed members and their revalidated ancestor records may
+change; surviving rows retain their original leaf partitions. Keep old leaves
+and indexes charged and readable. This does not authorize metadata deletion,
+batch eviction, rebaselining or changes to scientific/public catalog schemas.
+Admission includes changed leaves, index publication and atomic coexistence;
+the single-unit pending receipt remains the recovery and charge-update boundary.
+
 - Archive policy, source, manifests, transfer receipts and control snapshots have
   separate hashes. They do not masquerade as unchanged historical scientific data.
 - Include the approved amendment and new executable files in both pilot source
