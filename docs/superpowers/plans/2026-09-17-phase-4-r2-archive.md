@@ -1744,6 +1744,109 @@ forwarding in the outer gate. Genuine old artifacts are sufficient to test
 artifact-only equivalence but never certify current-source execution. The
 remaining full gate and recovery obligations stay open until independently run.
 
+#### Artifact-only gate inputs and reuse admission
+
+After numerical reader review, adapt the remaining independently testable gate
+inputs before the complete source-bound aggregation/execution closure. This is
+a bounded continuation of Task5, not approval for fresh diagnostics or training.
+
+**Files:** modify `train/pilot_evidence.py::_verify_available_training` and
+`compact_attachment_records`, and `train/pilot_checks.py` for one small reuse
+admission helper used by `_run_pilot_checks_owned`. Add
+`tests/pilot/test_pilot_cold_gate_inputs.py`; reuse strict historical borrowing
+fixtures, with no generic archive framework or new scientific schemas.
+
+**Interfaces:** optional `evidence_context=None` on both readers; consume
+`evidence_path`, `logical_root` and existing context-aware `_durable`. Keep
+existing decoded outputs, unavailable labels and RNG restoration. The small
+reuse predicate consumes the existing verifier result and rejects missing raw
+or semantic evidence, without promoting a failed result or requiring success.
+
+- [ ] Write genuine eager/cold equivalence tests before reader changes. Read
+  the original historical training result/config/source and compact attachment;
+  do not call current-source authentication on historical bytes. Add cases for
+  one missing dependency plus independently corrupt journal/checkpoint, wrong
+  root, advertised lease failure, compact final count/hash, generator-close
+  cleanup and export isolation. Use the actual CPU codecs and compact parser;
+  tripwire training/model forward/engine/replay, never fake their outputs.
+
+  ```python
+  eager_unavailable, cold_unavailable = [], []
+  _verify_available_training(backing, training=training, config=config,
+                             source=source, unavailable=eager_unavailable)
+  with cold.guarded_reads(monkeypatch):
+      _verify_available_training(run, training=training, config=config,
+                                 source=source, unavailable=cold_unavailable,
+                                 evidence_context=cold)
+  assert cold_unavailable == eager_unavailable == []
+  assert cold.active == 0 and cold.payload_maximum == 1
+  ```
+
+- [ ] Obtain a fresh bounded test-prefix admission before imports/execution.
+  Fail the real legacy cold behavior first, not just a new-keyword mismatch.
+  Borrow large archives/weights unchanged; inventory exact control bytes and
+  file/directory counts before writes. Preserve every test prefix. Neither
+  historical measurements nor another task's reservation authorizes a new run.
+- [ ] Validate exact run/context agreement before any training input reads.
+  Fully exhaust discovery while retaining only descriptor paths, index and
+  journal/dependency candidates. Resident files and authenticated membership
+  both count as present; advertised read/integrity failures propagate.
+  Decode each archive and weights file inside its own lease; preserve full
+  source/model/eligibility/progress binding and RNG restoration.
+- [ ] Read available journal links individually; check hashes/cycles even
+  after another dependency is missing. Mark absent unindexed inputs with the
+  existing unavailable labels. Run `_durable(..., evidence_context=context)`
+  only when the checkpoint index, latest archive and full discovered journal
+  dependency closure are available. Never treat a corrupt available dependency
+  as absent or skip an independent check because another file is missing.
+- [ ] Hold a compact shard lease through its hash check, parsed rows and final
+  count check, closing on exhaustion, exception or explicit generator close.
+
+  ```python
+  for attachment in attachments:
+      with evidence_path(root, attachment.path,
+                         evidence_context=evidence_context) as local:
+          if sha256_bytes(read_bytes(local, limit=MAX_BYTES)) != attachment.sha256:
+              raise ValueError("compact attachment hash mismatch")
+          count = 0
+          for record in read_compact_rows(local):
+              count += 1
+              yield record
+          if count != attachment.rows:
+              raise ValueError("episode inventory mismatch")
+  ```
+
+- [ ] Introduce and use a small `_require_reusable_gate(verified)` predicate
+  in the existing reuse branch. Cover all four missing/unavailable combinations
+  without forging a complete gate. A verified `debug_non_acceptance` or failed
+  recorded outcome remains reusable; this test is not full-gate evidence.
+
+  ```python
+  def _require_reusable_gate(verified):
+      if (verified["missing_raw_attachments"]
+              or verified["unavailable_semantic_checks"]):
+          raise ValueError("missing raw or semantic evidence prevents compatible execution reuse")
+  ```
+
+- [ ] Run the bounded targeted cases, inspect all outputs, commit scoped
+  source/tests/report, then obtain fresh controller checks and independent
+  task review. Full `make verify`, new training, current-source aggregation,
+  providers and recovery remain separately gated.
+
+Ruling: the context belongs to `raw_run_dir`. Gate/compact/exported-index paths
+belong to `artifact_path.parent`. In subsequent integrated callers, supply that
+context only when both roots are equal; otherwise read the exported files
+locally with their original hashes. Never substitute an identically named raw
+shard for an absent exported shard. No second context or cross-run resolver is
+needed for this task. Direct readers reject a mismatched supplied context.
+
+Ruling: the later complete reuse branch must reread gate bytes within their
+lease and compare their hash with `verified["artifact_sha256"]` before returning
+the artifact. The small predicate does not claim to complete this broader
+binding, collection, recovery or execution work. A genuinely produced
+current-source debug gate is required for positive end-to-end proof; historical
+source rejection is a negative test only.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the

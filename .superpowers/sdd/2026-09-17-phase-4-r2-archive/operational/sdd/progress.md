@@ -1100,3 +1100,138 @@ open. The Phase 4 production pilot has not started.
   wholeTask5 remains open. Ownerrelease requested before next reservation.
   Next numerical plan/brief/preflight defines actual semantic-reader closure,
   not aggregate forwarding. Fresh numerical test admission still required.
+- Owner20818 finalcheck/release exited0: scratch246124544/logs1593344,
+  spool219099136/cache67153920/metadata52965376/pinned0/emergency0;
+  retained6195077120 unchanged. Verified milestone/next numerical scope committed
+  471d181. Sole nextwriter task5_cold_numerics dispatched; no test/project import
+  admitted yet. New same-ledger16MiB scratch reservation is being opened only
+  after prior owner release; no overlap, deletion, rebinding or budget reset.
+- Numerical-reader capacity owner47503 PID56919@1789776995.570263 admitted
+  token3b0bba158666a2c4f9fb6b7fe2a4d1c4: scratch16777216/metadata33562624/
+  logs2097152, all other increments0. Before scratch246124544/logs1593344,
+  spool219099136/cache67153920/metadata52965376; retained6195077120 unchanged.
+  Still no test command admitted. Worker preparing readonly historical RED;
+  primary/native diagnostic execution remains forbidden in this reader scope.
+- Read-only next-integration sizing: historical full smoke run215456KiB,
+  runtime continuation directory29908KiB. This is measured old output, NOT a
+  prospective admission bound. A future current-source full debug gate needs
+  its own precise guard/admission and likely additional verified archival;
+  no such run is authorized by the16MiB reader reservation.
+- First numericRED single genuine eager/coldreport selector admitted at
+  scratch/task5-cold-numerics/red-1:<=1MiBadministration/64files/24dirs,
+  <=256KiBdiagnostics, no payloadcopies. Launcher corrected to explicit
+  --basetemp and full TMP/XDG/MPL/Hypothesis/archive path containment; direct
+  existing .venv, plugins/bytecode/cacheprovider disabled. Production unchanged
+  until real reader failure. Current helper parameterization reuses prior
+  strictcontext; its old equivalence regression is required in GREEN.
+- NumericRED1failed4.40s exit1 as intended: genuine eager fullreader completed,
+  cold reader failed missing logicalfinal/numerics/numeric-report.json with
+  ReplayError/path and underlyingFileNotFoundError. No keyword/setup failure;
+  red-1retained0B/0files/12dirs, no copiedevidence. Solewriter now implementing
+  actual numerical read chain; nextfullmatrix needs separate admission.
+- Numericgreen-1 two no-copy selectors admitted<=1MiBadministration/96files/
+  32dirs plus256KiBdiagnostics. Both passed9.49s: genuine numericreport eager/
+  cold equality and prior continuation/offline regression. Retained0B/0files/
+  14dirs; no payloadcopies. Worker continues complete/partial verifier and
+  adverse controls; full numeric slice not complete or independently reviewed.
+- Resume reconciliation found numerical implementer active and previous read-only
+  caller review complete; no stalled execution needed restarting. Owner47503
+  measurement still scratch246124544/logs1593344 and other categories unchanged.
+  Numericred-2 admitted for the exact genuine verifier/runtime-row equivalence
+  selector, fresh prefix, <=1MiB administration/96files/32dirs plus256KiB
+  diagnostics and zero payload copies. Production verifier/runtime context edits
+  removed for this behavior RED; no scientific execution or provider work.
+- Numericred-2 was a setup failure0.84s: historical debug gate has no selected
+  checkpoint. Corrected test to use training_result.progress.latest, matching
+  the existing production selected-or-latest rule. Retained0B/0files/10dirs.
+  Freshred-2b, same no-copy admission, reproduced real missing cold runtimeDONE
+  failure4.84s after genuine eager verifier/runtime rows completed; retained
+  0B/0files/12dirs. Worker restores implementation. Controller named two
+  self-review risks before GREEN: whole-inventory tuple and tautological
+  runtime required-file comparison; worker is correcting both.
+- Ruling: next independently testable Task5 grouping is available-training
+  inputs, compact attachments and the existing-gate reuse admission predicate.
+  Read-only preflight recorded in task5-gate-inputs-preflight.md and a scoped
+  plan subsection. Source-bound full-gate/collection/recovery integration
+  remains distinct; historical debug evidence cannot certify current-source
+  execution. This avoids false closure, at the cost of a later genuine bounded
+  full-gate run and possibly additional verified archival. No next writer or
+  numeric execution has been admitted yet.
+- Numericgreen-2 two no-copy cases passed13.22s, retained0B/0files/14dirs.
+  Full owner47503 check passed scratch246124544/logs1605632, other categories
+  unchanged. Final-runtime control now checks count4 and <=3366912 rounded
+  payload before copying. Partial-only RED admitted at freshred-3-partial for
+  the two missing-tensor/available-operations cases, <=1MiB admin/control and
+  <=256KiB diagnostics/96files/32dirs. After real RED, freshgreen-3 full numeric
+  file plus old no-copy semantic equivalence is admitted <=5MiB/128files/64dirs
+  and256KiB diagnostics. One controller5MiB and one fix5MiB stage remain within
+  16MiB assuming measured intermediate results; no prefix may be reused/reset.
+- Next-task plan self-review confirms only two reader interfaces plus used reuse
+  predicate; current-source gate revalidation is explicitly subsequent work.
+  Root/export contracts retain isolation, no source relabeling or unavailable
+  evidence promotion. Brief prepared but not dispatched. Read-only
+  task5_remaining_gate_slice now examines prospective later full-gate output
+  bounds; no writer, import, test or provider authority granted to that review.
+- Numeric partialRED confirmed missing cold available operations were incorrectly
+  reported unavailable;1failed0.94s, retained0B/0files/11dirs. Green-3 reached
+  7passes before a fixture-only guard/setup error18.03s; retained3489792B/
+  12files/43dirs. Both contexts are now built before guard installation.
+  Green-3b fresh fullmatrix admitted<=3923968B/128files/64dirs plus256KiB logs;
+  prospective cumulative7413760B fits16MiB with a controller5MiB run remaining.
+- Read-only full-gate bound report saved task5-full-gate-bound-preflight.md.
+  Existing fit64MiB and source/data12MiB guards do not cover the whole gate;
+  three publisher aliases and the genuine offline child require explicit
+  bounded admission before a new aggregate run. No prospective full-gate total
+  is claimed from historical output. Reader work remains independently useful.
+- Numericgreen-3b full matrix passed9cases20.67s; retained3489792B/12files/
+  45dirs, cumulative6979584B. Worker self-review restored exact batch-recipe
+  raw-byte hashing instead of canonical reserialization. Fresh no-copy
+  green-4-raw two-selector check admitted<=1MiB admin/96files/32dirs plus256KiB
+  diagnostics, then scoped no-cache lint/format/diff checks and commit. Root
+  fresh matrix command prepared for after commit; it is not yet executed.
+- Numerical implementation d4cd56e and reportf0b3c81 committed; raw-binding
+  two-case check passed10.16s, no copied payload. Controllerfresh main-cover
+  full9cases passed20.36s; actual3489792B, all numerical stages10469376B.
+  Fresh4file Rufflint/format and diffcheck passed. Exact command/evidence in
+  task5-cold-numerics-main-evidence.md. Independent sol/high task reviewer
+  task5_cold_numerics_review active against471d181..f0b3c81; same-ledger final
+  check underway. No source/test writer remains active; Task5 still incomplete.
+- Round0 numerical review found two Important issues: partial branch skips
+  extra/symlink inventory rejection; versioned report contains machine-specific
+  stage path. Controller checked actual code: consumed codecs already use
+  descriptor-relative O_NOFOLLOW, so traversal itself is not established, but
+  ignoring unconsumed extras/symlinks violates the common integrity requirement.
+  Both findings enter fixround1/5 with original implementer. Full47503check
+  passed scratch256593920/logs1703936, other categories unchanged. Keep owner
+  live; next gate-input implementation waits for this review closure.
+- Fixround1 RED admitted at freshfix-red-1, exact partial-extra and partial-
+  dangling-symlink selectors, without fail-fast so both behaviors are observed.
+  Each hides one indexed tensor; controls are7B/4096rounded plus one dangling
+  symlink, no payload copies. Stage<=1MiB/96files/32dirs plus256KiB diagnostics.
+  Report machine-specific prefix normalized by worker; no production edit
+  before behavior RED. No aggregate/source-auth or scientific gate changes.
+- Fixround1 RED reproduced both DID NOT RAISE failures3.01s, retained4096B/
+  1regularfile/2symlinks/18dirs. Worker adds shared resident+authenticated
+  inventory before complete/partial branch, retaining full closure checks.
+  Freshfix-green-1 admitted<=1MiB/128files/64dirs plus256KiB diagnostics:
+  complete report/verifier, missing/corrupt operations, both new regressions,
+  prior complete-extra/wrong-root cases and no-copy semantics equivalence.
+  Nine selectors, only tiny operations/extra/symlink controls; no large copies.
+- Fixround1 source11de6d4/report39a6467 committed. Worker9caseGREEN passed
+  19.25s,32768B. Controllerfresh same9selectors passed18.85s,32768B; changed
+  three-file lint/format and diffcheck passed. All numerical prefixes10539008B
+  including failures, no cleanup/reset. Evidence appended to main-evidence.
+  Scoped re-review active againstf0b3c81..39a6467; owner47503 finalcheck running.
+- Numerical fixround1/5:2addressed,0Importantopen; re-review confirms common
+  partial inventory and report path corrections. No Critical/Important new
+  breakage. One documentation Minor (absolute/relative stage wording) assigned
+  verbatim to original writer for cleanup only; no numerical execution needed.
+  Controller fresh post-fix9cases18.85s already resolves reviewer pending-test
+  note. Remaining cannot-verify custody/accounting requires final ownercheck.
+- Original writer corrected the lone documentation Minor; controller read the
+  exact sentence and freshdiffcheck passed. Re-review has0Importantopen and
+  no deferred numeric-slice findings. Full47503check passed scratch256663552/
+  logs1736704, spool219099136/cache67153920/metadata52965376, pinned/emergency0;
+  retained6195077120 unchanged. Numeric reader slice complete, commits
+  471d181..39a6467 plus milestone docs; wholeTask5/Task7/Phase4 remain open.
+  Ownerrelease requested before any next reservation or implementation test.

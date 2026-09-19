@@ -60,7 +60,8 @@ Every stage first ran `test ! -e <absolute-stage>` and then created distinct
 `pytest` children. Prefixes were preserved; no cleanup deletion occurred.
 
 Every pytest command used this exact launcher, with `STAGE` replaced by the
-absolute stage shown below and `SELECTORS` replaced by the exact table entry:
+absolute path obtained by expanding the repository-relative stage below and
+`SELECTORS` replaced by the exact table entry:
 
 ```text
 env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONHASHSEED=0 TMPDIR=STAGE/tmp TMP=STAGE/tmp TEMP=STAGE/tmp XDG_CACHE_HOME=STAGE/xdg-cache XDG_CONFIG_HOME=STAGE/xdg-config XDG_DATA_HOME=STAGE/xdg-data MPLCONFIGDIR=STAGE/mpl HYPOTHESIS_STORAGE_DIRECTORY=STAGE/hypothesis SILENT_CASCADE_ARCHIVE_TEST_SCRATCH=STAGE/archive .venv/bin/python -B -m pytest --basetemp=STAGE/pytest -q -x --tb=short -p no:cacheprovider SELECTORS

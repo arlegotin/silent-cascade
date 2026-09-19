@@ -702,3 +702,25 @@ check passed. Original evidence and its negative/debug status remain unchanged.
 This completes only these semantic readers. Numerical readers, aggregate caller
 integration, cold recovery, full local verification and real storage integration
 remain open. The production Phase 4 pilot has not started.
+
+### Cold numerical semantic checks
+
+`d4cd56e`, with review fix `11de6d4`, makes the numerical readers consume
+archived reports, checkpoints, captures and runtime episodes through scoped
+reads. The complete and partial paths retain original identities, byte hashes,
+comparison results and missing-evidence labels. Missing evidence cannot hide
+unexpected files or symlinks. Genuine CPU debug evidence still reports missing
+MPS; these checks do not establish device parity or new learning performance.
+
+The controller's fresh nine-case full reader check passed in 20.36 seconds; after
+review found and corrected the partial-inventory gap, nine covering cases
+passed in 18.85 seconds. Scoped lint/format checks passed, and independent
+re-review closed both important findings. All test output, including failures,
+remains retained (10,539,008 allocated bytes); shared-ledger accounting passed.
+
+This completes the numerical reader slice only. Remaining gate-input readers,
+aggregate/collection integration, cold recovery, full local verification and
+real storage integration still precede the Phase 4 production pilot. A genuine
+current-source end-to-end debug gate also needs a separately reviewed output
+bound, including its offline subprocess; old evidence is not relabeled to
+satisfy that obligation.
