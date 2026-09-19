@@ -843,7 +843,7 @@ def test_privacy_nonempty_capture_never_enters_public_logs(tmp_path, monkeypatch
 
 
 @contextmanager
-def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144):
+def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144, scratch=65536, bindings=()):
     """Tiny ledger fixture; isolate only existing host ancestor authorities."""
     import runpy
 
@@ -874,8 +874,10 @@ def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144):
         initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
         budget = _StorageBudget(workspace=workspace, policy=policy)
         budget.bind(workspace / "run", category="metadata")
+        for relative, category in bindings:
+            budget.bind(workspace / relative, category=category)
         with budget._scoped_reservation(
-            admission={"control": "offline-privacy"}, logs=logs, metadata=metadata, scratch=65536
+            admission={"control": "offline-privacy"}, logs=logs, metadata=metadata, scratch=scratch
         ) as admission:
             yield budget, admission, workspace / "run/final/offline"
 
@@ -892,6 +894,88 @@ def _prepare_privacy(budget, admission, output):
         ),
         attempt_id="a" * 32,
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "intent.json",
+        "process-result.json",
+        "stdout.txt",
+        "stderr.txt",
+        ".pilot-" + "b" * 32 + ".tmp",
+    ],
+)
+def test_privacy_custody_rejects_split_publication_categories_before_writes(tmp_path, name):
+    with _privacy_ledger(
+        tmp_path,
+        scratch=1 if name.startswith(".pilot-") else 65536,
+        bindings=(("run/final/offline/" + name, "scratch"),),
+    ) as (budget, admission, output):
+        before = set(budget.workspace.rglob("*"))
+        custody = None
+        try:
+            with pytest.raises(ValueError, match="public publication category differs"):
+                custody = _prepare_privacy(budget, admission, output)
+        finally:
+            if custody is not None:
+                custody.close()
+        assert set(budget.workspace.rglob("*")) == before
+        assert not output.exists()
+        assert not (budget.workspace / "logs/offline-process-private").exists()
+
+
+@pytest.mark.parametrize("mapping", ["finals", "temporary", "unrelated"])
+def test_privacy_custody_preserves_compatible_publication_categories(tmp_path, mapping):
+    from silent_cascade.train import pilot_offline_process as process
+
+    if mapping == "finals":
+        bindings = tuple(
+            ("run/final/offline/" + name, "metadata")
+            for name in ("intent.json", "process-result.json", "stdout.txt", "stderr.txt")
+        )
+    elif mapping == "temporary":
+        bindings = (("run/final/offline/.pilot-" + "b" * 32 + ".tmp", "metadata"),)
+    else:
+        bindings = (("run/final/offline/child/.pilot-" + "b" * 32 + ".tmp", "scratch"),)
+    with (
+        _privacy_ledger(tmp_path, bindings=bindings) as (budget, admission, output),
+        _prepare_privacy(budget, admission, output) as custody,
+    ):
+        for phase in (0, 6):
+            assert (
+                process.require_offline_process_custody(custody, output_dir=output, phase=phase)
+                is custody
+            )
+        state = budget._state()
+        assert all(state["paths"][name] == category for name, category in bindings)
+        assert not output.exists()
+        assert os.listdir(custody.directory_fd) == []
+
+
+@pytest.mark.parametrize("name", ["process-result.json", ".pilot-" + "b" * 32 + ".tmp"])
+@pytest.mark.parametrize("phase", [0, 6])
+def test_privacy_custody_rechecks_publication_categories(tmp_path, monkeypatch, name, phase):
+    from silent_cascade.train import pilot_offline_process as process
+
+    with (
+        _privacy_ledger(tmp_path) as (budget, admission, output),
+        _prepare_privacy(budget, admission, output) as custody,
+    ):
+        original = budget._state
+
+        def changed_state():
+            state = original()
+            # Read-only fault injection: no live reservation's bindings are mutated.
+            return state | {"paths": state["paths"] | {"run/final/offline/" + name: "scratch"}}
+
+        before = set(budget.workspace.rglob("*"))
+        with monkeypatch.context() as patch:
+            patch.setattr(budget, "_state", changed_state)
+            with pytest.raises(ValueError, match="public publication category differs"):
+                process.require_offline_process_custody(custody, output_dir=output, phase=phase)
+        assert set(budget.workspace.rglob("*")) == before
+        assert not output.exists() and os.listdir(custody.directory_fd) == []
 
 
 def test_privacy_custody_pins_counted_private_directory(tmp_path):

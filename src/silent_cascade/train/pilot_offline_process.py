@@ -230,6 +230,20 @@ def _custody_paths(budget, output, attempt):
     ]
     if any(run.is_relative_to(path) or path.is_relative_to(run) for path in forbidden):
         raise ValueError("offline process custody overlaps public run")
+    public_category = _category(budget, state, output)
+    if any(
+        _category(budget, state, output / name) != public_category
+        for name in _PUBLICATION_NAMES
+        if name not in _PRIVATE_NAMES
+    ) or any(
+        category != public_category
+        and (budget.workspace / prefix).parent == output
+        and re.fullmatch(r"\.pilot-[0-9a-f]{32}\.tmp", Path(prefix).name) is not None
+        for prefix, category in state["paths"].items()
+    ):
+        # Public final and random sibling temporary must share the category
+        # charged by _publication_peaks; unrelated descendants remain valid.
+        raise ValueError("offline process public publication category differs")
     if _category(budget, state, private) != "logs":
         raise ValueError("offline process private custody must count as logs")
     if any(_category(budget, state, private / name) != "logs" for name in _PRIVATE_NAMES):
