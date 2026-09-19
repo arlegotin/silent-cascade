@@ -2413,3 +2413,15 @@ open. The Phase 4 production pilot has not started.
   pinned/emergency0; frozen6195077120 unchanged. Entiretask36864scratch retained,
   no cleanup/capchange/provider. Next source freeze includes reviewedfix/evidence
   and exactDiagnostic02 admission; only then a newowner may start.
+- Diagnostic02 source2e5b96d, owner82437/PTY87294/token977357be9c5347bd99de470b4afa4018,
+  freshattempt6be71f5c342d4fa9a24c9d0f116a8bd2 admittedexact53137408increment;
+  publicP114688/privateP1110016, child16MiB/102names/9dirs,180s unchanged.
+- Genuineworker82514 PASS60.250s/exit0/EOF,zero rawstreams. OneCPUupdate,
+ 16debugautonomousevaluations,1verifiedreplay,1report;backwardMACs337667328,
+  FM/network/optionalimport0,forbiddenmodulesempty. Report/process/source hashes
+  retained in task5-real-offline-02.md and independentlychecked fromrawfiles.
+- Publicretained11939840allocated/11779480logical,70files11dirs;private4096,
+  admin0. Finalfullcheckpassedfrozen6195077120; ownerreleased/exited0. Categories
+  spool231063552/cache67153920/metadata52965376/scratch264118272/logs2699264,
+  pinned/emergency0. No quota enlargement/provider/deletion/fullgate/pilot.
+  Next bounded preflight maps explicitallowance forwarding; no source work yet.

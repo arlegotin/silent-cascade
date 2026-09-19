@@ -1,9 +1,9 @@
 # Task5 direct offline diagnostic 02
 
-Status: prepared, not launched. Optimizer-cache review passed with no required
-fixes; its owner released/exited0 after full frozen verification. New exact
-same-owner global admission remains required. Source fix13fef3b passed five
-focused cases and statics twice, with frozen-source equality.
+Status: **passed genuine standalone offline diagnostic**, not a Phase4 pilot
+or learning-support gate. The owner released/exited0 after full frozen-history
+verification. Source fix13fef3b had passed independent review and five focused
+cases/statics twice before this separately admitted execution.
 
 Reason for this fresh attempt: Diagnostic01 reproduced a specific ordinary
 AdamW initialization failure; the one-line closed-cache mapping now passes the
@@ -112,3 +112,45 @@ with budget._scoped_reservation(admission=dict(operation="task5-real-offline-02"
 emit(dict(phase="released",diagnostic_passed=not failed))
 sys.exit(1 if failed else 0)
 ```
+
+## Observed result
+
+Executed exactly once at `2e5b96dbc8a436ff039a1efb5836f2c7236c2e36`.
+Owner PID82437/create-time1789799877.814541; token
+`977357be9c5347bd99de470b4afa4018`; worker PID82514. Before categories matched
+the preflight table. No second owner, checkout, provider or broad gate ran.
+
+Measurement completed in **60.250 seconds**; worker exit0, EOF, no stdout or
+stderr. The genuine worker performed one CPU training update,16 autonomous
+debug evaluations, one verified neural replay and one report build. Its report
+records backwardMACs337667328, foundation-model calls0, network attempts0,
+optional-import attempts0, forbidden modules empty. These are engineering
+diagnostic results, not model-accuracy or scientific-support results.
+
+Authenticated identities/hashes:
+
+- Process intent: `fd9120b5c3d00ec71119ce61ef5a484a9d1402445ae1b4911cdb66f98b443422`
+- Process result: `a54d85c3f947642dcff98b4e0348701752261759d0157d76bf7850336260f593`
+- Offline report: `7aa16ec2c77ac40e83a2dbdf820587eac93a9730240deedfb7c6ba6979dfcb41`
+- Executed source: `e264f35374335ce2f4c93c2e9d8f214b4c0b41476325353927fdfd1e4762fd24`
+- Config: `f9b1fa70f4bbb075fef516b491125ff975cdb36301639741a44ad1f92956069b`
+- Manifest: `09c049b27f26bc4b13e89085ffed602ec199d9e63a3826c8540480036e567975`
+- Weights: `afd82f1dd49ecb053125ef1eb369f8abeb71496566847a6dde30c440204bf541`
+- Replay: `c266e0f87b98e1f271695dca891e7a2b5dde2b99acc9ac7e102f721f5e2c1515`
+- Generated report: `d9cf6947fce30185dbd69e4a051f918e624ead4c61380d770b9146a4368be13f`
+
+Actual retained public run:11939840allocated/11779480logical bytes,70files/
+11directories (includes run/final ancestors outside the nine-directory child
+grammar). Private binding:4096allocated/227logical,1file/1directory. Parent
+administrative root:0allocated,0files/4dirs. Limits remained unchanged; no
+failure/root reuse or cleanup occurred.
+
+Final global categories: spool231063552/cache67153920/metadata52965376/
+scratch264118272/logs2699264/pinned0/emergency0. Full frozen6195077120 check
+passed, then owner exited0 and released the reservation. The controller also
+independently read the public report and checked the raw intent/result/report/
+source/weights/replay/generated-report SHA-256 values without neural reruns.
+
+Still outstanding: explicit allowance forwarding into the main workflow,
+same-owner versus inherited supervisor integration, full Task5/Task7 gates,
+`make verify` and the production Phase4 pilot/learning acceptance.
