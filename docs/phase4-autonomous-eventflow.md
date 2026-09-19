@@ -767,3 +767,8 @@ This completes only the parent-process safeguard. The genuine diagnostic still
 needs its child-output allowance; aggregate/collection/recovery integration,
 full local verification and storage handoff remain open. No production Phase 4
 pilot or new learning-performance result was produced by these control tests.
+
+A subsequent specification check found that the new launch records serialize
+absolute machine paths. Before any genuine diagnostic or archive promotion,
+these identities must be bound without exposing those paths. The focused
+process tests remain valid, but that privacy correction is still outstanding.

@@ -1521,3 +1521,139 @@ open. The Phase 4 production pilot has not started.
   Next TaskA brief scopes standalone child-writer adapters/tiny controls only;
   production allowance binding and fixture hold remain later B/C tasks. New
   source inventory entry accompanies TaskA's module, never lags its source.
+- Parent checkpoint/next plan committed3820408. Fresh astra/high
+  task5_offline_writes_a is sole writer for standalone TaskA only. New sole
+  holder65407 PID64890@1789784591.66643 admitted tokenc6867a60b5f3c9e17685312b08a6f75a:
+  scratch4MiB/metadata33562624/logs2MiB, otherincrements0. Before scratch258252800/
+  logs2007040/spool219099136/cache67153920/metadata52965376,pinned/emergency0,
+  retained6195077120 unchanged. Source/tests clean at dispatch; old23159 exited.
+  Exact test-stage admission remains required; no production worker/bindings,
+  providers/fullgate, source copies, generic quota framework or scientific edits.
+- TaskA RED1 admitted exact3 tests (invalid bool allowance, real publisher exact
+  capacity, rows/final link), fresh red1 <=768KiB/<160KiB logical/32names/
+  40dirs; two tiny children<=64KiB each,4096B source/2048B pipes each, batch120s,
+  launcherlogs16KiB each. All3 failed missing new APIs (not behavioral RED);
+  two children ended nonzero with ModuleNotFoundError, no payload writes.
+  Retained2918logical/4096allocated/2regularfiles/2links/11dirs; stderrlogempty.
+- Controller found a plan/spec privacy conflict after parent review: new process
+  intent serializes output_root/python_executable absolute strings, while R2
+  spec98-107/425-426/528 keeps such paths out of diagnostic records/archives.
+  Previously verified process behavior is unchanged, but promotion to a real
+  v2 diagnostic/archive is BLOCKED pending a serial corrective slice. Original
+  reviewer is checking exact exposure and raw-log implications read-only.
+  TaskA's independent tiny writer work continues with no competing source edits;
+  its exceptions must use closed codes/relative members, never absolute paths.
+  No original artifacts will be rewritten and no new provider run is admitted.
+- Same reviewer confirmed Important privacy defect and superseded parent
+  publication approval; no actual remote disclosure established. Hash-only
+  versioned launch identities plus pre-admitted private raw capture/empty-only
+  publiclogs are the chosen correction direction. Original parent implementer
+  is drafting exact caller/custody/reservation plan read-only (owned draftonly,
+  <=10KiB), not competing with TaskA source writer. Serial fix before B/archive.
+- TaskA GREEN1 admitted same3 cases/freshgreen1/same768KiB bounds;2passed/
+  1failed2.88s, retained3082logical/12288allocated/4files/2links/14dirs. Real
+  pilot publisher passed; io tempfile uses O_RDWR|O_CREAT|O_EXCL whereas adapter
+  expected O_WRONLY. Correct exact owned-temp capability, preserve original
+  publisher. GREEN2 admitted same3/freshgreen2/same768KiB/<160KiB/32names/
+  40dirs/120s, prior16384B retained. No native/cache denial observed.
+- TaskA GREEN2 observed2passed/1failed: durable identity2B now published, but
+  atomic_create performs its idempotent temp cleanup again at function exit.
+  Token lifetime ended on first unlink. Retained1335logical/16384allocated/
+  5files/2links/14dirs. Fix spans the entire original atomic create/write call,
+  including final cleanup; bind wrappers before transitive consumer aliases.
+  GREEN3 admitted same3/freshgreen3/same768KiB/<160KiB/32names/40dirs/120s,
+  prior32768B retained. No scientific writer behavior is changed.
+- TaskA GREEN3 passed3/3 in2.86s; retained104logical/16384allocated/5files/
+  2links/14dirs. All four stages retain49152allocated. CONTROLS1 admitted
+  exact8 function selectors/32cases/20tinychildren, fresh controls1 <=3MiB/
+  <256KiB logical/160file-link-temp names/180dirs. Each child<=64KiB,
+  source4096B/pipes2048B each, launcherlogs16KiB each; batch660s/yielding.
+  Stage-local relative/dir-fd escapes reviewed; no new font/descriptor/native
+  science or provider selectors admitted. Prior49152B+3MiB fits held4MiB.
+  Owner65407 remains the sole live reservation; measured scratch258301952/
+  logs2019328, other categories unchanged before controls1. Privacy correction
+  planning is read-only and cannot compete with TaskA's sole source writer.
+- CONTROLS1 observed29passed/3behavioral RED failures22.61s; retained4719B
+  logical/24576allocated/6files/7links/54dirs, total73728allocated. Failures:
+  evaluator's imported publisher kept an expired operation token; lexical and
+  dir-fd parent escapes raised the old boundary error without latching. Writer
+  corrected import order and boundary path coordination, retained dir-fds in
+  native publisher calls and added final inventory/pin validation. CONTROLS2
+  admitted the same8selectors/32cases/20children at freshcontrols2, same3MiB/
+  <256KiB/160names/180dirs/660s limits. Prior73728B+3MiB fits held4MiB.
+- CONTROLS2 passed32/32 in22.61s; retained111logical/24576allocated/7files/
+  7links/54dirs. STREAMS1 admitted8exactfunctions/19children at freshstreams1,
+  <=3MiB/<256KiB/160names/180dirs/630s;18children<=64KiB, crash17control128KiB,
+  source4096B/pipes2048B/logs16KiB each. Prior98304B+3MiB fit held4MiB.
+  Observed18passed/1behavioral RED21.01s; retained10606logical/77824allocated/
+  36files/8links/87dirs. Exact Git batch's _communicate writes its stdin after
+  Popen returns; narrow live-handle/fd/inode capability correction followed.
+  All descriptor escapes, hardlink double charge, UTF8 and UUID17 tests passed.
+- FONT1 admitted exact Git-batch plus two real font_manager success/overflow
+  controls, freshfont1 <=1MiB/<448KiB logical/32names/40dirs/120s. Childcaps
+  64+256+64KiB, source4096B/pipes2048B/logs16KiB each; prior176128B+1MiB fits
+  held4MiB. Existing MPL_IGNORE_SYSTEM_FONTS=1 retained; no native/subprocess
+  fallback or scientific run admitted. Latest owner measure scratch258428928/
+  logs2035712; other categories unchanged.
+- FONT1 passed3/3 in12.63s; retained39348logical/45056allocated/4files/3links/
+  15dirs, cumulative221184allocated. Genuine font_manager cache26961B
+  (28672allocated) and overflow prefix12288B retained; both real lock files
+  cleaned, overflow latchedbytes, exact Git batch now passes. No native or
+  cache fallback escaped. Targeted install/grammar/late-alias controls and
+  boundary-only regressions remain before source freeze/controller verification.
+- ADDITIONS1 prospectively admitted freshadditions1 <=1.5MiB/<128KiB logical/
+  80names/90dirs/270s, source4096B/pipes2048B/logs16KiB each, children<=64KiB.
+  Exact functions: install_requires_exact_allowance_type; install_cannot_replace_
+  or_enlarge_allowance; late_consumer_binding_is_denied(two params); preexisting_
+  symlink_fails_at_installation; last_episode_ordinal_and_crash_pair_are_admitted;
+  closed_names_latch_before_publication[weights.safetensors-pilot]. All have
+  test_ prefix in test_pilot_offline_writes.py. Corrected BEFORE launch from
+  overcount8/7 to7cases/6children; conservative envelope unchanged. Prior
+  221184B+1.5MiB fits held4MiB. Four owned files may receive scoped no-cache
+  Ruff formatting/checks, no other source changes or source-copy runs.
+- ADDITIONS1 observed5passed/2expected late-consumer RED failures6.59s;
+  retained1464logical/20480allocated/6files/7links/25dirs, total241664allocated.
+  Writer rejects late project consumers of original durable aliases before
+  patching publishers. FINAL1 admitted16cases/14children at freshfinal1,
+  <=3MiB/<256KiB/160names/180dirs/480s; one256KiBfont child, remaining64KiB,
+  closed bounded streams/logs and four existing boundary-only regressions.
+  Passed16/16 in24.77s; retained39370logical/81920allocated/13files/16links/
+  45dirs. Total323584allocated retained. Fourfile lint/format and diffcheck
+  passed; worker freezes/commits only its four code/test files. Controller's
+  complete frozen-source matrix and independent review still precede TaskA
+  completion; no real diagnostic, model or provider run occurred.
+- Ruling: integrated privacy correction after TaskA and before B/real diagnostic
+  or archive promotion — R2spec98-107/528 forbids plaintext machine paths and
+  arbitrary public logs. Hash-only intent/result versioning plus same-owner
+  active scoped admission and fixed private logs custody is reversible and
+  satisfies standing approval; no scientific threshold changes. New parent P
+  explicitly splits public/private categories (4096B granule); 8192 remains
+  control-only cushion. If wrong, cost is implementation rework, not changed
+  scientific evidence. Controller self-reviewed interfaces against actual
+  ledger/reader/workflow APIs and added plan conflict table and exact names.
+  Inherited supervisor/FitGuard capability routing is explicitly deferred to
+  existing open integration: current session/status provides no such authority.
+  Missing authority must fail before costly fresh work, with the temporary
+  restriction documented. Original bytes remain forensic evidence, not current
+  privacy-safe proof. No new ledger, redaction framework or private path export.
+- Source TaskA committed14abc50. Controller MAIN1 prospectively admitted at
+  freshmain1: same8function selectors as controls2, now33cases/21children
+  after new wrong-adapter parameter. <=3MiB/<256KiB logical/160names/180dirs,
+  children<=64KiB/source4096B/pipes2048B/logs16KiB each, outer690s yielding.
+  Prior323584B+3MiB fits held4MiB. Remaining29 new-module cases plus4 legacy
+  cases will be a separately admitted MAIN2; no genuine worker or provider.
+- MAIN1 passed33/33 in23.91s (wall24.165), exit0/stderrempty;111logical/
+  24576allocated/7files/7links/56dirs. Cumulative348160allocated. Frozen fourfile
+  lint/format/source equality to14abc50 passed. MAIN2 prospectively admitted:
+  all remaining17new-module functions (29cases) plus4named legacy functions
+  from FINAL1,33cases/31children; freshmain2 <=3.5MiB/<512KiB logical/180names/
+  200dirs (512KiB+8192*380=3637248B), outer990s yielding. Onefont256KiB,
+  crash128KiB, other childcontrols64KiB; bounded source/pipes/logs unchanged.
+  Prior348160B+3670016B=4018176B <held4MiB. Together MAIN1/2 cover all62 new
+  cases plus4 legacy, not merely the earlier partial GREEN subsets.
+- MAIN2 passed33/33 in42.71s (wall42.933), exit0/stderrempty;47585logical/
+  155648allocated/47files/22links/121dirs. All66frozen-source cases passed;
+  all12prefixes retain503808allocated. Controller evidence/commands/hashes
+  recorded. Independent task5_offline_writes_a_review (astra/high, isolated,
+  read-only) reviews52291char package3820408..14abc50. Owner65407 fullcheck
+  underway. Production/privacy/B/C/fullgate/Task7/Phase4 remain incomplete.

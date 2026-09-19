@@ -63,6 +63,9 @@ PY
 ## Limits
 
 Independent review approved with no blocking findings; see the review record.
+Its subsequent privacy-contract follow-up supersedes publication approval:
+machine paths/raw output must not enter archives. These 60 tests remain
+functional evidence, not clearance for a real diagnostic or archive promotion.
 Full local make verify, actual v2 worker,
 child-write allowance, outer cold integration/recovery, storage handoff and
 the Phase4 production pilot remain incomplete. These controls are process and
