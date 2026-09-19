@@ -1367,3 +1367,157 @@ open. The Phase 4 production pilot has not started.
   cache67153920/metadata52965376, pinned/emergency0; retained6195077120 unchanged.
   Every gate-input prefix remains; all720896B included. Root milestone/next
   process plan documents commit before the next sole writer is dispatched.
+- Milestone/next-plan docs committed47395b7; source clean at dispatch. Fresh
+  astra/high task5_offline_process is sole writer for bounded parent capture
+  and completion fence. New owner23159 PID62642@1789782193.664843 admitted
+  token deff627ffe458e5573ed87bf7504534a with scratch4MiB/metadata33562624/
+  logs2MiB, other increments0. Before scratch257384448/logs1851392, spool/cache/
+  metadata and retained baseline unchanged; previous13703 already released.
+- Newprocess firstRED admitted at fresh scratch/task5-offline-process/red1:
+  exact test_existing_intent_blocks_launch and test_capture_bounds_both_pipes,
+  <=128KiB rounded/6files/10dirs, logs<=16KiB each,intent<=64B. --noconftest
+  intentionally avoids implicit Torch, all envpaths/bytecode/plugins closed.
+  Legacy RED targets Git resolution before existing-intent rejection with a
+  tripwire; capture API RED is explicitly separate. No genuine child worker,
+  Git execution, training, evaluation, replay or provider is admitted.
+- ProcessRED1 observed2failures1.43s (wall1.982): real legacy Git resolution
+  precedes incomplete-attempt rejection; capture primitive is new-API missing
+  module. Retained1371logical/8192allocated/3files/8dirs; no childscientificwork.
+  Transitive Torch module import by legacy pilot_data is permitted/recorded,
+  not tensor/model execution. RED2 primitive matrix admitted fresh red2,
+  <=128KiB/4files/8dirs/log16KiB each, exactnewtestfile -k not-existing_intent
+  only declared overflow/exit/timeout/launch/cancellation/strictlimits cases.
+  Each tiny child<=130pipebytes and no disk files; actualcollection recorded.
+- ProcessRED2 actual17new-API failures,1legacydeselected,0.07s (wall0.291s);
+  retained7777logical/8192allocated/2files/6dirs. Worker implements stdlib-only
+  capture and early-existing-attempt fence after RED. GREEN1 admitted at
+  fresh green1 exactcurrent18cases, <=128KiB/6files/10dirs/log16KiB each,
+  childwrites<=130B/no files, timeoutcontrol1s/grace0.25s/outer30s.
+- ProcessGREEN1 passed18cases1.26s (wall1.501); stdout99B/stderr0,
+  retained101logical/8192allocated/3files/8dirs. Expected tiny children joined
+  under overflow/success/nonzero/timeout/cancel waitpid checks. Worker may make
+  a scoped primitive/early-fence commit after staticchecks and include the new
+  source-inventory entry. Full protocol/semantic integration remains in progress.
+- Primitive/initialfence/currentinventory committed32452b4 after scoped Ruff/
+  diffchecks. Owner23159measure: scratch257409024/logs1851392; all other
+  categories unchanged. ProcessRED3 admitted exactnew16case -k expression
+  reuse_rejects|terminal_record|marked_report|cold_process|failed_process|
+  process_reader, fresh red3,<=128KiB/6files/12dirs/log16KiB each,sentinel2B.
+  One real pre-auth reuse regression, eight impossible terminal records, one
+  invalid marker and six cold missing/corrupt/root/inventory controls. No
+  scientific report/metrics produced; unavailable APIs separately classified.
+- Controller clarified portability: exact recorded root/executable/bootstrap
+  authority belongs to launch. Artifact-only verification/recovery checks
+  unchanged original bindings, not the current machine's Python binary or
+  rehydrated absolute path; evidence-context logical-root agreement still holds.
+- ProcessRED3 observed16failed/18deselected2.07s (wall2.725): one real reuse
+  ordering failure and15 missing new APIs. Retained9752logical/16384allocated/
+  3regularfiles, but16directories exceeded declared12. This stage's directory
+  forecast FAILED; its128KiB byte envelope and parent4MiB reservation held.
+  All output remains. Cause: pytest allocates each tmp_path before the missing
+  API import; test-body-only forecasting omitted these directories. No claim
+  that RED3 satisfied its entire admission. Next envelope must explicitly count
+  per-parametrized-case fixture directories and prebound each control before
+  write. This is a prospective correction, not retroactive limit approval.
+- ProcessGREEN2 uses a newly prospective envelope: exact same16 cases,
+  <=1MiB allocated/<82KiB logical/40file-link names/50dirs, including every
+  pytest fixture directory. Passed16/18deselected2.10s (wall2.725), retained
+  7999logical/81920allocated/27regularfiles/40dirs; stdout107B/stderr0.
+  One-lease cold missing/corruption controls passed; this is not a full gate.
+- ProcessRED4 admitted frozen9 cases selected by measurement_persists|
+  measurement_records|bootstrap_rejects, fresh red4, <=1MiB allocated/
+  <160KiB logical/48file-link-temp names/30dirs, log16KiB each, outer30s.
+  Two actual parent paths use fixed invalid-sentinel child or launch denial;
+  seven bootstrap validator cases target missing API. No real diagnostic,
+  source checkout, Git resolution, training, evaluation, replay or provider.
+  All current process stages remain within owner23159's4MiB reservation.
+- Owner23159 measure after GREEN2: scratch257507328/logs1851392, spool/
+  cache/metadata unchanged. Read-only task5_child_write_plan (astra/high) is
+  drafting the next workload-specific writer plan from the accepted design;
+  it owns only operational/sdd/task5-offline-writes-plan-draft.md. No second
+  source writer or numerical/provider owner is active.
+- ProcessRED4 reproduced9 failures/37deselected1.57s (wall2.15): terminal
+  record absent after invalid-report child and unnormalized launch OSError;
+  seven missing validator APIs. Retained6262logical/24576allocated/7files/
+  18dirs, within its prospective envelope. GREEN3 admitted same9 selectors,
+  fresh green3, unchanged1MiB/<160KiB/48names/30dirs/log16KiB/outer30s.
+- ProcessGREEN3 passed9/37deselected1.57s (wall2.15); retained7844logical/
+  57344allocated/18files/18dirs, within envelope. Current task refinement
+  remains the planned collection/full-gate v2 fence and guarded cold readers,
+  pre-Popen cancellation and publication-failure controls; no real worker.
+  Owner measure scratch257589248/logs1855488, other categories unchanged.
+- ProcessRED5 admitted frozen7 cases: collection_fences|cancellation_before_launch|
+  log_publication_failure|uses_only_active|advertised_process|current_process_parser,
+  fresh red5 <=1MiB/<160KiB logical/40file-link-temp names/40dirs,
+  launcher16KiB each/outer30s. Cold controls <=8194B each, parent records
+  <=16KiB each, tiny child7B invalid sentinel/2B pipe. One exact existing837B
+  historical v1 report may be read only; no copying or sourceauth bypass.
+  Some cases cover already implemented paths, separately from real RED failures.
+- ProcessRED5 observed4failed/3passed/46deselected2.24s (wall2.88), retained
+  7905logical/49152allocated/17files/24dirs. Real failures: collection precedes
+  incomplete-attempt fence, pre-Popen cancellation dereferences absent process,
+  combined launch/log failure cannot form terminal schema; new parser flag
+  missing API is separate. Guarded coldreads, advertised lease failure and
+  ordinary log-publication failure already passed. Final integration/matrix
+  in preparation; owner23159 full custody/accounting check underway.
+- Owner23159 fullcheck passed scratch257638400/logs1855488/spool219099136/
+  cache67153920/metadata52965376, pinned/emergency0; frozen retained baseline
+  6195077120 unchanged. Task process stages retained253952B before final1.
+- Process final1 admitted frozen54 current new-module cases plus4 exact legacy
+  Git-pin, fresh-denial, counted-workspace and closed-Git-provenance selectors
+  (58 expected), <=3MiB/<256KiB logical/144file-link-temp names/128dirs,
+  logs16KiB each/outer30s. Worst prior253952B+3MiB fits held4MiB. New negative
+  audit child256Bstdout/4096Bstderr/10s tests changed bootstrap authority, never
+  runs real worker. Explicit two expensive legacy selectors remain excluded.
+  Git is trusted local /opt/homebrew/bin/git2.49.0, read-only; fixed legacy
+  writable controls are two6B files. No science/provider or source-copy run.
+- Process final1 passed58/58 in8.25s (wall8.792), retained24903logical/
+  233472allocated/74regularfiles/90dirs, stderr0. Self-review then identified
+  broken symlink roots/members being treated as absence rather than corruption.
+  Two bounded RED6 controls admitted; prospective envelope corrected BEFORE
+  execution to256KiB/6file-linknames/16dirs/log16KiB each, covering env and
+  pytest fixture dirs explicitly. Only stage-local absent symlink targets;
+  no children/science. Final1 remains retained evidence for its exact source,
+  not verification of the subsequent correction.
+- RED6 name forecast corrected prospectively to8 before execution (pytest lock
+  included). Exact two tests failed DID NOT RAISE0.24s (wall0.482), retained
+  1143logical/4096allocated/2regularfiles/4links/12dirs. Brokenroot/member
+  correction followed. GREEN4 admitted exact13 existing/new cold-symlink
+  selectors, fresh green4 <=1.5MiB/<128KiB logical/80names/80dirs/log16KiB
+  each; no children/science. Controller's later frozen-source run will cover
+  all60 new-plus-legacy cases together; unchanged58 are not rerun by worker.
+- GREEN4 observed12passed/1failed/43deselected1.53s (wall2.12), retained
+  16051logical/139264allocated/46regularfiles/67dirs, within envelope. Broken
+  intent correctly failed its nofollow read, but raw ELOOP was not normalized
+  into the semantic reader's ValueError. Minimal local-read-only adapter
+  correction preserves lease-acquisition failures. GREEN5 admitted exact2
+  broken selectors, freshgreen5 <=256KiB/8names/16dirs/log16KiB each/outer30s.
+- Read-only child-write plan draft delivered24026B. No source/tests/project
+  imports or Git mutations by its author. Controller self-review/integration
+  still precedes its execution; capacity/admission for a full worker is open.
+- Parent source frozen70aace8/report985a3a7. Controller main1 prospectively
+  admitted634880B retained+3MiB <=4MiB; all60passed8.00s (wall8.629), actual
+  pytestexit0/stderrempty. Stage233472allocated/24882logical/74files/24links/
+  95dirs; all13prefixes868352allocated remain. Fresh fivefileRufflint/format,
+  diffcheck and source/test equality to70aace8 passed. Main evidence saved.
+  Independent task5_offline_process_review (astra/high) now reviews base47395b7
+  through70aace8 using69196char diff package. Owner23159 fullcheck underway.
+- Controller integrated next child-write plan after source-derived self-review:
+  production child excludes only authenticated intent; other parent finals
+  must remain absent until it exits. Standalone tiny adapter controls do not
+  grant production launch authority. Optional whole allowance may beNone;
+  present integer fields are strict. No default byte capacity/fullrun promise,
+  no second ledger, no scientific change; sequence A->B->C stays single-writer.
+- Parent-process independent review approved spec and quality,0Critical/
+  Important/actionableMinor. Cross-task actualv2/fullgate/childwrites/cold
+  routing/makeverify remain open, not new process-slice findings. Full owner
+  check passed scratch258252800/logs1970176/spool219099136/cache67153920/
+  metadata52965376,pinned/emergency0; retained6195077120 unchanged. Process
+  slice complete only; Task5/Task7/Phase4 incomplete. Review/main evidence and
+  public milestone recorded; release requested before next owner/implementation.
+- Owner23159 finalcheck passed and process exited0 after release. Final
+  scratch258252800/logs1982464/spool219099136/cache67153920/metadata52965376,
+  pinned/emergency0; retained6195077120 unchanged. No old owner remains.
+  Next TaskA brief scopes standalone child-writer adapters/tiny controls only;
+  production allowance binding and fixture hold remain later B/C tasks. New
+  source inventory entry accompanies TaskA's module, never lags its source.

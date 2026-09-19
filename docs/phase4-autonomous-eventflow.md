@@ -745,3 +745,25 @@ The production pilot still has not started. Next is bounded diagnostic
 subprocess logging and a durable completion fence, followed by child-output
 admission and the remaining aggregate/collection/recovery integration. A
 process or storage integrity test is not evidence of learning performance.
+
+### Bounded diagnostic process and completion evidence
+
+`32452b4` and `70aace8` bound diagnostic stdout/stderr and require an immutable
+launch record plus a verified terminal result before reuse. Interrupted or
+failed attempts cannot become successful merely because an output file exists.
+Archived process records and logs are checked through scoped reads; available
+corruption remains an error when another member is missing. Historical v1
+reports retain their original interpretation, while new execution requires v2
+intent binding.
+
+Fresh controller verification passed all 60 focused tests in 8.00 seconds.
+Scoped lint/format checks and independent review passed with no blocking
+findings. All test prefixes, including failures, remain retained (868,352
+allocated bytes), and shared-ledger accounting passed. One earlier temporary-
+directory estimate was wrong; the byte allowance held, and the failed estimate
+remains documented rather than retroactively approved.
+
+This completes only the parent-process safeguard. The genuine diagnostic still
+needs its child-output allowance; aggregate/collection/recovery integration,
+full local verification and storage handoff remain open. No production Phase 4
+pilot or new learning-performance result was produced by these control tests.
