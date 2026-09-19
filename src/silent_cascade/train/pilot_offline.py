@@ -10,11 +10,14 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
 from silent_cascade.validation import StrictModel
+
+if TYPE_CHECKING:
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance, OfflineWrites
 
 
 class PilotOfflineReport(StrictModel):
@@ -66,6 +69,7 @@ class OfflineGitPin:
 
 
 _BOUNDARY_GIT_PIN: OfflineGitPin | None = None
+_BOUNDARY_WRITES: "OfflineWrites | None" = None
 _PENDING_OFFLINE_LAUNCH: tuple[str, str] | None = None
 _GIT_PIN_ENV = "SILENT_CASCADE_OFFLINE_GIT_PIN"
 
@@ -252,14 +256,18 @@ def _closed_git_arguments(arguments):
     return values[:1] + (_GIT_LOG_OPTIONS if command == "log" else ()) + values[1:]
 
 
-def install_offline_boundary(*, workspace_root: Path | None = None):
+def install_offline_boundary(
+    *,
+    workspace_root: Path | None = None,
+    write_allowance: "OfflineWriteAllowance | None" = None,
+):
     """Install irreversible child-only denial hooks, retaining read-only Git."""
     import importlib.abc
     import socket
     import threading
     import urllib.request
 
-    global _BOUNDARY_GIT_PIN
+    global _BOUNDARY_GIT_PIN, _BOUNDARY_WRITES
     pin = _decode_git_pin(os.environ.get(_GIT_PIN_ENV))
     _BOUNDARY_GIT_PIN = pin
     git_prefix = (pin.executable, *_GIT_PREFIX)
@@ -270,9 +278,25 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
     trusted_environment = offline_environment(Path(os.environ["TMPDIR"]), git_pin=pin)
     original_popen = subprocess.Popen
 
-    from silent_cascade.train.pilot_offline_writes import active_offline_writes
+    from silent_cascade.train.pilot_offline_writes import (
+        OfflineWriteAllowance,
+        active_offline_writes,
+        install_offline_writes,
+    )
 
-    writes = active_offline_writes()
+    if write_allowance is not None and type(write_allowance) is not OfflineWriteAllowance:
+        raise ValueError("invalid offline write allowance")
+    if write_allowance is not None and workspace is None:
+        raise ValueError("offline write allowance requires a workspace root")
+    writes = (
+        install_offline_writes(workspace, write_allowance)
+        if write_allowance is not None
+        else active_offline_writes()
+    )
+    if writes is not None:
+        if _BOUNDARY_WRITES is not None and _BOUNDARY_WRITES is not writes:
+            raise ValueError("offline write boundary already installed")
+        _BOUNDARY_WRITES = writes
 
     def closed_popen(args, *positional, **kwargs):
         if isinstance(args, (list, tuple)) and args and args[0] in {"git", pin.executable}:
@@ -450,17 +474,28 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
 
     torch.hub.download_url_to_file = deny
     torch.hub.load_state_dict_from_url = deny
+    if writes is not None:
+        writes.bind_publishers()
     return attempts, blocked
 
 
 _PROGRAM = r"""
 import sys
-from silent_cascade.train.pilot_offline import (
-    _worker, install_offline_boundary, validate_offline_launch,
+import silent_cascade.train.pilot_offline as boundary
+from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+intent = boundary.validate_offline_launch(sys.argv[1], sys.argv[2])
+allowance = (
+    None
+    if intent.write_allowance is None
+    else OfflineWriteAllowance(**intent.write_allowance)
 )
-validate_offline_launch(sys.argv[1], sys.argv[2])
-attempts, blocked = install_offline_boundary(workspace_root=sys.argv[1])
-_worker(sys.argv[1], attempts, blocked, process_intent_sha256=sys.argv[2])
+attempts, blocked = boundary.install_offline_boundary(
+    workspace_root=sys.argv[1], write_allowance=allowance
+)
+boundary._require_installed_offline_writes(sys.argv[1], intent)
+boundary._worker(sys.argv[1], attempts, blocked, process_intent_sha256=sys.argv[2])
+if boundary._BOUNDARY_WRITES is not None:
+    boundary._BOUNDARY_WRITES.assert_clear()
 """
 
 
@@ -494,7 +529,21 @@ def _offline_source_identity():
     return revision.decode().strip(), sha256_bytes(canonical_json_bytes(source))
 
 
-def validate_offline_launch(output_dir, intent_sha256):
+def _require_installed_offline_writes(output_dir, intent):
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    output_dir = Path(output_dir).absolute()
+    allowance = (
+        None if intent.write_allowance is None else OfflineWriteAllowance(**intent.write_allowance)
+    )
+    if (_BOUNDARY_WRITES is None) != (allowance is None) or (
+        _BOUNDARY_WRITES is not None
+        and (_BOUNDARY_WRITES.root != output_dir or _BOUNDARY_WRITES.allowance != allowance)
+    ):
+        raise ValueError("offline process launch authority differs")
+
+
+def validate_offline_launch(output_dir, intent_sha256, *, require_installed=False):
     """The exact parent-authorized bootstrap is checked before any worker import."""
     from silent_cascade.hashing import sha256_bytes
     from silent_cascade.train.evidence_types import read_bytes
@@ -507,8 +556,11 @@ def validate_offline_launch(output_dir, intent_sha256):
     output_dir = Path(output_dir).absolute()
     raw = read_bytes(output_dir / "intent.json", limit=16384)
     intent = _parse_record(raw, OfflineProcessIntent)
+    if require_installed:
+        _require_installed_offline_writes(output_dir, intent)
     if (
         sha256_bytes(raw) != intent_sha256
+        or "write_allowance" not in intent.model_fields_set
         or len(raw) > intent.limits["record_bytes"]
         or intent.output_root_sha256 != path_identity(b"output-root", str(output_dir))
         or output_dir.resolve() != output_dir
@@ -522,16 +574,25 @@ def validate_offline_launch(output_dir, intent_sha256):
     return intent
 
 
-def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=None):
+def measure_pilot_offline(
+    *,
+    output_dir,
+    process_limits=None,
+    process_custody=None,
+    write_allowance: "OfflineWriteAllowance | None" = None,
+):
     """Fresh launches require private same-owner custody; inherited routing is deferred."""
     from silent_cascade.train.pilot_offline_process import (
         OfflineProcessCustody,
         OfflineProcessLimits,
         require_offline_process_custody,
     )
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
 
     global _PENDING_OFFLINE_LAUNCH
     output_dir = Path(output_dir).absolute()
+    if write_allowance is not None and type(write_allowance) is not OfflineWriteAllowance:
+        raise ValueError("invalid offline write allowance")
     limits = process_limits
     if limits is None:
         limits = (
@@ -572,6 +633,7 @@ def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=No
         source_commit=revision,
         executed_source_sha256=source_sha256,
         limits=asdict(limits),
+        write_allowance=None if write_allowance is None else asdict(write_allowance),
     )
     intent_raw = canonical_json_bytes(intent)
     if len(intent_raw) > limits.record_bytes:
@@ -678,7 +740,7 @@ def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=No
 
 
 def _worker(directory, attempts, blocked, *, process_intent_sha256):
-    validate_offline_launch(directory, process_intent_sha256)
+    validate_offline_launch(directory, process_intent_sha256, require_installed=True)
     import torch
 
     from silent_cascade.env.pilot import curriculum_to_bundle
@@ -771,7 +833,9 @@ def _worker(directory, attempts, blocked, *, process_intent_sha256):
     forbidden = tuple(n for n in sys.modules if n.split(".")[0] in blocked or "qwen" in n.lower())
     if forbidden or not replay.matched:
         raise ValueError("offline replay/import probe failed")
-    validate_offline_launch(directory, process_intent_sha256)
+    validate_offline_launch(directory, process_intent_sha256, require_installed=True)
+    if _BOUNDARY_WRITES is not None:
+        _BOUNDARY_WRITES.assert_clear()
     publish_json(
         output_dir / "offline.json",
         PilotOfflineReportV2(

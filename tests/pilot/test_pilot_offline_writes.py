@@ -28,11 +28,14 @@ from contextlib import contextmanager
 from silent_cascade.train.pilot_offline_writes import (
     OfflineWriteAllowance, OfflineWriteDenied, install_offline_writes,
 )
-from silent_cascade.train.pilot_offline import install_offline_boundary
+from silent_cascade.train import pilot_offline as boundary
 root = Path(sys.argv[1])
-guard = install_offline_writes(root, OfflineWriteAllowance(**json.loads(sys.argv[2])))
-install_offline_boundary(workspace_root=root)
-guard.bind_publishers()
+attempts, blocked = boundary.install_offline_boundary(
+    workspace_root=root,
+    write_allowance=OfflineWriteAllowance(**json.loads(sys.argv[2])),
+)
+guard = boundary._BOUNDARY_WRITES
+assert guard is boundary._BOUNDARY_WRITES
 from silent_cascade.train.pilot_data import _publish_pilot_bytes
 from silent_cascade.io import atomic_create_bytes, atomic_write_bytes
 @contextmanager
@@ -60,7 +63,8 @@ def denied(reason=None):
         + code
     )
     program = program.replace(
-        "guard.bind_publishers()", before_binding + "\nguard.bind_publishers()"
+        "attempts, blocked = boundary.install_offline_boundary(",
+        before_binding + "\nattempts, blocked = boundary.install_offline_boundary(",
     )
     assert len(program.encode()) <= 4096
     limits = allowance if isinstance(allowance, dict) else dict(allocated_bytes=allowance)

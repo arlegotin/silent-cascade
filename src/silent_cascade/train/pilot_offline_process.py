@@ -84,12 +84,19 @@ class OfflineProcessIntent(StrictModel):
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     executed_source_sha256: Hash
     limits: dict[str, int]
+    write_allowance: dict[str, int] | None = None
 
     @model_validator(mode="after")
     def closed_limits(self):
         if set(self.limits) != {"stdout_bytes", "stderr_bytes", "record_bytes", "timeout_seconds"}:
             raise ValueError("offline process intent limits differ")
         OfflineProcessLimits(**self.limits)
+        if self.write_allowance is not None:
+            from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+            if set(self.write_allowance) != {"allocated_bytes", "file_names", "directories"}:
+                raise ValueError("offline process intent write allowance differs")
+            OfflineWriteAllowance(**self.write_allowance)
         return self
 
 
