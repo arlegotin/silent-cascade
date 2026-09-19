@@ -2650,6 +2650,38 @@ The controller and a read-only admission reviewer inspect the concrete API and
 process graph before launch. A definite uncovered writer or missing authority
 stops this one attempt before execution, without substituting a different path.
 
+##### Diagnostic01 correction: eager optimizer cache initialization
+
+The first actual diagnostic failed before its update: the installed Torch
+optimizer lazily imports Dynamo, whose default Inductor cache calls
+`tempfile.gettempdir()` and triggers a forbidden random-file probe. Preserve
+that failed attempt. This is a compatibility correction within Task5, not a
+scientific or quota change.
+
+Files: `train/pilot_offline.py` (closed environment only), focused
+`tests/pilot/test_pilot_offline_writes.py` / environment tests. Do not modify
+Torch, the optimizer, the bootstrap, writer grammar, byte/name/directory limits,
+private custody or scientific configuration.
+
+1. RED: assert the closed environment derives `TORCHINDUCTOR_CACHE_DIR` from
+   the admitted root's existing `cache` path, ignoring an ambient override.
+   A fresh tiny real boundary control must construct AdamW on one scalar CPU
+   parameter without training, evaluation, replay or model creation, then leave
+   only the permitted empty cache directory with a clear denial latch. Confirm
+   the unchanged implementation fails at the observed default-cache probe.
+2. GREEN: add the fixed cache environment entry. No general temp-file exception,
+   extra writable subtree, compiler invocation or disabled guard is allowed.
+   Verify attempts to publish compiler/cache files or a child cache directory
+   still fail and latch the existing denial.
+3. Admit the exact tiny selectors and full parent/child retained bounds before
+   each RED/GREEN/controller run; use the existing global ledger, closed
+   launcher, fresh prefixes and existing 30-second/2048-byte-pipe tiny-control
+   helper. No actual diagnostic is part of these regressions.
+4. Controller repeats affected checks and scoped statics after the source
+   commit; obtain independent review. Only then consider a separately admitted
+   fresh Diagnostic02 under unchanged child/process limits, with exact updated
+   public/private missing-directory counts. No automatic retry or failure reuse.
+
 ##### Primitive admission and execution instructions
 
 Use the existing closed Python `-B` launcher, disabled external pytest plugins/cacheprovider and explicit TMP/XDG/MPL/Hypothesis/archive roots under a fresh operational scratch prefix per RED/GREEN/controller stage. Select only the named new writer tests and named parent/legacy primitive tests; never select the entire offline test file if it contains the actual diagnostic. Example inner command after its containing launcher/environment has been admitted:

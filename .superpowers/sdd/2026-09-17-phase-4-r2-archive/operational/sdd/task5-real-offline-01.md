@@ -1,6 +1,6 @@
 # Task5 direct offline diagnostic 01
 
-Status: preflight; not launched.
+Status: failed diagnostic; retained evidence, reservation released.
 
 Read-only admission reviewer `/root/offline_diagnostic_admission_review`
 confirmed the public/private arithmetic and conservative outer reservation,
@@ -135,3 +135,47 @@ with budget._scoped_reservation(admission=dict(operation="task5-real-offline-01"
 emit(dict(phase="released",diagnostic_passed=not failed))
 sys.exit(1 if failed else 0)
 ```
+
+## Observed outcome
+
+Executed once at frozen source `f2ce7341f659a4113f4d27b27a17edcb98ab5516`.
+Owner PID80759/create-time1789798696.990154; token
+`75a1262b35dc922ffdcc35be5ac048e0`. Actual pre-admission logs2637824;
+other categories matched the last Task C counts. Full frozen custody passed.
+
+The real worker PID80815 failed after 12.883 seconds, exit1, EOF observed.
+Public result status `failed`, reason `nonzero_exit`, stdout0, stderr3619
+private bytes. No completed offline report or scientific acceptance result.
+No retry occurred. Evidence hashes:
+
+- Intent: `673b3d1d18704eaee62bcf02041974f94142e7d702dfbd268898d3ba26214b5f`
+- Process result: `b2132acdfb0be36939f6fd529078bd0b8ee17a69f8a9b23a10a7b8cd1256e628`
+- Private stderr: `3d9cc2222b9bf829965e54053603ae88d4b15c1a5bc320b3b477654ad3bf143a`
+
+Retained public run:24576 allocated/16584 logical bytes,4files/3dirs.
+Private attempt:8192 allocated/3846 logical bytes,2files/1dir.
+Administrative root:0 allocated bytes,0files/4dirs. Final global measurement:
+spool219123712/cache67153920/metadata52965376/scratch264081408/
+logs2646016/pinned0/emergency0. Full frozen6195077120 verification passed;
+owner exited1 and released its reservation. No cleanup/reclassification occurred.
+
+### Sanitized root-cause diagnosis
+
+An exact-length/SHA-256 verified, read-only inspection extracted only source
+frame names and the allowlisted terminal denial from private stderr; it did not
+print raw captured text or machine paths. AdamW construction in
+`train/trainer.py:64` lazily imports `torch._dynamo`. Installed Torch's
+`_dynamo/package.py:1267` initializes its cache object via
+`_inductor/runtime/cache_dir_utils.py:17,32`. With no explicit
+`TORCHINDUCTOR_CACHE_DIR`, that code calls `tempfile.gettempdir()`, whose
+writability probe attempts an arbitrary temporary file. The existing boundary
+correctly latches `OfflineWriteDenied: offline write denied: writer` before the
+first optimizer update. This is not evidence of insufficient byte capacity.
+
+The local library's explicit-cache branch uses `os.makedirs(cache_dir,
+exist_ok=True)` and bypasses the temp probe. `DiskDynamoStore.__init__` merely
+retains the path prefix; it does not create compiler artifacts. Proposed next
+fix: derive `TORCHINDUCTOR_CACHE_DIR` from the existing child `cache` directory
+in the closed environment. Keep the current nine-directory grammar and
+prohibition on cache files/subdirectories; no compile execution or larger cap.
+Prove with a real tiny AdamW-construction regression before any new diagnostic.

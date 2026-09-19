@@ -2349,3 +2349,22 @@ open. The Phase 4 production pilot has not started.
   logs2621440/emergency0. Exact TaskC scratch1163264 retained; nothing deleted,
   reclassified or retried in place. Reservation ba5e75302aadf87b4a2e843887df9802
   released. Next step is read-only one-worker admission design, not a launch.
+- One direct genuine diagnostic admitted by versioned Task5 refinementf2ce734,
+  source unchanged; owner80759/PTY6552 token75a1262b35dc922ffdcc35be5ac048e0.
+  Child16MiB/102names/9dirs;default180sprocess;spool16891904/logs2162688/
+  metadata33562624/scratch524288. Independent read-only admission review passed;
+  root corrected Git count to7 (9totalprocesses,max3concurrent).
+- Diagnostic01 failed12.883s/child80815exit1/nonzero_exit/EOF. Private stderr3619
+  retained,stdout0. No completedreport/learningresult. Actualpublic24576allocated,
+  private8192,admin0. Full frozen check passed; owner exited1/released. Final
+  spool219123712/cache67153920/metadata52965376/scratch264081408/logs2646016.
+- Hash-verified sanitized traceback: ordinary AdamW construction lazily imports
+  TorchDynamo; its default Inductor cache calls tempfile.gettempdir, whose probe
+  is rejected by the existing closed writer. Not byteexhaustion. Local source
+  shows explicit TORCHINDUCTOR_CACHE_DIR bypassesprobe and creates only existing
+  allowed cache directory. TDD correction planned; no retry or enlargedcap.
+- Dispatched sole sourcewriter /root/offline_optimizer_cache_fix(sol/high) for
+  narrow env/test correction per versioned plan; no execution admitted yet.
+  Task envelope proposed2MiBscratch/1MiBlogs/33562624metadata, no spool growth;
+  exact RED/GREEN/controller stage bounds required separately. No native cache
+  permission expansion or optimizer/compiled execution change.
