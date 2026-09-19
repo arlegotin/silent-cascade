@@ -66,8 +66,8 @@ absolute stage shown below and `SELECTORS` replaced by the exact table entry:
 env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONHASHSEED=0 TMPDIR=STAGE/tmp TMP=STAGE/tmp TEMP=STAGE/tmp XDG_CACHE_HOME=STAGE/xdg-cache XDG_CONFIG_HOME=STAGE/xdg-config XDG_DATA_HOME=STAGE/xdg-data MPLCONFIGDIR=STAGE/mpl HYPOTHESIS_STORAGE_DIRECTORY=STAGE/hypothesis SILENT_CASCADE_ARCHIVE_TEST_SCRATCH=STAGE/archive .venv/bin/python -B -m pytest --basetemp=STAGE/pytest -q -x --tb=short -p no:cacheprovider SELECTORS
 ```
 
-The absolute stage prefix was
-`/Volumes/git/legotin/silent-cascade/.superpowers/sdd/2026-09-17-phase-4-r2-archive/operational/scratch/task5-cold-numerics/`.
+The repository-relative stage prefix was
+`.superpowers/sdd/2026-09-17-phase-4-r2-archive/operational/scratch/task5-cold-numerics/`.
 
 | Stage | Exact selectors | Result | Allocated/files/dirs |
 | --- | --- | --- | --- |
@@ -145,3 +145,59 @@ bootstrap, current-source diagnostic production, 64 production runtime episodes,
 a complete current-source gate, recovery, or provider/transport integration.
 Primary scientific execution remains offline with exactly zero foundation-model
 calls; no new scientific execution occurred in this task.
+
+## Round-one review fix
+
+Review found that the partial verifier selected its available/missing branches
+without first applying the complete reader's resident-inventory boundary. An
+unconsumed regular extra, symlink, or dangling symlink could therefore be
+ignored whenever another expected artifact was absent. The committed report
+also contained a machine-specific absolute stage prefix.
+
+The fix factors resident/authenticated name discovery into
+`_numeric_artifact_names`. It rejects a symbolic numerical root or any nested
+resident symlink, inventories resident regular files, unions the already
+filtered authenticated names, and returns the materialized name set. Complete
+closure reuses this function. `verify_numeric_evidence` now invokes it before
+choosing complete versus partial verification and rejects any name outside the
+report's exact inventory. Missing expected members still enter the partial
+branch with the same unavailable labels, and available operations/archive
+members still undergo their existing semantic and integrity readers. Generic
+archive readers and their descriptor-relative `O_NOFOLLOW` behavior were not
+changed.
+
+The report stage root above is repository-relative; no machine-specific path
+remains in this versioned report.
+
+The round-one pytest commands used the same isolated launcher documented above,
+with these exact repository-relative stages and selectors:
+
+| Stage | Exact selectors | Result | Allocated/files/symlinks/dirs |
+| --- | --- | --- | --- |
+| `fix-red-1` | `tests/pilot/test_pilot_cold_numerics.py::test_partial_numeric_evidence_rejects_extra_resident_member` and `tests/pilot/test_pilot_cold_numerics.py::test_partial_numeric_evidence_rejects_dangling_resident_symlink` | Genuine RED: both returned normally instead of rejecting closure, 2 failed in 3.01s | 4 KiB / 1 / 2 / 18 |
+| `fix-green-1` | cold-numerics selectors `test_genuine_numeric_report_matches_cold_read`, `test_genuine_numeric_verifier_and_runtime_rows_match_cold_reads`, `test_missing_capture_tensor_validates_available_operations`, `test_missing_capture_tensor_cannot_hide_corrupt_operations`, `test_partial_numeric_evidence_rejects_extra_resident_member`, `test_partial_numeric_evidence_rejects_dangling_resident_symlink`, `test_extra_resident_numeric_inventory_is_rejected`, `test_wrong_numeric_root_and_late_inventory_failure_precede_reads`; plus `tests/pilot/test_pilot_cold_semantics.py::test_genuine_continuation_and_offline_results_match_cold_reads` | 9 passed in 19.25s | 32 KiB / 3 / 9 / 39 |
+
+The RED wrote only a 7-byte extra and one dangling symlink. GREEN additionally
+used the existing bounded operations rewrite (original 21,337 bytes, no more
+than 65,536 rounded bytes). Neither stage copied scientific tensor/runtime
+payloads. Retained Task 5 scratch after the fix is 10,260 KiB (10,506,240
+bytes), below the active 16 MiB reservation; every prefix remains preserved.
+
+Post-fix static checks:
+
+```text
+git diff --check
+# exit 0
+
+.venv/bin/ruff check --no-cache src/silent_cascade/train/pilot_verification.py src/silent_cascade/train/pilot_evidence.py tests/pilot/test_pilot_cold_numerics.py
+# All checks passed!
+
+.venv/bin/ruff format --check --no-cache src/silent_cascade/train/pilot_verification.py src/silent_cascade/train/pilot_evidence.py tests/pilot/test_pilot_cold_numerics.py
+# 3 files already formatted
+```
+
+Round-one source/test commit:
+`11de6d4176f2ccbb4e0a7c3003b7202bfb946d56`
+(`fix: enforce partial numerical inventory closure`). The report normalization
+and this evidence are committed separately. Controller-owned plan/progress files
+remain unstaged by this writer.
