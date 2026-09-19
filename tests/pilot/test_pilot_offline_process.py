@@ -1107,16 +1107,18 @@ def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144, scratch=65536, bi
             yield budget, admission, workspace / "run/final/offline"
 
 
-def _prepare_privacy(budget, admission, output):
+def _prepare_privacy(budget, admission, output, *, limits=None):
     from silent_cascade.train import pilot_offline_process as process
 
+    if limits is None:
+        limits = process.OfflineProcessLimits(
+            stdout_bytes=64, stderr_bytes=64, record_bytes=1024, timeout_seconds=2
+        )
     return process.prepare_offline_process_custody(
         budget=budget,
         admission=admission,
         output_dir=output,
-        limits=process.OfflineProcessLimits(
-            stdout_bytes=64, stderr_bytes=64, record_bytes=1024, timeout_seconds=2
-        ),
+        limits=limits,
         attempt_id="a" * 32,
     )
 
@@ -1527,6 +1529,157 @@ def test_privacy_nonempty_failure_retains_closed_outcome(tmp_path, monkeypatch, 
         else:
             assert (private / "stderr.raw").read_bytes() == expected
         assert b"SECRET" not in (output / "process-result.json").read_bytes()
+        assert len(launched) == 1 and launched[0].poll() is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(launched[0].pid, os.WNOHANG)
+
+
+@pytest.fixture(scope="module")
+def _real_offline_git_identity():
+    from silent_cascade.train import pilot_offline
+
+    previous = pilot_offline._BOUNDARY_GIT_PIN
+    pin = pilot_offline.resolve_offline_git()
+    pilot_offline._BOUNDARY_GIT_PIN = pin
+    try:
+        identity = pilot_offline._offline_source_identity()
+    finally:
+        pilot_offline._BOUNDARY_GIT_PIN = previous
+    return pin, identity
+
+
+def _combined_fence_control(monkeypatch, output, *, failure, pin, identity):
+    """Substitute only the tiny worker, then execute the real bound bootstrap."""
+    from silent_cascade.train import pilot_offline
+
+    original_popen = pilot_offline.subprocess.Popen
+    original_program = pilot_offline._PROGRAM
+    launched = []
+    payload = b"DENIED:" + (b"X" * 58 if failure == "output_limit" else b"/private/SECRET")
+    pause = failure in {"timeout", "cancelled"}
+    program = f"""
+import os
+import time
+from pathlib import Path
+from silent_cascade.train import pilot_offline as boundary
+from silent_cascade.train.pilot_offline_writes import OfflineWriteDenied
+def substituted_worker(directory, attempts, blocked, *, process_intent_sha256):
+    boundary.validate_offline_launch(
+        directory, process_intent_sha256, require_installed=True
+    )
+    from silent_cascade.train.pilot_data import _publish_pilot_bytes
+    _publish_pilot_bytes(Path(directory) / 'offline.json', b'invalid')
+    try:
+        _publish_pilot_bytes(Path(directory) / 'step.json', b'x')
+    except OfflineWriteDenied:
+        os.write(2, {payload!r})
+    else:
+        raise AssertionError('write allowance exhaustion was not enforced')
+    if {pause!r}:
+        time.sleep(60)
+boundary._worker = substituted_worker
+exec(boundary._PROGRAM)
+"""
+    assert len(program.encode()) <= 4096
+    monkeypatch.setattr(pilot_offline, "_BOUNDARY_GIT_PIN", pin)
+    monkeypatch.setattr(pilot_offline, "_offline_source_identity", lambda: identity)
+
+    def launch_substituted_worker(command, *args, **kwargs):
+        assert command[:4] == [sys.executable, "-B", "-c", original_program]
+        assert command[4] == str(output) and len(command) == 6
+        assert (output / "intent.json").is_file() and not (output / "offline.json").exists()
+        process = original_popen(
+            [sys.executable, "-B", "-c", program, command[4], command[5]],
+            *args,
+            **kwargs,
+        )
+        launched.append(process)
+        return process
+
+    monkeypatch.setattr(pilot_offline.subprocess, "Popen", launch_substituted_worker)
+    return pilot_offline, launched, payload
+
+
+@pytest.mark.parametrize(
+    "failure,reason",
+    [
+        ("denial", "nonzero_exit"),
+        ("output_limit", "output_limit"),
+        ("timeout", "timeout"),
+        ("cancelled", "cancelled"),
+    ],
+)
+def test_measurement_combines_write_exhaustion_with_parent_failure_custody(
+    tmp_path, monkeypatch, _real_offline_git_identity, failure, reason
+):
+    from silent_cascade.train import pilot_offline_process as process
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    limits = process.OfflineProcessLimits(
+        stdout_bytes=64,
+        stderr_bytes=4096 if failure == "denial" else 64,
+        record_bytes=1024,
+        timeout_seconds=15,
+    )
+    with (
+        _privacy_ledger(tmp_path) as (budget, admission, output),
+        _prepare_privacy(budget, admission, output, limits=limits) as custody,
+    ):
+        module, launched, marker = _combined_fence_control(
+            monkeypatch,
+            output,
+            failure=failure,
+            pin=_real_offline_git_identity[0],
+            identity=_real_offline_git_identity[1],
+        )
+        if failure == "cancelled":
+            original_select = process.selectors.DefaultSelector.select
+            selected = False
+
+            def cancel_after_denial(selector, timeout=None):
+                nonlocal selected
+                if selected:
+                    raise KeyboardInterrupt
+                events = original_select(selector, timeout)
+                selected = bool(events)
+                return events
+
+            monkeypatch.setattr(process.selectors.DefaultSelector, "select", cancel_after_denial)
+        allowance = OfflineWriteAllowance(65536, file_names=2, directories=9)
+        with pytest.raises(ValueError, match="offline process failed"):
+            module.measure_pilot_offline(
+                output_dir=output,
+                process_custody=custody,
+                write_allowance=allowance,
+            )
+
+        intent = json.loads((output / "intent.json").read_bytes())
+        assert intent["write_allowance"] == {
+            "allocated_bytes": 65536,
+            "file_names": 2,
+            "directories": 9,
+        }
+        result_raw = (output / "process-result.json").read_bytes()
+        result = json.loads(result_raw)
+        assert result["status"] == "failed" and result["reason"] == reason
+        assert result["offline_sha256"] is None
+        assert result["stdout_disposition"] == "empty_public"
+        assert result["stderr_disposition"] == "private_rejected"
+        assert (output / "stdout.txt").read_bytes() == b""
+        assert not (output / "stderr.txt").exists()
+        assert (output / "offline.json").read_bytes() == b"invalid"
+
+        private = budget.workspace / "logs/offline-process-private" / custody.attempt_id
+        stderr = (private / "stderr.raw").read_bytes()
+        assert stderr.startswith(b"DENIED:")
+        if failure == "output_limit":
+            assert stderr == marker[:64]
+        else:
+            assert stderr.startswith(marker)
+        assert len(stderr) <= limits.stderr_bytes
+        assert result["stderr_bytes"] == len(stderr)
+        assert result["stderr_sha256"] == _digest(stderr)
+        assert b"DENIED:" not in result_raw and b"SECRET" not in result_raw
         assert len(launched) == 1 and launched[0].poll() is not None
         with pytest.raises(ChildProcessError):
             os.waitpid(launched[0].pid, os.WNOHANG)
