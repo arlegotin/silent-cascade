@@ -2128,3 +2128,224 @@ open. The Phase 4 production pilot has not started.
   Holder29448 released after final fullcheck: scratch262918144/logs2490368,
   spool219099136/cache67153920/metadata52965376,pinned/emergency0;
   frozen retained6195077120 verified. No active B reservation remains.
+- Task5 TaskC setup basee323533; approved brief task5-offline-writes-c-brief.md.
+  Prospective single holder: scratch4194304/metadata33562624/logs2097152,
+  other increments0, same policy. Scratchbefore262918144+4194304=267112448
+  <268435456 cap. Scope fixture heldH/public spool separation, tiny primitive
+  qualification only; no actual diagnostic/checkout/provider/inherited/fullgate.
+  Tests require exact staged admission after holder starts; no test admitted by
+  this prospective whole-task reservation. B owner fully released first.
+- TaskC live holder96335/PID75458@1789794623.28995,
+  tokenba5e75302aadf87b4a2e843887df9802; before scratch262918144/logs2494464,
+  spool219099136/cache67153920/metadata52965376,pinned/emergency0.
+  Fresh implementer /root/task5_offline_writes_c (sol/high) dispatched with full
+  brief; read/test writing only until exact RED admission. No tests started.
+  Root read-only continuation check confirms inherited supervisor still does
+  not forward offline_process_custody; no such implementation claimed by C.
+- Independent read-only handoff map /root/offline_supervisor_handoff_map
+  (sol/high) dispatched after completed B implementer finished its turn.
+  Earlier spawn hit thread limit and ran nothing. Scope existing supervisor/
+  session/ledger job/status ownership fields only; no new design, implementation,
+  approval, tests or provider. Root continues C admission/review separately.
+- Handoff map complete, retained in task5-offline-supervisor-handoff-preflight.md.
+  Root checked concrete supervisor/session/ledger seams: same-owner capability
+  cannot be supplied by healthy status or simply serialized into job.json.
+  No implementation/design approval follows. TaskC remains independently active.
+- TaskC RED1 admitted exact2 custody selectors: accepts_admitted_public_spool,
+  rejects_public_spool_one_byte_short, fresh scratch/task5-offline-writes-c/
+  red1-public-spool-ba5e7530. Closed env/-B/no conftest/cache; onepytest,
+  zero application/control children;source<=8192,fixturepayload<=131072B,
+  logs16KiBperpipe,120s.<=256KiBlogical/64file-linknames/64dirs.
+  Correct proposed1MiB to1536KiB before execution:262144+8192*(64+64)+4096=
+  1314816<=1572864<4MiBhold. No priorC scratch. Simultaneoustemp1 counted.
+  One-byte-short test must identify allowance exhaustion, not accept unrelated
+  overlap rejection; expected originalcode may fail both assertions.
+- TaskC RED1 both2failed0.34s/wall0.529,pytest1; correct current blanketspool
+  overlap rejection, including negative regex mismatch before budget check.
+  Retained3935logical/12288allocated,8names/17dirs,stdout2457/stderr0.
+  Root read full retained output; no scientific/appchild run. Implementer now
+  applies only the approved public/private separation correction beforeGREEN.
+- TaskC GREEN1 exactsame2selectors/closedcommand admitted fresh green1-public-
+  spool-ba5e7530;<=1536KiB/256KiBlogical/64names/64dirs/temp1/120s/pipes16KiB,
+  code8192/onepytest/noappchildren. Prior12288+1572864<4194304 hold.
+  Negative must reach true category-share exhaustion, not overlap fallback.
+- Controller path check: preserve fixed workspace/logs exclusion as well as
+  custom logs/cache mappings. Initial working diff removed fixed path while
+  allowing spool; more-specific mappings must not allow public runs in that
+  private-log namespace. Sent to implementer; later focused negative required,
+  not silently added to the2caseGREEN1 admission.
+- TaskC GREEN1 exact2passed0.29s/wall0.489,pytest/wrapper0;1584logical/
+  12288allocated,8names20dirs,stdout98/stderr0. TaskC24576allocated.
+  Root read retained stdout; corrected shortcase reaches allowanceexhaustion.
+  Unrun aliasRED revised beforeadmission: precreate parent so mkdir hook cannot
+  mask missing module alias wrapper; target parent must remainempty afterdenial.
+- TaskC RED2 admitted exact test_fit_guard_binds_existing_publisher_aliases
+  (pilot_checks,pilot_evidence,report.pilot:3cases), fresh red2-alias-ba5e7530.
+  Sameclosedpytest/-B/no-conftest/cache,code8192/onepytest/noappchildren;
+  three1Bpayloads,oneatomictemp at a time;<=256KiBlogical/64names/64dirs/
+  1536KiBallocated/120s/pipes16KiB.24576+1572864<4194304.
+  Expected3RED via unwrapped aliases, not directory-hook denial; no modelrun.
+- TaskC RED2 exact3failed DID NOT RAISE, confirmed unwrapped publishing paths;
+  root read retained output.1792logical/16384allocated,6names15dirs,
+  stdout1605/stderr0,wall1.921. TaskC40960allocated.
+- TaskC GREEN2 admitted exactsame3alias selector/newgreen2-alias-ba5e7530;
+  sameclosedcommand/onepytest/noappchildren/1536KiB/256KiBlogical/64names/
+  64dirs/temp1/120s/pipes16KiB.40960+1572864<4194304. Existingwrapperonly.
+- TaskC GREEN2 exact3passed1.31s/wall1.711,pytest/wrapper0;284logical/
+  4096allocated,3names15dirs,stdout98/stderr0. TaskC45056allocated.
+- RED3 proposal corrected beforeexecution:512KiB+8192*(128+160)+4096=
+  2887680>2MiB, use3MiB. Ruling: directory hold must include public ancestors
+  outside childroot and prepared private folders, not only child9. Count union
+  once, preserve category shares; byteP already includes those folderbytes.
+  Empty fixtureD=9+2public+3private=14, F=8+14=22. Cost: conservative explicit
+  fixture inventory may reject an underfunded layout earlier; caps unchanged.
+  Requirement clarified in brief/approvedplan; no hold implementation yet.
+- RED3 admitted revised twelve cases: seven proposed hold selectors (10cases)
+  plus test_fit_guard_offline_hold_rejects_short_inventory (names/dirs:2cases).
+  Fresh red3-hold-ba5e7530,onepytest/noappchildren,code8192; source-bounded
+  controlpages4096,childpayload4096/two1024publicrecords/1Bprivate-outer.
+  <=512KiBlogical/128file-linknames/160dirs/temp1/3MiB/120s/pipes32KiB.
+  45056+3145728=3190784<4194304. All twelve use same tiny ledger grammar;
+  no app launch. New short inventory cases must be written before holdcode.
+- TaskC RED3 exact12failed0.66s/wall0.860,pytest1, expectedmissing
+  FitGuard.reserve_offline_attempt. Root read full retained output.
+  13592logical/57344allocated,34names93dirs,stdout5612/stderr0;
+  cumulativeC102400allocated. Minimal fixture-only hold implementation now
+  underway; no actualchild/fullgate/provider or scientific changes.
+- TaskC GREEN3 admitted exact same8selectors/12cases as RED3, fresh
+  green3-hold-ba5e7530, onepytest/zeroappchildren; closedenv/-B/nocache/
+  noconftest,code8192,temp1,120s,pipes32KiB;<=512KiBlogical/128names/160dirs/
+  3MiBallocated. Bound2887680<=3145728 and102400+3145728=3248128<4194304.
+  Same live holder96335; no new owner or scientific/provider/fullgate authority.
+- TaskC GREEN3 exact12passed0.73s/wall0.929,pytest/wrapper0;
+  14265logical/73728allocated,41names100dirs,stdout99/stderr0.
+  Root read complete raw GREEN3 and preceding GREEN2 stdout. C176128allocated.
+  Exact H192512/names22/dirs14 and one-short controls passed; covering run and
+  independent review remain outstanding, no fullworker or Phase4 pass implied.
+- Controller found concrete installed-hook integration risk: mkdir for fresh
+  held output routes a synthetic directory-allowance member into _admit, which
+  rejects non-parent names under held root. Existing direct-admit test bypasses
+  installed(). Implementer investigating and preparing tiny real-publisher RED
+  before correction; no added test admitted yet. Retained-outer exact-H coverage
+  also requested by existing brief. No budget or source ownership change.
+- Parallel read-only /root/offline_handoff_design (astra/high) now compares
+  minimal existing-supervisor handoff approaches from retained preflight map.
+  It may inspect concrete seams but cannot implement, test, launch, write,
+  delegate or contact provider. Result is analysis only, not new authority.
+- TaskC RED4 admitted one actual-parent-publisher control
+  test_fit_guard_real_parent_publication_creates_fresh_held_root, fresh
+  red4-real-parent-ba5e7530. Onepytest/noappchildren,code8192,temp1,120s/
+  pipes16KiB,1Bprivate+1Bpublic/pages4096;<=128KiBlogical/32names/40dirs/
+  768KiBallocated. Bound724992<=786432;176128+786432<4194304.
+  Publisher uses os.mkdir(dir_fd), not Path.mkdir; this may disprove that
+  exact integration failure and must not trigger an unsupported source fix.
+- TaskC RED4 characterization1passed1.52s/wall1.949,pytest/wrapper0;
+  837logical/16384allocated,7names19dirs,stdout98/stderr0. Root read fullstdout.
+  Real publisher is compatible; Path.mkdir broadening not made. C192512allocated.
+- COVER-A admitted10nodes/31cases (proposal mislabeled7nodes): admittedspool,
+  spoolshort,fixedlogs/privateoverlap,split/compatible/recheckedpubliccategories,
+  pinnedprivate,unadmittedtargets,staleauthority. Fresh cover-custody-ba5e7530;
+  onepytest/noappchildren,code8192,temp1,120s,pipes32KiB;<=256KiBlogical/
+  96names/200dirs/2752512allocated;bound2691072 and192512+2752512<4194304.
+  B covering proposal requires exact selector paths before its separate admission.
+- COVER-A31passed0.99s/wall1.184,pytest/wrapper0;19619logical/139264allocated,
+  76names171dirs,stdout99/stderr0. Root read complete stdout. C331776allocated.
+- COVER-B admitted exact20nodes/27cases supplied by implementer (16 new hold/
+  alias cases,6legacyFitGuard,5primitivewriter). Fresh cover-hold-static-ba5e7530;
+  formatter,pytest,Ruffcheck/formatcheck,scopeddiffcheck,rg inventory:6commands;
+  5tinyPython controls plus their one closed read-only Git batch child.
+  <=512KiBlogical/128names/220dirs/3407872allocated,temp1,pipes32KiB,
+  180spercommand,code12288; childcode4096/pipes2048/30s,5x65536allowances.
+  Bound3379200<=3407872 and331776+3407872=3739648<4194304. No completedfit
+  selector, model/worker/fullgate/provider or new source authority included.
+- COVER-B formatter0,27pytestpassed6.77s/0,thenRuff1 (two RUF043 raw-regex
+  literals); remainingcommands notrun. Root read complete failed Ruff/stdout.
+  Full lstat inventory:22867logical/135168allocated,51files20links139dirs;
+  C466944allocated, confirmed holder scratch263385088/logs2510848.
+  du deduplicates one hardlink block and undercounts4KiB; use per-name lstat,
+  not du, for task accounting. Agent corrected only two test regex literals.
+- COVER-B2 admitted fresh cover-hold-static2-ba5e7530, same27cases and five
+  commands (no formatter), samebounds/children;466944+3407872=3874816<4194304.
+  Failed B artifacts remain retained. Source freeze/review still outstanding.
+- COVER-B2 exact27passed6.72s;Ruffcheck/formatcheck(4files)/scopeddiffcheck/
+  existing2member source inventory all clean. Four owned source/test files staged
+  by implementer; commit pending. No broader work or diagnostic launched.
+- TaskC source freeze44edf69; exactlyfourfiles. Root read all final rawstdout;
+  B2 21797logical/139264allocated,55files20links139dirs. C606208allocated.
+- MAIN-CUSTODY admitted exactsame10nodes/31cases at44edf69, fresh main-custody;
+  <=2752512allocated/262144logical/96names/200dirs/temp1/pipes32768/120s,
+  onepytest/noappchildren/code8192,closedenv/-B/noconftest/nocache.
+  606208+2752512=3358720<4194304. Source equality checked before run.
+- MAIN-CUSTODY31passed0.98s/wall1.180,pytest/wrapper0;17421logical/
+  139264allocated,66files10links169dirs,stdout99/stderr0. C745472allocated.
+- MAIN-HOLD admitted exactsame20nodes/27cases at44edf69, fresh main-hold;
+  <=3407872allocated/524288logical/128names/220dirs/temp1/pipes32768/180s,
+  onepytest+5tinyPython+1closedGit,childcode4096/pipes2048/30s,
+  closedenv/-B/noconftest/nocache.745472+3407872=4153344<4194304.
+  Scoped review package prepared; report/review still pending.
+- MAIN-HOLD27passed6.80s/wall7.347,pytest/wrapper0;21397logical/
+  126976allocated,47files20links137dirs,stdout99/stderr0. C872448allocated.
+- MAIN-STATIC admitted fourownedfiles Ruffcheck/formatcheck/diffcheck/equality
+  against44edf69, fresh main-static;<=512KiB/<128KiB/16names/24dirs/
+  pipes16KiB/60s percommand,no tests or appimports.872448+524288<4194304.
+- MAIN-STATIC fourcommands0;45logical/8192allocated,8files1dir;
+  C880640allocated. Exact independent58cases and static commands retained in
+  task5-offline-writes-c-main-evidence.md. Source44edf69 matches. Review pending.
+- TaskC report fully read; controller corrected report identity typos through
+  implementer (fullSHA and A/Blabels), not source. Independent task reviewer
+  /root/task5_offline_writes_c_review(astra/high) dispatched with brief/report/
+  scoped package/main evidence. Read-only, no new tests or authority.
+- TaskC independentreview: specFAIL/Needsfixes, oneImportant: required public
+  ancestor outside FitGuard.spool omitted, allowing13dirs where14required.
+  Accepted. NoCritical/Minor. Fixround1/5 starts at44edf69; originalimplementer
+  owns fixture/focusedtests only. Cross-task actualworker/inheritedhand-off
+  exclusions remain open Task5 work, not this task's completion evidence.
+  Owner fullcheck passed: scratch263798784/logs2592768, othercategoriesunchanged;
+  frozen6195077120 verified. Holder stays live for scopedfix, no release yet.
+- FIX1-RED admitted exact newancestorunion selector4cases: missing/existing
+  run/final with directorycap13reject/14accept; fresh fix1-red-ancestor-union-
+  ba5e7530. Onepytest/noappchildren;0publicpayload,controlpages4096,temp1;
+  <=128KiBlogical/48names/64dirs/1152KiBallocated,pipes16KiB/120s/code8192.
+  Bound1052672<=1179648 and880640+1179648=2060288<4194304.
+- FIX1-RED2failed2passed0.46s/wall0.656: both13dircasesDIDNOTRAISE,
+  both14dircasespassed. Root read full retainedstdout;3334logical/20480allocated,
+  10files1link41dirs,stderr0. C901120allocated. Minimal union correction underway.
+- FIX1-COVER admitted exact16nodes/26cases (new4,priorhold/aliases16,
+  legacyFitGuard6), fresh fix1-cover-ancestor-union-ba5e7530;4commands total:
+  pytest,Ruffcheck,formatcheck,scopeddiff. Onepytest/noapp/controlchildren;
+  pages4096/tinyrecords/3x1Baliases/temp1;<=256KiBlogical/96names/188dirs/
+  2621440allocated,pipes32KiB/120s/code8192. Bound2592768<=2621440;
+  901120+2621440=3522560<4194304. Onlyfixture/writertest changed.
+- FIX1 pre-GREEN self-review preserves retained-directory byte cushion when
+  directorynamecount is held. Concrete-path union deduplicates overlapping
+  spool/cache traversals without disjoint-roots rejection; distinct hardlink
+  names remain separately charged. Same26case admission executing, no extra tests.
+- FIX1-COVER26passed2.62s/Ruffcheck0/formatcheck0/diffcheck0;wall3.251s;
+  23983logical/131072allocated,56files16links158dirs,stderr0. C1032192allocated.
+  Root read complete pyteststdout. Twofile source freeze pending; main command
+  prepared but not admitted/executed before frozen source handoff.
+- FIX1 sourcefreeze0aee7bd, exactlyfixture/writertests. MAIN-FIX1 admitted
+  same16nodes/26cases, fresh main-fix1;2621440allocated/262144logical/
+  96names188dirs,temp1,pipes32768/120s/code8192;onepytest/noappchildren,
+  closedenv/-B/noconftest/nocache.1032192+2621440=3653632<4194304.
+  Four owned files match freeze; unchanged privacy path source is retained.
+- MAIN-FIX1 independent26passed2.41s/wall2.948,pytest/wrapper0;
+  23513logical/122880allocated,50files16links156dirs,stdout99/stderr0;
+  C1155072allocated. Scoped re-review /root/task5_offline_writes_c_fix1_review
+  (sol/high) dispatched after full appended report read; readonly/no execution.
+- MAIN-FIX1-STATIC admitted samefourfile Ruff/format/diff/equality at0aee7bd,
+  fresh main-fix1-static;512KiB/<128KiB/16names24dirs/pipes16KiB/60s,
+  no tests/imports.1155072+524288<4194304.
+- MAIN-FIX1-STATIC fourcommands0;45logical/8192allocated,8files1dir;
+  C1163264allocated. Exactcommands in task5-offline-writes-c-fix1-main-evidence.md.
+  Changed hashes match report; sourceequality0aee7bd confirmed. Reviewpending.
+- FIX1 scoped re-review clean: missing public-ancestor finding addressed;
+  directory byte cushion preserved, no new Critical/Important breakage. TaskC
+  complete at0aee7bd after independent26case rerun and static checks. Task5,
+  Task7,Phase4 and productionpilot remain incomplete. No actualworker/provider
+  launched. Owner final frozen check/release requested; no second owner admitted.
+- TaskC owner96335 exited0 after full frozen6195077120 check. Final categories:
+  spool219099136/cache67153920/pinned0/metadata52965376/scratch264081408/
+  logs2621440/emergency0. Exact TaskC scratch1163264 retained; nothing deleted,
+  reclassified or retried in place. Reservation ba5e75302aadf87b4a2e843887df9802
+  released. Next step is read-only one-worker admission design, not a launch.

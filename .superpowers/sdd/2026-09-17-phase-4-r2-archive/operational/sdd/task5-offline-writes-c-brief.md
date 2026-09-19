@@ -165,6 +165,21 @@ reject this fixture layout rather than allocating the whole child allowance to
 the wrong category. No binding mutation, child-inherited authority or raw-private
 publication hook is added by the fixture.
 
+For the fixture directory ceiling, count the union of retained spool/cache
+folders outside the held child root, required public ancestors outside that
+root (whether existing or still missing), the child directory allowance, and
+the prepared private-custody folders outside spool/cache. Count each shared
+folder once. The child allowance includes the output root, not its run/final
+ancestors. Private folders stay in logs for global accounting but are included
+conservatively in FIT_DIRECTORIES, just as full private P is included in H and
+parent F=14 in the name hold. Use the existing validated custody route/identity,
+not a new locator or public record. These folders' bytes are already covered
+by P; do not charge them a second time in H. With a wholly absent run/final
+path and child directory allowance9, the simple fixture holds14 directories
+(9+2 public ancestors+3 prepared private folders). Exact and one-short byte,
+name and directory cases must fail before public intent or launch when short.
+
+
 ##### Task C: Hold the exact child allowance in the existing fixture
 
 **Files:** `tests/pilot/cold_authentication_fixture.py`, focused tests in `test_pilot_offline_writes.py`; one path-contract correction in `pilot_offline_process.py` and focused custody tests in `test_pilot_offline_process.py`.

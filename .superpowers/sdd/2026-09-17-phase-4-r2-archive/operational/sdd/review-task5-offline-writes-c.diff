@@ -1,0 +1,990 @@
+# Task C review package
+
+Base e323533; head44edf6947aa6cf59d75c2bb31e8ae1a8bfaa9ee0.
+Task-scoped source/test changes only; controller plan/ledger excluded.
+
+## Commits
+
+44edf69 feat(pilot): reserve offline child and parent writes
+
+## Stat
+
+ src/silent_cascade/train/pilot_offline_process.py |  15 +-
+ tests/pilot/cold_authentication_fixture.py        | 235 ++++++++++++++++-
+ tests/pilot/test_pilot_offline_process.py         | 125 ++++++++-
+ tests/pilot/test_pilot_offline_writes.py          | 306 ++++++++++++++++++++++
+ 4 files changed, 662 insertions(+), 19 deletions(-)
+
+## Diff
+
+diff --git a/src/silent_cascade/train/pilot_offline_process.py b/src/silent_cascade/train/pilot_offline_process.py
+index 33f7e2d..da712de 100644
+--- a/src/silent_cascade/train/pilot_offline_process.py
++++ b/src/silent_cascade/train/pilot_offline_process.py
+@@ -223,27 +223,36 @@ def _custody_paths(budget, output, attempt):
+         or output.resolve() != output
+         or ".." in output.parts
+         or re.fullmatch(r"[0-9a-f]{32}", attempt) is None
+     ):
+         raise ValueError("offline process custody root differs")
+     budget.require_path(output)
+     private = budget.workspace / "logs/offline-process-private" / attempt
+     budget.require_path(private)
+     run = output.parent.parent
+     state = budget._state()
+-    forbidden = [budget.root, budget.workspace / "logs"] + [
++    public_forbidden = [budget.root, budget.workspace / "logs"] + [
+         budget.workspace / path
+         for path, category in state["paths"].items()
+-        if category in {"spool", "cache"}
++        if category in {"logs", "cache"}
+     ]
+-    if any(run.is_relative_to(path) or path.is_relative_to(run) for path in forbidden):
++    if any(run.is_relative_to(path) or path.is_relative_to(run) for path in public_forbidden):
+         raise ValueError("offline process custody overlaps public run")
++    private_forbidden = [budget.root, run] + [
++        budget.workspace / path
++        for path, category in state["paths"].items()
++        if category in {"spool", "cache"}
++    ]
++    if any(
++        private.is_relative_to(path) or path.is_relative_to(private) for path in private_forbidden
++    ):
++        raise ValueError("offline process private custody overlaps public storage")
+     public_category = _category(budget, state, output)
+     if any(
+         _category(budget, state, output / name) != public_category
+         for name in _PUBLICATION_NAMES
+         if name not in _PRIVATE_NAMES
+     ) or any(
+         category != public_category
+         and (budget.workspace / prefix).parent == output
+         and re.fullmatch(r"\.pilot-[0-9a-f]{32}\.tmp", Path(prefix).name) is not None
+         for prefix, category in state["paths"].items()
+diff --git a/tests/pilot/cold_authentication_fixture.py b/tests/pilot/cold_authentication_fixture.py
+index 8e61edf..fe21df4 100644
+--- a/tests/pilot/cold_authentication_fixture.py
++++ b/tests/pilot/cold_authentication_fixture.py
+@@ -1,16 +1,17 @@
+ """Test-only bounded real-source fit and strict path leases; no provider authority."""
+
+ import hashlib
+ import inspect
+ import json
+ import os
++import re
+ import shutil
+ import stat
+ import subprocess
+ import sys
+ from contextlib import contextmanager
+ from pathlib import Path
+ from types import SimpleNamespace
+ from unittest.mock import patch
+
+ BLOCK = 4096
+@@ -200,69 +201,278 @@ def create_checkout(scratch):
+             }
+         )
+     )
+     return root
+
+
+ class FitGuard:
+     """Reserve full next publication against current live names, never total history."""
+
+     def __init__(self, spool, cache):
+-        self.spool, self.cache = spool, cache
++        self.spool, self.cache = Path(spool).absolute(), Path(cache).absolute()
+         self.maximum = 0
+         self.calls = {}
+         self.blocked = None
++        self.offline = None
++
++    def reserve_offline_attempt(
++        self, output_dir, *, write_allowance, process_limits, process_custody
++    ):
++        from silent_cascade.train.pilot_offline_process import (
++            OfflineProcessCustody,
++            OfflineProcessLimits,
++            _category,
++            _custody_paths,
++            _publication_peaks,
++            require_offline_process_custody,
++        )
++        from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++        assert self.blocked is None, "fixture guard remains blocked: " + str(self.blocked)
++        try:
++            assert self.offline is None, "fixture offline hold already held"
++            assert type(write_allowance) is OfflineWriteAllowance, "fixture offline allowance"
++            assert type(process_limits) is OfflineProcessLimits, "fixture offline limits"
++            assert type(process_custody) is OfflineProcessCustody, "fixture offline custody"
++            output = Path(output_dir)
++            assert output == output.absolute() and output.resolve() == output, (
++                "fixture offline root"
++            )
++            assert output.is_relative_to(self.spool), "fixture offline root"
++            assert not output.exists() and not output.is_symlink(), "fixture offline root"
++            custody = require_offline_process_custody(
++                process_custody,
++                output_dir=output,
++                limits=process_limits,
++                phase=0,
++            )
++            budget = custody.budget
++            private, state = _custody_paths(budget, output, custody.attempt_id)
++            public_category = _category(budget, state, output)
++            relative = output.relative_to(budget.workspace)
++            assert not any(
++                Path(prefix).is_relative_to(relative) and category != public_category
++                for prefix, category in state["paths"].items()
++            ), "fixture offline child category differs"
++
++            original_peaks = dict(custody.category_peaks)
++            current_peaks = dict(
++                _publication_peaks(
++                    budget,
++                    state,
++                    output,
++                    private,
++                    process_limits,
++                    phase=0,
++                )
++            )
++            assert original_peaks and set(current_peaks) <= set(original_peaks), (
++                "fixture offline custody peaks differ"
++            )
++            allocated = budget.check_scoped(custody.retained)
++            active = budget._state()["reservations"][custody.token]
++            for category, original_peak in original_peaks.items():
++                remaining_peak = current_peaks.get(category, 0)
++                assert 0 <= remaining_peak <= original_peak, "fixture offline custody peaks differ"
++                growth = max(0, allocated[category] - active["before"][category])
++                required = growth + remaining_peak
++                if category == public_category:
++                    required += write_allowance.allocated_bytes
++                assert required <= active["amounts"].get(category, 0), (
++                    "fixture offline category allowance"
++                )
++
++            held_bytes = write_allowance.allocated_bytes + sum(original_peaks.values())
++            public_missing = tuple(
++                parent
++                for parent in output.parents
++                if parent.is_relative_to(self.spool) and not parent.exists()
++            )
++            private_directories = tuple(
++                parent
++                for parent in (private, *private.parents)
++                if parent != budget.workspace
++                and parent.is_relative_to(budget.workspace)
++                and parent.is_dir()
++            )
++            held_names = write_allowance.file_names + 14
++            held_directories = (
++                write_allowance.directories + len(public_missing) + len(private_directories)
++            )
++            used = files = directories = 0
++            for root in (self.spool, self.cache):
++                values = allocation(root)
++                used += values[0]
++                files += values[1]
++                directories += values[2]
++            projected = used + held_bytes + (files + directories) * BLOCK
++            assert files + held_names <= FIT_NAMES, "fixture file name bound"
++            assert directories + held_directories <= FIT_DIRECTORIES, "fixture directory bound"
++            assert projected <= FIT_BYTES, (
++                "fixture live allocation blocked before write",
++                projected,
++            )
++            self.offline = dict(
++                root=output,
++                private=private,
++                allowance=write_allowance,
++                limits=process_limits,
++                custody=custody,
++                held_bytes=held_bytes,
++                held_names=held_names,
++                held_directories=held_directories,
++                missing_ancestors=frozenset(public_missing),
++            )
++            self.maximum = max(self.maximum, projected)
++        except AssertionError as error:
++            self.blocked = str(error)
++            raise
++
++    def _outer_allocation(self):
++        total = files = directories = 0
++        held = self.offline
++        for root in (self.spool, self.cache):
++            if not root.exists():
++                continue
++            for path in (root, *root.rglob("*")):
++                if held is not None and (
++                    path == held["root"]
++                    or path.is_relative_to(held["root"])
++                    or path in held["missing_ancestors"]
++                ):
++                    continue
++                info = path.lstat()
++                assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
++                total += info.st_blocks * 512
++                files += stat.S_ISREG(info.st_mode)
++                directories += stat.S_ISDIR(info.st_mode)
++        return total, files, directories
++
++    def _validate_offline_inventory(self):
++        held = self.offline
++        if held is None or not held["root"].exists():
++            return
++        used = files = directories = 0
++        parent_names = {"intent.json", "stdout.txt", "stderr.txt", "process-result.json"}
++        for path in (held["root"], *held["root"].rglob("*")):
++            info = path.lstat()
++            assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
++            if stat.S_ISDIR(info.st_mode):
++                directories += 1
++                used += info.st_blocks * 512
++                continue
++            relative = path.relative_to(held["root"])
++            if (len(relative.parts) == 1 and path.name in parent_names) or (
++                len(relative.parts) == 1
++                and re.fullmatch(r"\.pilot-[0-9a-f]{32}\.tmp", path.name) is not None
++            ):
++                continue
++            files += 1
++            used += info.st_blocks * 512
++        allowance = held["allowance"]
++        assert files <= allowance.file_names, "fixture offline file name bound"
++        assert directories <= allowance.directories, "fixture offline directory bound"
++        assert used <= allowance.allocated_bytes, "fixture offline byte bound"
+
+     def admit(self, path, size, *, temporary=True):
+         assert self.blocked is None, "fixture guard remains blocked: " + str(self.blocked)
+         try:
+             self._admit(path, size, temporary=temporary)
+         except AssertionError as error:
+             self.blocked = str(error)
+             raise
+
+     def _admit(self, path, size, *, temporary):
+         path = path.absolute()
+         assert path.is_relative_to(self.spool) or path.is_relative_to(self.cache), path
+         assert size <= 16 * MIB, "fixture input exceeds admitted single-file lease"
+-        used = files = directories = 0
+-        for root in (self.spool, self.cache):
+-            values = allocation(root)
+-            used += values[0]
+-            files += values[1]
+-            directories += values[2]
++        self._validate_offline_inventory()
++        held = self.offline
++        if (
++            held is not None
++            and path.parent == held["root"]
++            and path.name
++            in {
++                "intent.json",
++                "stdout.txt",
++                "stderr.txt",
++                "process-result.json",
++            }
++        ):
++            from silent_cascade.train.pilot_offline_process import (
++                require_offline_process_custody,
++            )
++
++            phase = {"intent.json": 1, "stdout.txt": 4, "stderr.txt": 5, "process-result.json": 6}[
++                path.name
++            ]
++            bound = held["limits"].record_bytes if path.name.endswith(".json") else 0
++            assert size <= bound, "fixture offline parent publication bound"
++            require_offline_process_custody(
++                held["custody"],
++                output_dir=held["root"],
++                limits=held["limits"],
++                phase=phase,
++            )
++            used, files, directories = self._outer_allocation()
++            projected = used + held["held_bytes"] + (files + directories) * BLOCK
++            assert files + held["held_names"] <= FIT_NAMES, "fixture file name bound"
++            assert directories + held["held_directories"] <= FIT_DIRECTORIES, (
++                "fixture directory bound"
++            )
++            assert projected <= FIT_BYTES, (
++                "fixture live allocation blocked before write",
++                projected,
++            )
++            self.maximum = max(self.maximum, projected)
++            self.calls[path.suffix] = self.calls.get(path.suffix, 0) + 1
++            return
++        if held is not None:
++            assert not path.is_relative_to(held["root"]), "fixture offline parent path"
++        used, files, directories = self._outer_allocation()
+         missing = sum(
+-            not parent.exists()
++            not parent.exists() and (held is None or parent not in held["missing_ancestors"])
+             for parent in path.parents
+             if parent.is_relative_to(self.spool) or parent.is_relative_to(self.cache)
+         )
+         # Count every current allocation, the complete next temp (old target stays),
+         # missing directories, and temp/final directory entries. A hardlink gets
+         # charged twice conservatively, without calling the parent ledger here.
+         names = 2 if temporary else 1
+         projected = (
+-            used + 2 * rounded(size) + BLOCK + (directories + missing + files + names) * BLOCK
++            used
++            + (0 if held is None else held["held_bytes"])
++            + 2 * rounded(size)
++            + BLOCK
++            + (directories + missing + files + names) * BLOCK
++        )
++        held_names = 0 if held is None else held["held_names"]
++        held_directories = 0 if held is None else held["held_directories"]
++        assert files + names + held_names <= FIT_NAMES, "fixture file name bound"
++        assert directories + missing + held_directories <= FIT_DIRECTORIES, (
++            "fixture directory bound"
+         )
+-        assert files + names <= FIT_NAMES, "fixture file name bound"
+-        assert directories + missing <= FIT_DIRECTORIES, "fixture directory bound"
+         assert projected <= FIT_BYTES, ("fixture live allocation blocked before write", projected)
+         self.maximum = max(self.maximum, projected)
+         self.calls[path.suffix] = self.calls.get(path.suffix, 0) + 1
+
+     @contextmanager
+     def installed(self, run):
+         from contextlib import ExitStack
+
+         from silent_cascade import io
++        from silent_cascade.report import pilot as pilot_report
+         from silent_cascade.train import (
+             pilot_checkpoints,
++            pilot_checks,
+             pilot_data,
++            pilot_evidence,
+             pilot_evidence_types,
+             pilot_trainer,
+             pilot_workflow,
+         )
+
+         def publication(original):
+             def guarded(path, raw, *args, **kwargs):
+                 self.admit(path, len(raw))
+                 return original(path, raw, *args, **kwargs)
+
+@@ -314,21 +524,24 @@ class FitGuard:
+             assert os.fstat(parent).st_ino == run.stat().st_ino
+             self.admit(run / name, len(raw))
+             return original_at(parent, name, raw, **kwargs)
+
+         with ExitStack() as stack:
+             for module in (
+                 pilot_data,
+                 pilot_trainer,
+                 pilot_checkpoints,
+                 pilot_workflow,
++                pilot_checks,
++                pilot_evidence,
+                 pilot_evidence_types,
++                pilot_report,
+             ):
+                 stack.enter_context(
+                     patch.object(
+                         module, "_publish_pilot_bytes", publication(module._publish_pilot_bytes)
+                     )
+                 )
+             stack.enter_context(patch.object(pilot_trainer, "_publish_bytes_at", at))
+             stack.enter_context(patch.object(io, "_durable_temp", publication(io._durable_temp)))
+             stack.enter_context(patch.object(Path, "open", opened))
+             stack.enter_context(patch.object(Path, "mkdir", mkdir))
+diff --git a/tests/pilot/test_pilot_offline_process.py b/tests/pilot/test_pilot_offline_process.py
+index 8dfcff3..3f656d9 100644
+--- a/tests/pilot/test_pilot_offline_process.py
++++ b/tests/pilot/test_pilot_offline_process.py
+@@ -1061,75 +1061,174 @@ def test_privacy_nonempty_capture_never_enters_public_logs(tmp_path, monkeypatch
+         assert result["stdout_bytes"] == 15
+         assert result["stdout_sha256"] == _digest(b"/private/SECRET")
+         assert result["offline_sha256"] is None
+         intent_raw = (output / "intent.json").read_bytes()
+         assert os.fsencode(output) not in intent_raw
+         assert os.fsencode(sys.executable) not in intent_raw
+         assert (output / "stderr.txt").read_bytes() == b""
+
+
+ @contextmanager
+-def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144, scratch=65536, bindings=()):
++def _privacy_ledger(
++    tmp_path,
++    *,
++    logs=262144,
++    metadata=262144,
++    scratch=65536,
++    spool=0,
++    run_category="metadata",
++    privacy_spool_short=None,
++    privacy_spool_extra=0,
++    bindings=(),
++):
+     """Tiny ledger fixture; isolate only existing host ancestor authorities."""
+     import runpy
+
+     from silent_cascade.archive.ledger import _StorageBudget, initialize_workspace_ledger
+     from silent_cascade.archive.types import ArchivePolicy
+
+     helpers = runpy.run_path(str(Path(__file__).parents[1] / "archive/conftest.py"))
+     boundary = helpers["_authority_boundary"](tmp_path)
+     policy = ArchivePolicy(
+         workspace_bytes=16 * 1024**2,
+-        spool_bytes=4096,
++        spool_bytes=1024**2,
+         cache_bytes=4096,
+         pinned_bytes=4096,
+         metadata_bytes=1024**2,
+         scratch_bytes=1024**2,
+         logs_bytes=1024**2,
+         emergency_bytes=4096,
+         reserve_bytes=1024**2,
+         episode_bytes=2048,
+         pack_target_bytes=512,
+         journal_bytes=256,
+         chunk_bytes=64,
+         page_bytes=2048,
+     )
+     assert len(_encoded(policy.model_dump())) <= 4096
+     with helpers["_hide_host_authorities"](boundary):
+         workspace = tmp_path / "workspace"
+         initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
+         budget = _StorageBudget(workspace=workspace, policy=policy)
+-        budget.bind(workspace / "run", category="metadata")
++        budget.bind(workspace / "run", category=run_category)
+         for relative, category in bindings:
+             budget.bind(workspace / relative, category=category)
++        if privacy_spool_short is not None:
++            from silent_cascade.train import pilot_offline_process as process
++
++            output = workspace / "run/final/offline"
++            private = workspace / "logs/offline-process-private" / ("a" * 32)
++            peaks = dict(
++                process._publication_peaks(
++                    budget,
++                    budget._state(),
++                    output,
++                    private,
++                    process.OfflineProcessLimits(
++                        stdout_bytes=64,
++                        stderr_bytes=64,
++                        record_bytes=1024,
++                        timeout_seconds=2,
++                    ),
++                )
++            )
++            logs = peaks["logs"]
++            spool = peaks["spool"] + privacy_spool_extra - privacy_spool_short
+         with budget._scoped_reservation(
+-            admission={"control": "offline-privacy"}, logs=logs, metadata=metadata, scratch=scratch
++            admission={"control": "offline-privacy"},
++            logs=logs,
++            metadata=metadata,
++            scratch=scratch,
++            spool=spool,
+         ) as admission:
+             yield budget, admission, workspace / "run/final/offline"
+
+
+ def _prepare_privacy(budget, admission, output, *, limits=None):
+     from silent_cascade.train import pilot_offline_process as process
+
+     if limits is None:
+         limits = process.OfflineProcessLimits(
+             stdout_bytes=64, stderr_bytes=64, record_bytes=1024, timeout_seconds=2
+         )
+     return process.prepare_offline_process_custody(
+         budget=budget,
+         admission=admission,
+         output_dir=output,
+         limits=limits,
+         attempt_id="a" * 32,
+     )
+
+
++def test_privacy_custody_accepts_admitted_public_spool(tmp_path):
++    from silent_cascade.train import pilot_offline_process as process
++
++    with (
++        _privacy_ledger(
++            tmp_path,
++            logs=61440,
++            metadata=0,
++            scratch=0,
++            spool=0,
++            run_category="spool",
++            privacy_spool_short=0,
++        ) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        assert custody.category_peaks == (("logs", 61440), ("spool", 65536))
++        assert process.require_offline_process_custody(custody, output_dir=output) is custody
++        assert not output.exists()
++        assert os.listdir(custody.directory_fd) == []
++
++
++def test_privacy_custody_rejects_public_spool_one_byte_short(tmp_path):
++    with _privacy_ledger(
++        tmp_path,
++        logs=61440,
++        metadata=0,
++        scratch=0,
++        spool=0,
++        run_category="spool",
++        privacy_spool_short=1,
++    ) as (budget, admission, output):
++        before = set(budget.workspace.rglob("*"))
++        with pytest.raises(ValueError, match="allowance exhausted"):
++            _prepare_privacy(budget, admission, output)
++        assert set(budget.workspace.rglob("*")) == before
++        assert not output.exists()
++
++
++def test_privacy_custody_rejects_fixed_logs_even_with_spool_subbinding(tmp_path):
++    with _privacy_ledger(
++        tmp_path,
++        spool=65536,
++        bindings=(("logs/run", "spool"),),
++    ) as (budget, admission, _output):
++        output = budget.workspace / "logs/run/final/offline"
++        before = set(budget.workspace.rglob("*"))
++        with pytest.raises(ValueError, match="overlaps public run"):
++            _prepare_privacy(budget, admission, output)
++        assert set(budget.workspace.rglob("*")) == before
++
++
++@pytest.mark.parametrize("category", ["spool", "cache"])
++def test_privacy_custody_rejects_private_storage_overlap(tmp_path, category):
++    with _privacy_ledger(
++        tmp_path,
++        bindings=(("logs/offline-process-private", category),),
++    ) as (budget, admission, output):
++        before = set(budget.workspace.rglob("*"))
++        with pytest.raises(ValueError, match="private custody overlaps public storage"):
++            _prepare_privacy(budget, admission, output)
++        assert set(budget.workspace.rglob("*")) == before
++
++
+ @pytest.mark.parametrize(
+     "name",
+     [
+         "intent.json",
+         "process-result.json",
+         "stdout.txt",
+         "stderr.txt",
+         ".pilot-" + "b" * 32 + ".tmp",
+     ],
+ )
+@@ -1225,37 +1324,53 @@ def test_privacy_custody_pins_counted_private_directory(tmp_path):
+             custody.attempt_id = "b" * 32
+         fd = custody.directory_fd
+         custody.close()
+         with pytest.raises(OSError):
+             os.fstat(fd)
+         assert private.exists()
+
+
+ @pytest.mark.parametrize(
+     "bad",
+-    ["shape", "overlap", "spool", "symlink", "hardlink", "existing", "owner", "logs", "metadata"],
++    [
++        "shape",
++        "overlap",
++        "spool",
++        "cache",
++        "control",
++        "symlink",
++        "hardlink",
++        "existing",
++        "owner",
++        "logs",
++        "metadata",
++    ],
+ )
+ def test_privacy_custody_rejects_unadmitted_targets(tmp_path, bad):
+     from dataclasses import replace
+
+     from silent_cascade.archive.ledger import StorageBlocked
+
+     with _privacy_ledger(
+         tmp_path, logs=1 if bad == "logs" else 262144, metadata=1 if bad == "metadata" else 262144
+     ) as (budget, admission, output):
+         private = budget.workspace / "logs/offline-process-private" / ("a" * 32)
+         if bad == "shape":
+             output = budget.workspace / "wrong"
+         elif bad == "overlap":
+             output = budget.workspace / "logs/final/offline"
+         elif bad == "spool":
+             output = budget.workspace / "spool/run/final/offline"
++        elif bad == "cache":
++            output = budget.workspace / "cache/run/final/offline"
++        elif bad == "control":
++            output = budget.root / "run/final/offline"
+         elif bad == "symlink":
+             (budget.workspace / "run").symlink_to(budget.workspace / "absent")
+         elif bad == "hardlink":
+             (budget.workspace / "run").mkdir()
+             (budget.workspace / "run/first").write_bytes(b"x")
+             os.link(budget.workspace / "run/first", budget.workspace / "run/second")
+         elif bad == "existing":
+             private.mkdir(parents=True)
+         elif bad == "owner":
+             admission = replace(
+diff --git a/tests/pilot/test_pilot_offline_writes.py b/tests/pilot/test_pilot_offline_writes.py
+index e5c46c4..9d45469 100644
+--- a/tests/pilot/test_pilot_offline_writes.py
++++ b/tests/pilot/test_pilot_offline_writes.py
+@@ -80,20 +80,47 @@ def denied(reason=None):
+         assert captured.reason == "nonzero_exit"
+         assert (
+             "OfflineWriteDenied: offline write denied: " + installation_denial
+         ).encode() in captured.stderr
+         return
+     assert captured.reason is None, captured.stderr.decode(errors="replace")
+     assert captured.returncode == 0
+     assert captured.eof
+
+
++@contextmanager
++def _held_fixture_attempt(tmp_path, *, extra_spool=0, bindings=()):
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++    from . import cold_authentication_fixture as fixture
++    from .test_pilot_offline_process import _prepare_privacy, _privacy_ledger
++
++    allowance = OfflineWriteAllowance(65536, file_names=8, directories=9)
++    with (
++        _privacy_ledger(
++            tmp_path,
++            logs=0,
++            metadata=0,
++            scratch=0,
++            spool=0,
++            run_category="spool",
++            privacy_spool_short=0,
++            privacy_spool_extra=allowance.allocated_bytes + extra_spool,
++            bindings=bindings,
++        ) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        guard = fixture.FitGuard(budget.workspace / "run", budget.workspace / "cache")
++        hold = allowance.allocated_bytes + sum(peak for _, peak in custody.category_peaks)
++        yield fixture, guard, custody, output, allowance, hold
++
++
+ @contextmanager
+ def _replace_owned_inode(root, *, rows):
+     """A bounded external actor preserves then replaces one stage-local inode."""
+     replacement, displaced = root.parent / "replacement", root.parent / "displaced"
+     replacement.write_bytes(b"y")
+     replacement.chmod(0o600)
+     stopped, changed = threading.Event(), threading.Event()
+     errors = []
+
+     def substitute():
+@@ -227,20 +254,299 @@ def test_install_cannot_replace_or_enlarge_allowance(tmp_path):
+     run_writer_control(
+         """
+ with denied('authority'):
+     install_offline_writes(root, OfflineWriteAllowance(131072))
+ assert not list(root.iterdir())
+ """,
+         tmp_path / "child",
+     )
+
+
++@pytest.mark.parametrize(
++    "module_name",
++    [
++        "silent_cascade.train.pilot_checks",
++        "silent_cascade.train.pilot_evidence",
++        "silent_cascade.report.pilot",
++    ],
++)
++def test_fit_guard_binds_existing_publisher_aliases(tmp_path, monkeypatch, module_name):
++    from . import cold_authentication_fixture as fixture
++
++    publisher = __import__(module_name, fromlist=["_publish_pilot_bytes"])
++    run = tmp_path / "run"
++    run.mkdir()
++    guard = fixture.FitGuard(tmp_path, tmp_path / "cache")
++    monkeypatch.setattr(fixture, "FIT_BYTES", 0)
++    with guard.installed(run), pytest.raises(AssertionError, match="before write"):
++        publisher._publish_pilot_bytes(run / "blocked.json", b"x")
++    assert list(run.iterdir()) == []
++
++
++@pytest.mark.parametrize("short", [0, 1])
++def test_fit_guard_reserves_exact_offline_hold_before_publication(tmp_path, monkeypatch, short):
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        guard.cache.mkdir()
++        (guard.cache / "retained").write_bytes(b"x")
++        used, files, directories = fixture.allocation(guard.cache)
++        exact = hold + used + (files + directories) * fixture.BLOCK
++        monkeypatch.setattr(fixture, "FIT_BYTES", exact - short)
++        monkeypatch.setattr(fixture, "FIT_NAMES", allowance.file_names + 14 + files)
++        # Child directories start at offline; two missing public ancestors and
++        # the three prepared private-custody directories remain parent-held.
++        monkeypatch.setattr(
++            fixture,
++            "FIT_DIRECTORIES",
++            allowance.directories + 5 + directories,
++        )
++        if short:
++            with pytest.raises(AssertionError, match="before write"):
++                guard.reserve_offline_attempt(
++                    output,
++                    write_allowance=allowance,
++                    process_limits=custody.limits,
++                    process_custody=custody,
++                )
++        else:
++            guard.reserve_offline_attempt(
++                output,
++                write_allowance=allowance,
++                process_limits=custody.limits,
++                process_custody=custody,
++            )
++            assert guard.maximum == exact
++        assert not output.exists()
++        assert os.listdir(custody.directory_fd) == []
++
++
++def test_fit_guard_real_parent_publication_creates_fresh_held_root(tmp_path, monkeypatch):
++    from silent_cascade.train import pilot_data
++    from silent_cascade.train import pilot_offline_process as process
++
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold)
++        monkeypatch.setattr(fixture, "FIT_NAMES", allowance.file_names + 14)
++        monkeypatch.setattr(fixture, "FIT_DIRECTORIES", allowance.directories + 5)
++        guard.reserve_offline_attempt(
++            output,
++            write_allowance=allowance,
++            process_limits=custody.limits,
++            process_custody=custody,
++        )
++        process._publish_private_process_bytes(custody, "binding.json", b"x")
++        with guard.installed(guard.spool):
++            pilot_data._publish_pilot_bytes(output / "intent.json", b"x")
++        assert (output / "intent.json").read_bytes() == b"x"
++        assert guard.blocked is None
++
++
++def test_fit_guard_offline_hold_cannot_be_rebound_or_replenished(tmp_path, monkeypatch):
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold * 2)
++        guard.reserve_offline_attempt(
++            output,
++            write_allowance=allowance,
++            process_limits=custody.limits,
++            process_custody=custody,
++        )
++        with pytest.raises(AssertionError, match="already held"):
++            guard.reserve_offline_attempt(
++                output,
++                write_allowance=allowance,
++                process_limits=custody.limits,
++                process_custody=custody,
++            )
++        assert guard.maximum == hold
++
++
++@pytest.mark.parametrize("short", ["names", "directories"])
++def test_fit_guard_offline_hold_rejects_short_inventory(tmp_path, monkeypatch, short):
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold)
++        monkeypatch.setattr(
++            fixture,
++            "FIT_NAMES",
++            allowance.file_names + 14 - (short == "names"),
++        )
++        monkeypatch.setattr(
++            fixture,
++            "FIT_DIRECTORIES",
++            allowance.directories + 5 - (short == "directories"),
++        )
++        with pytest.raises(AssertionError, match=r"file name bound|directory bound"):
++            guard.reserve_offline_attempt(
++                output,
++                write_allowance=allowance,
++                process_limits=custody.limits,
++                process_custody=custody,
++            )
++        assert not output.exists()
++        assert os.listdir(custody.directory_fd) == []
++
++
++def test_fit_guard_live_child_bytes_are_not_double_counted(tmp_path, monkeypatch):
++    with _held_fixture_attempt(tmp_path, extra_spool=32768) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold + 32768)
++        guard.reserve_offline_attempt(
++            output,
++            write_allowance=allowance,
++            process_limits=custody.limits,
++            process_custody=custody,
++        )
++        output.mkdir(parents=True)
++        (output / "step.json").write_bytes(b"x" * 4096)
++        guard.admit(guard.spool / "outer.json", 1)
++        assert guard.blocked is None
++
++
++def test_fit_guard_unrelated_output_cannot_spend_offline_hold(tmp_path, monkeypatch):
++    with _held_fixture_attempt(tmp_path, extra_spool=24576) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold + 24576)
++        guard.reserve_offline_attempt(
++            output,
++            write_allowance=allowance,
++            process_limits=custody.limits,
++            process_custody=custody,
++        )
++        first = guard.spool / "outer.json"
++        guard.admit(first, 1)
++        first.parent.mkdir(parents=True)
++        first.write_bytes(b"x")
++        with pytest.raises(AssertionError, match="before write"):
++            guard.admit(guard.spool / "second.json", 1)
++        assert not (guard.spool / "second.json").exists()
++
++
++def test_fit_guard_routes_parent_publications_through_held_process_peak(tmp_path, monkeypatch):
++    from silent_cascade.train import pilot_offline_process as process
++
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold)
++        guard.reserve_offline_attempt(
++            output,
++            write_allowance=allowance,
++            process_limits=custody.limits,
++            process_custody=custody,
++        )
++        process._publish_private_process_bytes(custody, "binding.json", b"x")
++        for name, size in (
++            ("intent.json", custody.limits.record_bytes),
++            ("stdout.txt", 0),
++            ("stderr.txt", 0),
++            ("process-result.json", custody.limits.record_bytes),
++        ):
++            guard.admit(output / name, size)
++            output.mkdir(parents=True, exist_ok=True)
++            (output / name).write_bytes(b"x" * size)
++        assert guard.blocked is None
++
++
++def test_fit_guard_rejects_split_child_categories(tmp_path, monkeypatch):
++    with _held_fixture_attempt(
++        tmp_path,
++        bindings=(("run/final/offline/child", "scratch"),),
++    ) as (fixture, guard, custody, output, allowance, hold):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold * 2)
++        with pytest.raises(AssertionError, match="child category"):
++            guard.reserve_offline_attempt(
++                output,
++                write_allowance=allowance,
++                process_limits=custody.limits,
++                process_custody=custody,
++            )
++
++
++@pytest.mark.parametrize("invalid", ["allowance", "limits", "output"])
++def test_fit_guard_validates_exact_offline_hold_bindings(tmp_path, monkeypatch, invalid):
++    from silent_cascade.train.pilot_offline_process import OfflineProcessLimits
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++    class DerivedAllowance(OfflineWriteAllowance):
++        pass
++
++    class DerivedLimits(OfflineProcessLimits):
++        pass
++
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        monkeypatch.setattr(fixture, "FIT_BYTES", hold * 2)
++        selected_allowance = (
++            DerivedAllowance(**allowance.__dict__) if invalid == "allowance" else allowance
++        )
++        selected_limits = (
++            DerivedLimits(**custody.limits.__dict__) if invalid == "limits" else custody.limits
++        )
++        selected_output = output.with_name("different") if invalid == "output" else output
++        with pytest.raises((AssertionError, ValueError), match=r"offline|custody|root"):
++            guard.reserve_offline_attempt(
++                selected_output,
++                write_allowance=selected_allowance,
++                process_limits=selected_limits,
++                process_custody=custody,
++            )
++
++
+ @pytest.mark.parametrize(
+     "module", ["silent_cascade.eval.artifacts", "silent_cascade.train.pilot_data"]
+ )
+ def test_late_consumer_binding_is_denied(tmp_path, module):
+     run_writer_control(
+         "", tmp_path / "child", installation_denial="authority", before_binding=f"import {module}"
+     )
+
+
+ def test_real_publishers_exact_capacity(tmp_path):

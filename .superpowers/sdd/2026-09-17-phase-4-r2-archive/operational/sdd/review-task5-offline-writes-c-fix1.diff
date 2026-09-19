@@ -1,0 +1,265 @@
+# Task C FIX1 review package
+
+Base44edf6947aa6cf59d75c2bb31e8ae1a8bfaa9ee0; head0aee7bd.
+One open Important: directory union omits public ancestors outside spool.
+
+## Commits
+
+0aee7bd fix(pilot): count held offline parent directories
+
+## Stat
+
+ tests/pilot/cold_authentication_fixture.py | 73 +++++++++++++++++++-----------
+ tests/pilot/test_pilot_offline_writes.py   | 46 +++++++++++++++++++
+ 2 files changed, 92 insertions(+), 27 deletions(-)
+
+## Diff
+
+diff --git a/tests/pilot/cold_authentication_fixture.py b/tests/pilot/cold_authentication_fixture.py
+index fe21df4..0e4b688 100644
+--- a/tests/pilot/cold_authentication_fixture.py
++++ b/tests/pilot/cold_authentication_fixture.py
+@@ -275,83 +275,96 @@ class FitGuard:
+                 assert 0 <= remaining_peak <= original_peak, "fixture offline custody peaks differ"
+                 growth = max(0, allocated[category] - active["before"][category])
+                 required = growth + remaining_peak
+                 if category == public_category:
+                     required += write_allowance.allocated_bytes
+                 assert required <= active["amounts"].get(category, 0), (
+                     "fixture offline category allowance"
+                 )
+
+             held_bytes = write_allowance.allocated_bytes + sum(original_peaks.values())
+-            public_missing = tuple(
++            public_directories = {
+                 parent
+                 for parent in output.parents
+-                if parent.is_relative_to(self.spool) and not parent.exists()
+-            )
+-            private_directories = tuple(
++                if parent != budget.workspace and parent.is_relative_to(budget.workspace)
++            }
++            public_missing = {parent for parent in public_directories if not parent.exists()}
++            private_directories = {
+                 parent
+                 for parent in (private, *private.parents)
+                 if parent != budget.workspace
+                 and parent.is_relative_to(budget.workspace)
+                 and parent.is_dir()
+-            )
++            }
+             held_names = write_allowance.file_names + 14
+-            held_directories = (
+-                write_allowance.directories + len(public_missing) + len(private_directories)
+-            )
+             used = files = directories = 0
++            retained_directories = set()
++            retained_paths = set()
+             for root in (self.spool, self.cache):
+-                values = allocation(root)
+-                used += values[0]
+-                files += values[1]
+-                directories += values[2]
++                if root.exists():
++                    retained_paths.update((root, *root.rglob("*")))
++            for path in retained_paths:
++                info = path.lstat()
++                assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
++                used += info.st_blocks * 512
++                files += stat.S_ISREG(info.st_mode)
++                directories += stat.S_ISDIR(info.st_mode)
++                if stat.S_ISDIR(info.st_mode):
++                    retained_directories.add(path)
++            directory_hold_paths = retained_directories | public_directories | private_directories
++            held_directories = write_allowance.directories + len(directory_hold_paths)
+             projected = used + held_bytes + (files + directories) * BLOCK
+             assert files + held_names <= FIT_NAMES, "fixture file name bound"
+-            assert directories + held_directories <= FIT_DIRECTORIES, "fixture directory bound"
++            assert held_directories <= FIT_DIRECTORIES, "fixture directory bound"
+             assert projected <= FIT_BYTES, (
+                 "fixture live allocation blocked before write",
+                 projected,
+             )
+             self.offline = dict(
+                 root=output,
+                 private=private,
+                 allowance=write_allowance,
+                 limits=process_limits,
+                 custody=custody,
+                 held_bytes=held_bytes,
+                 held_names=held_names,
+                 held_directories=held_directories,
++                held_directory_cushion=directories * BLOCK,
++                directory_hold_paths=frozenset(directory_hold_paths),
+                 missing_ancestors=frozenset(public_missing),
+             )
+             self.maximum = max(self.maximum, projected)
+         except AssertionError as error:
+             self.blocked = str(error)
+             raise
+
+     def _outer_allocation(self):
+         total = files = directories = 0
+         held = self.offline
++        paths = set()
+         for root in (self.spool, self.cache):
+-            if not root.exists():
++            if root.exists():
++                paths.update((root, *root.rglob("*")))
++        for path in paths:
++            if held is not None and (
++                path == held["root"]
++                or path.is_relative_to(held["root"])
++                or path in held["missing_ancestors"]
++            ):
+                 continue
+-            for path in (root, *root.rglob("*")):
+-                if held is not None and (
+-                    path == held["root"]
+-                    or path.is_relative_to(held["root"])
+-                    or path in held["missing_ancestors"]
+-                ):
+-                    continue
+-                info = path.lstat()
+-                assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
+-                total += info.st_blocks * 512
+-                files += stat.S_ISREG(info.st_mode)
+-                directories += stat.S_ISDIR(info.st_mode)
++            info = path.lstat()
++            assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
++            total += info.st_blocks * 512
++            files += stat.S_ISREG(info.st_mode)
++            directories += stat.S_ISDIR(info.st_mode) and (
++                held is None or path not in held["directory_hold_paths"]
++            )
+         return total, files, directories
+
+     def _validate_offline_inventory(self):
+         held = self.offline
+         if held is None or not held["root"].exists():
+             return
+         used = files = directories = 0
+         parent_names = {"intent.json", "stdout.txt", "stderr.txt", "process-result.json"}
+         for path in (held["root"], *held["root"].rglob("*")):
+             info = path.lstat()
+@@ -407,21 +420,26 @@ class FitGuard:
+             ]
+             bound = held["limits"].record_bytes if path.name.endswith(".json") else 0
+             assert size <= bound, "fixture offline parent publication bound"
+             require_offline_process_custody(
+                 held["custody"],
+                 output_dir=held["root"],
+                 limits=held["limits"],
+                 phase=phase,
+             )
+             used, files, directories = self._outer_allocation()
+-            projected = used + held["held_bytes"] + (files + directories) * BLOCK
++            projected = (
++                used
++                + held["held_bytes"]
++                + held["held_directory_cushion"]
++                + (files + directories) * BLOCK
++            )
+             assert files + held["held_names"] <= FIT_NAMES, "fixture file name bound"
+             assert directories + held["held_directories"] <= FIT_DIRECTORIES, (
+                 "fixture directory bound"
+             )
+             assert projected <= FIT_BYTES, (
+                 "fixture live allocation blocked before write",
+                 projected,
+             )
+             self.maximum = max(self.maximum, projected)
+             self.calls[path.suffix] = self.calls.get(path.suffix, 0) + 1
+@@ -434,20 +452,21 @@ class FitGuard:
+             for parent in path.parents
+             if parent.is_relative_to(self.spool) or parent.is_relative_to(self.cache)
+         )
+         # Count every current allocation, the complete next temp (old target stays),
+         # missing directories, and temp/final directory entries. A hardlink gets
+         # charged twice conservatively, without calling the parent ledger here.
+         names = 2 if temporary else 1
+         projected = (
+             used
+             + (0 if held is None else held["held_bytes"])
++            + (0 if held is None else held["held_directory_cushion"])
+             + 2 * rounded(size)
+             + BLOCK
+             + (directories + missing + files + names) * BLOCK
+         )
+         held_names = 0 if held is None else held["held_names"]
+         held_directories = 0 if held is None else held["held_directories"]
+         assert files + names + held_names <= FIT_NAMES, "fixture file name bound"
+         assert directories + missing + held_directories <= FIT_DIRECTORIES, (
+             "fixture directory bound"
+         )
+diff --git a/tests/pilot/test_pilot_offline_writes.py b/tests/pilot/test_pilot_offline_writes.py
+index 9d45469..3543c28 100644
+--- a/tests/pilot/test_pilot_offline_writes.py
++++ b/tests/pilot/test_pilot_offline_writes.py
+@@ -318,20 +318,66 @@ def test_fit_guard_reserves_exact_offline_hold_before_publication(tmp_path, monk
+                 output,
+                 write_allowance=allowance,
+                 process_limits=custody.limits,
+                 process_custody=custody,
+             )
+             assert guard.maximum == exact
+         assert not output.exists()
+         assert os.listdir(custody.directory_fd) == []
+
+
++@pytest.mark.parametrize("existing", [False, True], ids=["missing", "existing-shared"])
++@pytest.mark.parametrize("directory_limit, accepted", [(13, False), (14, True)])
++def test_fit_guard_counts_public_ancestors_outside_spool(
++    tmp_path, monkeypatch, existing, directory_limit, accepted
++):
++    with _held_fixture_attempt(tmp_path) as (
++        fixture,
++        original_guard,
++        custody,
++        output,
++        allowance,
++        hold,
++    ):
++        if existing:
++            output.parent.mkdir(parents=True)
++        assert output.parent.exists() is existing
++        assert output.parent.parent.exists() is existing
++
++        guard = fixture.FitGuard(output.parent, original_guard.cache)
++        used, files, directories = fixture.allocation(guard.spool)
++        exact = hold + used + (files + directories) * fixture.BLOCK
++        monkeypatch.setattr(fixture, "FIT_BYTES", exact)
++        monkeypatch.setattr(fixture, "FIT_NAMES", allowance.file_names + 14 + files)
++        monkeypatch.setattr(fixture, "FIT_DIRECTORIES", directory_limit)
++
++        if accepted:
++            guard.reserve_offline_attempt(
++                output,
++                write_allowance=allowance,
++                process_limits=custody.limits,
++                process_custody=custody,
++            )
++            assert guard.maximum == exact
++            assert guard.blocked is None
++        else:
++            with pytest.raises(AssertionError, match="directory bound"):
++                guard.reserve_offline_attempt(
++                    output,
++                    write_allowance=allowance,
++                    process_limits=custody.limits,
++                    process_custody=custody,
++                )
++        assert not output.exists()
++        assert os.listdir(custody.directory_fd) == []
++
++
+ def test_fit_guard_real_parent_publication_creates_fresh_held_root(tmp_path, monkeypatch):
+     from silent_cascade.train import pilot_data
+     from silent_cascade.train import pilot_offline_process as process
+
+     with _held_fixture_attempt(tmp_path) as (
+         fixture,
+         guard,
+         custody,
+         output,
+         allowance,
