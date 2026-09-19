@@ -1065,16 +1065,20 @@ def verify_offline_evidence(
     evidence_context=None,
 ):
     from silent_cascade.archive.readers import evidence_path, logical_root
-    from silent_cascade.train.pilot_offline import PilotOfflineReport
+    from silent_cascade.train.pilot_offline import parse_offline_report
+    from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
 
     if evidence_context is not None and (
         run_dir is None or logical_root(run_dir, evidence_context) != "."
     ):
         raise ValueError("offline evidence context run root differs")
-    report = PilotOfflineReport.model_validate_json(canonical_json_bytes(value))
+    report = parse_offline_report(canonical_json_bytes(value))
     if report.source_commit != source.source_commit or report.forbidden_modules:
         raise ValueError("offline source/import evidence differs")
     unavailable = [] if unavailable is None else unavailable
+    read_offline_process_outcome(
+        run_dir, report=report, evidence_context=evidence_context, unavailable=unavailable
+    )
     if run_dir is not None:
         from silent_cascade.eventflow.neural_replay import _parse
 
@@ -1355,6 +1359,9 @@ def _verify_available_training(
 
 
 def collect_pilot_evidence(*, run_dir, config, output_path):
+    from silent_cascade.train.pilot_offline_process import require_completed_offline_process
+
+    require_completed_offline_process(run_dir)
     root, source, result, manifests, weights, _ = authenticate_run(run_dir, config)
     attachments, projections, rows_by_suite, execution, upstream = {}, {}, {}, {}, {}
     continuation = ()
@@ -1469,10 +1476,11 @@ def collect_pilot_evidence(*, run_dir, config, output_path):
         upstream["final/numerics/DONE"] = sha256_bytes(read_bytes(run_dir / "final/numerics/DONE"))
     offline, offline_evidence = False, None
     if (run_dir / "final/offline/offline.json").exists():
-        from silent_cascade.train.pilot_offline import PilotOfflineReport
+        from silent_cascade.train.pilot_offline import parse_offline_report
 
-        report = PilotOfflineReport.model_validate_json(
-            canonical_json_bytes(strict_json(run_dir / "final/offline/offline.json"))
+        report = parse_offline_report(
+            canonical_json_bytes(strict_json(run_dir / "final/offline/offline.json")),
+            require_process=True,
         )
         executed = strict_json(run_dir / "final/offline/executed-source.json")
         expected = {p: h for p, h in source.source_files.items() if p.startswith("src/")}
@@ -1626,6 +1634,10 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
         or artifact.workload != WORKLOAD
     ):
         raise ValueError("gate source/config/workload differs")
+    if artifact.offline_evidence is not None:
+        from silent_cascade.train.pilot_offline import parse_offline_report
+
+        parse_offline_report(canonical_json_bytes(artifact.offline_evidence), require_process=True)
     manifests = {
         stage: child(repo_root, artifact.source.data_introductions[stage + "/manifest"]["path"])
         for stage in ("one_hop", "two_hop", "primary", "robustness")

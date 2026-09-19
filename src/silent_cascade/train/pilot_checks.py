@@ -347,6 +347,9 @@ def _run_pilot_checks_owned(
     *, run_dir, config, output_path, archive_producer=None, evidence_context=None
 ):
     """Called only under the workflow's existing permanent run ownership."""
+    from silent_cascade.train.pilot_offline_process import require_completed_offline_process
+
+    offline_completed = require_completed_offline_process(run_dir)
     root, source, result, manifests, weights, archive = authenticate_run(run_dir, config)
     if output_path.exists():
         verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
@@ -378,7 +381,7 @@ def _run_pilot_checks_owned(
 
         if not (run_dir / "final/numerics/DONE").exists():
             verify_pilot_numerics(config, checkpoint=archive, output_dir=run_dir / "final/numerics")
-        if not (run_dir / "final/offline/offline.json").exists():
+        if not offline_completed:
             measure_pilot_offline(output_dir=run_dir / "final/offline")
     return collect_pilot_evidence(run_dir=run_dir, config=config, output_path=output_path)
 

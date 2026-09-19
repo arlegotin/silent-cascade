@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -37,6 +38,27 @@ class PilotOfflineReport(StrictModel):
     artifact_report_sha256: str
 
 
+class PilotOfflineReportV2(PilotOfflineReport):
+    evidence_kind: Literal["offline_smoke_diagnostic_v2"] = "offline_smoke_diagnostic_v2"
+    process_intent_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def parse_offline_report(raw, *, require_process=False):
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.evidence_types import decode_json
+
+    value = decode_json(raw, limit=16384)
+    if require_process and value.get("evidence_kind") != "offline_smoke_diagnostic_v2":
+        raise ValueError("offline process requires a v2 diagnostic report")
+    model = {
+        "offline_smoke_diagnostic": PilotOfflineReport,
+        "offline_smoke_diagnostic_v2": PilotOfflineReportV2,
+    }.get(value.get("evidence_kind"))
+    if model is None:
+        raise ValueError("invalid offline diagnostic report kind")
+    return model.model_validate_json(canonical_json_bytes(value))
+
+
 @dataclass(frozen=True)
 class OfflineGitPin:
     executable: str
@@ -45,6 +67,7 @@ class OfflineGitPin:
 
 
 _BOUNDARY_GIT_PIN: OfflineGitPin | None = None
+_PENDING_OFFLINE_LAUNCH: tuple[str, str] | None = None
 _GIT_PIN_ENV = "SILENT_CASCADE_OFFLINE_GIT_PIN"
 
 
@@ -374,15 +397,17 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
                 workspace is not None
                 and executable == sys.executable
                 and isinstance(argv, (list, tuple))
-                and len(argv) == 5
+                and len(argv) == 6
                 and list(argv[:4]) == [sys.executable, "-B", "-c", _PROGRAM]
                 and type(argv[4]) is str
+                and (argv[4], argv[5]) == _PENDING_OFFLINE_LAUNCH
                 and Path(argv[4]).is_absolute()
                 and _cwd is not None
                 and Path(_cwd) == Path(__file__).resolve().parents[3]
                 and _env == offline_environment(Path(argv[4]))
             ):
                 check_write(argv[4])
+                validate_offline_launch(Path(argv[4]), argv[5])
                 return
             if (
                 executable != pin.executable
@@ -421,41 +446,183 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
 
 _PROGRAM = r"""
 import sys
-from silent_cascade.train.pilot_offline import _worker, install_offline_boundary
+from silent_cascade.train.pilot_offline import (
+    _worker, install_offline_boundary, validate_offline_launch,
+)
+validate_offline_launch(sys.argv[1], sys.argv[2])
 attempts, blocked = install_offline_boundary(workspace_root=sys.argv[1])
-_worker(sys.argv[1], attempts, blocked)
+_worker(sys.argv[1], attempts, blocked, process_intent_sha256=sys.argv[2])
 """
 
 
-def measure_pilot_offline(*, output_dir):
-    output_dir = Path(output_dir)
+def _python_sha256():
+    with Path(sys.executable).open("rb") as executable:
+        return hashlib.file_digest(executable, "sha256").hexdigest()
+
+
+def _offline_source_identity():
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+
+    root = Path(__file__).resolve().parents[3]
+    if _BOUNDARY_GIT_PIN is not None:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root)
+    else:
+        pin = (
+            _decode_git_pin(os.environ[_GIT_PIN_ENV])
+            if _GIT_PIN_ENV in os.environ
+            else resolve_offline_git()
+        )
+        revision = subprocess.check_output(
+            [pin.executable, *_GIT_PREFIX, "rev-parse", "HEAD"],
+            cwd=root,
+            env=offline_environment(Path(os.environ.get("TMPDIR", root)), git_pin=pin),
+            timeout=5,
+        )
+    source = {
+        str(path.relative_to(root)): sha256_bytes(path.read_bytes())
+        for path in sorted((root / "src/silent_cascade").rglob("*.py"))
+    }
+    return revision.decode().strip(), sha256_bytes(canonical_json_bytes(source))
+
+
+def validate_offline_launch(output_dir, intent_sha256):
+    """The exact parent-authorized bootstrap is checked before any worker import."""
+    from silent_cascade.hashing import sha256_bytes
+    from silent_cascade.train.evidence_types import read_bytes
+    from silent_cascade.train.pilot_offline_process import OfflineProcessIntent, _parse_record
+
+    output_dir = Path(output_dir).absolute()
+    raw = read_bytes(output_dir / "intent.json", limit=16384)
+    intent = _parse_record(raw, OfflineProcessIntent)
+    if (
+        sha256_bytes(raw) != intent_sha256
+        or len(raw) > intent.limits["record_bytes"]
+        or intent.output_root != str(output_dir)
+        or output_dir.resolve() != output_dir
+        or intent.bootstrap_sha256 != sha256_bytes(_PROGRAM.encode())
+        or intent.python_executable != sys.executable
+        or intent.python_sha256 != _python_sha256()
+        or (intent.source_commit, intent.executed_source_sha256) != _offline_source_identity()
+        or (output_dir / "process-result.json").exists()
+    ):
+        raise ValueError("offline process launch authority differs")
+    return intent
+
+
+def measure_pilot_offline(*, output_dir, process_limits=None):
+    from silent_cascade.train.pilot_offline_process import OfflineProcessLimits
+
+    global _PENDING_OFFLINE_LAUNCH
+    output_dir = Path(output_dir).absolute()
+    limits = OfflineProcessLimits() if process_limits is None else process_limits
+    if type(limits) is not OfflineProcessLimits:
+        raise ValueError("invalid offline process limits")
+    if output_dir.resolve() != output_dir or ".." in output_dir.parts:
+        raise ValueError("offline process output root must be canonical")
+    if _PENDING_OFFLINE_LAUNCH is not None:
+        raise ValueError("offline process launch already active")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("offline process attempt already exists; preserve its evidence")
-    from silent_cascade.train.pilot_data import _publish_pilot_bytes, _read_pilot_bytes
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.train.evidence_types import read_bytes
+    from silent_cascade.train.pilot_data import _publish_pilot_bytes
+    from silent_cascade.train.pilot_offline_process import (
+        OfflineProcessIntent,
+        OfflineProcessResult,
+        capture_offline_process,
+    )
 
     root = Path(__file__).resolve().parents[3]
     git_pin = _BOUNDARY_GIT_PIN or resolve_offline_git()
-    # Persist intent before the child starts; all outputs/errors survive failures.
-    _publish_pilot_bytes(
-        output_dir / "intent.json", b'{"evidence_kind":"offline_smoke_diagnostic"}'
+    revision, source_sha256 = _offline_source_identity()
+    intent = OfflineProcessIntent(
+        schema_version="phase4-offline-process-intent-v1",
+        attempt=uuid.uuid4().hex,
+        output_root=str(output_dir),
+        bootstrap_sha256=sha256_bytes(_PROGRAM.encode()),
+        python_executable=sys.executable,
+        python_sha256=_python_sha256(),
+        source_commit=revision,
+        executed_source_sha256=source_sha256,
+        limits=asdict(limits),
     )
-    completed = subprocess.run(
-        [sys.executable, "-B", "-c", _PROGRAM, str(output_dir.absolute())],
-        cwd=root,
-        env=offline_environment(output_dir, git_pin=git_pin),
-        capture_output=True,
-        timeout=180,
-    )
-    _publish_pilot_bytes(output_dir / "stdout.txt", completed.stdout)
-    _publish_pilot_bytes(output_dir / "stderr.txt", completed.stderr)
-    if completed.returncode:
-        raise ValueError(
-            f"offline probe failed exit{completed.returncode}: {completed.stderr.decode()[-3000:]}"
+    intent_raw = canonical_json_bytes(intent)
+    if len(intent_raw) > limits.record_bytes:
+        raise ValueError("offline process intent exceeds reserved record limit")
+    # Intent and result each need their full durable-publication peak reserved
+    # by the caller; no storage reservation is created or replenished here.
+    try:
+        _publish_pilot_bytes(output_dir / "intent.json", intent_raw)
+    except Exception as error:
+        raise ValueError("offline process intent publication failed") from error
+    digest = sha256_bytes(intent_raw)
+    _PENDING_OFFLINE_LAUNCH = (str(output_dir), digest)
+    try:
+        captured = capture_offline_process(
+            [sys.executable, "-B", "-c", _PROGRAM, str(output_dir), digest],
+            cwd=root,
+            env=offline_environment(output_dir, git_pin=git_pin),
+            limits=limits,
         )
-    return PilotOfflineReport.model_validate_json(_read_pilot_bytes(output_dir / "offline.json"))
+    except Exception as error:
+        raise ValueError(
+            "offline process capture/join failed; attempt remains incomplete"
+        ) from error
+    finally:
+        _PENDING_OFFLINE_LAUNCH = None
+    reason = captured.reason
+    report, report_sha256 = None, None
+    if reason is None:
+        try:
+            if read_bytes(output_dir / "intent.json", limit=limits.record_bytes) != intent_raw:
+                raise ValueError("offline process intent changed during capture")
+            raw = read_bytes(output_dir / "offline.json", limit=16384)
+            report = parse_offline_report(raw, require_process=True)
+            if (
+                not captured.eof
+                or not isinstance(report, PilotOfflineReportV2)
+                or report.process_intent_sha256 != digest
+                or report.source_commit != revision
+                or report.executed_source_sha256 != source_sha256
+            ):
+                raise ValueError("offline process report binding differs")
+            report_sha256 = sha256_bytes(raw)
+        except Exception:
+            reason = "invalid_report"
+    for name in ("stdout", "stderr"):
+        try:
+            _publish_pilot_bytes(output_dir / (name + ".txt"), getattr(captured, name))
+        except Exception:
+            reason = captured.reason or "publication_failure"
+    result = OfflineProcessResult(
+        schema_version="phase4-offline-process-result-v1",
+        status="completed" if reason is None else "failed",
+        intent_sha256=digest,
+        attempt=intent.attempt,
+        pid=captured.pid,
+        returncode=captured.returncode,
+        reason=reason,
+        eof=captured.eof,
+        stdout_bytes=len(captured.stdout),
+        stderr_bytes=len(captured.stderr),
+        stdout_sha256=sha256_bytes(captured.stdout),
+        stderr_sha256=sha256_bytes(captured.stderr),
+        offline_sha256=report_sha256 if reason is None else None,
+    )
+    raw_result = canonical_json_bytes(result)
+    if len(raw_result) > limits.record_bytes:
+        raise ValueError("offline process result exceeds reserved record limit")
+    try:
+        _publish_pilot_bytes(output_dir / "process-result.json", raw_result)
+    except Exception as error:
+        raise ValueError("offline process terminal publication failed") from error
+    if reason is not None:
+        raise ValueError("offline process failed: " + reason)
+    return report
 
 
-def _worker(directory, attempts, blocked):
+def _worker(directory, attempts, blocked, *, process_intent_sha256):
+    validate_offline_launch(directory, process_intent_sha256)
     import torch
 
     from silent_cascade.env.pilot import curriculum_to_bundle
@@ -548,9 +715,11 @@ def _worker(directory, attempts, blocked):
     forbidden = tuple(n for n in sys.modules if n.split(".")[0] in blocked or "qwen" in n.lower())
     if forbidden or not replay.matched:
         raise ValueError("offline replay/import probe failed")
+    validate_offline_launch(directory, process_intent_sha256)
     publish_json(
         output_dir / "offline.json",
-        PilotOfflineReport(
+        PilotOfflineReportV2(
+            process_intent_sha256=process_intent_sha256,
             backward_macs=step.compute.backward_macs,
             network_attempts=attempts["network"],
             optional_import_attempts=attempts["imports"],
