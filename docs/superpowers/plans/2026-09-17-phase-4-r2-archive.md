@@ -2128,9 +2128,12 @@ Preparation/prelaunch/publication checks use real ledger interfaces:
    Never change bindings while a reservation is live.
 4. Pin directory0700/files0600 on the same device; reject symlinks/hardlinks,
    external aliases and public/private ancestor overlap. Public root must
-   have the existing canonical run/final/offline shape. Reject overlap with
-   its run, budget.root controls, spool/cache bindings and frozen engineering
-   custody. Prove the fixed private route remains outside scientific/export
+   have the existing canonical run/final/offline shape. The PRIVATE route must
+   reject overlap with its run, budget.root controls, spool/cache bindings and
+   frozen engineering custody. Public run files may occupy an already-bound,
+   separately admitted spool root, as required by supervisor._bind_storage_paths
+   and Task C; reject public overlap with controls, logs and cache bindings.
+   Prove the fixed private route remains outside scientific/export
    and engineering membership; if boundaries are unavailable, fail admission.
    Revalidate fd/path identities before writes.
 
@@ -2358,7 +2361,9 @@ class OfflineWrites:
     def assert_clear(self) -> None: ...
     def admit_publication(self, path: Path, size: int, *, writer: str) -> None: ...
 
-def reserve_offline_attempt(self, output_dir, *, write_allowance, process_limits):
+def reserve_offline_attempt(
+    self, output_dir, *, write_allowance, process_limits, process_custody
+):
     ...  # new FitGuard method: hold once, never replenish
 ```
 
@@ -2440,6 +2445,20 @@ custody. A larger explicitly admitted P is valid; unused global headroom is not
 an admission.
 
 FitGuard stores one held root in memory. Outer admissions count non-offline spool/cache allocation plus H; do not double-count live child bytes or let unrelated writes spend H. Still validate offline inventory. Route four parent writes to P/per-record limits. No second reservation/root/replenishment; keep full hold through failures for guard lifetime. H plus retained fit/cache/outer publication peaks must fit existing FIT_BYTES/FIT_NAMES/FIT_DIRECTORIES before launch. No envelope expansion or full-gate total follows.
+
+Task C consumes the actual `process_custody`, validated with
+`require_offline_process_custody(..., phase=0)`, to obtain its immutable
+`category_peaks`. It must not guess the private path or recompute the historical
+four-file P. The caller first owns the global admission and prepares private
+custody, then establishes this fixture hold before any public intent or child
+launch. `H = write_allowance.allocated_bytes + sum(custody.category_peaks)` is
+conservative inside the unchanged fixture envelope, including private bytes
+whose real category remains logs. The public spool and private logs shares must
+also fit the live underlying category admission; this fixture hold grants none.
+If child output paths have a different effective category from the public run,
+reject this fixture layout rather than allocating the whole child allowance to
+the wrong category. No binding mutation, child-inherited authority or raw-private
+publication hook is added by the fixture.
 
 ##### Task A: Closed adapter and tiny writer controls
 
@@ -2526,11 +2545,36 @@ FitGuard stores one held root in memory. Outer admissions count non-offline spoo
 
 ##### Task C: Hold the exact child allowance in the existing fixture
 
-**Files:** `tests/pilot/cold_authentication_fixture.py`, focused tests in `test_pilot_offline_writes.py`.
+**Files:** `tests/pilot/cold_authentication_fixture.py`, focused tests in `test_pilot_offline_writes.py`; one path-contract correction in `pilot_offline_process.py` and focused custody tests in `test_pilot_offline_process.py`.
+
+**Post-privacy interface ruling:** `_custody_paths` currently rejects the public
+run itself when it overlaps any spool binding. The privacy requirement concerns
+PRIVATE capture membership; this public restriction also rejects the existing
+supervisor's mandatory spool run. Correct that distinction in this task, after
+Task B freezes the shared file. Keep the private route outside the run, controls,
+all spool/cache bindings and frozen engineering custody; keep public run outside
+controls/logs/cache. No binding changes under a live reservation. Do not delete
+the original unadmitted-spool negative case: it still lacks a spool allowance.
+
+- [ ] **RED/GREEN — admitted public spool.** Use a tiny real isolated ledger,
+  bind a fresh public run as spool before its one reservation, and reserve the
+  existing privacy-derived public P in spool and private P in logs. Preparation
+  and revalidation must succeed, with no raw capture inside the run. One byte
+  short in the public spool share fails before custody creation. Private route
+  overlapping any spool/cache binding, public cache/control/log overlap, changed
+  category mappings and no admission still fail. No real diagnostic or provider.
+  The correction changes only which side of the separation rule is checked;
+  it does not weaken category accounting or add inherited ownership.
 
 - [ ] **RED — aliases.** Tiny undersized-guard tests for bound publishers in pilot_checks, pilot_evidence and report.pilot; no numerical execution. Patch those three aliases in installed() with existing wrapper.
 - [ ] **RED — hold.** Tiny retained outer file: exact H fits, one byte short fails before intent/launch (tripwire). After reserve, unrelated output cannot spend H; failed child cannot rebind/replenish; live child not double-counted; logs/result can use P.
 - [ ] **Implement hold.** `FitGuard.reserve_offline_attempt` validates canonical fresh spool root, no previous hold and dataclasses; checks H/names/dirs plus retained usage/missing parents; stores one hold. Extend admit to route exact parent files and preserve H on other writes. Future caller explicitly passes allowance; no FIT_BYTES increase/default capacity/full-gate fit claim or substituted report.
+  Validate `process_custody` and matching limits/output before fixing H. Retain
+  the public/private category split from its `category_peaks`; check the child's
+  full allowance plus the public share in the run's effective category, and
+  each other parent share separately. Do not count already-created private
+  directories twice against remaining category capacity: compare their retained
+  allocation plus the remaining phase peak to the original category hold.
 - [ ] **GREEN/review/commit.** Primitive hold/alias tests, source inventory and scoped static checks. Record outstanding actual worker/full-gate admission. Obtain independent task review after controller verification; the full-run admission remains separate.
 
 ##### Primitive admission and execution instructions

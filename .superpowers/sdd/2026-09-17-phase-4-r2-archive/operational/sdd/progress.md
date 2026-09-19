@@ -1876,3 +1876,32 @@ open. The Phase 4 production pilot has not started.
   review clean after FIX1; one minor deferred to TaskB/final review).
   Standalone privacy only; Task5/Task7/Task12/Phase4 remain incomplete.
   Release61737 with final check, then a new exactly scoped TaskB reservation.
+- Privacy owner61737 final check passed unchanged and released (exit0).
+  Evidence/review closure committedc2433d1. Fresh TaskB implementer
+  /root/task5_offline_writes_b (sol/high) owns only brief source/test files;
+  no tests/imports/children before controller admission.
+- TaskB operational owner admission: basec2433d1, scratch4194304,
+  metadata33562624,logs2097152;spool/cache/pinned/emergency0. Bounded launch
+  binding and tiny controls only; no actual diagnostic, provider, inherited
+  supervisor or full gate. Frozen6195077120 unchanged. Exact selectors and
+  per-attempt bounds are a second prerequisite, not granted by this hold.
+- TaskB holder29448 active PID72277@1789791033.899469,
+  token1d4f93d86ddbca6a2280f8783168e874; before scratch260595712/logs2351104/
+  spool219099136/cache67153920/metadata52965376,pinned/emergency0. One owner.
+- Ruling: privacy overlap restriction applies to private captures, not an
+  admitted public spool run. Existing supervisor._bind_storage_paths explicitly
+  binds run_dir to spool; TaskC requires the same. Plan clarified: public remains
+  outside controls/logs/cache, private outside run/controls/all spool/cache.
+  TaskC owns minimal _custody_paths correction after TaskB freeze plus real
+  ledger exact/short/overlap controls. Cost if wrong: incompatible path layout
+  rejected or integration rework; no higher cap or changed membership authority.
+  Prior unadmitted-spool rejection remains required; no inherited channel added.
+- TaskC interface grounding: reserve_offline_attempt additionally requires the
+  existing process_custody. Only that object supplies actual immutable category
+  peaks; the old three-argument interface cannot derive the private share safely.
+  Validate phase0 after globally-admitted private preparation, hold H before
+  public intent/child, preserve category shares and reject split child layouts.
+  Conservatively include full P in unchanged FIT64MiB while logs remain globally
+  logs. Ruling: pass existing private capability, not a duplicate P formula/new
+  resolver. Cost: internal fixture call sites gain one required argument; no
+  public record, authority channel, capacity increase or scientific change.
