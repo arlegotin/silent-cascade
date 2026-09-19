@@ -2599,6 +2599,57 @@ and no new Critical/Important breakage. Evidence is retained under
 `operational/sdd/task5-offline-writes-c-*.md`. This closes only Task C, not
 actual-worker qualification, inherited supervisor integration, Task5 or Phase4.
 
+##### Task5 next qualification: one direct same-owner diagnostic
+
+After Task C, qualify the existing real diagnostic once from the current
+committed checkout, before attempting inherited supervisor integration. This is
+a bounded execution refinement of the approved Task5 actual-worker check, not
+an implementation of delegated custody or a production pilot. No source,
+scientific configuration, threshold or evidence schema changes are needed.
+
+- Use one closed-environment `python -B` operational parent, holding the existing
+  global `_StorageBudget._scoped_reservation(child_inheritable=False)`. That same
+  process prepares `OfflineProcessCustody` and calls `measure_pilot_offline`.
+  No holder-to-child capability transfer, new ledger, checkout or synthetic
+  replacement report is permitted.
+- Fresh output: `operational/spool/task5-real-offline-01/final/offline`; fresh
+  private attempt `d7c2cb464e9043c6a11a77e6dc1a3e51`. Neither may already exist.
+  Preserve both on success or failure; never reuse this attempt.
+- Pass explicit `OfflineWriteAllowance(16777216, 102, 9)` and default
+  `OfflineProcessLimits` (180 seconds, 256 KiB per pipe, 16 KiB per record).
+  The child performs the unchanged one-update / 16-episode CPU diagnostic,
+  one replay and one report. Its pre-write adapters must remain active. The
+  16 MiB cap bounds the attempt; it is not a successful-run size prediction.
+- Before admission, verify canonical category bindings, source/config freeze,
+  no live reservation/pending eviction, unchanged frozen allocation, and exact
+  missing-directory counts. With three missing public ancestors and two private
+  directories, the existing publication calculation gives public P=114688 and
+  private P=1114112 bytes. Check these exact peaks before creating custody.
+- Reserve spool=16891904 (child + public P), logs=2162688 (private P plus 1 MiB
+  bounded operational notes/status), metadata=33562624 (two maximum 16 MiB
+  control pages plus two allocation blocks), scratch=524288 (parent-only
+  confined administrative temporary/cache roots), other categories zero.
+  No unrelated producer runs during this reservation. Scientific child outputs
+  and native font cache remain inside its own 16 MiB grammar, not this scratch
+  cushion. Parent imports use bytecode suppression; no model runs in the parent.
+- The last complete ledger measured 605921280 operational bytes plus
+  6195077120 frozen bytes. The 53141504-byte proposed increment gives
+  6854139904 bytes against the unchanged 6979321856 normal limit, preserving
+  the separate 2 GiB reserve and 1.5 GiB emergency capacity. These are a planning
+  calculation; the existing live ledger must authenticate and admit it again.
+- Retain public intent/result and any private capture using existing semantics.
+  Print only bounded status/report metadata, never raw private output. A failure
+  is failed diagnostic evidence, not a scientific result. On failure investigate
+  from retained evidence; no automatic retry, quota enlargement or cleanup.
+- Check category deltas, source/result bindings, actual allocated bytes, zero
+  network/foundation-model calls on success, and full frozen custody on owner
+  release. Record runtime and outcome. This does not complete Task5/Task7,
+  `make verify`, production training, learning acceptance or inherited handoff.
+
+The controller and a read-only admission reviewer inspect the concrete API and
+process graph before launch. A definite uncovered writer or missing authority
+stops this one attempt before execution, without substituting a different path.
+
 ##### Primitive admission and execution instructions
 
 Use the existing closed Python `-B` launcher, disabled external pytest plugins/cacheprovider and explicit TMP/XDG/MPL/Hypothesis/archive roots under a fresh operational scratch prefix per RED/GREEN/controller stage. Select only the named new writer tests and named parent/legacy primitive tests; never select the entire offline test file if it contains the actual diagnostic. Example inner command after its containing launcher/environment has been admitted:
