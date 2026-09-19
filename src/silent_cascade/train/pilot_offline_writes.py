@@ -615,6 +615,8 @@ class OfflineWrites:
             and self._streams[_ROWS].closed
         ):
             self._reserve(destination, source.stat().st_size, names=1)
+            if self._identity(source.lstat()) != self._streams[_ROWS]._identity:
+                self._deny("authority")
         elif (
             operation is None
             or source != operation.get("temp")
@@ -680,6 +682,8 @@ class OfflineWrites:
         if self._operation is None or target != self._operation.get("temp"):
             self._deny("writer")
         self._inventory()
+        if self._identity(target.lstat()) != self._operation["identity"]:
+            self._deny("authority")
         with self._event("os.chmod"):
             return self._original["chmod"](
                 path, mode, dir_fd=dir_fd, follow_symlinks=follow_symlinks

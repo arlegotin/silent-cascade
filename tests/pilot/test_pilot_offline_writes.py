@@ -1,7 +1,12 @@
 """Fresh, tiny real writers; no training, evaluation, replay or provider calls."""
 
 import json
+import os
+import stat
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -76,6 +81,101 @@ def denied(reason=None):
     assert captured.reason is None, captured.stderr.decode(errors="replace")
     assert captured.returncode == 0
     assert captured.eof
+
+
+@contextmanager
+def _replace_owned_inode(root, *, rows):
+    """A bounded external actor preserves then replaces one stage-local inode."""
+    replacement, displaced = root.parent / "replacement", root.parent / "displaced"
+    replacement.write_bytes(b"y")
+    replacement.chmod(0o600)
+    stopped, changed = threading.Event(), threading.Event()
+    errors = []
+
+    def substitute():
+        try:
+            deadline = time.monotonic() + 10
+            while not stopped.is_set() and time.monotonic() < deadline:
+                if rows:
+                    targets = [root / "run/eval/primary/.rows.pending.jsonl"]
+                    ready = (root / "step.json").exists()
+                else:
+                    targets = list(root.glob(".weights.safetensors.*.tmp"))
+                    ready = len(targets) == 1 and stat.S_IMODE(targets[0].stat().st_mode) == 0o400
+                if ready:
+                    target = targets[0]
+                    before = target.stat()
+                    assert before.st_size == 1
+                    os.link(target, displaced)
+                    os.replace(replacement, target)
+                    assert target.stat().st_ino != before.st_ino
+                    changed.set()
+                    return
+                stopped.wait(0.01)
+        except BaseException as error:
+            errors.append(error)
+
+    actor = threading.Thread(target=substitute)
+    actor.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        actor.join(timeout=10)
+        assert not actor.is_alive()
+        if errors:
+            raise errors[0]
+        assert changed.is_set(), "bounded inode replacement did not occur"
+
+
+def test_rows_substitution_is_denied_before_final_link(tmp_path):
+    root = tmp_path / "child"
+    root.mkdir()
+    with _replace_owned_inode(root, rows=True):
+        run_writer_control(
+            """
+import time
+pending = root / 'run/eval/primary/.rows.pending.jsonl'
+pending.parent.mkdir(parents=True)
+with pending.open('xb') as stream:
+    stream.write(b'x')
+_publish_pilot_bytes(root / 'step.json', b'x')
+deadline = time.monotonic() + 5
+while pending.read_bytes() != b'y' and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert pending.read_bytes() == b'y'
+with denied('authority'):
+    os.link(pending, pending.parent / 'rows.jsonl')
+assert not (pending.parent / 'rows.jsonl').exists()
+""",
+            root,
+        )
+    assert not (root / "run/eval/primary/rows.jsonl").exists()
+    assert (tmp_path / "displaced").read_bytes() == b"x"
+
+
+def test_temp_substitution_is_denied_before_chmod(tmp_path):
+    root = tmp_path / "child"
+    root.mkdir()
+    with _replace_owned_inode(root, rows=False):
+        run_writer_control(
+            """
+import stat, time
+from silent_cascade.io import _durable_temp
+temporary = _durable_temp(root / 'weights.safetensors', b'x', 0o400)
+deadline = time.monotonic() + 5
+while temporary.read_bytes() != b'y' and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert temporary.read_bytes() == b'y'
+with denied('authority'):
+    os.chmod(temporary, 0o644)
+assert stat.S_IMODE(temporary.stat().st_mode) == 0o600
+""",
+            root,
+        )
+    (temporary,) = root.glob(".weights.safetensors.*.tmp")
+    assert stat.S_IMODE(temporary.stat().st_mode) == 0o600
+    assert (tmp_path / "displaced").read_bytes() == b"x"
 
 
 @pytest.mark.parametrize(
