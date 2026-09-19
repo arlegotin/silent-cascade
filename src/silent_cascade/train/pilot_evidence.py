@@ -1064,6 +1064,7 @@ def verify_offline_evidence(
     missing_raw=(),
     unavailable=None,
     evidence_context=None,
+    require_safe_process=False,
 ):
     from silent_cascade.archive.readers import evidence_path, logical_root
     from silent_cascade.train.pilot_offline import parse_offline_report
@@ -1078,7 +1079,11 @@ def verify_offline_evidence(
         raise ValueError("offline source/import evidence differs")
     unavailable = [] if unavailable is None else unavailable
     read_offline_process_outcome(
-        run_dir, report=report, evidence_context=evidence_context, unavailable=unavailable
+        run_dir,
+        report=report,
+        evidence_context=evidence_context,
+        unavailable=unavailable,
+        require_safe_process=require_safe_process,
     )
     if run_dir is not None:
         from silent_cascade.eventflow.neural_replay import _parse
@@ -1492,7 +1497,9 @@ def collect_pilot_evidence(*, run_dir, config, output_path):
         ):
             raise ValueError("offline executing source differs")
         offline_evidence = report.model_dump(mode="json")
-        offline = verify_offline_evidence(offline_evidence, source=source, run_dir=run_dir)
+        offline = verify_offline_evidence(
+            offline_evidence, source=source, run_dir=run_dir, require_safe_process=True
+        )
         for path in (run_dir / "final/offline").rglob("*"):
             if path.is_file():
                 upstream[path.relative_to(run_dir).as_posix()] = sha256_bytes(
@@ -1847,6 +1854,7 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
         run_dir=raw_run_dir,
         missing_raw=missing,
         unavailable=unavailable,
+        require_safe_process=True,
     )
     if (
         coverage != artifact.coverage

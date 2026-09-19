@@ -406,7 +406,12 @@ def _workflow(
     complete,
     archive_producer=None,
     evidence_context=None,
+    offline_process_custody=None,
 ):
+    if complete:
+        from silent_cascade.train.pilot_offline_process import preflight_offline_process
+
+        preflight_offline_process(run_dir, offline_process_custody)
     if device not in {"cpu", "mps"}:
         raise ValueError("pilot device must be cpu or mps")
     _check_path(manifest_dir)
@@ -470,6 +475,7 @@ def _workflow(
                 output_path=run_dir / "phase4-gate.json",
                 archive_producer=archive_producer,
                 evidence_context=evidence_context,
+                offline_process_custody=offline_process_custody,
             )
             build_pilot_report(
                 run_dir=run_dir, output_dir=run_dir / "report", evidence_context=evidence_context
@@ -485,7 +491,9 @@ def run_pilot(
     device: str,
     archive_producer=None,
     evidence_context=None,
+    offline_process_custody=None,
 ) -> PilotTrainingResult:
+    """Fresh complete workflows require explicit same-owner diagnostic custody."""
     return _workflow(
         resolve_pilot_path(config_path),
         manifest_dir,
@@ -494,6 +502,7 @@ def run_pilot(
         complete=True,
         archive_producer=archive_producer,
         evidence_context=evidence_context,
+        offline_process_custody=offline_process_custody,
     )
 
 

@@ -8,7 +8,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -499,7 +498,11 @@ def validate_offline_launch(output_dir, intent_sha256):
     """The exact parent-authorized bootstrap is checked before any worker import."""
     from silent_cascade.hashing import sha256_bytes
     from silent_cascade.train.evidence_types import read_bytes
-    from silent_cascade.train.pilot_offline_process import OfflineProcessIntent, _parse_record
+    from silent_cascade.train.pilot_offline_process import (
+        OfflineProcessIntent,
+        _parse_record,
+        path_identity,
+    )
 
     output_dir = Path(output_dir).absolute()
     raw = read_bytes(output_dir / "intent.json", limit=16384)
@@ -507,10 +510,10 @@ def validate_offline_launch(output_dir, intent_sha256):
     if (
         sha256_bytes(raw) != intent_sha256
         or len(raw) > intent.limits["record_bytes"]
-        or intent.output_root != str(output_dir)
+        or intent.output_root_sha256 != path_identity(b"output-root", str(output_dir))
         or output_dir.resolve() != output_dir
         or intent.bootstrap_sha256 != sha256_bytes(_PROGRAM.encode())
-        or intent.python_executable != sys.executable
+        or intent.python_executable_sha256 != path_identity(b"python-executable", sys.executable)
         or intent.python_sha256 != _python_sha256()
         or (intent.source_commit, intent.executed_source_sha256) != _offline_source_identity()
         or (output_dir / "process-result.json").exists()
@@ -519,12 +522,23 @@ def validate_offline_launch(output_dir, intent_sha256):
     return intent
 
 
-def measure_pilot_offline(*, output_dir, process_limits=None):
-    from silent_cascade.train.pilot_offline_process import OfflineProcessLimits
+def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=None):
+    """Fresh launches require private same-owner custody; inherited routing is deferred."""
+    from silent_cascade.train.pilot_offline_process import (
+        OfflineProcessCustody,
+        OfflineProcessLimits,
+        require_offline_process_custody,
+    )
 
     global _PENDING_OFFLINE_LAUNCH
     output_dir = Path(output_dir).absolute()
-    limits = OfflineProcessLimits() if process_limits is None else process_limits
+    limits = process_limits
+    if limits is None:
+        limits = (
+            process_custody.limits
+            if type(process_custody) is OfflineProcessCustody
+            else OfflineProcessLimits()
+        )
     if type(limits) is not OfflineProcessLimits:
         raise ValueError("invalid offline process limits")
     if output_dir.resolve() != output_dir or ".." in output_dir.parts:
@@ -533,24 +547,27 @@ def measure_pilot_offline(*, output_dir, process_limits=None):
         raise ValueError("offline process launch already active")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError("offline process attempt already exists; preserve its evidence")
+    custody = require_offline_process_custody(process_custody, output_dir=output_dir, limits=limits)
     from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
     from silent_cascade.train.evidence_types import read_bytes
     from silent_cascade.train.pilot_data import _publish_pilot_bytes
     from silent_cascade.train.pilot_offline_process import (
         OfflineProcessIntent,
         OfflineProcessResult,
+        _publish_private_process_bytes,
         capture_offline_process,
+        path_identity,
     )
 
     root = Path(__file__).resolve().parents[3]
     git_pin = _BOUNDARY_GIT_PIN or resolve_offline_git()
     revision, source_sha256 = _offline_source_identity()
     intent = OfflineProcessIntent(
-        schema_version="phase4-offline-process-intent-v1",
-        attempt=uuid.uuid4().hex,
-        output_root=str(output_dir),
+        schema_version="phase4-offline-process-intent-v2",
+        attempt=custody.attempt_id,
+        output_root_sha256=path_identity(b"output-root", str(output_dir)),
         bootstrap_sha256=sha256_bytes(_PROGRAM.encode()),
-        python_executable=sys.executable,
+        python_executable_sha256=path_identity(b"python-executable", sys.executable),
         python_sha256=_python_sha256(),
         source_commit=revision,
         executed_source_sha256=source_sha256,
@@ -559,13 +576,25 @@ def measure_pilot_offline(*, output_dir, process_limits=None):
     intent_raw = canonical_json_bytes(intent)
     if len(intent_raw) > limits.record_bytes:
         raise ValueError("offline process intent exceeds reserved record limit")
-    # Intent and result each need their full durable-publication peak reserved
-    # by the caller; no storage reservation is created or replenished here.
+    digest = sha256_bytes(intent_raw)
     try:
+        require_offline_process_custody(custody, output_dir=output_dir, phase=0)
+        _publish_private_process_bytes(
+            custody,
+            "binding.json",
+            canonical_json_bytes(
+                {
+                    "attempt": intent.attempt,
+                    "intent_sha256": digest,
+                    "limits": asdict(limits),
+                }
+            ),
+        )
+        require_offline_process_custody(custody, output_dir=output_dir, phase=1)
         _publish_pilot_bytes(output_dir / "intent.json", intent_raw)
     except Exception as error:
         raise ValueError("offline process intent publication failed") from error
-    digest = sha256_bytes(intent_raw)
+    require_offline_process_custody(custody, output_dir=output_dir, phase=2)
     _PENDING_OFFLINE_LAUNCH = (str(output_dir), digest)
     try:
         captured = capture_offline_process(
@@ -580,7 +609,9 @@ def measure_pilot_offline(*, output_dir, process_limits=None):
         ) from error
     finally:
         _PENDING_OFFLINE_LAUNCH = None
-    reason = captured.reason
+    reason = captured.reason or (
+        "private_output_rejected" if captured.stdout or captured.stderr else None
+    )
     report, report_sha256 = None, None
     if reason is None:
         try:
@@ -599,13 +630,25 @@ def measure_pilot_offline(*, output_dir, process_limits=None):
             report_sha256 = sha256_bytes(raw)
         except Exception:
             reason = "invalid_report"
-    for name in ("stdout", "stderr"):
+    for phase, name in enumerate(("stdout", "stderr"), 2):
+        payload = getattr(captured, name)
+        if not payload:
+            continue
         try:
-            _publish_pilot_bytes(output_dir / (name + ".txt"), getattr(captured, name))
+            require_offline_process_custody(custody, output_dir=output_dir, phase=phase)
+            _publish_private_process_bytes(custody, name + ".raw", payload)
         except Exception:
-            reason = captured.reason or "publication_failure"
+            reason = captured.reason or "private_custody_failure"
+    for phase, name in enumerate(("stdout", "stderr"), 4):
+        if getattr(captured, name):
+            continue
+        try:
+            require_offline_process_custody(custody, output_dir=output_dir, phase=phase)
+            _publish_pilot_bytes(output_dir / (name + ".txt"), b"")
+        except Exception:
+            reason = reason or "publication_failure"
     result = OfflineProcessResult(
-        schema_version="phase4-offline-process-result-v1",
+        schema_version="phase4-offline-process-result-v2",
         status="completed" if reason is None else "failed",
         intent_sha256=digest,
         attempt=intent.attempt,
@@ -617,12 +660,15 @@ def measure_pilot_offline(*, output_dir, process_limits=None):
         stderr_bytes=len(captured.stderr),
         stdout_sha256=sha256_bytes(captured.stdout),
         stderr_sha256=sha256_bytes(captured.stderr),
+        stdout_disposition="private_rejected" if captured.stdout else "empty_public",
+        stderr_disposition="private_rejected" if captured.stderr else "empty_public",
         offline_sha256=report_sha256 if reason is None else None,
     )
     raw_result = canonical_json_bytes(result)
     if len(raw_result) > limits.record_bytes:
         raise ValueError("offline process result exceeds reserved record limit")
     try:
+        require_offline_process_custody(custody, output_dir=output_dir, phase=6)
         _publish_pilot_bytes(output_dir / "process-result.json", raw_result)
     except Exception as error:
         raise ValueError("offline process terminal publication failed") from error

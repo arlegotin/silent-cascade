@@ -344,12 +344,18 @@ def _require_reusable_gate(verified):
 
 
 def _run_pilot_checks_owned(
-    *, run_dir, config, output_path, archive_producer=None, evidence_context=None
+    *,
+    run_dir,
+    config,
+    output_path,
+    archive_producer=None,
+    evidence_context=None,
+    offline_process_custody=None,
 ):
     """Called only under the workflow's existing permanent run ownership."""
-    from silent_cascade.train.pilot_offline_process import require_completed_offline_process
+    from silent_cascade.train.pilot_offline_process import preflight_offline_process
 
-    offline_completed = require_completed_offline_process(run_dir)
+    offline_completed = preflight_offline_process(run_dir, offline_process_custody)
     root, source, result, manifests, weights, archive = authenticate_run(run_dir, config)
     if output_path.exists():
         verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
@@ -382,15 +388,26 @@ def _run_pilot_checks_owned(
         if not (run_dir / "final/numerics/DONE").exists():
             verify_pilot_numerics(config, checkpoint=archive, output_dir=run_dir / "final/numerics")
         if not offline_completed:
-            measure_pilot_offline(output_dir=run_dir / "final/offline")
+            measure_pilot_offline(
+                output_dir=run_dir / "final/offline", process_custody=offline_process_custody
+            )
     return collect_pilot_evidence(run_dir=run_dir, config=config, output_path=output_path)
 
 
 def run_pilot_checks(
-    *, run_dir: Path, config, output_path: Path, archive_producer=None, evidence_context=None
+    *,
+    run_dir: Path,
+    config,
+    output_path: Path,
+    archive_producer=None,
+    evidence_context=None,
+    offline_process_custody=None,
 ) -> Phase4GateArtifact:
+    """Fresh checks require same-owner custody until inherited integration exists."""
+    from silent_cascade.train.pilot_offline_process import preflight_offline_process
     from silent_cascade.train.pilot_workflow import pilot_ownership
 
+    preflight_offline_process(run_dir, offline_process_custody)
     owner = strict_json(run_dir.parent / ("." + run_dir.name + ".owner.json"))
     with pilot_ownership(
         run_dir,
@@ -418,6 +435,7 @@ def run_pilot_checks(
             output_path=output_path,
             archive_producer=archive_producer,
             evidence_context=evidence_context,
+            offline_process_custody=offline_process_custody,
         )
 
 
@@ -427,8 +445,12 @@ def recover_pilot_checks(
     raw_run_dir: Path,
     destination: Path,
     retained_run_dir: Path | None = None,
+    offline_process_custody=None,
 ) -> Phase4GateArtifact:
     """Restore immutable training inputs; rerun only final checks in a fresh run."""
+    from silent_cascade.train.pilot_offline_process import preflight_offline_process
+
+    preflight_offline_process(destination, offline_process_custody)
     from silent_cascade.eventflow.neural_weights import decode_archive
     from silent_cascade.train.checkpoints import _Environment
     from silent_cascade.train.pilot_artifact_index import (
@@ -547,5 +569,8 @@ def recover_pilot_checks(
             ),
         )
         return _run_pilot_checks_owned(
-            run_dir=destination, config=config, output_path=destination / "phase4-gate.json"
+            run_dir=destination,
+            config=config,
+            output_path=destination / "phase4-gate.json",
+            offline_process_custody=offline_process_custody,
         )

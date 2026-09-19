@@ -592,10 +592,10 @@ def forecast_workload(**kwargs):
     return forecast(**kwargs)
 
 
-def measure_pilot_offline(*, output_dir):
+def measure_pilot_offline(*, output_dir, offline_process_custody=None):
     from silent_cascade.train.pilot_offline import measure_pilot_offline as measure
 
-    return measure(output_dir=output_dir)
+    return measure(output_dir=output_dir, process_custody=offline_process_custody)
 
 
 class DiagnosticSubset(StrictModel):

@@ -19,3 +19,4 @@ assets/
 *.pth
 *.mlx
 .silent-cascade-storage/
+**/logs/offline-process-private/
