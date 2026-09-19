@@ -1817,3 +1817,62 @@ open. The Phase 4 production pilot has not started.
 - Task5 privacy: minor (deferred): add private-prefix overflow/cancellation
   publication controls alongside TaskB combined-fence tests/final review.
   Current in-memory capture controls alone are not that publication proof.
+- Documentation/evidence/ruling committed89b558d; original privacy implementer
+  resumed for two-file Important fix only. Same owner61737 remains live; source
+  base71eabfe, actual retained task1150976B. Review fix requires fresh admitted
+  RED/GREEN/controller prefixes; no new source writer or operational reservation.
+- Open Task5 integration note: current _custody_paths also rejects public runs
+  overlapping spool/cache bindings, while later FitGuard text calls for a fresh
+  spool root. Resolve that route contract together with inherited authority
+  before any genuine integration launch; never bypass custody or relabel existing
+  bytes to make it pass. Current standalone privacy qualification is not proof
+  that the later spool/inherited workflow is executable.
+- Privacy FIX1-RED prospectively admitted exact2cases of
+  test_privacy_custody_rejects_split_publication_categories_before_writes:
+  process-result.json and exact sibling .pilot-b32.tmp overridden to scratch
+  beneath metadata public parent. Temp case grants only1B scratch to demonstrate
+  missing temporary-category admission; final-name case may retain ample scratch.
+  Freshfix1-red <=512KiB/<48KiB logical/20names/32dirs/30s/log16KiB each;
+  two tiny ledger fixtures/records<=4096, no children/Git/science. Original
+  production unchanged. Prior1150976+524288 fits held4MiB. No GREEN admitted.
+- Privacy FIX1-RED reproduced both defects (DID NOT RAISE):2failed0.39s/
+  wall0.638, pytest1/stderr0;2476logical/12288allocated,6files/1link/21dirs.
+  Temp override with1B scratch was omitted from old forecast and custody was
+  created. Final-name mismatch likewise passed old prep. Both prefixes retained;
+  actual task1163264B. Minimal path-validation correction follows before GREEN.
+- Privacy FIX1-GREEN prospectively admitted11exact named functions/32cases in
+  worker proposal: split-category5, compatible3, recheck4, private-directory1,
+  unadmitted9, stale-custody2, failed-report1, launch-failure1, publication-failure2,
+  sentinel1, private-failure3. Freshfix1-green <=2.5MiB/<192KiB/256names/320dirs,
+  30s/log16KiB;32tiny ledgers and6tiny Python children (one2s timeout), no Git/
+  science. Native4096 forecast192KiB+4096*(256+320)=2555904<=2621440.
+  Prior1163264+2621440=3784704<4194304. Revalidation fault injection is read-only
+  returned state, restored before fixture release; no live ledger rebinding.
+  Twofile scoped Ruff/diff admitted. Existing98 baseline is not new110 coverage.
+- Privacy FIX1-GREEN passed32/32 in5.35s/wall5.985,pytest0/stderr0;
+  29575logical/278528allocated,111files/12links/218dirs. Fix prefixes290816B,
+  entire privacy task1441792B retained. Post-run scoped static checks and
+  source/test freeze follow; controller repeat and scoped re-review remain.
+- Privacy fix source/test freeze6754bd8 (2files/100insertions/2deletions), post-
+  GREEN static checks passed; root source equality verified. FIX1-MAIN admitted
+  same11functions/32cases, freshfix1-main <=2.5MiB/<192KiB/256names/320dirs/
+  30s/log16KiB,6tiny children and32ledger fixtures; no Git/science. Prior1441792+
+  2621440=4063232<4194304. Narrow fix package prepared; repeat awaits exact
+  saved launcher, then same reviewer scopes only open Important/new breakage.
+- Privacy FIX1-MAIN passed32/32 in5.31s/wall5.890,pytest0/stderr0;
+  29543logical/278528allocated,111files/12links/218dirs. Entire privacy scratch
+  1720320B retained. Twofile Ruff/diff/source6754bd8 equality passed; command,
+  hashes and output recorded in main-evidence. Report-only8277aea preserves
+  source. Full owner61737 check running; same reviewer gets scoped fix review.
+- Owner61737 full check after FIX1-MAIN passed: scratch260595712,logs2351104,
+  spool219099136,cache67153920,metadata52965376,pinned/emergency0;
+  original frozen6195077120 unchanged. All retained privacy scratch1720320B.
+- Task5 privacy: fix round1/5 (1 addressed,0 open;6754bd8). Same reviewer
+  spec compliant/quality Approved, no new findings in fix. Cross-task resolution:
+  present export exclusion source-supported; future operational export and
+  inherited/FitGuard/spool integration are explicit downstream qualifications.
+  Full diagnostic/all16 evaluations remain unexecuted, not silently passed.
+- Task5 privacy: complete (source89e987a..6754bd8, reports4006c9a/8277aea,
+  review clean after FIX1; one minor deferred to TaskB/final review).
+  Standalone privacy only; Task5/Task7/Task12/Phase4 remain incomplete.
+  Release61737 with final check, then a new exactly scoped TaskB reservation.

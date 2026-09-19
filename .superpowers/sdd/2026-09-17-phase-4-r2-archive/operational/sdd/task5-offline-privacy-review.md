@@ -47,3 +47,19 @@ evaluations, and future operational exports remain unverified open integration.
 No tests, imports, provider/scientific execution, edits or Git operations were
 performed by the reviewer. Root retains the same scope limitations.
 
+## Scoped FIX1 re-review — 6754bd8
+
+Same reviewer: Important ADDRESSED; spec compliant, task quality Approved.
+No new Critical, Important or Minor issue in the two-file fix. Shared path
+validation at process.py233/351/418 rejects differing final/temp categories
+before creation and during revalidation. Tests at909/929/958 cover all four
+finals, the one-byte temporary admission, compatible mappings and phases0/6.
+Reviewer checked worker RED/GREEN and controller32-case evidence, empty stderr,
+allocation/static/source equality; no tests or execution in re-review.
+
+The prior Minor is carried to TaskB/final review. Root resolution of cross-task
+items: existing export exclusion is source-verified above; a future generic
+operational export requires separate qualification. Inherited custody/FitGuard
+and actual all16-evaluation diagnostic are explicitly downstream requirements,
+not standalone privacy completion. The spool-route contract remains in the
+active ledger for integration before any real launch.
