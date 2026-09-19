@@ -2682,6 +2682,20 @@ private custody or scientific configuration.
    fresh Diagnostic02 under unchanged child/process limits, with exact updated
    public/private missing-directory counts. No automatic retry or failure reuse.
 
+Diagnostic02 is the one permitted follow-up after that fix's independent
+verification/review and owner release. Use fresh public
+`spool/task5-real-offline-02/final/offline`, administrative
+`scratch/task5-real-offline-02`, and private attempt
+`6be71f5c342d4fa9a24c9d0f116a8bd2`, all inside the existing operational workspace.
+Do not reuse Diagnostic01. The same 16 MiB/102 names/nine child directories and
+180-second/256KiB-pipe/16KiB-record limits apply. The private parent now exists,
+so one private directory is missing: P_private=1110016, P_public=114688.
+Reserve spool16891904/logs2158592/metadata33562624/scratch524288, total53137408;
+other increments zero. Reauthenticate these exact peaks and live totals before
+launch. Use the same fixed same-owner operational parent with only these
+root/attempt/peak changes; retain its exact command and result separately.
+No source copy, larger limit, automatic further retry or full-pilot authority.
+
 ##### Primitive admission and execution instructions
 
 Use the existing closed Python `-B` launcher, disabled external pytest plugins/cacheprovider and explicit TMP/XDG/MPL/Hypothesis/archive roots under a fresh operational scratch prefix per RED/GREEN/controller stage. Select only the named new writer tests and named parent/legacy primitive tests; never select the entire offline test file if it contains the actual diagnostic. Example inner command after its containing launcher/environment has been admitted:

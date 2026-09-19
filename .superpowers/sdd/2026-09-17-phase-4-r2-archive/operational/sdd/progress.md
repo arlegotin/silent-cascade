@@ -2368,3 +2368,48 @@ open. The Phase 4 production pilot has not started.
   Task envelope proposed2MiBscratch/1MiBlogs/33562624metadata, no spool growth;
   exact RED/GREEN/controller stage bounds required separately. No native cache
   permission expansion or optimizer/compiled execution change.
+- Optimizer task owner81184/PTY20632 admittedtoken14b87188832c94b90df668388f03ca65;
+  frozen6195077120 verified. Before scratch264081408/logs2650112, othercategories
+  as Diagnostic01 final. Task2MiBscratch/1MiBlogs/33562624metadata held.
+- RED1 admitted3nodes/4cases: environmentmapping, realScalarAdamW, two cache
+  artifactdenials; fresh scratch/task5-optimizer-cache/red1. Onepytest150s,
+ 3tinychildren64KiB/30s/2048Bpipes and localGitversionprobes; outerpipes32KiB,
+  code8192B, metadata4096B,16outerfile/linknames40dirs at8192cushion;
+  3*65536+4096+8192*(16+40)+65536=724992<=786432allocated.
+  Root requested test-only corrections beforeRED: optimizer precedesenvassert,
+  eagerforeach/fusedFalse, source-derived filewriter/directorypath denials.
+- RED1 intendedFF.. (2fail2pass), pytest3.87s/wall3.98s: envKeyError and
+  actualAdamWdefaultprobe OfflineWriteDenied writer; negativespass. Rawcommand/
+  stdout6453/stderr0 retained aftercontrollerrequest,12288allocated,3files/
+  3links21dirs. Execution deviation: implementer used tool output/yield limits,
+  not mechanical32KiB/150s outercapture. Actualoutput/time remained belowbounds,
+  but RED is not evidence of outer limiter enforcement. NoREDretry; controller
+  supplies enforced capture forGREEN and independentfrozenverification.
+- GREEN1 admitted exact4nodes/5cases (new4 + closedGitbatch), fourcommands:
+  pytest,Ruffcheck,formatcheck,scopeddiff. Fresh green1;4sequentialtinychildren
+ 64KiB/30s/2048Bpipes plus trustedGit probes/batch. Outer32KiBperpipe/150s,
+  32file/linknames48dirs/4096metadata/8192cushion; worst5commandbound
+  4*65536+5*65536+4096+8192*(32+48)=1249280<=1310720allocated.
+  ActualC12288+1310720<2097152. Source diff exactlyoneenvline+47testlines.
+- GREEN1 fivecasespassed4.86s/wall5.032;Ruffcheck/formatcheck/scopeddiff0;
+  wrapper0. Fullrawlogs retained,143logical/12288allocated,8files4links19dirs.
+  C24576allocated. Root read complete RED and GREEN logs. Onlyscalaroptimizer
+  construction; no trainingupdate/model/diagnostic. Source freeze requested.
+- Source freeze13fef3b8be474b7cd77768c5e8ff7b459e611130, exactlytwoownedfiles.
+  MAIN admitted same5cases/fourtinychildren and fivecommands adding sourceequality,
+  fresh scratch/task5-optimizer-cache/main; same1310720allocated/32KiBpipes/
+ 150s/32names48dirs bounds. C24576+1310720<2097152. Owner measure confirms
+  scratch264105984; source matches freeze. No actual diagnostic in this run.
+- MAIN fivecasespassed4.79s/wall4.962;Ruff/format/diff/sourceequalityall0,
+  wrapper0.143logical/12288allocated,10files4links19dirs;C36864allocated.
+  Root read fullreport/diff/rawoutputs; filehashes match writer. Reviewpending.
+- Optimizer-cache independentreviewPASS, noCritical/Important; onlyMinor is
+  disclosed REDouterlimiter omission (futureREDmustuseboundedwrapper). Taskfix
+  completeat13fef3b after5case frozenrepeat/statics; no scientific claim.
+  Full ownercheck passed withscratch264118272/logs2682880, frozen6195077120.
+  Diagnostic02 prepared underunchanged16MiB/180s limits, notyetlaunched.
+- Optimizer task owner released/exited0 after final frozencheck. Final
+  spool219123712/cache67153920/metadata52965376/scratch264118272/logs2695168,
+  pinned/emergency0; frozen6195077120 unchanged. Entiretask36864scratch retained,
+  no cleanup/capchange/provider. Next source freeze includes reviewedfix/evidence
+  and exactDiagnostic02 admission; only then a newowner may start.

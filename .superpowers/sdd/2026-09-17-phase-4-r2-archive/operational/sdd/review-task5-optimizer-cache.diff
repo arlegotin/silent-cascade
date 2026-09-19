@@ -1,0 +1,70 @@
+diff --git a/src/silent_cascade/train/pilot_offline.py b/src/silent_cascade/train/pilot_offline.py
+index a8ad763..8b81d33 100644
+--- a/src/silent_cascade/train/pilot_offline.py
++++ b/src/silent_cascade/train/pilot_offline.py
+@@ -170,6 +170,7 @@ def offline_environment(scratch: Path, *, git_pin: OfflineGitPin | None = None)
+             "MPLCONFIGDIR": str(scratch / "matplotlib-cache"),
+             "MPL_IGNORE_SYSTEM_FONTS": "1",
+             "XDG_CACHE_HOME": str(scratch / "cache"),
++            "TORCHINDUCTOR_CACHE_DIR": str(scratch / "cache"),
+         }.items()
+     }
+
+diff --git a/tests/pilot/test_pilot_offline_writes.py b/tests/pilot/test_pilot_offline_writes.py
+index 3543c28..fecbf6c 100644
+--- a/tests/pilot/test_pilot_offline_writes.py
++++ b/tests/pilot/test_pilot_offline_writes.py
+@@ -595,6 +595,53 @@ def test_late_consumer_binding_is_denied(tmp_path, module):
+     )
+
+
++def test_offline_environment_derives_inductor_cache_and_ignores_ambient(tmp_path, monkeypatch):
++    from silent_cascade.train.pilot_offline import offline_environment
++
++    root = tmp_path / "child"
++    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "ambient-cache"))
++    environment = offline_environment(root)
++    assert environment["TORCHINDUCTOR_CACHE_DIR"] == str(root.absolute() / "cache")
++
++
++def test_real_scalar_adamw_initializes_only_empty_cache_root(tmp_path):
++    run_writer_control(
++        """
++try:
++    import torch
++    parameter = torch.tensor(0.0, device='cpu', requires_grad=True)
++    optimizer = torch.optim.AdamW([parameter], lr=0.001, foreach=False, fused=False)
++except OfflineWriteDenied as error:
++    raise RuntimeError(str(error)) from None
++assert os.environ['TORCHINDUCTOR_CACHE_DIR'] == str(root / 'cache')
++assert optimizer.param_groups[0]['params'][0] is parameter
++cache = root / 'cache'
++assert cache.is_dir()
++assert list(cache.iterdir()) == []
++guard.assert_clear()
++""",
++        tmp_path / "child",
++    )
++
++
++@pytest.mark.parametrize("artifact", ["file", "directory"])
++def test_optimizer_cache_artifact_denials_latch(tmp_path, artifact):
++    operation, reason = {
++        "file": ("(cache / 'compiler.bin').write_bytes(b'x')", "writer"),
++        "directory": ("(cache / 'fxgraph').mkdir()", "path"),
++    }[artifact]
++    run_writer_control(
++        f"""
++cache = root / 'cache'
++cache.mkdir()
++with denied({reason!r}):
++    {operation}
++assert list(cache.iterdir()) == []
++""",
++        tmp_path / "child",
++    )
++
++
+ def test_real_publishers_exact_capacity(tmp_path):
+     root = tmp_path / "child"
+     root.mkdir()
