@@ -1856,6 +1856,28 @@ freeze; changed verified inputs invalidate their prior receipt.
 
 ### Task 12: Run the One-Seed Pilot and Publish the Actual Outcome
 
+**Local-only continuation ruling (2026-09-19):** The user directed continuation
+without R2, with a 10 GiB working-space limit and optional offload of inactive
+artifacts to another local volume. R2 code remains on `r2-archive-work`; do not
+restore it into this phase. The explicitly authorized old R2 workspace was
+removed; Phase 4 evidence and runs are retained.
+
+Task 10's 4.4 TB admission figure is a whole-run worst-case projection, not
+measured consumption. Keep that historical result unchanged. Preparation of
+the four manifests and their audits may proceed independently of admitting the
+full training run: these existing commands retain manifests, reports and indexes,
+not neural trajectories. Allow at most 1 GiB additional workspace for this
+preparation and monitor the total workspace against 10 GiB. No optimizer starts
+until all four audits pass and their exact evidence has been committed.
+
+Before admitting training, establish a measured, bounded local execution path
+with room for checkpoints and failure evidence. A low-space pause is incomplete
+work, never a passed gate or permission to drop failures. Do not reserve the
+whole 75,000-update upper envelope merely to prepare data, infer that the entire
+pilot fits in 10 GiB, lower validation counts, or introduce another storage
+subsystem. Any necessary source correction follows the existing TDD/review
+workflow; source-bound evidence is regenerated when compatibility requires it.
+
 **Files:**
 
 - Generate: `manifests/validation/phase4/{one_hop,two_hop,primary,robustness}.json`.

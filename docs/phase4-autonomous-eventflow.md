@@ -487,6 +487,22 @@ against only **16,358,002,688 observed free bytes**. Storage headroom failed.
 No production run was started; nothing was deleted, relocated or pruned to fit.
 Remeasure at the actual stable retained destination before production.
 
+### Local-only continuation (2026-09-19)
+
+The user abandoned R2 and restored `main` to the pre-R2 implementation. R2
+history is preserved on `r2-archive-work`, including its remote branch. The old,
+ignored R2 workspace was explicitly deleted, releasing 6,651,892 KiB of
+allocated space (about 6.3 GiB); the repository directory then measured 4.7 GiB.
+Current Phase 4 run data, diagnostic failures and tracked verification evidence
+were not deleted.
+
+The historical 4.4 TB figure above remains a worst-case whole-run forecast, not
+actual storage consumption or a requirement for dataset preparation. Continue
+Task 12 locally under the plan's bounded preparation ruling: prepare and audit
+the four immutable 10,000-episode validation manifests first. Production fitting
+still needs a separate measured space check. No R2 calls, changed learning gates,
+or claim that Phase 4 is complete follow from this cleanup.
+
 Raw evidence remains under the ignored stable local path
 `runs/phase4-task10-measurements/6444632-seed11-20260917/profile`, not system temp.
 Both strict readers authenticated required inventories and recomputed summaries
