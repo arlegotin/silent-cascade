@@ -2431,3 +2431,53 @@ open. The Phase 4 production pilot has not started.
   Versioned narrowTaskD1/brief written beforeimplementation. No descriptor/job/
   session/CLI/newhold or scientific change; no newdiagnostic needed. Task5 and
   Phase4 remainopen; fullprototypepilotnotstarted.
+- D1 solewriter /root/offline_optimizer_cache_fix reused for newboundedtask,
+  basea8bf9e0; priorcachetaskclosed. Taskowner83137/PTY49338 admittedtoken
+  c87d6ee040bddf9c9c9b012345d1e0f8, scratch2097152/logs1048576/metadata33562624.
+  Before scratch264118272/logs2707456/spool231063552/cache67153920/
+  metadata52965376; frozen6195077120 verified. No perstage execution admitted
+  yet; test writing and codeinspection only. EveryREDoutercap must be enforced.
+- D1 RED admission: controller reviewed9namedselectors/15cases, no fixture
+  writes/model/Git/testchildren. Fresh scratch/task5-offline-allowance-forwarding/red1
+  <=655360B,16file/linknames,40dirs; owner49338 remainssoleproductionreservation.
+  Counted controller driver in sdd mechanically limits150s,32768B/stream and
+  65536B allcapturedstreams; closedruntime roots, plugin/bytecodeoff. GREEN/main
+  separatelyadmittedlater, same655360B each with24names forstaticcommandlogs;
+  entire task still<=2MiB scratch. Allattempts retained, no capchange/cleanup.
+- D1 RED executed through boundeddriver:14expected missing-keyword TypeErrors,
+  1omitted-defaultpass,2.04s pytest/2.466s wall; stdout6830/stderr0. Retained
+  red1 allocation8192B,2files9links22dirs. Controller readallfailures; solewriter
+  authorizedminimalGREENcode, no testexecution. Parallel read-only helper maps
+  futureproductionhold in <=16KB note underexistinglogs, without source/imports.
+- D1 GREEN admitted: same9selectors/15cases and no testchildren, freshgreen1,
+  <=655360B/24file-linknames/40dirs. Boundeddriver firstformats only5ownedfiles,
+  thenpytest/Ruffcheck/formatcheck/scopeddiffcheck; max2concurrentprocesses,
+  150s each/32768B perstream/65536B allstreams. No diagnostic/recoverycopy.
+- D1 GREEN:15passed1.42s (1.841s commandwall), Ruffcheck/formatcheck/diffcheck0;
+  formatterchanged onlytestlayout. Actualgreen1 16384allocated/187logical,
+  10files9links22dirs,stderr0. Controller readfullfourmodulesdiff, writer now
+  selfreview/report/scopedcommit. Thisprovesargumentplumbing, notfullpilotlaunch.
+- D1 source frozen 39ecdf451090ae5c81d984f6e7a7c0c7166ac8a2; controller main1 admitted withsame
+  15cases/zero testchildren,655360B/24names/40dirs andsameboundeddriver. Commands
+  pytest/Ruffcheck/formatcheck/scopeddiffcheck plus exactsourceequalitytofreeze;
+  noformatter or additionaltests. Priorownerfullcheck authenticated frozenhistory,
+  current scratch264142848/logs2719744. Main1 retainsresults separately.
+- Task D1: complete (a8bf9e0..39ecdf4, independentreview clean). Controller
+  frozenrepeat15passed1.41s/1.863swall, all5commands0 inclsourceequality;
+  main1 12288allocated/144logical/10files9links22dirs. All3stages36864B retained.
+  Source/reporthashesverified and fullreviewread; noCritical/Important/Minor.
+  Review's broaderlimitations remainopen, notwaived: inheritedauthority,
+  productionhold/fullpilot/fullmakeverify/Task5/Phase4. Ownerrelease waits only
+  for boundedread-only designnote completion, then finalintegritycheck.
+- D1 ownerreleased/exited0 afterfullfrozencheck (6195077120 unchanged):
+  spool231063552/cache67153920/metadata52965376/scratch264155136/logs2789376,
+  pinned/emergency0. Allattempts retained. Read-onlydesignnote finalized14569B;
+  it correctly defers inheritedhold until whole-workflow feasibility and an
+  explicit held/executing/terminal lifecycle exist. Phase2 alone is not join.
+- Ruling: close the independently useful final-evaluation request/execution
+  prewrite gap while separately auditing remaining spans — source inspection
+  proves those two publications precede/outlive existing producer boundaries;
+  the correction needs no futurehold or fullpilot authority — cost ifwrong is
+  scoped tests/code rework, never launch/cap/scientific-protocol expansion.
+  Futurehold numeric examples are state-dependent, not actualnew admission;
+  live missing-directory peaks must still be authenticated before execution.
