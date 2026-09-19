@@ -712,12 +712,29 @@ def pair_results(left, right):
 
 
 def verify_continuation_records(
-    records, *, rows, config, source, weights_sha, run_dir=None, unavailable=None
+    records,
+    *,
+    rows,
+    config,
+    source,
+    weights_sha,
+    run_dir=None,
+    unavailable=None,
+    evidence_context=None,
 ):
     """Validate retained comparisons and real pause/replay identities, never rerun."""
+    from silent_cascade.archive.readers import evidence_path, logical_root
     from silent_cascade.eventflow.checkpoint_state import _trace_from_metadata
-    from silent_cascade.eventflow.neural_checkpoint import load_neural_runtime_checkpoint
+    from silent_cascade.eventflow.neural_checkpoint import (
+        NeuralRuntimeMetadata,
+        load_neural_runtime_checkpoint,
+    )
     from silent_cascade.eventflow.neural_replay import NeuralReplayComparison, _parse
+    from silent_cascade.eventflow.neural_weights import (
+        decode_archive,
+        load_neural_weights,
+    )
+    from silent_cascade.eventflow.neural_weights import read_bytes as read_neural_bytes
 
     required = {
         "public_id",
@@ -741,6 +758,37 @@ def verify_continuation_records(
         "coverage",
         "matched",
     }
+    if evidence_context is not None and (
+        run_dir is None or logical_root(run_dir, evidence_context) != "."
+    ):
+        raise ValueError("continuation evidence context run root differs")
+    records = tuple(records)
+    expected_names = {
+        name
+        for record in records
+        if isinstance(record, dict)
+        for name in (record.get("checkpoint_path"), record.get("replay_path"))
+        if isinstance(name, str)
+    }
+    expected_names.update(
+        (
+            Path(record["checkpoint_path"]).parent
+            / f"weights-{record['weights_sha256']}.safetensors"
+        ).as_posix()
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("checkpoint_path"), str)
+        and isinstance(record.get("weights_sha256"), str)
+    )
+    indexed = (
+        {entry.path for entry in evidence_context.entries() if entry.path in expected_names}
+        if evidence_context is not None
+        else set()
+    )
+
+    def available(name):
+        return run_dir is not None and (child(run_dir, name).exists() or name in indexed)
+
     by_id = {value["row"]["public_id"]: value for value in rows}
     unavailable = [] if unavailable is None else unavailable
     coverage = set()
@@ -813,18 +861,44 @@ def verify_continuation_records(
             raise ValueError("continuation comparison flag differs")
         if not matched:
             raise ValueError("continuation comparison failed; later coverage cannot excuse it")
-        checkpoint_present = (
-            run_dir is not None and child(run_dir, record["checkpoint_path"]).exists()
-        )
-        replay_present = run_dir is not None and child(run_dir, record["replay_path"]).exists()
+        checkpoint_present = available(record["checkpoint_path"])
+        replay_present = available(record["replay_path"])
         if checkpoint_present:
-            checkpoint = load_neural_runtime_checkpoint(
-                child(run_dir, record["checkpoint_path"]),
-                expected_sha256=record["checkpoint_sha256"],
-                config=config.config.event_flow,
-                source_revision=source.source_commit,
-                device="cpu",
-            )
+            checkpoint_name = record["checkpoint_path"]
+            with evidence_path(
+                run_dir, checkpoint_name, evidence_context=evidence_context
+            ) as local:
+                raw = read_neural_bytes(local)
+                discovered, _ = decode_archive(
+                    raw,
+                    record["checkpoint_sha256"],
+                    NeuralRuntimeMetadata,
+                    "runtime",
+                )
+            materialized_weights = None
+            if discovered.weights_ref is not None:
+                if discovered.weights_sha256 != record["weights_sha256"]:
+                    raise ValueError("continuation referenced weights hash differs")
+                weights_name = (Path(checkpoint_name).parent / discovered.weights_ref).as_posix()
+                with evidence_path(
+                    run_dir, weights_name, evidence_context=evidence_context
+                ) as local:
+                    materialized_weights = load_neural_weights(
+                        local,
+                        expected_sha256=discovered.weights_sha256,
+                        device="cpu",
+                    )
+            with evidence_path(
+                run_dir, checkpoint_name, evidence_context=evidence_context
+            ) as local:
+                checkpoint = load_neural_runtime_checkpoint(
+                    local,
+                    expected_sha256=record["checkpoint_sha256"],
+                    config=config.config.event_flow,
+                    source_revision=source.source_commit,
+                    device="cpu",
+                    materialized_weights=materialized_weights,
+                )
             metadata = checkpoint.metadata
             if (
                 metadata.public_id != row["public_id"]
@@ -839,7 +913,10 @@ def verify_continuation_records(
         else:
             unavailable.append("continuation.checkpoint:" + record["checkpoint_path"])
         if replay_present:
-            replay_raw = read_bytes(child(run_dir, record["replay_path"]), limit=MAX_BYTES)
+            with evidence_path(
+                run_dir, record["replay_path"], evidence_context=evidence_context
+            ) as local:
+                replay_raw = read_bytes(local, limit=MAX_BYTES)
             if sha256_bytes(replay_raw) != record["replay_sha256"]:
                 raise ValueError("continuation replay hash differs")
             replay, bundle, _ = _parse(replay_raw)
@@ -929,9 +1006,22 @@ def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None, 
     return report.device_checks_passed
 
 
-def verify_offline_evidence(value, *, source, run_dir=None, missing_raw=(), unavailable=None):
+def verify_offline_evidence(
+    value,
+    *,
+    source,
+    run_dir=None,
+    missing_raw=(),
+    unavailable=None,
+    evidence_context=None,
+):
+    from silent_cascade.archive.readers import evidence_path, logical_root
     from silent_cascade.train.pilot_offline import PilotOfflineReport
 
+    if evidence_context is not None and (
+        run_dir is None or logical_root(run_dir, evidence_context) != "."
+    ):
+        raise ValueError("offline evidence context run root differs")
     report = PilotOfflineReport.model_validate_json(canonical_json_bytes(value))
     if report.source_commit != source.source_commit or report.forbidden_modules:
         raise ValueError("offline source/import evidence differs")
@@ -939,18 +1029,44 @@ def verify_offline_evidence(value, *, source, run_dir=None, missing_raw=(), unav
     if run_dir is not None:
         from silent_cascade.eventflow.neural_replay import _parse
 
-        root = run_dir / "final/offline"
+        root_name = "final/offline"
+        root = run_dir / root_name
+        direct_names = {
+            root_name + "/executed-source.json",
+            root_name + "/step.json",
+            root_name + "/replay.json",
+            root_name + "/weights.safetensors",
+            root_name + "/report/report.md",
+        }
+        evaluation_prefix = root_name + "/run/eval/primary/"
+        indexed = (
+            {
+                entry.path
+                for entry in evidence_context.entries()
+                if entry.path in direct_names or entry.path.startswith(evaluation_prefix)
+            }
+            if evidence_context is not None
+            else set()
+        )
+
+        def available(name):
+            return child(run_dir, name).exists() or name in indexed
+
         expected = {p: h for p, h in source.source_files.items() if p.startswith("src/")}
-        if (root / "executed-source.json").exists():
-            executed = strict_json(root / "executed-source.json")
+        source_name = root_name + "/executed-source.json"
+        if available(source_name):
+            with evidence_path(run_dir, source_name, evidence_context=evidence_context) as local:
+                executed = strict_json(local)
             if executed != expected or report.executed_source_sha256 != sha256_bytes(
                 canonical_json_bytes(executed)
             ):
                 raise ValueError("offline executing source differs")
         else:
             unavailable.append("offline.executed_source")
-        if (root / "step.json").exists():
-            step = strict_json(root / "step.json")
+        step_name = root_name + "/step.json"
+        if available(step_name):
+            with evidence_path(run_dir, step_name, evidence_context=evidence_context) as local:
+                step = strict_json(local)
             if (
                 step["compute"]["backward_macs"] != report.backward_macs
                 or step["compute"]["foundation_model_calls"] != 0
@@ -958,8 +1074,10 @@ def verify_offline_evidence(value, *, source, run_dir=None, missing_raw=(), unav
                 raise ValueError("offline raw update/count evidence differs")
         else:
             unavailable.append("offline.update")
-        if (root / "replay.json").exists():
-            replay_raw = read_bytes(root / "replay.json", limit=MAX_BYTES)
+        replay_name = root_name + "/replay.json"
+        if available(replay_name):
+            with evidence_path(run_dir, replay_name, evidence_context=evidence_context) as local:
+                replay_raw = read_bytes(local, limit=MAX_BYTES)
             replay, _, _ = _parse(replay_raw)
             if (
                 replay.weights_sha256 != report.weights_sha256
@@ -974,16 +1092,24 @@ def verify_offline_evidence(value, *, source, run_dir=None, missing_raw=(), unav
             ("weights.safetensors", report.weights_sha256),
             ("report/report.md", report.artifact_report_sha256),
         ):
-            if (root / name).exists():
-                if sha256_bytes(read_bytes(root / name)) != digest:
+            logical_name = root_name + "/" + name
+            if available(logical_name):
+                with evidence_path(
+                    run_dir, logical_name, evidence_context=evidence_context
+                ) as local:
+                    raw = read_bytes(local)
+                if sha256_bytes(raw) != digest:
                     raise ValueError("offline raw attachment differs")
             else:
                 unavailable.append("offline.attachment:" + name)
-        prefix = "final/offline/run/eval/primary/"
-        if (root / "run/eval/primary/DONE").exists() and not any(
-            name.startswith(prefix) for name in missing_raw
-        ):
-            identity, rows, metrics, _ = load_evaluation(root / "run/eval/primary")
+        done_name = evaluation_prefix + "DONE"
+        missing_evaluation = any(
+            name.startswith(evaluation_prefix) and not available(name) for name in missing_raw
+        )
+        if available(done_name) and not missing_evaluation:
+            identity, rows, metrics, _ = load_evaluation(
+                root / "run/eval/primary", evidence_context=evidence_context
+            )
             if (
                 identity.purpose != "debug"
                 or len(rows) != 16

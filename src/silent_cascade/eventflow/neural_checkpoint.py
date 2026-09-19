@@ -235,7 +235,7 @@ def snapshot_neural_runtime(
         raise ReplayError("invalid neural snapshot") from error
 
 
-def _validated_weights(artifact, device):
+def _validated_weights(artifact, device, materialized_weights=None):
     metadata = artifact.metadata
     embedded = {
         name: value
@@ -243,7 +243,7 @@ def _validated_weights(artifact, device):
         if name.startswith(("parameter/", "buffer/"))
     }
     if metadata.weights_ref is None:
-        if metadata.weights_sha256 is not None:
+        if metadata.weights_sha256 is not None or materialized_weights is not None:
             raise ReplayError("standalone weights cannot claim a containing-file hash")
         return reconstruct_weights(metadata.weights, embedded, device)
     if (
@@ -252,20 +252,23 @@ def _validated_weights(artifact, device):
         or metadata.weights_ref != f"weights-{metadata.weights_sha256}.safetensors"
     ):
         raise ReplayError("invalid referenced weights")
-    loaded = load_neural_weights(
-        artifact.path.parent / metadata.weights_ref,
-        expected_sha256=metadata.weights_sha256,
-        device=device,
-    )
-    if (
-        loaded.identity != metadata.weights.identity
-        or snapshot_weights(loaded.model, loaded.identity)[0] != metadata.weights
-    ):
+    loaded = materialized_weights
+    if loaded is None:
+        loaded = load_neural_weights(
+            artifact.path.parent / metadata.weights_ref,
+            expected_sha256=metadata.weights_sha256,
+            device=device,
+        )
+    if loaded.sha256 != metadata.weights_sha256 or loaded.identity != metadata.weights.identity:
+        raise ReplayError("referenced weights identity differs")
+    if any(value.device.type != device for value in loaded.model.state_dict().values()):
+        raise ReplayError("materialized referenced weights device differs")
+    if snapshot_weights(loaded.model, loaded.identity)[0] != metadata.weights:
         raise ReplayError("referenced weights identity differs")
     return loaded.model
 
 
-def _validate(artifact, *, config, source_revision, device):
+def _validate(artifact, *, config, source_revision, device, materialized_weights=None):
     try:
         raw = canonical_json_bytes(artifact.metadata)
         if len(raw) > MAX_METADATA_BYTES:
@@ -355,7 +358,7 @@ def _validate(artifact, *, config, source_revision, device):
             or diagnostic.module_calls != expected_calls
         ):
             raise ReplayError("neural diagnostic counters differ from causal callback")
-        model = _validated_weights(artifact, device)
+        model = _validated_weights(artifact, device, materialized_weights)
         return session, rng, model
     except ReplayError:
         raise
@@ -380,12 +383,24 @@ def publish_neural_runtime_checkpoint(
 
 
 def load_neural_runtime_checkpoint(
-    path: Path, *, expected_sha256: str, config: EventFlowConfig, source_revision: str, device: str
+    path: Path,
+    *,
+    expected_sha256: str,
+    config: EventFlowConfig,
+    source_revision: str,
+    device: str,
+    materialized_weights=None,
 ) -> NeuralRuntimeCheckpoint:
     raw = read_bytes(path)
     metadata, tensors = decode_archive(raw, expected_sha256, NeuralRuntimeMetadata, "runtime")
     artifact = NeuralRuntimeCheckpoint(metadata, tensors, path, sha256_bytes(raw))
-    _validate(artifact, config=config, source_revision=source_revision, device=device)
+    _validate(
+        artifact,
+        config=config,
+        source_revision=source_revision,
+        device=device,
+        materialized_weights=materialized_weights,
+    )
     return artifact
 
 
