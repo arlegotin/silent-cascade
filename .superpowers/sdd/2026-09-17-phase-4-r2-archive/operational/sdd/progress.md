@@ -1657,3 +1657,50 @@ open. The Phase 4 production pilot has not started.
   recorded. Independent task5_offline_writes_a_review (astra/high, isolated,
   read-only) reviews52291char package3820408..14abc50. Owner65407 fullcheck
   underway. Production/privacy/B/C/fullgate/Task7/Phase4 remain incomplete.
+- Independent review requires one Important fix: pending-rows link and temporary
+  chmod must compare actual inode with recorded owner identity before mutation.
+  No Critical/Minor findings. Controller accepts as brief violation; fix round1/5
+  resumes task5_offline_writes_a, exact two-path correction and tiny substitution
+  controls only. Review record saved. Full ownercheck passed scratch258756608/
+  logs2117632/spool219099136/cache67153920/metadata52965376,pinned/emergency0;
+  frozenretained6195077120 unchanged. Owner65407 remains live for admitted fixes.
+- FIX1-RED admitted exact rows_substitution_is_denied_before_final_link and
+  temp_substitution_is_denied_before_chmod (test_ prefix), freshfix1-red
+  <=768KiB/<160KiB logical/32names/40dirs/120s;2children<=64KiB/source4096B/
+  pipes2048B each/30s. Bounded parent thread swaps only fixture-local1B
+  replacement into signaled rows/temp target, retaining original inode via a
+  displaced link; no production seams or guard-private-state changes. Actor
+  joins/stops on all exits; no deletion. Tests prove no final link/no chmod
+  before authority denial. Prior503808B+768KiB fits held4MiB. GREEN separate.
+- FIX1-RED reproduced both missing checks:2failed write-was-not-denied2.99s;
+  retained2504logical/28672allocated/8files/2links/14dirs. Rows final linked
+  substituted inode; temporary replacement changed0600->0644, original0400
+  inode retained separately. Four-line pre-mutation identity correction follows.
+  FIX1-GREEN admitted exact new2 plus rows_stream_and_final_link,
+  pending_and_final_hardlink_both_charge_allocation, atomic_replace_and_create_
+  preserve_original_behavior, second_atomic_temp_denied_and_owned_cleanup_allowed:
+  6cases, freshfix1-green <=1.5MiB/<128KiB/80names/90dirs/240s, child64KiB and
+  bounded streams/actors unchanged. Prior532480B+1.5MiB fits held4MiB.
+  Scoped writes-module/test static formatting/checks allowed; no other source.
+- FIX1-GREEN passed6/6 in7.23s;111logical/45056allocated/12files/6links/28dirs.
+  No substituted rows final exists; temporary remains0600, displaced original
+  remains0400. Both deny authority and retain failed evidence; success/cleanup
+  controls passed. Cumulative577536allocated. Twofile static checks passed;
+  scoped source commit/freeze then controller covering check/re-review follow.
+- Fix source committed07e9394. Controller FIX1-MAIN prospectively admitted
+  exact same6covering selectors at freshfix1-main, same1.5MiB/<128KiB/80names/
+  90dirs/240s and six64KiB children with bounded actors/capture. Prior577536B+
+  1.5MiB fits held4MiB. No other tests, native/scientific/provider work admitted.
+- FIX1-MAIN passed6/6 in7.39s (wall7.630), exit0/stderrempty;111logical/
+  45056allocated/12files/6links/28dirs. All15prefixes retain622592allocated.
+  Scoped lint/format/source equality07e9394 passed. Fix review package7555chars
+  prepared; same reviewer will judge only the Important finding and new fix
+  breakage. Prior full66cases remain14abc50 evidence, not a new68case run.
+- Task5 child writes A: fix round1/5 (1 addressed,0 open;07e9394).
+  Scoped re-review approved spec/quality, no new Critical/Important/Minor or
+  out-of-scope findings. Full post-fix ownercheck passed scratch258875392/
+  logs2162688/spool219099136/cache67153920/metadata52965376,pinned/emergency0,
+  frozenretained6195077120 unchanged. Task A complete as standalone slice only.
+  All622592B/fifteen prefixes retained. Release requested for owner65407 before
+  new privacy-correction admission/sole writer. No real diagnostic/fullgate,
+  provider or Phase4production run. Private-custody brief prepared from5298eff.

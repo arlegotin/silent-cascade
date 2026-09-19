@@ -1,8 +1,11 @@
 # Task5 standalone child writer controls (Task A)
 
-Task A implementation frozen at `14abc50e9b033032ec9379163db2a7ee527c13c6`.
-Final targeted check:16 passed. Independent review and controller execution of
-the complete frozen primitive matrix remain outstanding. No scientific
+Task A initial implementation was frozen at `14abc50e9b033032ec9379163db2a7ee527c13c6`.
+Review fix1 is frozen at `07e9394a3c89346052f1861e5c3de196e8213e84`; see the appended fix record for current
+source identities and six passing targeted checks. The controller completed
+the original66-case matrix, and independent review then found the two missing
+pre-mutation ownership checks addressed by fix1. Covering verification and
+scoped re-review of the fix remain outstanding. No scientific
 execution, production launch binding, FitGuard hold, full local quality gate
 or archival success is claimed. Controller owns the reservation and review.
 Scope is the standalone adapter, boundary coordination, source inventory entry
@@ -257,6 +260,7 @@ env -i PATH=/opt/homebrew/bin:/usr/bin:/bin LANG=C.UTF-8 \
 import os, pathlib, selectors, subprocess, time
 root = pathlib.Path.cwd()
 stage_name = 'controller-recheck1'
+batch_seconds = 480
 names = [
     'test_install_requires_exact_allowance_type',
     'test_install_cannot_replace_or_enlarge_allowance',
@@ -307,7 +311,7 @@ try:
                 p.kill()
                 raise RuntimeError('output bound')
             buffers[key.data].extend(chunk)
-        if time.monotonic() - start > 480:
+        if time.monotonic() - start > batch_seconds:
             p.kill()
             raise RuntimeError('timeout')
 finally:
@@ -333,3 +337,102 @@ the pinned read-only Git command capability and TMP/XDG/MPL roots inside each
 child. Allocation includes each retained directory/file/link name's
 `st_blocks*512`; the admission formula adds4096 B rounding and metadata cushion.
 Child capacity is an explicitly supplied limit, never a granted reservation.
+
+## Review fix1: compare owned inode before rows link and temp chmod
+
+The independent review of14abc50 found that the rows-final-link and temp-chmod
+branches checked pathname/inventory shape but omitted the identity recorded
+when each owned file was created. A different singly linked regular inode at
+the same path could therefore be mutated before later cleanup detected it.
+The controller accepted the finding and dispatched this two-path fix against
+HEAD5298eff (source still14abc50). The production change is four lines:
+compare live `lstat` device/inode to the closed row stream's recorded identity
+after reservation, and to the atomic operation's recorded identity after
+inventory, latching `authority` before the corresponding OS mutation.
+No other production source file changed.
+
+The new regression controls use a genuine external actor in the pytest parent,
+not a mock or production test seam. Each fixture precreates one1 B replacement
+with mode0600 outside its child root. A bounded thread waits for the row
+stream to close and publish a1 B `step.json`, or for the real durable temp's
+initial chmod0400. It retains the original inode under fixture/displaced using
+a hardlink, then atomically moves the replacement onto that exact rows/temp
+path. The child waits using read-only payload checks and attempts the real
+link/chmod. The actor has a10-second wait, is stopped and joined on every exit,
+and all changed paths stay inside the admitted fixture. Neither original nor
+substituted inode is cleaned up by the control.
+
+Exact new selectors, both in `tests/pilot/test_pilot_offline_writes.py`:
+
+```text
+test_rows_substitution_is_denied_before_final_link
+test_temp_substitution_is_denied_before_chmod
+```
+
+`fix1-red` used exactly those two selectors and the unchanged production
+implementation. Both failed with `write was not denied`, establishing
+behavioral RED. The retained rows-final and pending names shared substituted
+inode23959574 with link count2; original inode23959578 remained displaced.
+The substituted temp inode23959589 changed from0600 to0644, while the original
+inode23959590 remained displaced with mode0400. These are observed local
+filesystem identities, not stable protocol fields.
+
+`fix1-green` used exactly the two new selectors plus these four existing ones:
+
+```text
+test_rows_stream_and_final_link
+test_pending_and_final_hardlink_both_charge_allocation
+test_atomic_replace_and_create_preserve_original_behavior
+test_second_atomic_temp_denied_and_owned_cleanup_allowed
+```
+
+All six passed. The substituted pending file remained singly linked, with no
+`rows.jsonl`; the substituted temp remained0600. Both tests also checked the
+sticky `authority` denial and rejection of a later known publication. Existing
+rows publication, durable replacement/create, hardlink accounting and owned
+cleanup after denial continued to pass.
+
+| Stage | Result | Logical B | Allocated B | Regular files | Symlinks | Dirs |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| fix1-red | 2 behavioral RED failures,2.99 s | 2504 | 28672 | 8 | 2 | 14 |
+| fix1-green | 6 passed,7.23 s | 111 | 45056 | 12 | 6 | 28 |
+
+Both used the closed launcher above with the exact new-file selectors listed,
+`legacy=[]`, and the recorded fresh stage_name. Batch deadlines were120 and
+240 seconds respectively. All children used64 KiB allowances,≤4096 B program
+text,2048 B stdout/stderr limits,4096 B record limit and30-second child timeout.
+Outer logs were each bounded at16384 B before disk writes and stderr was empty.
+The shell launcher exited0 in both stages; actual pytest exits were1 and0.
+
+Separate prospective admission for fix1-red was768 KiB/<160 KiB logical/
+32 file-link-temp names/40 directories. Fix1-green was1.5 MiB/<128 KiB/
+80 names/90 directories (128 KiB+8192*(80+90)=1523712 B≤1.5 MiB). Per case,
+the replacement/displaced/target/ready/final/temp peak was conservatively six
+names; child directory count was at most four. Stage infrastructure includes
+pytest fixtures/current links/lock, five environment directories and two logs.
+
+The controller's retained baseline before fix1-red was503808 B over twelve
+prefixes. The red stage raised it to532480 B; green raised that known subtotal
+to577536 B over fourteen prefixes. During the final read-only no-follow `stat`
+sum the controller's concurrent `fix1-main` prefix was already present; the
+observed fifteen-prefix total was622592 B, including that additional45056 B.
+The controller records its own covering run's outcome. Each
+prospective stage plus all prior actual allocation fit holder65407's existing
+4 MiB scratch reservation. No retained prefix was removed or reused.
+
+Commit `07e9394a3c89346052f1861e5c3de196e8213e84` contains only
+`pilot_offline_writes.py` and its test file.
+Scoped Ruff lint/format checks and `git diff --check` passed. Formatting after
+the green run changed only test layout, not production or test behavior.
+The current frozen hashes are:
+
+```text
+517cb7ad23c4198f2bb1b8ad31b3746c8b7ff7dfe790612a96b4c58ceb12c916  src/silent_cascade/train/pilot_offline_writes.py
+6e2a01fb6dd36e9b8983745d03e240d1d91df5775ef7967a7440cbe4b56523e5  tests/pilot/test_pilot_offline_writes.py
+```
+
+The historical62-case matrix above now has these two additional plain cases:
+64 new writer cases, or68 with the four legacy controls. This records the
+available matrix, not a claim of a completed68-case post-fix run. No scientific
+worker, provider, full quality gate, production binding or FitGuard hold ran.
+Source is frozen for the controller's covering rerun and scoped re-review.

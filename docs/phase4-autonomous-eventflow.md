@@ -772,3 +772,24 @@ A subsequent specification check found that the new launch records serialize
 absolute machine paths. Before any genuine diagnostic or archive promotion,
 these identities must be bound without exposing those paths. The focused
 process tests remain valid, but that privacy correction is still outstanding.
+
+### Standalone diagnostic write safeguards
+
+`14abc50`, with reviewed fix `07e9394`, adds pre-write limits for the
+diagnostic's known files, streams and directories. Unknown writes and exhausted
+allowances fail before publication; a caught denial remains fatal. The tests
+exercise the existing durable writers and Matplotlib cache writer. Review also
+found and corrected missing file-identity checks before rows publication and
+temporary-file permission changes.
+
+Controller verification passed all 66 original focused cases on `14abc50`.
+After the fix, six covering cases passed in 7.39 seconds; scoped lint/format
+checks and independent re-review passed. This is not a new full 68-case run or
+the project's complete local gate. All failed and successful prefixes remain
+retained (622,592 allocated bytes), and shared storage accounting passed.
+
+This completes only the standalone writer safeguards. Parent diagnostic privacy,
+production launch/allowance binding, the fixture's held reservation and broader
+storage integration remain open. No production pilot or learning-performance
+result was generated. The next correction keeps paths and raw nonempty process
+output out of publishable evidence; it does not change scientific thresholds.
