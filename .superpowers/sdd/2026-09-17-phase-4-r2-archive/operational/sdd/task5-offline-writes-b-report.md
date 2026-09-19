@@ -233,3 +233,119 @@ left unstaged. This report is likewise left unstaged for controller handling.
 - All failed roots and logs remain private operational evidence. No raw private
   stderr was placed in a public process attachment by these controls.
 - Controller fresh repeat and independent Task B review are still required.
+
+## FIX1 combined-fence qualification
+
+Independent review of source commit `9f0c0b3` found a qualification gap rather
+than a production defect: the guarded-denial controls stopped at direct
+capture, while the parent custody controls substituted an unguarded child and
+passed no write allowance. FIX1 changes only
+`tests/pilot/test_pilot_offline_process.py`. It adds a real
+`measure_pilot_offline` + real custody + exact allowance control whose launch
+shim substitutes only a tiny worker and then executes the production
+`boundary._PROGRAM` bootstrap.
+
+The worker validates the installed launch binding, publishes the seven-byte
+invalid `offline.json`, then attempts a one-byte `step.json` after consuming
+the exact two-name allowance. It catches `OfflineWriteDenied`, writes a
+`DENIED:` marker to stderr, and either returns or sleeps for the competing
+termination control. The four parameter cases prove:
+
+- bootstrap postcheck turns a caught denial into `nonzero_exit`;
+- a 65-byte marked stderr write becomes a 64-byte `output_limit` prefix;
+- the marked denial occurs before a 15-second parent timeout of a 60-second
+  sentinel sleep;
+- cancellation is injected only after the selector has delivered the marked
+  stderr event;
+- every public result is failed, has `offline_sha256=null`, and contains only
+  the private stream count/hash/disposition;
+- the invalid `offline.json` remains an invalid sentinel and never becomes
+  completion evidence; and
+- each exact child has already been joined (`waitpid(..., WNOHANG)` raises
+  `ChildProcessError`).
+
+No artificial RED was manufactured: the review explicitly identified missing
+coverage, not broken production behavior. The first focused qualification was
+therefore expected to pass the unchanged production implementation.
+
+The exact new selector, expanding to four cases, was:
+
+```text
+tests/pilot/test_pilot_offline_process.py::test_measurement_combines_write_exhaustion_with_parent_failure_custody
+```
+
+The focused inner command was the common pytest prefix from this report plus
+that selector. The covering inner command was the same prefix plus these exact
+selectors, expanding to 11 cases:
+
+```text
+tests/pilot/test_pilot_offline_process.py::test_measurement_combines_write_exhaustion_with_parent_failure_custody
+tests/pilot/test_pilot_offline_process.py::test_measurement_serializes_exact_write_allowance_before_launch
+tests/pilot/test_pilot_offline_process.py::test_measurement_persists_failed_invalid_report_and_fences_reuse
+tests/pilot/test_pilot_offline_process.py::test_privacy_nonempty_failure_retains_closed_outcome
+```
+
+Each covering stage then ran these exact commands:
+
+```text
+.venv/bin/ruff check --no-cache tests/pilot/test_pilot_offline_process.py
+.venv/bin/ruff format --check --no-cache tests/pilot/test_pilot_offline_process.py
+git diff --check -- tests/pilot/test_pilot_offline_process.py
+```
+
+The outer launcher and environment were exactly the closed launcher already
+recorded above. FIX1 used at most four tiny Python measurement children and 14
+trusted read-only Git children for the new cases; the covering run added seven
+existing tiny Python controls. The substituted source was at most 4096 bytes,
+scientific sentinel payloads were seven bytes plus a refused one byte, stdout
+was capped at 64 bytes, stderr at 4096 bytes for the postcheck case and 64
+bytes for the other cases, records at 1024 bytes, and process timeout at 15
+seconds. No real scientific worker, provider, network, copied fixture, full
+suite, or full gate ran.
+
+| Stage/prefix | Result | Wall | stdout/stderr logs | Logical | Allocated | Files+links | Dirs |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fix1-combined-20260919-1d4f93d8` | 4 passed in 20.59 s | 21.154 s | 99 / 0 B | 9382 B | 102400 B | 35 | 49 |
+| `fix1-cover-20260919-1d4f93d8` | commands green; wrapper exit 1 because 99 names exceeded forecast 96 | under 90 s | 144 B total across eight logs | 24480 B | 270336 B | 99 | 119 |
+| `fix1-cover2-20260919-1d4f93d8` | 11 passed in 23.33 s; all three statics exit 0 | 23.938 s | 144 B total across eight logs | 24495 B | 270336 B | 99 | 119 |
+
+The first covering prefix is retained as an honest accounting failure. Its
+pytest, Ruff, format, and diff commands all exited zero, but the wrapper exited
+one on the admitted 96-name limit. COVER2 repeated the identical commands
+under the corrected 112-name/136-directory envelope and passed. Its exact raw
+logs are `pytest.stdout.log`, `pytest.stderr.log`,
+`ruff-check.stdout.log`, `ruff-check.stderr.log`,
+`ruff-format.stdout.log`, `ruff-format.stderr.log`,
+`git-diff.stdout.log`, and `git-diff.stderr.log` directly under the prefix.
+
+The retained-name and directory forecast is source-derived for these exact 11
+cases. Eight wrapper logs consume eight names. Four pytest `current` links
+consume four. The four combined controls retain eight files each: two ledger
+files, private binding/stderr, and public intent/result/empty-stdout/invalid
+offline. The serialization and invalid-report controls also retain eight each.
+Four existing nonempty-failure modes retain eight each, while the injected
+private-write failure retains seven because `stderr.raw` is refused. Thus the
+exact family count is `8 + 4 + 4*8 + 2*8 + 4*8 + 7 = 99` names, with 13 spare
+in the corrected limit. Directories are the stage, seven closed environment
+roots, pytest root, and ten per retained case (test root, workspace, three
+private-log levels, two ledger levels, and three public-run levels):
+`1 + 7 + 1 + 11*10 = 119`, with 17 spare. Final process-public and private
+files replace their atomic temporaries, so no temporary name survives; the
+112-name ceiling still covers all 13 spare names if an admitted atomic
+temporary is observed at inventory time.
+
+Across all Task B owner prefixes recorded in this report, retained evidence is
+now 220187 logical bytes, 1548288 allocated bytes, 618 regular/symlink names,
+and 910 directories. Including controller/reviewer prefixes, the shared Task B
+holder stood at 2048000 allocated bytes after COVER2, below its 4 MiB hold.
+
+FIX1 test-only commit:
+
+```text
+cc05f1fd97a258f04aa4d9262d337fca1078bf17
+test(pilot): qualify combined offline fences
+184b69d47e0a2b1113a20de067f65ad4f47d90745a3d35f73f124b9600684eac  tests/pilot/test_pilot_offline_process.py
+```
+
+Only the test file was staged in this commit. Controller-owned progress and
+this operational report remained unstaged for controller handling.

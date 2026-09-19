@@ -2054,3 +2054,77 @@ open. The Phase 4 production pilot has not started.
   TaskA unchangedhash and previous reviewed evidence resolve its cross-task
   item; inventory hash unchanged. TaskC H is explicitly downstream/not claimed.
   No full gate or increased allowance follows; stage admission pending.
+- FIX1 admitted new exact4case selector
+  test_measurement_combines_write_exhaustion_with_parent_failure_custody,
+  fresh scratch/task5-offline-writes-b/fix1-combined-20260919-1d4f93d8.
+  Real parent measurement/private custody; launch shim substitutes tiny worker
+  then executes unchanged bootstrap. Real installed name allowance2 denies
+  second publisher after7B invalid offline.json; no actual scientific worker.
+  Max4tinyPython+14trustedGit, outerpytest; child64KiB/2names/9dirs;
+  stdout64,stderr4096 denial/64others,record1024,source4096. Parent failure
+  paths:nonzero/output_limit/timeout/cancelled, joined and privacy-safe result.
+  <=2MiB/<128KiB/96file-link names/128dirs/90s outer/pipes16KiB.
+  Bound1970176<=2097152;1404928+2097152=3502080<4194304.
+  Ruling: use15s child process timeout and60s sentinel sleep, rather than2s/
+  10s; real Torch/bootstrap startup must finish before testing exhaustion.
+  Cost: true timeout control takes15s; unchanged90s outer bound covers4cases.
+  This is missing qualification, expectedpass on frozen production; not a
+  claim of production-defect RED. Source changes require separate evidence.
+- FIX1 focused4 passed20.59s/wall21.154,pytest/wrapper0;stdout99B/stderr0;
+  9382logical/102400allocated,34files1link49dirs. Each failure retained DENIED
+  before its competing termination; no production source changed. Task1507328B.
+- FIX1-COVER admitted exact11 cases: combined4, measurement_serializes1,
+  measurement_persists_failed_invalid_report1, privacy_nonempty_failure5;
+  then scoped test-file Ruffcheck/format-check no-cache and diffcheck. Fresh
+  fix1-cover-20260919-1d4f93d8 <=2304KiB/<192KiB/96file-link names/144dirs,
+  90s/percommand pipes16KiB;11tinyPython+14trustedGit max, outer4commands.
+  Corrected proposed128KiB logical ceiling before execution: eight capped pipes
+  alone permit128KiB, so retain192KiB with fixture/control data.
+  Bound196608+8192*(96+144)+4096=2166784<=2359296;
+  1507328+2359296=3866624<4194304. Same child15s/60s pause for new controls.
+- FIX1-COVER test11 passed23.52s and3statics0, but wrapper1:95files+4links=
+  99names exceeded declared96. Not a qualified stage. Retain24480logical/
+  270336allocated,119dirs; task1777664allocated. No production/source changes.
+  FIX1-COVER2 exact same11+3statics admitted fresh fix1-cover2-20260919-1d4f93d8
+  <=2304KiB/<192KiB/112file-link names/136dirs/90s/pipes16KiB.
+  Bound196608+8192*(112+136)+4096=2232320<=2359296;
+  1777664+2359296=4136960<4194304. Finite same control grammar/inventory,
+  no new payload or child selection. Root final repeat must be partitioned if
+  retained cover2 bytes leave too little for the same whole-stage bound.
+- FIX1-COVER2 qualified:11passed23.33s,all3statics0/wrapper0,wall23.938;
+  24495logical/270336allocated,95files4links119dirs. Total2048000allocated.
+  Root read logs and full fix report.99names derive from8wrapperlogs+4pytest
+  links+4*8combinedfiles+2*8legacyfiles+4*8failurefiles+7private-write-failure;
+  119dirs=9harness+11*10. Corrected112/136 includes transient spare names.
+  No production files changed. Root repeats after test commit/HEAD freeze.
+- MAIN-FIX1-COMBINED admitted exact4 newcases at fresh main-fix1-combined,
+  <=2MiB/<128KiB/96file-link names/128dirs/90s/pipes16KiB.
+  Bound1970176<=2097152;2048000+2097152=4145152<4194304.
+  Same4tinyPython+14trustedGit; outerpytest. HEAD must remain fixed during
+  actual identity controls. Original unsplit main-fix1 command not executed.
+- FIX1 test commitcc05f1f; owned4files equal frozenhead. Test SHA
+  184b69d47e0a2b1113a20de067f65ad4f47d90745a3d35f73f124b9600684eac.
+  MAIN-FIX1-COMBINED4passed20.52s/wall21.106,pytest/wrapper0;
+  stdout99/stderr0,9134logical/102400allocated,34files1link47dirs.
+  Current2150400allocated. Scoped re-review resumed original independent
+  reviewer after new mid-tier dispatch hit tool thread limit; no duplicate review.
+- MAIN-FIX1-LEGACY admitted exact remaining7 cases (serialization1,
+  failed-invalid-report1,privacyfailure5), fresh main-fix1-legacy,
+  <=1792KiB/<128KiB/80file-link names/104dirs/90s/pipes16KiB.
+  Bound1642496<=1835008;2150400+1835008=3985408<4194304.
+  Seven tinyPython, no addedGit; unchanged raw controls from prior coverage.
+- MAIN-FIX1-LEGACY7passed4.69s/wall5.265,pytest/wrapper0;stdout98/stderr0;
+  14503logical/163840allocated,57files3links77dirs. Current2314240allocated.
+  FIX1 independent re-review: oneImportant addressed; no new breakage/minors.
+  MAIN-FIX1-STATIC admitted fresh main-fix1-static,4file Ruff/format/diff/equality
+  cc05f1f,<=512KiB/<128KiB/16names/24dirs/60s/pipes16KiB, no tests/imports.
+  2314240+524288<4194304. Scope remains primitive qualification, no fullgate.
+- MAIN-FIX1-STATIC all4commands0,45logical/8192allocated. Final task2322432B.
+  Task5 TaskB: fix round1/5 (1addressed,0open;9f0c0b3..cc05f1f).
+  Task5 TaskB: complete (c2433d1..cc05f1f, review clean; independent40+64 at
+  original freeze and scoped11 at test-only fix; no fullgate/learning claim).
+  Parent custody remains mandatory, installed child allowance is bound; TaskC
+  heldH/category integration still required. No open reviewer minors.
+  Holder29448 released after final fullcheck: scratch262918144/logs2490368,
+  spool219099136/cache67153920/metadata52965376,pinned/emergency0;
+  frozen retained6195077120 verified. No active B reservation remains.

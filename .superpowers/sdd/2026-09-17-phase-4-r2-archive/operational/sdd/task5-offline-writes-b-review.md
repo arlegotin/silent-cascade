@@ -34,3 +34,15 @@ None identified.
 
 - Review checks: read supplied diff; inspected cutoff _measurement_control and existing capture/exact-capacity controls specifically for combined coverage. No tests/imports/child probes/network/mutations.
 - Evidence available during review:40/40 process tests; independent writer/static still pending in that read revision.
+
+## FIX1 scoped re-review — source cc05f1f
+
+Missing required combined-fence control — ADDRESSED. Real bootstrap plus tiny
+worker triggers actual denial (test_pilot_offline_process.py:1551); real
+measurement/private custody/allowance cover denial, overflow, timeout and
+cancellation (:1612,:1648), and assert failed result, private hash/count/
+disposition, invalid report sentinel and joined child (:1664,:1674,:1685).
+New breakage: none. Optional limits preserves defaults (:1110).
+Out-of-scope observations: none. Reviewer read fix diff/report and retained
+COVER2 logs (11passed23.33s, Ruff/format0, stderr0), no execution/mutations.
+Verdict: all findings addressed, no new Critical/Important breakage.
