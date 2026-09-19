@@ -1905,3 +1905,152 @@ open. The Phase 4 production pilot has not started.
   logs. Ruling: pass existing private capability, not a duplicate P formula/new
   resolver. Cost: internal fixture call sites gain one required argument; no
   public record, authority channel, capacity increase or scientific change.
+- TaskB RED admission corrected before any test/import/output: first proposal
+  miscounted16 as14 and its worst-case name/dir arithmetic exceeded1MiB.
+  No prefix was created. Revised exact16 cases: safe_intent_write_allowance7,
+  measurement_serializes1, measurement_nonexact1, bootstrap_postcheck1,
+  bootstrap_digest4, process_reader_changed_allowance1, real_publishers_exact1.
+  Fresh scratch/task5-offline-writes-b/red-20260919-1d4f93d8 <=1536KiB,
+  <128KiB logical,64file/link names,96dirs; native4096 and conservative
+  128KiB+8192*(64+96)+4096=1445888<=1572864. Closed env -i -B launcher,
+  --noconftest/no:cacheprovider, fresh pytest basetemp,90s/log16KiB perpipe.
+  At most3 tiny Python controls+5 trusted read-only Git probes; no science.
+  Bootstrap sentinel explicitly allows stderr4096B (actual test limit), writer
+  stdout/stderr2048B each, measurement64B each; control text <=4096B by exact
+  source inspection. Public/private records <=4096/1024B; two tiny ledgers.
+  All charged to29448/1d4f93d86ddbca6a2280f8783168e874; no new reservation.
+- TaskB RED once:11failed/5passed2.50s,pytest1/wall3.113; retained53248B,
+  16files/7links/42dirs, reported13906logical. Root read retained test output.
+  Seven missing optional-field attributes, two missing measure keywords,
+  one missing boundary keyword; bootstrap failed old strict-record parsing,
+  NOT a caught-denial/postcheck proof. Existing digest/reader5cases passed.
+  Source implementation underway; no GREEN or repeat admitted yet.
+- TaskB pre-GREEN source check: installed-root/allowance equality was guarded
+  only by _BOUNDARY_WRITES is not None; bootstrap lacked an explicit post-install
+  check before _worker. Returned to implementer to distinguish pre-install
+  validation from required installed-state validation, including missing guard
+  for a nonnull allowance. This is within TaskB's explicit brief, not new hold
+  authority. Proposed24case GREEN remains unexecuted; revised admission pending.
+- TaskB focused RED2 admitted: exactly test_bootstrap_requires_installed_allowance_before_worker,
+  fresh scratch/task5-offline-writes-b/red2-installed-20260919-1d4f93d8,
+  <=768KiB/<64KiB logical/32file-link names/48dirs/60s/log16KiB perpipe.
+  64KiB+8192*(32+48)+4096=724992<=786432; prior53248 retained.
+  One tiny Python sentinel plus4trusted Git probes, outerpytest; no real worker.
+  Actual installed writer is intentionally dropped from boundary global, then
+  worker tripwire distinguishes absent post-install validation. Child captures
+  stdout2048/stderr4096/record4096/30s; only bound intent is retained.
+- TaskB RED2 once:1failed2.00s/wall2.228,pytest1; true worker-tripwire reach.
+  Retained2139logical/8192allocated,3files/1link/10dirs. Root wc confirms
+  stdout1375B/stderr0 (2139 is total logical, not stdout). RED1 stdout likewise
+  7625B while13906 is total logical. Entire task61440allocated retained.
+- TaskB GREEN admitted exact25 cases: prior proposed24 plus missing-installed
+  bootstrap case. Fresh green-20260919-1d4f93d8 <=2MiB/<192KiB/96file-link
+  names/120dirs/180s/log16KiB perpipe. Conservative1970176B+prior61440
+  <held4194304.10tiny Python children+11trusted Git max, outerpytest additional;
+  no extra Git in pure post-install validator. Four tiny ledger fixtures.
+  Includes actual output_limit/cancelled private publication and one legacy
+  boundary child (subprocess.run30s, two6Bfiles, expectedstdout/stderr0,
+  not the new capture API). No science, actual worker, provider or full gate.
+- TaskB GREEN passed25/25 in8.93s/wall9.602,pytest/wrapper0; stdout99B,
+  stderr0,13579logical/135168allocated,43files/13links/71dirs. Total196608B.
+- COVER1 corrected before execution: expanded selectors total40, not39;
+  existing allocation196608, not196800; retain max11Git, not10. Ten ledger
+  fixtures require a larger name/dir forecast than prior25case stage. Admit
+  exact expanded40 list from worker confirmation at fresh cover-process-
+  20260919-1d4f93d8, <=3MiB/<192KiB/160file-link names/192dirs/240s,
+  logs16KiB percommand perpipe. Forecast3084288<=3145728; actual196608
+  +3145728=3342336<4194304.15tiny Python+11trusted Git max; wrapper invokes
+  pytest plus scoped4file Ruff check/format-check(no-cache) and git diffcheck.
+  No science/provider. COVER2 entire64 shared-helper writer cases must pass
+  before source freeze/commit. TaskB broader/full local gate still not admitted.
+- COVER1 pytest passed40/40 in12.45s,exit0; static check failed RUF021/E501
+  and format-check on2files, diffcheck0. Not a full passing gate. Wall13.241;
+  retained34789logical/307200allocated,102files/18links/144dirs. All admitted
+  bounds passed (old120dir forecast would have failed). Root read pytest log.
+  Worker applied only displayed parentheses/wrapping corrections; no test rerun
+  yet. Cumulative503808 allocated. Source remains unfrozen.
+- COVER2 admitted entire64case test_pilot_offline_writes.py, fresh cover-writers-
+  20260919-1d4f93d8,<=3.5MiB/<500KiB/128file-link names/256dirs/1650s,
+  percommand pipes16KiB; closed env/no conftest/cache/fresh pytest basetemp.
+  500KiB+8192*(128+256)+4096=3661824<=3670016; existing503808+3670016=
+  4173824<4194304.51tinyPython+52trustedGit max, direct pytest+2Ruff+gitdiff.
+  Ordinary controls retain finite tiny literals; existing16-crash-stem control
+  declares128KiB, real font256KiB, other ordinary guards64KiB/exact lower.
+  Child capture2048B perpipe/record4096/30s/source<=4096; no science/provider.
+  Root checked source literals/previous standalone coverage; no cap changes.
+- COVER2 completed63passed/1failed60.17s,pytest1; missing test-child import
+  install_offline_writes caused NameError in second-install control. Ruffcheck0,
+  format-check1 (one mechanical condition layout),diff0; wall60.454.
+  Retained49523logical/196608allocated,61files/27links/174dirs. Actual task
+  700416B. Worker restored import and exact formatter output; production logic
+  unchanged. This is a test-harness regression, not a quota test pass.
+- COVER3 prospective correction: reject the requested120KiB logical ceiling;
+  four commands' capped stdout/stderr alone could occupy128KiB. Keep500KiB
+  logical bound and use3MiB allocation,104file/link names/200dirs, not an
+  observed-byte-only allowance. Same full64writer cases+4file statics, fresh
+  cover-writers2-20260919-1d4f93d8,1650s/percommand pipes16KiB,51Python+52Git.
+  500KiB+8192*(104+200)+4096=3006464<=3145728; prior700416+3145728=
+  3846144<4194304. Exact diff restores an attribute import from an already-loaded
+  module; second install must deny on _ACTIVE before writes. Existing finite
+  fixture/writer grammar remains authoritative; measured margins are not proof
+  for a new payload. No science/provider or source freeze before passing run.
+- COVER3 passed64/64 in64.03s,pytest0; Ruffcheck0,format-check1 (missing
+  blank line after local imports),diff0; wall64.337. Retained47849logical/
+  196608allocated,61files/27links/174dirs. Cumulative897024B. Worker inserted
+  that blank line only; still no source freeze until static check passes.
+- Final static-only stage admitted at fresh cover-static-20260919-1d4f93d8:
+  scoped4file Ruff check/format-check --no-cache and git diffcheck, closed env,
+  each pipe16KiB,60s,<=512KiB/<128KiB/16file-link names/24dirs. Forecast
+  131072+8192*(16+24)+4096=462848<=524288;897024+524288<4194304.
+  No pytest/project imports/control children/science/provider in this stage.
+- TaskB source/test frozen9f0c0b3, final static4file checks all0. Report fully
+  read; exact total retained905216allocated/161830logical,385names/623dirs.
+  Controller MAIN-PROCESS admitted exact same40 COVER1 cases under fresh
+  scratch/task5-offline-writes-b/main-process: <=3MiB/<192KiB logical,
+  160file/link names/192dirs/240s/pipes16KiB. Forecast
+  192KiB+8192*(160+192)+4096=3084288<=3145728;905216+3145728=
+  4050944<existing4194304 held. Same15tinyPython+11trustedGit max;
+  outerpytest additional, no actual worker/science/provider/full gate.
+  Closed env -B/no conftest/no cache/fresh basetemp; reviewed exact command
+  retained in controller command store. Holder29448/token1d4f93d8 unchanged.
+- MAIN-PROCESS passed40/40 in12.30s/wall12.927;pytest/wrapper0;
+  stdout100B/stderr0,30709logical/299008allocated,96files18links142dirs.
+  Current task1204224 allocated. MAIN-WRITERS1 admitted28 exact cases
+  (first15 named writer functions in independent partition) at fresh
+  scratch/task5-offline-writes-b/main-writers1, <=2MiB/<128KiB logical,
+  64file/link names/120dirs/1500s/pipes16KiB. Bound128KiB+
+  8192*(64+120)+4096=1642496<=2097152;1204224+2097152<4194304.
+  At most15tinyPython+16trustedGit, outerpytest; source-derived ordinary
+  64KiB writer allowances/exact lower, captures2048B each/record4096/30s.
+  This is half the existing entire64 writer file, not a new/full worker run.
+- MAIN-WRITERS1 passed28/28 in17.69s/wall17.941,pytest/wrapper0;
+  stdout99B/stderr0,124logical/65536allocated,17files14links50dirs.
+  Current1269760allocated. MAIN-WRITERS2 admitted remaining36 exact cases
+  (12 named functions) at fresh scratch/task5-offline-writes-b/main-writers2,
+  <=2560KiB/<500KiB/96file-link names/160dirs/1500s/pipes16KiB.
+  Bound500KiB+8192*(96+160)+4096=2613248<=2621440;
+  1269760+2621440=3891200<4194304.36tinyPython+36trustedGit maximum,
+  outerpytest;128KiB16-crash-stem control,256KiBfont control, ordinary64KiB/
+  exact lower. Captures2048perpipe/record4096/30s/source4096. No actual worker.
+  Independent TaskB reviewer dispatched read-only against4file frozen diff.
+- MAIN-WRITERS2 passed36/36 in51.30s/wall51.540,pytest/wrapper0;
+  stdout100B/stderr0,47563logical/126976allocated,40files13links129dirs.
+  Entire64writer file independently passed28+36; task1396736allocated.
+  MAIN-STATIC admitted scoped4file Ruff check/format-check no-cache plus
+  diffcheck/source equality against9f0c0b3, fresh main-static <=512KiB/
+  <128KiB/16file-link names/24dirs/60s percommand/pipes16KiB.
+  Four read-only commands; no tests/project imports.1396736+524288<4194304.
+  Holder fullcheck passed: scratch261980160/logs2441216; other categories
+  unchanged, frozen retained6195077120 verified. Review remains pending.
+- MAIN-STATIC all4commands0;45logical/8192allocated. Currenttask1404928B.
+  Fresh six source hashes match worker report; four owned files equal9f0c0b3.
+- TaskB initial review: spec gap/quality Needs fixes, oneImportant combined-fence
+  coverage gap. Root verified _measurement_control replaces bootstrap and
+  privacy failure tests pass no child allowance; bootstrap denial stops at
+  direct capture. Existing separate tests do not cover their interaction.
+  Fix round1/5: same implementer, tests only unless genuine production defect
+  established; require real custody/measurement/bootstrap/allowance with tiny
+  worker sentinel, failed record/private capture/child join under exhaustion.
+  TaskA unchangedhash and previous reviewed evidence resolve its cross-task
+  item; inventory hash unchanged. TaskC H is explicitly downstream/not claimed.
+  No full gate or increased allowance follows; stage admission pending.

@@ -1,0 +1,902 @@
+# Task B scoped review package
+
+Base c2433d1; source/test head9f0c0b3. Root documentation commitc0659fd is outside this four-file task diff.
+
+9f0c0b3 feat(pilot): bind offline child write allowance
+
+ src/silent_cascade/train/pilot_offline.py         |  92 ++++++--
+ src/silent_cascade/train/pilot_offline_process.py |   7 +
+ tests/pilot/test_pilot_offline_process.py         | 275 ++++++++++++++++++++--
+ tests/pilot/test_pilot_offline_writes.py          |  14 +-
+ 4 files changed, 354 insertions(+), 34 deletions(-)
+
+diff --git a/src/silent_cascade/train/pilot_offline.py b/src/silent_cascade/train/pilot_offline.py
+index 9cb12bf..a8ad763 100644
+--- a/src/silent_cascade/train/pilot_offline.py
++++ b/src/silent_cascade/train/pilot_offline.py
+@@ -3,26 +3,29 @@
+ import hashlib
+ import json
+ import os
+ import re
+ import shutil
+ import stat
+ import subprocess
+ import sys
+ from dataclasses import asdict, dataclass
+ from pathlib import Path
+-from typing import Literal
++from typing import TYPE_CHECKING, Literal
+
+ from pydantic import Field
+
+ from silent_cascade.validation import StrictModel
+
++if TYPE_CHECKING:
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance, OfflineWrites
++
+
+ class PilotOfflineReport(StrictModel):
+     evidence_kind: Literal["offline_smoke_diagnostic"] = "offline_smoke_diagnostic"
+     training_updates: Literal[1] = 1
+     evaluation_episodes: Literal[16] = 16
+     replayed_episodes: Literal[1] = 1
+     artifact_reports: Literal[1] = 1
+     backward_macs: int = Field(gt=0)
+     network_attempts: Literal[0] = 0
+     optional_import_attempts: Literal[0] = 0
+@@ -59,20 +62,21 @@ def parse_offline_report(raw, *, require_process=False):
+
+
+ @dataclass(frozen=True)
+ class OfflineGitPin:
+     executable: str
+     version: str
+     sha256: str
+
+
+ _BOUNDARY_GIT_PIN: OfflineGitPin | None = None
++_BOUNDARY_WRITES: "OfflineWrites | None" = None
+ _PENDING_OFFLINE_LAUNCH: tuple[str, str] | None = None
+ _GIT_PIN_ENV = "SILENT_CASCADE_OFFLINE_GIT_PIN"
+
+
+ def _git_identity(path):
+     resolved = Path(path).resolve(strict=True)
+     if str(resolved) != path or not resolved.is_file():
+         raise RuntimeError("offline Git pin is not a real executable")
+     with resolved.open("rb") as source:
+         info = os.fstat(source.fileno())
+@@ -245,41 +249,61 @@ def _closed_git_arguments(arguments):
+         if tail and revision(tail[0]):
+             tail = tail[1:]
+         admitted = tail[:1] == ["--"] and len(tail) > 1 and all(map(path, tail[1:]))
+     if not admitted:
+         raise RuntimeError("offline child forbids external command")
+     if command == "status":
+         return (*values[:1], "--ignore-submodules=none", *values[1:])
+     return values[:1] + (_GIT_LOG_OPTIONS if command == "log" else ()) + values[1:]
+
+
+-def install_offline_boundary(*, workspace_root: Path | None = None):
++def install_offline_boundary(
++    *,
++    workspace_root: Path | None = None,
++    write_allowance: "OfflineWriteAllowance | None" = None,
++):
+     """Install irreversible child-only denial hooks, retaining read-only Git."""
+     import importlib.abc
+     import socket
+     import threading
+     import urllib.request
+
+-    global _BOUNDARY_GIT_PIN
++    global _BOUNDARY_GIT_PIN, _BOUNDARY_WRITES
+     pin = _decode_git_pin(os.environ.get(_GIT_PIN_ENV))
+     _BOUNDARY_GIT_PIN = pin
+     git_prefix = (pin.executable, *_GIT_PREFIX)
+     workspace = None if workspace_root is None else Path(workspace_root).resolve(strict=True)
+     workspace_device = None if workspace is None else workspace.stat().st_dev
+     descriptor_open = threading.local()
+     trusted_repo = Path(__file__).resolve().parents[3]
+     trusted_environment = offline_environment(Path(os.environ["TMPDIR"]), git_pin=pin)
+     original_popen = subprocess.Popen
+
+-    from silent_cascade.train.pilot_offline_writes import active_offline_writes
++    from silent_cascade.train.pilot_offline_writes import (
++        OfflineWriteAllowance,
++        active_offline_writes,
++        install_offline_writes,
++    )
+
+-    writes = active_offline_writes()
++    if write_allowance is not None and type(write_allowance) is not OfflineWriteAllowance:
++        raise ValueError("invalid offline write allowance")
++    if write_allowance is not None and workspace is None:
++        raise ValueError("offline write allowance requires a workspace root")
++    writes = (
++        install_offline_writes(workspace, write_allowance)
++        if write_allowance is not None
++        else active_offline_writes()
++    )
++    if writes is not None:
++        if _BOUNDARY_WRITES is not None and _BOUNDARY_WRITES is not writes:
++            raise ValueError("offline write boundary already installed")
++        _BOUNDARY_WRITES = writes
+
+     def closed_popen(args, *positional, **kwargs):
+         if isinstance(args, (list, tuple)) and args and args[0] in {"git", pin.executable}:
+             if (
+                 positional
+                 or kwargs.get("shell", False)
+                 or kwargs.get("executable") not in {None, "git", pin.executable}
+                 or Path(kwargs.get("cwd") or Path.cwd()) != trusted_repo
+                 or dict(kwargs.get("env") if kwargs.get("env") is not None else os.environ)
+                 != trusted_environment
+@@ -443,31 +467,42 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
+     socket.socket.connect_ex = deny
+     socket.create_connection = deny
+     socket.getaddrinfo = deny
+     socket.socket.sendto = deny
+     urllib.request.urlopen = deny
+     urllib.request.urlretrieve = deny
+     import torch
+
+     torch.hub.download_url_to_file = deny
+     torch.hub.load_state_dict_from_url = deny
++    if writes is not None:
++        writes.bind_publishers()
+     return attempts, blocked
+
+
+ _PROGRAM = r"""
+ import sys
+-from silent_cascade.train.pilot_offline import (
+-    _worker, install_offline_boundary, validate_offline_launch,
++import silent_cascade.train.pilot_offline as boundary
++from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++intent = boundary.validate_offline_launch(sys.argv[1], sys.argv[2])
++allowance = (
++    None
++    if intent.write_allowance is None
++    else OfflineWriteAllowance(**intent.write_allowance)
+ )
+-validate_offline_launch(sys.argv[1], sys.argv[2])
+-attempts, blocked = install_offline_boundary(workspace_root=sys.argv[1])
+-_worker(sys.argv[1], attempts, blocked, process_intent_sha256=sys.argv[2])
++attempts, blocked = boundary.install_offline_boundary(
++    workspace_root=sys.argv[1], write_allowance=allowance
++)
++boundary._require_installed_offline_writes(sys.argv[1], intent)
++boundary._worker(sys.argv[1], attempts, blocked, process_intent_sha256=sys.argv[2])
++if boundary._BOUNDARY_WRITES is not None:
++    boundary._BOUNDARY_WRITES.assert_clear()
+ """
+
+
+ def _python_sha256():
+     with Path(sys.executable).open("rb") as executable:
+         return hashlib.file_digest(executable, "sha256").hexdigest()
+
+
+ def _offline_source_identity():
+     from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+@@ -487,58 +522,84 @@ def _offline_source_identity():
+             env=offline_environment(Path(os.environ.get("TMPDIR", root)), git_pin=pin),
+             timeout=5,
+         )
+     source = {
+         str(path.relative_to(root)): sha256_bytes(path.read_bytes())
+         for path in sorted((root / "src/silent_cascade").rglob("*.py"))
+     }
+     return revision.decode().strip(), sha256_bytes(canonical_json_bytes(source))
+
+
+-def validate_offline_launch(output_dir, intent_sha256):
++def _require_installed_offline_writes(output_dir, intent):
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++    output_dir = Path(output_dir).absolute()
++    allowance = (
++        None if intent.write_allowance is None else OfflineWriteAllowance(**intent.write_allowance)
++    )
++    if (_BOUNDARY_WRITES is None) != (allowance is None) or (
++        _BOUNDARY_WRITES is not None
++        and (_BOUNDARY_WRITES.root != output_dir or _BOUNDARY_WRITES.allowance != allowance)
++    ):
++        raise ValueError("offline process launch authority differs")
++
++
++def validate_offline_launch(output_dir, intent_sha256, *, require_installed=False):
+     """The exact parent-authorized bootstrap is checked before any worker import."""
+     from silent_cascade.hashing import sha256_bytes
+     from silent_cascade.train.evidence_types import read_bytes
+     from silent_cascade.train.pilot_offline_process import (
+         OfflineProcessIntent,
+         _parse_record,
+         path_identity,
+     )
+
+     output_dir = Path(output_dir).absolute()
+     raw = read_bytes(output_dir / "intent.json", limit=16384)
+     intent = _parse_record(raw, OfflineProcessIntent)
++    if require_installed:
++        _require_installed_offline_writes(output_dir, intent)
+     if (
+         sha256_bytes(raw) != intent_sha256
++        or "write_allowance" not in intent.model_fields_set
+         or len(raw) > intent.limits["record_bytes"]
+         or intent.output_root_sha256 != path_identity(b"output-root", str(output_dir))
+         or output_dir.resolve() != output_dir
+         or intent.bootstrap_sha256 != sha256_bytes(_PROGRAM.encode())
+         or intent.python_executable_sha256 != path_identity(b"python-executable", sys.executable)
+         or intent.python_sha256 != _python_sha256()
+         or (intent.source_commit, intent.executed_source_sha256) != _offline_source_identity()
+         or (output_dir / "process-result.json").exists()
+     ):
+         raise ValueError("offline process launch authority differs")
+     return intent
+
+
+-def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=None):
++def measure_pilot_offline(
++    *,
++    output_dir,
++    process_limits=None,
++    process_custody=None,
++    write_allowance: "OfflineWriteAllowance | None" = None,
++):
+     """Fresh launches require private same-owner custody; inherited routing is deferred."""
+     from silent_cascade.train.pilot_offline_process import (
+         OfflineProcessCustody,
+         OfflineProcessLimits,
+         require_offline_process_custody,
+     )
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+     global _PENDING_OFFLINE_LAUNCH
+     output_dir = Path(output_dir).absolute()
++    if write_allowance is not None and type(write_allowance) is not OfflineWriteAllowance:
++        raise ValueError("invalid offline write allowance")
+     limits = process_limits
+     if limits is None:
+         limits = (
+             process_custody.limits
+             if type(process_custody) is OfflineProcessCustody
+             else OfflineProcessLimits()
+         )
+     if type(limits) is not OfflineProcessLimits:
+         raise ValueError("invalid offline process limits")
+     if output_dir.resolve() != output_dir or ".." in output_dir.parts:
+@@ -565,20 +626,21 @@ def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=No
+     intent = OfflineProcessIntent(
+         schema_version="phase4-offline-process-intent-v2",
+         attempt=custody.attempt_id,
+         output_root_sha256=path_identity(b"output-root", str(output_dir)),
+         bootstrap_sha256=sha256_bytes(_PROGRAM.encode()),
+         python_executable_sha256=path_identity(b"python-executable", sys.executable),
+         python_sha256=_python_sha256(),
+         source_commit=revision,
+         executed_source_sha256=source_sha256,
+         limits=asdict(limits),
++        write_allowance=None if write_allowance is None else asdict(write_allowance),
+     )
+     intent_raw = canonical_json_bytes(intent)
+     if len(intent_raw) > limits.record_bytes:
+         raise ValueError("offline process intent exceeds reserved record limit")
+     digest = sha256_bytes(intent_raw)
+     try:
+         require_offline_process_custody(custody, output_dir=output_dir, phase=0)
+         _publish_private_process_bytes(
+             custody,
+             "binding.json",
+@@ -671,21 +733,21 @@ def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=No
+         require_offline_process_custody(custody, output_dir=output_dir, phase=6)
+         _publish_pilot_bytes(output_dir / "process-result.json", raw_result)
+     except Exception as error:
+         raise ValueError("offline process terminal publication failed") from error
+     if reason is not None:
+         raise ValueError("offline process failed: " + reason)
+     return report
+
+
+ def _worker(directory, attempts, blocked, *, process_intent_sha256):
+-    validate_offline_launch(directory, process_intent_sha256)
++    validate_offline_launch(directory, process_intent_sha256, require_installed=True)
+     import torch
+
+     from silent_cascade.env.pilot import curriculum_to_bundle
+     from silent_cascade.eval.artifacts import EvaluationIdentity
+     from silent_cascade.eval.runner import evaluate_episodes
+     from silent_cascade.eventflow.engine import EventEngine
+     from silent_cascade.eventflow.neural import NeuralEventFlowAgent, NeuralModelIdentity
+     from silent_cascade.eventflow.neural_replay import verify_neural_replay, write_neural_replay
+     from silent_cascade.eventflow.neural_weights import save_neural_weights
+     from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+@@ -764,21 +826,23 @@ def _worker(directory, attempts, blocked, *, process_intent_sha256):
+         config=config.config.event_flow,
+         weights=weights,
+         source_revision=revision,
+         experiment_config_canonical_json=config.canonical_json.decode(),
+     )
+     replay = verify_neural_replay(replay_path, weights_path=weights)
+     report = build_pilot_report(run_dir=output_dir / "run", output_dir=output_dir / "report")
+     forbidden = tuple(n for n in sys.modules if n.split(".")[0] in blocked or "qwen" in n.lower())
+     if forbidden or not replay.matched:
+         raise ValueError("offline replay/import probe failed")
+-    validate_offline_launch(directory, process_intent_sha256)
++    validate_offline_launch(directory, process_intent_sha256, require_installed=True)
++    if _BOUNDARY_WRITES is not None:
++        _BOUNDARY_WRITES.assert_clear()
+     publish_json(
+         output_dir / "offline.json",
+         PilotOfflineReportV2(
+             process_intent_sha256=process_intent_sha256,
+             backward_macs=step.compute.backward_macs,
+             network_attempts=attempts["network"],
+             optional_import_attempts=attempts["imports"],
+             forbidden_modules=forbidden,
+             foundation_model_calls=step.compute.foundation_model_calls
+             + evaluation.metrics.foundation_model_calls
+diff --git a/src/silent_cascade/train/pilot_offline_process.py b/src/silent_cascade/train/pilot_offline_process.py
+index f3135b4..33f7e2d 100644
+--- a/src/silent_cascade/train/pilot_offline_process.py
++++ b/src/silent_cascade/train/pilot_offline_process.py
+@@ -77,26 +77,33 @@ class OfflineProcessIntentV1(StrictModel):
+ class OfflineProcessIntent(StrictModel):
+     schema_version: Literal["phase4-offline-process-intent-v2"]
+     attempt: Attempt
+     output_root_sha256: Hash
+     bootstrap_sha256: Hash
+     python_executable_sha256: Hash
+     python_sha256: Hash
+     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+     executed_source_sha256: Hash
+     limits: dict[str, int]
++    write_allowance: dict[str, int] | None = None
+
+     @model_validator(mode="after")
+     def closed_limits(self):
+         if set(self.limits) != {"stdout_bytes", "stderr_bytes", "record_bytes", "timeout_seconds"}:
+             raise ValueError("offline process intent limits differ")
+         OfflineProcessLimits(**self.limits)
++        if self.write_allowance is not None:
++            from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++            if set(self.write_allowance) != {"allocated_bytes", "file_names", "directories"}:
++                raise ValueError("offline process intent write allowance differs")
++            OfflineWriteAllowance(**self.write_allowance)
+         return self
+
+
+ def path_identity(kind: bytes, value: str) -> str:
+     if kind not in {b"output-root", b"python-executable"}:
+         raise ValueError("offline process identity kind differs")
+     return sha256_bytes(b"phase4-offline-process-v2\0" + kind + b"\0" + os.fsencode(value))
+
+
+ class OfflineProcessResultV1(StrictModel):
+diff --git a/tests/pilot/test_pilot_offline_process.py b/tests/pilot/test_pilot_offline_process.py
+index 36f4def..cb8ac36 100644
+--- a/tests/pilot/test_pilot_offline_process.py
++++ b/tests/pilot/test_pilot_offline_process.py
+@@ -221,20 +221,50 @@ def _safe_control_intent(root):
+     for field, kind in (
+         ("output_root", b"output-root"),
+         ("python_executable", b"python-executable"),
+     ):
+         value[field + "_sha256"] = _digest(
+             b"phase4-offline-process-v2\0" + kind + b"\0" + os.fsencode(value.pop(field))
+         )
+     return value
+
+
++@pytest.mark.parametrize(
++    "allowance",
++    [
++        {"allocated_bytes": 65536, "file_names": 102, "directories": 9},
++        {"allocated_bytes": True, "file_names": 102, "directories": 9},
++        {"allocated_bytes": 65536, "file_names": 102},
++        {"allocated_bytes": 65536, "file_names": 102, "directories": 9, "extra": 1},
++        {"allocated_bytes": 2**63, "file_names": 102, "directories": 9},
++        {"allocated_bytes": 65536, "file_names": 103, "directories": 9},
++        {"allocated_bytes": 65536, "file_names": 102, "directories": 10},
++    ],
++)
++def test_safe_intent_write_allowance_is_optional_and_strict(tmp_path, allowance):
++    from silent_cascade.train.pilot_offline_process import OfflineProcessIntent
++
++    value = _safe_control_intent(tmp_path)
++    parsed = OfflineProcessIntent.model_validate_json(_encoded(value))
++    assert parsed.write_allowance is None
++    if allowance == {"allocated_bytes": 65536, "file_names": 102, "directories": 9}:
++        value["write_allowance"] = allowance
++        assert (
++            OfflineProcessIntent.model_validate_json(_encoded(value)).write_allowance == allowance
++        )
++    else:
++        with pytest.raises(ValueError):
++            OfflineProcessIntent.model_validate_json(
++                _encoded(value | {"write_allowance": allowance})
++            )
++
++
+ @pytest.mark.parametrize(
+     "mutation",
+     [
+         {"status": "completed", "returncode": 7},
+         {"status": "completed", "reason": "timeout"},
+         {"status": "completed", "eof": False},
+         {"status": "completed", "offline_sha256": None},
+         {"status": "failed", "reason": None},
+         {"status": "failed", "reason": "launch_failure", "pid": None, "returncode": 0},
+         {"status": "failed", "reason": "unknown"},
+@@ -475,41 +505,190 @@ def _measurement_control(
+         lambda: ("d" * 40, "e" * 64),
+         raising=False,
+     )
+
+     def tiny_child(command, *args, **kwargs):
+         assert command[:4] == [sys.executable, "-B", "-c", pilot_offline._PROGRAM]
+         assert command[4] == str(output)
+         assert (output / "intent.json").is_file()
+         if launch_failure:
+             raise OSError("control launch denied")
+-        assert len(payload) <= 64
++        assert len(payload) <= 4096
+         assert descriptor in {1, 2} and exitcode in {0, 7}
+-        command = [
+-            sys.executable,
+-            "-B",
+-            "-c",
++        source = (
+             "import os,sys; from pathlib import Path; "
+             "Path(sys.argv[1],'offline.json').write_bytes(b'invalid'); "
+             f"os.write({descriptor},{payload!r}); "
+             + ("import time; time.sleep(10); " if pause else "")
+-            + f"sys.exit({exitcode})",
+-            str(output),
+-        ]
++            + f"sys.exit({exitcode})"
++        )
++        assert len(source.encode()) <= 4096
++        command = [sys.executable, "-B", "-c", source, str(output)]
+         process = original(command, *args, **kwargs)
+         launched.append(process)
+         return process
+
+     monkeypatch.setattr(pilot_offline.subprocess, "Popen", tiny_child)
+     return pilot_offline, launched
+
+
++def test_measurement_serializes_exact_write_allowance_before_launch(tmp_path, monkeypatch):
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++    allowance = OfflineWriteAllowance(65536, file_names=7, directories=3)
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        module, launched = _measurement_control(monkeypatch, output, payload=b"")
++        with pytest.raises(ValueError, match="invalid_report"):
++            module.measure_pilot_offline(
++                output_dir=output,
++                process_custody=custody,
++                write_allowance=allowance,
++            )
++        intent = json.loads((output / "intent.json").read_bytes())
++        assert intent["write_allowance"] == {
++            "allocated_bytes": 65536,
++            "file_names": 7,
++            "directories": 3,
++        }
++        assert len(launched) == 1 and launched[0].poll() == 0
++
++
++def test_measurement_rejects_nonexact_write_allowance_before_launch(tmp_path, monkeypatch):
++    from silent_cascade.train import pilot_offline
++    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
++
++    class DerivedAllowance(OfflineWriteAllowance):
++        pass
++
++    def launch_tripwire(*args, **kwargs):
++        raise AssertionError("launch preparation reached with an invalid allowance")
++
++    monkeypatch.setattr(pilot_offline, "resolve_offline_git", launch_tripwire)
++    monkeypatch.setattr(pilot_offline, "_offline_source_identity", launch_tripwire)
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        with pytest.raises(ValueError, match="write allowance"):
++            pilot_offline.measure_pilot_offline(
++                output_dir=output,
++                process_custody=custody,
++                write_allowance=DerivedAllowance(65536),
++            )
++        assert not output.exists()
++
++
++def test_bootstrap_postcheck_exposes_caught_write_denial(tmp_path):
++    from silent_cascade.train import pilot_offline
++    from silent_cascade.train.pilot_offline_process import (
++        OfflineProcessLimits,
++        capture_offline_process,
++    )
++
++    revision, source_sha256 = pilot_offline._offline_source_identity()
++    intent = _safe_control_intent(tmp_path)
++    with open(sys.executable, "rb") as executable:
++        python_sha256 = hashlib.file_digest(executable, "sha256").hexdigest()
++    intent.update(
++        bootstrap_sha256=_digest(pilot_offline._PROGRAM.encode()),
++        python_sha256=python_sha256,
++        source_commit=revision,
++        executed_source_sha256=source_sha256,
++        write_allowance={"allocated_bytes": 65536, "file_names": 102, "directories": 9},
++    )
++    raw = _encoded(intent)
++    assert len(raw) <= 4096
++    (tmp_path / "intent.json").write_bytes(raw)
++    (tmp_path / "offline.json").write_bytes(b"invalid-preseed")
++    program = r"""
++import sys
++from pathlib import Path
++from silent_cascade.train import pilot_offline as boundary
++from silent_cascade.train.pilot_offline_writes import OfflineWriteDenied
++def swallowed(directory, attempts, blocked, *, process_intent_sha256):
++    try:
++        (Path(directory) / 'unknown').write_bytes(b'x')
++    except OfflineWriteDenied:
++        return
++boundary._worker = swallowed
++exec(boundary._PROGRAM)
++"""
++    assert len(program.encode()) <= 4096
++    captured = capture_offline_process(
++        [sys.executable, "-B", "-c", program, str(tmp_path), _digest(raw)],
++        cwd=Path(__file__).resolve().parents[2],
++        env=pilot_offline.offline_environment(tmp_path),
++        limits=OfflineProcessLimits(
++            stdout_bytes=2048, stderr_bytes=4096, record_bytes=4096, timeout_seconds=30
++        ),
++    )
++    assert captured.reason == "nonzero_exit"
++    assert b"OfflineWriteDenied: offline write denied" in captured.stderr
++    assert (tmp_path / "offline.json").read_bytes() == b"invalid-preseed"
++    with pytest.raises(ChildProcessError):
++        os.waitpid(captured.pid, os.WNOHANG)
++
++
++def test_bootstrap_requires_installed_allowance_before_worker(tmp_path):
++    from silent_cascade.train import pilot_offline
++    from silent_cascade.train.pilot_offline_process import (
++        OfflineProcessLimits,
++        capture_offline_process,
++    )
++
++    revision, source_sha256 = pilot_offline._offline_source_identity()
++    intent = _safe_control_intent(tmp_path)
++    with open(sys.executable, "rb") as executable:
++        python_sha256 = hashlib.file_digest(executable, "sha256").hexdigest()
++    intent.update(
++        bootstrap_sha256=_digest(pilot_offline._PROGRAM.encode()),
++        python_sha256=python_sha256,
++        source_commit=revision,
++        executed_source_sha256=source_sha256,
++        write_allowance={"allocated_bytes": 65536, "file_names": 102, "directories": 9},
++    )
++    raw = _encoded(intent)
++    assert len(raw) <= 4096
++    (tmp_path / "intent.json").write_bytes(raw)
++    program = r"""
++import sys
++from silent_cascade.train import pilot_offline as boundary
++original_install = boundary.install_offline_boundary
++def drop_guard(*args, **kwargs):
++    installed = original_install(*args, **kwargs)
++    boundary._BOUNDARY_WRITES = None
++    return installed
++def worker_tripwire(*args, **kwargs):
++    raise AssertionError('worker tripwire reached')
++boundary.install_offline_boundary = drop_guard
++boundary._worker = worker_tripwire
++exec(boundary._PROGRAM)
++"""
++    assert len(program.encode()) <= 4096
++    captured = capture_offline_process(
++        [sys.executable, "-B", "-c", program, str(tmp_path), _digest(raw)],
++        cwd=Path(__file__).resolve().parents[2],
++        env=pilot_offline.offline_environment(tmp_path),
++        limits=OfflineProcessLimits(
++            stdout_bytes=2048, stderr_bytes=4096, record_bytes=4096, timeout_seconds=30
++        ),
++    )
++    assert captured.reason == "nonzero_exit"
++    assert b"offline process launch authority differs" in captured.stderr
++    assert b"worker tripwire reached" not in captured.stderr
++    with pytest.raises(ChildProcessError):
++        os.waitpid(captured.pid, os.WNOHANG)
++
++
+ def test_measurement_persists_failed_invalid_report_and_fences_reuse(tmp_path, monkeypatch):
+     with (
+         _privacy_ledger(tmp_path) as (budget, admission, output),
+         _prepare_privacy(budget, admission, output) as custody,
+     ):
+         module, launched = _measurement_control(monkeypatch, output, payload=b"")
+         with pytest.raises(ValueError):
+             module.measure_pilot_offline(output_dir=output, process_custody=custody)
+         record = json.loads((output / "process-result.json").read_bytes())
+         assert record["status"] == "failed" and record["reason"] == "invalid_report"
+@@ -556,45 +735,91 @@ def test_measurement_records_launch_failure_without_return_code(tmp_path, monkey
+ )
+ def test_bootstrap_rejects_changed_launch_authority(tmp_path, monkeypatch, field, value):
+     from silent_cascade.train import pilot_offline
+     from silent_cascade.train.pilot_offline import validate_offline_launch
+
+     monkeypatch.setattr(pilot_offline, "_offline_source_identity", lambda: ("d" * 40, "e" * 64))
+     intent = _safe_control_intent(tmp_path)
+     with open(sys.executable, "rb") as executable:
+         python_sha256 = hashlib.file_digest(executable, "sha256").hexdigest()
+     intent.update(
+-        bootstrap_sha256=_digest(pilot_offline._PROGRAM.encode()), python_sha256=python_sha256
++        bootstrap_sha256=_digest(pilot_offline._PROGRAM.encode()),
++        python_sha256=python_sha256,
++        write_allowance=None,
+     )
+     intent[field] = value
+     raw = _encoded(intent)
+     assert len(raw) <= 4096
+     (tmp_path / "intent.json").write_bytes(raw)
+     with pytest.raises(ValueError, match="offline process"):
+         validate_offline_launch(tmp_path, _digest(raw))
+
+
++@pytest.mark.parametrize("change", ["removed", "enlarged", "invalid", "root"])
++def test_bootstrap_digest_binds_write_allowance(tmp_path, monkeypatch, change):
++    from silent_cascade.train import pilot_offline
++
++    monkeypatch.setattr(pilot_offline, "_offline_source_identity", lambda: ("d" * 40, "e" * 64))
++    intent = _safe_control_intent(tmp_path)
++    with open(sys.executable, "rb") as executable:
++        intent["python_sha256"] = hashlib.file_digest(executable, "sha256").hexdigest()
++    intent["bootstrap_sha256"] = _digest(pilot_offline._PROGRAM.encode())
++    intent["write_allowance"] = {
++        "allocated_bytes": 65536,
++        "file_names": 102,
++        "directories": 9,
++    }
++    original = _encoded(intent)
++    changed = dict(intent)
++    if change == "removed":
++        changed.pop("write_allowance")
++    elif change == "root":
++        changed["output_root_sha256"] = "0" * 64
++    else:
++        changed["write_allowance"] = dict(changed["write_allowance"])
++        changed["write_allowance"]["allocated_bytes"] = 131072 if change == "enlarged" else 2**63
++    (tmp_path / "intent.json").write_bytes(_encoded(changed))
++    with pytest.raises(ValueError, match="offline process"):
++        pilot_offline.validate_offline_launch(tmp_path, _digest(original))
++
++
+ @pytest.mark.parametrize("target", ["intent_sha256", "attempt", "stdout_bytes"])
+ def test_process_reader_rejects_changed_result_binding(tmp_path, target):
+     from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
+
+     run, output, context = _cold_process_controls(tmp_path)
+     result = json.loads((output / "process-result.json").read_bytes())
+     result[target] = {"intent_sha256": "0" * 64, "attempt": "0" * 32, "stdout_bytes": 3}[target]
+     raw = _encoded(result)
+     assert len(raw) <= 4096
+     (output / "process-result.json").write_bytes(raw)
+     with pytest.raises(ValueError, match="offline process"):
+         read_offline_process_outcome(run, report=None, evidence_context=context)
+     assert context.active == 0
+
+
++def test_process_reader_rejects_changed_intent_allowance(tmp_path):
++    from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
++
++    run, output, context = _cold_process_controls(tmp_path)
++    intent = json.loads((output / "intent.json").read_bytes())
++    intent["write_allowance"] = {
++        "allocated_bytes": 65536,
++        "file_names": 102,
++        "directories": 9,
++    }
++    (output / "intent.json").write_bytes(_encoded(intent))
++    with pytest.raises(ValueError, match="offline process"):
++        read_offline_process_outcome(run, report=None, evidence_context=context)
++    assert context.active == 0
++
++
+ def test_collection_fences_incomplete_before_authentication(tmp_path, monkeypatch):
+     from silent_cascade.train import pilot_evidence
+
+     output = tmp_path / "final/offline"
+     output.mkdir(parents=True)
+     (output / "intent.json").write_bytes(b"{}")
+
+     def execution_tripwire(*args, **kwargs):
+         raise AssertionError("collection reached authentication before offline process fence")
+
+@@ -798,21 +1023,21 @@ def test_privacy_intent_hashes_replace_paths(tmp_path):
+     root = value.pop("output_root")
+     executable = value.pop("python_executable")
+     value.update(
+         schema_version="phase4-offline-process-intent-v2",
+         output_root_sha256=_digest(b"phase4-offline-process-v2\0output-root\0" + os.fsencode(root)),
+         python_executable_sha256=_digest(
+             b"phase4-offline-process-v2\0python-executable\0" + os.fsencode(executable)
+         ),
+     )
+     intent = OfflineProcessIntent.model_validate_json(_encoded(value))
+-    assert intent.model_dump() == value
++    assert intent.model_dump() == value | {"write_allowance": None}
+     assert os.fsencode(root) not in _encoded(intent.model_dump())
+     assert os.fsencode(executable) not in _encoded(intent.model_dump())
+     with pytest.raises(ValueError):
+         OfflineProcessIntent.model_validate_json(_encoded(value | {"output_root": root}))
+
+
+ def test_privacy_nonempty_capture_never_enters_public_logs(tmp_path, monkeypatch):
+     with (
+         _privacy_ledger(tmp_path) as (budget, admission, output),
+         _prepare_privacy(budget, admission, output) as custody,
+@@ -1227,67 +1452,87 @@ def test_privacy_cold_reader_safe_and_forensic_controls(tmp_path, monkeypatch, m
+
+
+ def test_privacy_bootstrap_accepts_bound_hash_identities(tmp_path, monkeypatch):
+     from silent_cascade.train import pilot_offline
+
+     monkeypatch.setattr(pilot_offline, "_offline_source_identity", lambda: ("d" * 40, "e" * 64))
+     value = _safe_control_intent(tmp_path)
+     with open(sys.executable, "rb") as executable:
+         value["python_sha256"] = hashlib.file_digest(executable, "sha256").hexdigest()
+     value["bootstrap_sha256"] = _digest(pilot_offline._PROGRAM.encode())
++    value["write_allowance"] = None
+     raw = _encoded(value)
+     assert len(raw) <= 4096
+     (tmp_path / "intent.json").write_bytes(raw)
+     assert pilot_offline.validate_offline_launch(tmp_path, _digest(raw)).model_dump() == value
+
+
+-@pytest.mark.parametrize("failure", ["nonzero", "timeout", "private_write"])
++@pytest.mark.parametrize(
++    "failure", ["nonzero", "timeout", "output_limit", "cancelled", "private_write"]
++)
+ def test_privacy_nonempty_failure_retains_closed_outcome(tmp_path, monkeypatch, failure):
+     from silent_cascade.train import pilot_offline_process as process
+
+     with (
+         _privacy_ledger(tmp_path) as (budget, admission, output),
+         _prepare_privacy(budget, admission, output) as custody,
+     ):
+         module, launched = _measurement_control(
+             monkeypatch,
+             output,
+-            payload=b"/private/SECRET",
++            payload=b"X" * 65 if failure == "output_limit" else b"/private/SECRET",
+             descriptor=2,
+             exitcode=7 if failure == "nonzero" else 0,
+-            pause=failure == "timeout",
++            pause=failure in {"timeout", "cancelled"},
+         )
++        if failure == "cancelled":
++            original_select = process.selectors.DefaultSelector.select
++            selected = False
++
++            def cancel_after_payload(selector, timeout=None):
++                nonlocal selected
++                if selected:
++                    raise KeyboardInterrupt
++                events = original_select(selector, timeout)
++                selected = bool(events)
++                return events
++
++            monkeypatch.setattr(process.selectors.DefaultSelector, "select", cancel_after_payload)
+         original = process._publish_private_process_bytes
+
+         def publish(capability, name, payload):
+             if failure == "private_write" and name == "stderr.raw":
+                 raise OSError("control private storage denied /SECRET")
+             original(capability, name, payload)
+
+         monkeypatch.setattr(process, "_publish_private_process_bytes", publish)
+         with pytest.raises(ValueError, match="offline process failed"):
+             module.measure_pilot_offline(output_dir=output, process_custody=custody)
+         result = json.loads((output / "process-result.json").read_bytes())
+         reason = {
+             "nonzero": "nonzero_exit",
+             "timeout": "timeout",
++            "output_limit": "output_limit",
++            "cancelled": "cancelled",
+             "private_write": "private_custody_failure",
+         }[failure]
+         assert result["status"] == "failed" and result["reason"] == reason
+         assert result["stderr_disposition"] == "private_rejected"
+-        assert result["stderr_bytes"] == 15 and result["offline_sha256"] is None
++        expected = b"X" * 64 if failure == "output_limit" else b"/private/SECRET"
++        assert result["stderr_bytes"] == len(expected) and result["offline_sha256"] is None
++        assert result["stderr_sha256"] == _digest(expected)
+         assert not (output / "stderr.txt").exists()
+         private = budget.workspace / "logs/offline-process-private" / custody.attempt_id
+         if failure == "private_write":
+             assert not (private / "stderr.raw").exists()
+         else:
+-            assert (private / "stderr.raw").read_bytes() == b"/private/SECRET"
++            assert (private / "stderr.raw").read_bytes() == expected
+         assert b"SECRET" not in (output / "process-result.json").read_bytes()
+         assert len(launched) == 1 and launched[0].poll() is not None
+         with pytest.raises(ChildProcessError):
+             os.waitpid(launched[0].pid, os.WNOHANG)
+
+
+ @pytest.mark.parametrize("change", ["released", "directory"])
+ def test_privacy_prepared_custody_cannot_survive_authority_change(tmp_path, change):
+     from silent_cascade.archive.ledger import StorageBlocked
+     from silent_cascade.train.pilot_offline_process import require_offline_process_custody
+diff --git a/tests/pilot/test_pilot_offline_writes.py b/tests/pilot/test_pilot_offline_writes.py
+index bf47248..e5c46c4 100644
+--- a/tests/pilot/test_pilot_offline_writes.py
++++ b/tests/pilot/test_pilot_offline_writes.py
+@@ -21,25 +21,28 @@ def run_writer_control(code, root, allowance=65536, *, installation_denial=None,
+
+     root.mkdir(exist_ok=True)
+     program = (
+         """
+ import json, os, sys
+ from pathlib import Path
+ from contextlib import contextmanager
+ from silent_cascade.train.pilot_offline_writes import (
+     OfflineWriteAllowance, OfflineWriteDenied, install_offline_writes,
+ )
+-from silent_cascade.train.pilot_offline import install_offline_boundary
++from silent_cascade.train import pilot_offline as boundary
+ root = Path(sys.argv[1])
+-guard = install_offline_writes(root, OfflineWriteAllowance(**json.loads(sys.argv[2])))
+-install_offline_boundary(workspace_root=root)
+-guard.bind_publishers()
++attempts, blocked = boundary.install_offline_boundary(
++    workspace_root=root,
++    write_allowance=OfflineWriteAllowance(**json.loads(sys.argv[2])),
++)
++guard = boundary._BOUNDARY_WRITES
++assert guard is boundary._BOUNDARY_WRITES
+ from silent_cascade.train.pilot_data import _publish_pilot_bytes
+ from silent_cascade.io import atomic_create_bytes, atomic_write_bytes
+ @contextmanager
+ def denied(reason=None):
+     try:
+         yield
+     except OfflineWriteDenied as error:
+         if reason is not None:
+             assert str(error) == 'offline write denied: ' + reason, str(error)
+     else:
+@@ -53,21 +56,22 @@ def denied(reason=None):
+     try:
+         _publish_pilot_bytes(root / 'offline.json', b'x')
+     except OfflineWriteDenied:
+         pass
+     else:
+         raise AssertionError('latched publisher wrote')
+ """
+         + code
+     )
+     program = program.replace(
+-        "guard.bind_publishers()", before_binding + "\nguard.bind_publishers()"
++        "attempts, blocked = boundary.install_offline_boundary(",
++        before_binding + "\nattempts, blocked = boundary.install_offline_boundary(",
+     )
+     assert len(program.encode()) <= 4096
+     limits = allowance if isinstance(allowance, dict) else dict(allocated_bytes=allowance)
+     captured = capture_offline_process(
+         [sys.executable, "-B", "-c", program, str(root), json.dumps(limits)],
+         cwd=Path(__file__).resolve().parents[2],
+         env=offline_environment(root),
+         limits=OfflineProcessLimits(
+             stdout_bytes=2048, stderr_bytes=2048, record_bytes=4096, timeout_seconds=30
+         ),

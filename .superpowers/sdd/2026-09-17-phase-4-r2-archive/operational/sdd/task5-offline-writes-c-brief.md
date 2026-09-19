@@ -51,7 +51,7 @@ class OfflineWriteDenied(RuntimeError):
     pass
 
 def measure_pilot_offline(
-    *, output_dir, process_limits=None,
+    *, output_dir, process_limits=None, process_custody=None,
     write_allowance: OfflineWriteAllowance | None = None,
 ): ...
 
@@ -156,7 +156,7 @@ Task C consumes the actual `process_custody`, validated with
 `category_peaks`. It must not guess the private path or recompute the historical
 four-file P. The caller first owns the global admission and prepares private
 custody, then establishes this fixture hold before any public intent or child
-launch. `H = write_allowance.allocated_bytes + sum(custody.category_peaks)` is
+launch. `H = write_allowance.allocated_bytes + sum(peak for _, peak in custody.category_peaks)` is
 conservative inside the unchanged fixture envelope, including private bytes
 whose real category remains logs. The public spool and private logs shares must
 also fit the live underlying category admission; this fixture hold grants none.
@@ -198,5 +198,3 @@ the original unadmitted-spool negative case: it still lacks a spool allowance.
   directories twice against remaining category capacity: compare their retained
   allocation plus the remaining phase peak to the original category hold.
 - [ ] **GREEN/review/commit.** Primitive hold/alias tests, source inventory and scoped static checks. Record outstanding actual worker/full-gate admission. Obtain independent task review after controller verification; the full-run admission remains separate.
-
-
