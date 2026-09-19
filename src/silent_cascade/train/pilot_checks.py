@@ -153,6 +153,8 @@ def _evaluate(
     )
     output = run_dir / "final/eval" / name
     request = dict(identity_sha256=identity.sha256, device="cpu", purpose=name)
+    if archive_producer is not None:
+        archive_producer.before_final_evaluation_control()
     _publish(output.parent / ("." + name + ".request.json"), request)
     if (output / "DONE").exists():
         previous, _, _, _ = load_evaluation(output)
@@ -175,6 +177,8 @@ def _evaluate(
         evidence_context=evidence_context,
     )
 
+    if archive_producer is not None:
+        archive_producer.before_final_evaluation_control()
     _publish(
         output / "execution.json",
         dict(

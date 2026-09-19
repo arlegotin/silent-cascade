@@ -197,6 +197,8 @@ def before_work_bounds(operation):
         return {"spool": bounds.journal_record + ALLOCATION_OVERHEAD}
     if operation == "evaluation":
         return {"spool": 2 * EVALUATION_BYTES + ALLOCATION_OVERHEAD}
+    if operation == "final_evaluation_control":
+        return {"spool": 2 * PILOT_BYTES + ALLOCATION_OVERHEAD}
     if operation in {
         "validation_one_hop",
         "validation_autonomous",
@@ -649,6 +651,9 @@ class ArchiveProducer:
     def _before(self, operation):
         if self.session._request("status", {"before_work": operation}) != {"admitted": True}:
             raise StorageBlocked("storage_blocked: producer admission not authenticated")
+
+    def before_final_evaluation_control(self) -> None:
+        self._before("final_evaluation_control")
 
     def before_update(self, global_step: int) -> None:
         if type(global_step) is not int or global_step < 0:
