@@ -170,6 +170,7 @@ def offline_environment(scratch: Path, *, git_pin: OfflineGitPin | None = None) 
             "MPLCONFIGDIR": str(scratch / "matplotlib-cache"),
             "MPL_IGNORE_SYSTEM_FONTS": "1",
             "XDG_CACHE_HOME": str(scratch / "cache"),
+            "TORCHINDUCTOR_CACHE_DIR": str(scratch / "cache"),
         }.items()
     }
 
