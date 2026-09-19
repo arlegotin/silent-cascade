@@ -9,6 +9,7 @@ import math
 import os
 import time
 from collections import Counter
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
@@ -799,16 +800,13 @@ def _evaluate_subset(config, *, model, identity, weights_sha, manifest, subset, 
     )
 
 
-def _runtime_rows(root):
-    import json
+def _runtime_rows(root, *, evidence_context=None):
+    from silent_cascade.archive.readers import iter_evaluation_episodes
 
-    from silent_cascade.eval.artifacts import read_evaluation_artifact
-    from silent_cascade.report.pilot_artifacts import load_evaluation
-
-    _, rows, _, _ = load_evaluation(root)
+    evidence_context = _numeric_context(root.parent, evidence_context)
     result = []
-    for row in rows:
-        sidecar = json.loads(read_evaluation_artifact(root / row.neural_trace_ref))
+    for episode in iter_evaluation_episodes(root, evidence_context=evidence_context):
+        row, sidecar = episode.row, episode.sidecar
         result.append(
             {
                 "public_id": row.public_id,
@@ -1114,26 +1112,116 @@ def verify_pilot_numerics(
         restore_rng_snapshot(before, restore_mps=before.torch_mps_state is not None)
 
 
-def _check_artifact_closure(root, hashes, required, *, report_name):
-    from silent_cascade.report.pilot_artifacts import verify_hashes
+class _NumericEvidenceContext:
+    """One exhausted authenticated inventory shared by a numerical read."""
+
+    def __init__(self, root, source):
+        from silent_cascade.archive.readers import logical_root
+
+        self.source = source
+        self.run_dir = source.run_dir
+        self.root = root.absolute()
+        self.logical_root = logical_root(root, source)
+        expected = "final/numerics"
+        prefix = self.logical_root + "/"
+        saw_expected = False
+        self.entries_by_name = {}
+        for entry in source.entries():
+            saw_expected |= entry.path.startswith(expected + "/")
+            if entry.path.startswith(prefix):
+                self.entries_by_name[entry.path] = entry
+        if saw_expected and self.logical_root != expected:
+            raise ValueError("numeric evidence context root differs")
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+
+def _numeric_context(root, evidence_context):
+    if evidence_context is None or isinstance(evidence_context, _NumericEvidenceContext):
+        return evidence_context
+    return _NumericEvidenceContext(root, evidence_context)
+
+
+def _numeric_name(path, evidence_context):
+    from silent_cascade.archive.readers import logical_root
+
+    name = logical_root(path, evidence_context)
+    if not Path(name).is_relative_to(evidence_context.logical_root):
+        raise ValueError("numeric evidence path escapes root")
+    return name
+
+
+@contextmanager
+def _numeric_path(path, *, evidence_context=None):
+    if evidence_context is None:
+        yield path
+        return
+    from silent_cascade.archive.readers import evidence_path
+
+    name = _numeric_name(path, evidence_context)
+    with evidence_path(evidence_context.run_dir, name, evidence_context=evidence_context) as local:
+        yield local
+
+
+def _numeric_exists(path, evidence_context):
+    return path.exists() or (
+        evidence_context is not None
+        and _numeric_name(path, evidence_context) in evidence_context.entries_by_name
+    )
+
+
+def _numeric_json(path, *, evidence_context=None):
+    from silent_cascade.report.pilot_artifacts import read_json
+
+    with _numeric_path(path, evidence_context=evidence_context) as local:
+        return read_json(local)
+
+
+def _check_artifact_closure(root, hashes, required, *, report_name, evidence_context=None):
+    from silent_cascade.eval.artifacts import read_evaluation_artifact
+    from silent_cascade.report.pilot_artifacts import child
     from silent_cascade.train.pilot_data import _check_path
 
     _check_path(root)
     observed = set()
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise ValueError("symbolic artifact closure")
-        if path.is_file():
-            observed.add(str(path.relative_to(root)))
+    if root.exists():
+        for path in root.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("symbolic artifact closure")
+            if path.is_file():
+                observed.add(str(path.relative_to(root)))
+    if evidence_context is not None:
+        prefix = _numeric_name(root, evidence_context) + "/"
+        observed.update(
+            name.removeprefix(prefix)
+            for name in evidence_context.entries_by_name
+            if name.startswith(prefix)
+        )
     if set(hashes) != set(required) or observed != set(required) | {report_name, "DONE"}:
         raise ValueError("artifact closure differs from required inventory")
-    verify_hashes(root, hashes)
+    for name, digest in hashes.items():
+        with _numeric_path(child(root, name), evidence_context=evidence_context) as local:
+            raw = read_evaluation_artifact(local)
+        if sha256_bytes(raw) != digest:
+            raise ValueError(f"artifact integrity mismatch: {name}")
 
 
-def _runtime_artifact_inventory(root, *, config, manifest, subset, weights):
-    from silent_cascade.report.pilot_artifacts import load_evaluation, read_json
+def _runtime_artifact_inventory(root, *, config, manifest, subset, weights, evidence_context=None):
+    from silent_cascade.archive.readers import evaluation_header, iter_evaluation_episodes
+    from silent_cascade.logging.crash_bundle import CrashBundleManifest
 
-    identity, rows, _, hashes = load_evaluation(root)
+    evidence_context = _numeric_context(root.parent, evidence_context)
+    with evaluation_header(root, evidence_context=evidence_context) as (header, _):
+        pass
+    rows = []
+    for episode in iter_evaluation_episodes(
+        root, evidence_context=evidence_context, expected_header=header
+    ):
+        rows.append(episode.row)
+    identity = header.identity
+    rows = tuple(rows)
+    hashes = header.hashes
     if (
         identity.experiment != "phase4-task10-diagnostic"
         or identity.purpose != "action_diagnostic"
@@ -1148,19 +1236,19 @@ def _runtime_artifact_inventory(root, *, config, manifest, subset, weights):
     ):
         raise ValueError("raw runtime identity differs")
     required = {"identity.json", "retention.json", "rows.jsonl", "index.json", "metrics.json"}
-    if any(r.causal_trace_sha256 is not None for r in rows):
+    if any(row.causal_trace_sha256 is not None for row in rows):
         required.add(f"crashes/weights-{identity.checkpoint_sha256}.safetensors")
     required.update(f"episodes/{i:05d}.telemetry.json" for i in range(len(rows)))
-    required.update(r.neural_trace_ref for r in rows)
-    required.update(r.full_trace_ref for r in rows if r.full_trace_ref is not None)
-    if any(r.error is not None for r in rows):
-        from silent_cascade.logging.crash_bundle import CrashBundleManifest
-
+    required.update(row.neural_trace_ref for row in rows)
+    required.update(row.full_trace_ref for row in rows if row.full_trace_ref is not None)
+    if header.crashes:
         required.add("crashes/index.json")
-        for public_id, entry in read_json(root / "crashes/index.json").items():
+        for public_id, entry in header.crashes.items():
             required.add(entry["path"])
             crash = CrashBundleManifest.model_validate_json(
-                canonical_json_bytes(read_json(root / entry["path"]))
+                canonical_json_bytes(
+                    _numeric_json(root / entry["path"], evidence_context=evidence_context)
+                )
             )
             if crash.context.episode_public_id != public_id:
                 raise ValueError("raw crash episode identity differs")
@@ -1174,15 +1262,14 @@ def _runtime_artifact_inventory(root, *, config, manifest, subset, weights):
     return required | {"DONE"}
 
 
-def _read_capture_operations(path, *, model, config):
+def _read_capture_operations(path, *, model, config, evidence_context=None):
     """Consume saved observations, without executing a model or training step."""
     import math
 
     from silent_cascade.eval.compute import NeuralComputeSnapshot
-    from silent_cascade.report.pilot_artifacts import read_json
     from silent_cascade.train.trainer import StepResult
 
-    value = read_json(path.with_suffix(".json"))
+    value = _numeric_json(path.with_suffix(".json"), evidence_context=evidence_context)
     if not isinstance(value, dict) or set(value) != {"update", "extra_diagnostic_forward"}:
         raise ValueError("raw operation record schema differs")
     update = value["update"]
@@ -1265,12 +1352,15 @@ def _read_capture_operations(path, *, model, config):
     return StepResult(**parsed), extra
 
 
-def _read_capture(path, *, model, config):
+def _read_capture(path, *, model, config, evidence_context=None):
     from safetensors.torch import load
 
     from silent_cascade.train.pilot_data import _read_pilot_bytes
 
-    flat = load(_read_pilot_bytes(path.with_suffix(".safetensors")))
+    with _numeric_path(
+        path.with_suffix(".safetensors"), evidence_context=evidence_context
+    ) as local:
+        flat = load(_read_pilot_bytes(local))
     tensors = {group: {} for group in _GROUPS}
     for name, value in flat.items():
         group, separator, key = name.partition("/")
@@ -1296,7 +1386,9 @@ def _read_capture(path, *, model, config):
                     )
                 if not bool(valid.all()):
                     raise ValueError("raw tensor contains nonfinite values")
-    step, extra = _read_capture_operations(path, model=model, config=config)
+    step, extra = _read_capture_operations(
+        path, model=model, config=config, evidence_context=evidence_context
+    )
     result = CapturedUpdate(tensors, step, extra)
     compare_update(
         result, result, expected=expected, resume_device="cpu"
@@ -1323,7 +1415,17 @@ def _exact_tensors(left, right):
     return left.keys() == right.keys() and all(torch.equal(left[n], right[n]) for n in left)
 
 
-def _bind_resume_start(root, *, session, initial, model, config, device, observations):
+def _bind_resume_start(
+    root,
+    *,
+    session,
+    initial,
+    model,
+    config,
+    device,
+    observations,
+    evidence_context=None,
+):
     """Artifact-only starting-state and bootstrap arithmetic consistency.
 
     Saved gradients are execution evidence, not independently regenerated here.
@@ -1353,7 +1455,12 @@ def _bind_resume_start(root, *, session, initial, model, config, device, observa
         starting_model, starting_optimizer, "cpu"
     )
     if not starting_optimizer.state:
-        bootstrap = _read_capture(root / "bootstrap", model=model, config=config.config)
+        bootstrap = _read_capture(
+            root / "bootstrap",
+            model=model,
+            config=config.config,
+            evidence_context=evidence_context,
+        )
         for name, parameter in expected_model.named_parameters():
             parameter.grad = bootstrap.tensors["gradients"]["/" + name].clone()
         torch.nn.utils.clip_grad_norm_(expected_model.parameters(), 1.0, error_if_nonfinite=True)
@@ -1394,17 +1501,27 @@ def _bind_resume_start(root, *, session, initial, model, config, device, observa
         raise ValueError("raw starting input progress/mode/optimizer groups differ")
 
 
-def _read_resume(root, *, expected_report, model, config, source, initial=None):
-    from silent_cascade.report.pilot_artifacts import read_json
-    from silent_cascade.train.pilot_data import _read_pilot_bytes, next_pilot_batch
+def _read_resume(
+    root,
+    *,
+    expected_report,
+    model,
+    config,
+    source,
+    initial=None,
+    evidence_context=None,
+):
+    from silent_cascade.train.pilot_data import next_pilot_batch
 
-    raw = _read_pilot_bytes(root / "resume.safetensors")
-    session, _, archive = _read_checked_archive(
-        root / "resume.safetensors", config=config, source=source
+    session, digest, archive = _read_checked_archive(
+        root / "resume.safetensors",
+        config=config,
+        source=source,
+        evidence_context=evidence_context,
     )
     if archive.source != source or archive.config_json.encode() != config.canonical_json:
         raise ValueError("raw resume source/config differs")
-    observations = read_json(root / "observations.json")
+    observations = _numeric_json(root / "observations.json", evidence_context=evidence_context)
     if set(observations) != {
         "initial",
         "before",
@@ -1432,12 +1549,18 @@ def _read_resume(root, *, expected_report, model, config, source, initial=None):
         config=config,
         device=expected_report.device,
         observations=observations,
+        evidence_context=evidence_context,
     )
     batch = next_pilot_batch(
         config.config, stage=archive.progress.stage, batch_counter=archive.progress.batch_counter
     )
     captures = [
-        _read_capture(root / name, model=model, config=config.config)
+        _read_capture(
+            root / name,
+            model=model,
+            config=config.config,
+            evidence_context=evidence_context,
+        )
         for name in ("expected", "restored")
     ]
     comparison = compare_update(
@@ -1445,8 +1568,15 @@ def _read_resume(root, *, expected_report, model, config, source, initial=None):
         expected=expected_inventory(model),
         resume_device=expected_report.device,
     )
-    if (root / "bootstrap.json").exists():
-        captures.append(_read_capture(root / "bootstrap", model=model, config=config.config))
+    if _numeric_exists(root / "bootstrap.json", evidence_context):
+        captures.append(
+            _read_capture(
+                root / "bootstrap",
+                model=model,
+                config=config.config,
+                evidence_context=evidence_context,
+            )
+        )
     calls = sum(
         c.step.compute.foundation_model_calls + c.diagnostic_forward_compute.foundation_model_calls
         for c in captures
@@ -1455,7 +1585,7 @@ def _read_resume(root, *, expected_report, model, config, source, initial=None):
         update={
             "diagnostic_updates": len(captures),
             "foundation_model_calls": calls,
-            "checkpoint_sha256": sha256_bytes(raw),
+            "checkpoint_sha256": digest,
             "archive_global_step": archive.progress.global_step,
             "next_batch_counter": batch.next_batch_counter,
             "next_batch_hashes": batch.example_hashes,
@@ -1471,32 +1601,39 @@ def _read_resume(root, *, expected_report, model, config, source, initial=None):
             "comparison": comparison,
         }
     )
-    if recomputed != expected_report or read_json(
-        root / "resume.json"
+    if recomputed != expected_report or _numeric_json(
+        root / "resume.json", evidence_context=evidence_context
     ) != expected_report.model_dump(mode="json"):
         raise ValueError("raw resume summary differs")
     return len(captures), calls
 
 
-def _read_checked_archive(path, *, config, source):
+def _read_checked_archive(path, *, config, source, evidence_context=None):
     """Use the full archive validator without changing the reader's global RNG."""
     before = snapshot_global_rng()
     try:
-        return load_numeric_checkpoint(path, config=config, source=source, device="cpu")
+        with _numeric_path(path, evidence_context=evidence_context) as local:
+            return load_numeric_checkpoint(local, config=config, source=source, device="cpu")
     except Exception as error:
         raise ValueError("raw full training archive validation failed") from error
     finally:
         restore_rng_snapshot(before, restore_mps=before.torch_mps_state is not None)
 
 
-def read_numeric_report(output_dir, *, config, source_commit):
+def read_numeric_report(output_dir, *, config, source_commit, evidence_context=None):
 
     from silent_cascade.eventflow.neural_weights import load_neural_weights, read_bytes
-    from silent_cascade.report.pilot_artifacts import read_json
+    from silent_cascade.report.pilot_artifacts import _decode_json
     from silent_cascade.train.pilot_data import PilotManifest
 
-    raw = read_bytes(output_dir / "numeric-report.json")
-    if read_json(output_dir / "DONE") != {"report_sha256": sha256_bytes(raw)}:
+    evidence_context = _numeric_context(output_dir, evidence_context)
+    with _numeric_path(
+        output_dir / "numeric-report.json", evidence_context=evidence_context
+    ) as local:
+        raw = read_bytes(local)
+    if _numeric_json(output_dir / "DONE", evidence_context=evidence_context) != {
+        "report_sha256": sha256_bytes(raw)
+    }:
         raise ValueError("numeric report artifact hash differs")
     report = PilotNumericReport.model_validate_json(raw)
     if (
@@ -1540,7 +1677,10 @@ def read_numeric_report(output_dir, *, config, source_commit):
     resume_updates = 3
     if report.original_checkpoint_sha256 is not None:
         initial, digest, archived = _read_checked_archive(
-            output_dir / "input-training.safetensors", config=config, source=report.source
+            output_dir / "input-training.safetensors",
+            config=config,
+            source=report.source,
+            evidence_context=evidence_context,
         )
         if digest != report.original_checkpoint_sha256:
             raise ValueError("raw input archive identity differs")
@@ -1553,17 +1693,21 @@ def read_numeric_report(output_dir, *, config, source_commit):
         )
     if not required <= report.artifact_hashes.keys():
         raise ValueError("numeric artifact closure omits required capture")
-    weights = load_neural_weights(
-        output_dir / "unchanged-weights.safetensors",
-        expected_sha256=report.portable_weights_sha256,
-        device="cpu",
-    )
+    with _numeric_path(
+        output_dir / "unchanged-weights.safetensors", evidence_context=evidence_context
+    ) as local:
+        weights = load_neural_weights(
+            local,
+            expected_sha256=report.portable_weights_sha256,
+            device="cpu",
+        )
     if (
         weights.identity.model_state_sha256 != report.initial_model_sha256
         or weights.identity.source_revision != source_commit
     ):
         raise ValueError("raw unchanged model identity differs")
-    manifest = PilotManifest.model_validate_json(read_bytes(output_dir / "manifest.json"))
+    with _numeric_path(output_dir / "manifest.json", evidence_context=evidence_context) as local:
+        manifest = PilotManifest.model_validate_json(read_bytes(local))
     if (
         manifest.config_hash != config.sha256
         or manifest.source_commit != source_commit
@@ -1571,9 +1715,11 @@ def read_numeric_report(output_dir, *, config, source_commit):
     ):
         raise ValueError("raw manifest identity differs")
     report.runtime_subset.validate_manifest(manifest)
-    if read_json(output_dir / "runtime-subset.json") != report.runtime_subset.model_dump(
-        mode="json"
-    ) or report.runtime_episodes != (64 if config.config.pilot.is_production else 16):
+    if _numeric_json(
+        output_dir / "runtime-subset.json", evidence_context=evidence_context
+    ) != report.runtime_subset.model_dump(mode="json") or report.runtime_episodes != (
+        64 if config.config.pilot.is_production else 16
+    ):
         raise ValueError("raw runtime subset differs")
     for device in devices:
         required.update(
@@ -1584,10 +1730,15 @@ def read_numeric_report(output_dir, *, config, source_commit):
                 manifest=manifest,
                 subset=report.runtime_subset,
                 weights=(report.portable_weights_sha256, weights.identity),
+                evidence_context=evidence_context,
             )
         )
     _check_artifact_closure(
-        output_dir, report.artifact_hashes, required, report_name="numeric-report.json"
+        output_dir,
+        report.artifact_hashes,
+        required,
+        report_name="numeric-report.json",
+        evidence_context=evidence_context,
     )
     if (
         report.original_checkpoint_sha256 is not None
@@ -1606,7 +1757,10 @@ def read_numeric_report(output_dir, *, config, source_commit):
     observed_updates = observed_forwards = observed_calls = 0
     for stage in ("one_hop", "primary"):
         batch = diagnostic_batch(config.config, stage=stage, counter=0)
-        recipe = read_json(output_dir / f"{stage}-batch.json")
+        recipe_path = output_dir / f"{stage}-batch.json"
+        with _numeric_path(recipe_path, evidence_context=evidence_context) as local:
+            recipe_raw = read_bytes(local)
+        recipe = _decode_json(recipe_raw)
         if report.batches[stage] != batch.example_hashes or canonical_json_bytes(
             recipe
         ) != canonical_json_bytes(
@@ -1620,12 +1774,15 @@ def read_numeric_report(output_dir, *, config, source_commit):
             }
         ):
             raise ValueError("raw diagnostic batch recipe differs")
-        if report.batch_recipe_sha256s[stage] != sha256_bytes(
-            read_bytes(output_dir / f"{stage}-batch.json")
-        ):
+        if report.batch_recipe_sha256s[stage] != sha256_bytes(recipe_raw):
             raise ValueError("raw batch recipe hash differs")
         captures = {
-            d: _read_capture(output_dir / f"{stage}-{d}", model=weights.model, config=config.config)
+            d: _read_capture(
+                output_dir / f"{stage}-{d}",
+                model=weights.model,
+                config=config.config,
+                evidence_context=evidence_context,
+            )
             for d in devices
         }
         observed_updates += len(captures)
@@ -1661,6 +1818,7 @@ def read_numeric_report(output_dir, *, config, source_commit):
             config=config,
             source=report.source,
             initial=initial,
+            evidence_context=evidence_context,
         )
         observed_updates += count
         observed_forwards += count
@@ -1674,7 +1832,8 @@ def read_numeric_report(output_dir, *, config, source_commit):
     if (
         "mps" in devices
         and compare_runtime(
-            _runtime_rows(output_dir / "runtime-cpu"), _runtime_rows(output_dir / "runtime-mps")
+            _runtime_rows(output_dir / "runtime-cpu", evidence_context=evidence_context),
+            _runtime_rows(output_dir / "runtime-mps", evidence_context=evidence_context),
         )
         != report.runtime_comparison
     ):

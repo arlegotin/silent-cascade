@@ -15,6 +15,7 @@ FIXTURE_RELATIVE = Path(
     "cover-pilot-final/test_real_smoke_workflow_reuse0/repo/runs/smoke"
 )
 OFFLINE_ROOT = "final/offline/run/eval/primary"
+NUMERIC_RUNTIME_ROOT = "final/numerics/runtime-cpu"
 
 
 def historical_root():
@@ -37,7 +38,7 @@ def allocated(root):
 class HistoricalContext:
     """Expose original files only during an exact file/metadata/episode lease."""
 
-    def __init__(self, run_dir, backing, entries):
+    def __init__(self, run_dir, backing, entries, *, evaluation_root=OFFLINE_ROOT):
         from silent_cascade.archive.types import FileEntry
 
         self.run_dir = run_dir.absolute()
@@ -56,7 +57,8 @@ class HistoricalContext:
         self.overrides = {}
         self.late_failure = None
         self._allowed = frozenset()
-        self._commits = self._episode_commits(OFFLINE_ROOT)
+        self.evaluation_root = evaluation_root
+        self._commits = self._episode_commits(evaluation_root)
 
     def entries(self):
         for entry in self._entries:
@@ -66,7 +68,7 @@ class HistoricalContext:
             raise self.late_failure
 
     def evaluation_roots(self):
-        return (OFFLINE_ROOT,)
+        return (self.evaluation_root,)
 
     @contextmanager
     def _scope(self, kind, names, root=None):
@@ -110,7 +112,7 @@ class HistoricalContext:
 
     @contextmanager
     def metadata(self, logical_root):
-        assert logical_root == OFFLINE_ROOT
+        assert logical_root == self.evaluation_root
         names = tuple(
             f"{logical_root}/{name}"
             for name in (
@@ -123,11 +125,12 @@ class HistoricalContext:
             )
         )
         ref = SimpleNamespace(logical_root=logical_root, kind="evaluation_metadata")
-        with self._scope("metadata:" + logical_root, names) as local_root:
+        root = self.overrides.get(("metadata", logical_root), self.backing)
+        with self._scope("metadata:" + logical_root, names, root) as local_root:
             yield SimpleNamespace(local_root=local_root, ref=ref)
 
     def episode_commit(self, logical_root, ordinal):
-        assert logical_root == OFFLINE_ROOT
+        assert logical_root == self.evaluation_root
         return self._commits[ordinal]
 
     @contextmanager
@@ -276,12 +279,12 @@ class HistoricalContext:
             target = control_root / entry.path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(self.backing / entry.path, target)
-        target = control_root / f"{OFFLINE_ROOT}/episodes/00015.telemetry.json"
+        target = control_root / f"{self.evaluation_root}/episodes/00015.telemetry.json"
         target.write_bytes(target.read_bytes() + b" ")
         assert allocated(control_root) <= 6 * MIB
         assert sum(path.is_file() for path in control_root.rglob("*")) <= 4
         assert sum(path.is_dir() for path in control_root.rglob("*")) <= 8
-        self.overrides[(OFFLINE_ROOT, 15)] = control_root.absolute()
+        self.overrides[(self.evaluation_root, 15)] = control_root.absolute()
 
 
 def relevant_inventory(gate):
@@ -308,6 +311,15 @@ def relevant_inventory(gate):
     )
     inventory = gate["upstream_artifact_hashes"]
     return {name: inventory[name] for name in names if name in inventory}
+
+
+def numeric_inventory(gate):
+    prefix = "final/numerics/"
+    return {
+        name: digest
+        for name, digest in gate["upstream_artifact_hashes"].items()
+        if name.startswith(prefix)
+    }
 
 
 def referenced_checkpoint(backing):

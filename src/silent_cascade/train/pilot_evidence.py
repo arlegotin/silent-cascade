@@ -936,8 +936,22 @@ def verify_continuation_records(
     return tuple(sorted(coverage))
 
 
-def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None, unavailable=None):
-    from silent_cascade.train.pilot_verification import PilotNumericReport, read_numeric_report
+def verify_numeric_evidence(
+    value,
+    *,
+    config,
+    source,
+    checkpoint,
+    run_dir=None,
+    unavailable=None,
+    evidence_context=None,
+):
+    from silent_cascade.train.pilot_verification import (
+        PilotNumericReport,
+        _numeric_context,
+        _numeric_exists,
+        read_numeric_report,
+    )
 
     try:
         report = PilotNumericReport.model_validate_json(canonical_json_bytes(value))
@@ -952,10 +966,19 @@ def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None, 
         raise ValueError("numeric selected full archive differs")
     unavailable = [] if unavailable is None else unavailable
     directory = run_dir / "final/numerics" if run_dir is not None else None
+    if evidence_context is not None:
+        if directory is None:
+            raise ValueError("numeric evidence context requires run root")
+        evidence_context = _numeric_context(directory, evidence_context)
     names = {*report.artifact_hashes, "numeric-report.json", "DONE"}
-    if directory is not None and all(child(directory, name).exists() for name in names):
+    if directory is not None and all(
+        _numeric_exists(child(directory, name), evidence_context) for name in names
+    ):
         actual = read_numeric_report(
-            run_dir / "final/numerics", config=config, source_commit=source.source_commit
+            run_dir / "final/numerics",
+            config=config,
+            source_commit=source.source_commit,
+            evidence_context=evidence_context,
         )
         if actual != report:
             raise ValueError("numeric evidence differs from raw tensor comparisons")
@@ -985,11 +1008,21 @@ def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None, 
             }
             for stem in sorted(stems):
                 path = child(directory, stem)
-                if path.with_suffix(".json").exists():
-                    if path.with_suffix(".safetensors").exists():
-                        _read_capture(path, model=model, config=config.config)
+                if _numeric_exists(path.with_suffix(".json"), evidence_context):
+                    if _numeric_exists(path.with_suffix(".safetensors"), evidence_context):
+                        _read_capture(
+                            path,
+                            model=model,
+                            config=config.config,
+                            evidence_context=evidence_context,
+                        )
                     else:
-                        _read_capture_operations(path, model=model, config=config.config)
+                        _read_capture_operations(
+                            path,
+                            model=model,
+                            config=config.config,
+                            evidence_context=evidence_context,
+                        )
                         unavailable.append("numeric.capture_tensors:" + stem)
                 else:
                     unavailable.append("numeric.capture_operations:" + stem)
@@ -999,8 +1032,13 @@ def verify_numeric_evidence(value, *, config, source, checkpoint, run_dir=None, 
                 "resume-mps/resume.safetensors",
             ):
                 if name in names:
-                    if child(directory, name).exists():
-                        _read_checked_archive(child(directory, name), config=config, source=source)
+                    if _numeric_exists(child(directory, name), evidence_context):
+                        _read_checked_archive(
+                            child(directory, name),
+                            config=config,
+                            source=source,
+                            evidence_context=evidence_context,
+                        )
                     else:
                         unavailable.append("numeric.archive:" + name)
     return report.device_checks_passed
