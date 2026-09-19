@@ -1178,13 +1178,13 @@ def _numeric_json(path, *, evidence_context=None):
         return read_json(local)
 
 
-def _check_artifact_closure(root, hashes, required, *, report_name, evidence_context=None):
-    from silent_cascade.eval.artifacts import read_evaluation_artifact
-    from silent_cascade.report.pilot_artifacts import child
+def _numeric_artifact_names(root, *, evidence_context=None):
     from silent_cascade.train.pilot_data import _check_path
 
     _check_path(root)
     observed = set()
+    if root.is_symlink():
+        raise ValueError("symbolic artifact closure")
     if root.exists():
         for path in root.rglob("*"):
             if path.is_symlink():
@@ -1198,6 +1198,14 @@ def _check_artifact_closure(root, hashes, required, *, report_name, evidence_con
             for name in evidence_context.entries_by_name
             if name.startswith(prefix)
         )
+    return observed
+
+
+def _check_artifact_closure(root, hashes, required, *, report_name, evidence_context=None):
+    from silent_cascade.eval.artifacts import read_evaluation_artifact
+    from silent_cascade.report.pilot_artifacts import child
+
+    observed = _numeric_artifact_names(root, evidence_context=evidence_context)
     if set(hashes) != set(required) or observed != set(required) | {report_name, "DONE"}:
         raise ValueError("artifact closure differs from required inventory")
     for name, digest in hashes.items():

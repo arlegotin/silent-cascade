@@ -948,6 +948,7 @@ def verify_numeric_evidence(
 ):
     from silent_cascade.train.pilot_verification import (
         PilotNumericReport,
+        _numeric_artifact_names,
         _numeric_context,
         _numeric_exists,
         read_numeric_report,
@@ -971,6 +972,11 @@ def verify_numeric_evidence(
             raise ValueError("numeric evidence context requires run root")
         evidence_context = _numeric_context(directory, evidence_context)
     names = {*report.artifact_hashes, "numeric-report.json", "DONE"}
+    if (
+        directory is not None
+        and not _numeric_artifact_names(directory, evidence_context=evidence_context) <= names
+    ):
+        raise ValueError("numeric artifact closure differs from required inventory")
     if directory is not None and all(
         _numeric_exists(child(directory, name), evidence_context) for name in names
     ):

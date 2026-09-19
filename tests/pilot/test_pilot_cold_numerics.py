@@ -200,6 +200,55 @@ def test_missing_capture_tensor_cannot_hide_corrupt_operations(
     assert context.payload_maximum == 1 and context.active == 0
 
 
+def test_partial_numeric_evidence_rejects_extra_resident_member(
+    historical_numeric_case, tmp_path, monkeypatch
+):
+    from silent_cascade.train.pilot_evidence import verify_numeric_evidence
+
+    case = historical_numeric_case
+    run, context = context_for(case, tmp_path)
+    context.hidden.add("final/numerics/one_hop-cpu.safetensors")
+    extra = run / "final/numerics/unbound.txt"
+    assert len(b"unbound") <= 4096
+    extra.parent.mkdir(parents=True)
+    extra.write_bytes(b"unbound")
+    install_no_execution_tripwires(monkeypatch)
+    with context.guarded_reads(monkeypatch), pytest.raises(ValueError, match="closure"):
+        verify_numeric_evidence(
+            case["gate"]["numeric_evidence"],
+            config=case["config"],
+            source=case["source"],
+            checkpoint=selected_checkpoint(case),
+            run_dir=run,
+            evidence_context=context,
+        )
+    assert context.active == 0
+
+
+def test_partial_numeric_evidence_rejects_dangling_resident_symlink(
+    historical_numeric_case, tmp_path, monkeypatch
+):
+    from silent_cascade.train.pilot_evidence import verify_numeric_evidence
+
+    case = historical_numeric_case
+    run, context = context_for(case, tmp_path)
+    context.hidden.add("final/numerics/one_hop-cpu.safetensors")
+    extra = run / "final/numerics/unbound-link"
+    extra.parent.mkdir(parents=True)
+    extra.symlink_to(tmp_path / "absent-target")
+    install_no_execution_tripwires(monkeypatch)
+    with context.guarded_reads(monkeypatch), pytest.raises(ValueError, match="symbolic"):
+        verify_numeric_evidence(
+            case["gate"]["numeric_evidence"],
+            config=case["config"],
+            source=case["source"],
+            checkpoint=selected_checkpoint(case),
+            run_dir=run,
+            evidence_context=context,
+        )
+    assert context.active == 0
+
+
 def test_final_runtime_corruption_is_rejected(historical_numeric_case, tmp_path, monkeypatch):
     from silent_cascade.train.pilot_verification import read_numeric_report
 
