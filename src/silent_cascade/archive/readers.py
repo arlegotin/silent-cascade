@@ -71,8 +71,41 @@ def _verify_journal_segment(run_dir, entries, commitment_sha256, evidence_contex
         raise ValueError("empty journal segment")
 
 
+def _validated_journal_record(run_dir: Path, record):
+    from silent_cascade.report.pilot_artifacts import child
+
+    if (
+        not isinstance(record, dict)
+        or record.get("kind") not in {"update", "validation"}
+        or not re.fullmatch(r"attempt-[0-9a-f]{32}", record.get("attempt", ""))
+        or type(record.get("global_step")) is not int
+        or record["global_step"] <= 0
+        or "prior" not in record
+        or (
+            record["prior"] is not None
+            and (
+                not isinstance(record["prior"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", record["prior"])
+            )
+        )
+    ):
+        raise ValueError("invalid recovery journal")
+    artifacts = record.get("artifacts", {})
+    if not isinstance(artifacts, dict) or (record["kind"] == "validation" and not artifacts):
+        raise ValueError("missing committed validation artifacts")
+    for path, digest in artifacts.items():
+        relative = child(run_dir, path).relative_to(run_dir)
+        if (
+            relative.parts[0] != record["attempt"]
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            raise ValueError("committed validation artifact mismatch")
+    return record
+
+
 def iter_journal_records(run_dir: Path, head: str | None, *, evidence_context=None):
-    from silent_cascade.report.pilot_artifacts import _decode_json, child
+    from silent_cascade.report.pilot_artifacts import _decode_json
     from silent_cascade.train.pilot_data import _read_pilot_bytes
 
     if evidence_context is not None and logical_root(run_dir, evidence_context) != ".":
@@ -113,34 +146,7 @@ def iter_journal_records(run_dir: Path, head: str | None, *, evidence_context=No
             raw = _read_pilot_bytes(run_dir / name)
         if sha256_bytes(raw) != cursor:
             raise ValueError("pilot journal hash mismatch")
-        record = _decode_json(raw)
-        if (
-            not isinstance(record, dict)
-            or record.get("kind") not in {"update", "validation"}
-            or not re.fullmatch(r"attempt-[0-9a-f]{32}", record.get("attempt", ""))
-            or type(record.get("global_step")) is not int
-            or record["global_step"] <= 0
-            or "prior" not in record
-            or (
-                record["prior"] is not None
-                and (
-                    not isinstance(record["prior"], str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", record["prior"])
-                )
-            )
-        ):
-            raise ValueError("invalid recovery journal")
-        artifacts = record.get("artifacts", {})
-        if not isinstance(artifacts, dict) or (record["kind"] == "validation" and not artifacts):
-            raise ValueError("missing committed validation artifacts")
-        for path, digest in artifacts.items():
-            relative = child(run_dir, path).relative_to(run_dir)
-            if (
-                relative.parts[0] != record["attempt"]
-                or not isinstance(digest, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", digest)
-            ):
-                raise ValueError("committed validation artifact mismatch")
+        record = _validated_journal_record(run_dir, _decode_json(raw))
         yield record
         cursor = record["prior"]
 

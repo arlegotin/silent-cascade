@@ -1182,13 +1182,17 @@ def _verify_available_training(
     """Archive/weights authentication must not depend on old trajectory availability."""
     import re
 
-    from silent_cascade.archive.readers import evidence_path, logical_root
+    from silent_cascade.archive.readers import (
+        _validated_journal_record,
+        evidence_path,
+        logical_root,
+    )
     from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
     from silent_cascade.eventflow.neural import NeuralModelIdentity
     from silent_cascade.eventflow.neural_weights import load_neural_weights
     from silent_cascade.rng import snapshot_global_rng
     from silent_cascade.train.pilot_checkpoints import load_pilot_checkpoint
-    from silent_cascade.train.pilot_state import PilotProgress
+    from silent_cascade.train.pilot_state import PilotCheckpointDescriptor, PilotProgress
     from silent_cascade.train.pilot_trainer import _artifact_sha256
     from silent_cascade.train.pilot_workflow import _durable
 
@@ -1224,6 +1228,20 @@ def _verify_available_training(
         return child(run_dir, name).exists() or name in discovered
 
     progress = PilotProgress.model_validate_json(canonical_json_bytes(training["progress"]))
+    complete = available("checkpoint-index.json")
+    if complete:
+        with evidence_path(
+            run_dir, "checkpoint-index.json", evidence_context=evidence_context
+        ) as index_path:
+            try:
+                index = strict_json(index_path)
+                indexed_latest = PilotCheckpointDescriptor.model_validate_json(
+                    canonical_json_bytes(index["latest"])
+                )
+            except Exception as error:
+                raise ValueError("available checkpoint index differs") from error
+        if indexed_latest != progress.latest:
+            raise ValueError("available checkpoint index differs")
     for label, descriptor in (
         ("selected", training["selected_checkpoint"]),
         ("latest", training["progress"]["latest"]),
@@ -1286,7 +1304,6 @@ def _verify_available_training(
             or weights.identity.source_revision != source.source_commit
         ):
             raise ValueError("available training portable identity differs")
-    complete = available("checkpoint-index.json")
     cursor, seen, journal_dependencies = progress.journal_sha256, set(), []
     while cursor is not None:
         if cursor in seen:
@@ -1302,10 +1319,8 @@ def _verify_available_training(
             raw = read_bytes(journal_path)
             if sha256_bytes(raw) != cursor:
                 raise ValueError("available training journal hash differs")
-            record = strict_json(journal_path)
+            record = _validated_journal_record(run_dir, strict_json(journal_path))
         artifacts = record.get("artifacts", {})
-        if not isinstance(artifacts, dict):
-            raise ValueError("available training journal artifacts differ")
         journal_dependencies.extend(artifacts.items())
         cursor = record["prior"]
     if evidence_context is not None and journal_dependencies:

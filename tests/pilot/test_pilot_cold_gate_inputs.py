@@ -1,5 +1,6 @@
 """Artifact-only gate inputs through bounded cold evidence leases."""
 
+import copy
 import gzip
 import inspect
 import json
@@ -21,6 +22,16 @@ class HistoricalTrainingContext(HistoricalContext):
         self.journal_metadata = journal_metadata
         self.journal_paths = frozenset(journal_paths)
         self.lease_failure = None
+
+    def advertise_override(self, name, raw, control_root):
+        from silent_cascade.archive.types import FileEntry
+        from silent_cascade.hashing import sha256_bytes
+
+        assert name not in self._entry_names
+        entry = FileEntry(name, sha256_bytes(raw), len(raw))
+        self._entries = tuple(sorted((*self._entries, entry), key=lambda value: value.path))
+        self._entry_names = frozenset((*self._entry_names, name))
+        self.overrides[name] = control_root
 
     @contextmanager
     def _leased(self, payload):
@@ -378,6 +389,149 @@ def test_missing_unindexed_training_inputs_keep_existing_labels(
         "training.durable_journal",
     ]
     assert context.active == 0
+
+
+def missing_journal_dependency(case, context):
+    name = next(
+        name for name, _ in case["journal_dependencies"] if name.endswith("/validation.json")
+    )
+    context.hidden.add(name)
+    return name
+
+
+@pytest.mark.parametrize("damage", ["invalid", "mismatch"])
+def test_missing_journal_dependency_cannot_hide_bad_checkpoint_index(
+    historical_training_case, tmp_path, monkeypatch, damage
+):
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.pilot_evidence import _verify_available_training
+
+    case = historical_training_case
+    run, context = training_context(case, tmp_path)
+    missing_journal_dependency(case, context)
+    index_name = "checkpoint-index.json"
+    if damage == "invalid":
+        raw = b"{}\n"
+    else:
+        value = json.loads((case["backing"] / index_name).read_bytes())
+        value["latest"]["global_step"] -= 1
+        raw = canonical_json_bytes(value)
+    assert len(raw) <= 4096
+    control_root = tmp_path / ("checkpoint-index-" + damage)
+    control = control_root / index_name
+    control.parent.mkdir(parents=True)
+    control.write_bytes(raw)
+    context.overrides[index_name] = control_root
+    install_no_execution_tripwires(monkeypatch)
+    with context.guarded_reads(monkeypatch), pytest.raises(ValueError, match="checkpoint index"):
+        _verify_available_training(
+            run,
+            training=case["training"],
+            config=case["config"],
+            source=case["source"],
+            unavailable=[],
+            evidence_context=context,
+        )
+    assert "file:" + index_name in context.requests
+    assert context.payload_maximum == 1 and context.active == 0
+
+
+def test_missing_journal_dependency_cannot_hide_checkpoint_index_lease_failure(
+    historical_training_case, tmp_path, monkeypatch
+):
+    from silent_cascade.train.pilot_evidence import _verify_available_training
+
+    case = historical_training_case
+    run, context = training_context(case, tmp_path)
+    missing_journal_dependency(case, context)
+    context.lease_failure = "checkpoint-index.json"
+    install_no_execution_tripwires(monkeypatch)
+    with (
+        context.guarded_reads(monkeypatch),
+        pytest.raises(ValueError, match="advertised training lease"),
+    ):
+        _verify_available_training(
+            run,
+            training=case["training"],
+            config=case["config"],
+            source=case["source"],
+            unavailable=[],
+            evidence_context=context,
+        )
+    assert context.active == 0
+
+
+def test_available_checkpoint_index_requires_real_latest_descriptor(
+    historical_training_case, tmp_path, monkeypatch
+):
+    from silent_cascade.hashing import canonical_json_bytes
+    from silent_cascade.train.pilot_evidence import _verify_available_training
+
+    case = historical_training_case
+    run, context = training_context(case, tmp_path)
+    missing_journal_dependency(case, context)
+    training = copy.deepcopy(case["training"])
+    training["progress"]["latest"] = None
+    index_name = "checkpoint-index.json"
+    index = json.loads((case["backing"] / index_name).read_bytes())
+    index["latest"] = None
+    raw = canonical_json_bytes(index)
+    assert len(raw) <= 4096
+    control_root = tmp_path / "checkpoint-index-null-latest"
+    control = control_root / index_name
+    control.parent.mkdir(parents=True)
+    control.write_bytes(raw)
+    context.overrides[index_name] = control_root
+    install_no_execution_tripwires(monkeypatch)
+    with context.guarded_reads(monkeypatch), pytest.raises(ValueError, match="checkpoint index"):
+        _verify_available_training(
+            run,
+            training=training,
+            config=case["config"],
+            source=case["source"],
+            unavailable=[],
+            evidence_context=context,
+        )
+    assert "file:" + index_name in context.requests
+    assert context.payload_maximum == 1 and context.active == 0
+
+
+def test_incomplete_training_closure_rejects_rehashed_invalid_journal_schema(
+    historical_training_case, tmp_path, monkeypatch
+):
+    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+    from silent_cascade.train.pilot_evidence import _verify_available_training
+
+    case = historical_training_case
+    run, context = training_context(case, tmp_path)
+    record = dict(kind="invalid", attempt="not-an-attempt", global_step=0, prior=None, artifacts={})
+    raw = canonical_json_bytes(record)
+    assert len(raw) <= 256
+    digest = sha256_bytes(raw)
+    journal_name = f"journal-{digest}.json"
+    control_root = tmp_path / "invalid-journal-schema"
+    control = control_root / journal_name
+    control.parent.mkdir(parents=True)
+    control.write_bytes(raw)
+    context.advertise_override(journal_name, raw, control_root)
+    training = copy.deepcopy(case["training"])
+    training["progress"]["journal_sha256"] = digest
+    context.hidden.add(training["progress"]["latest"]["path"])
+    install_no_execution_tripwires(monkeypatch)
+    with (
+        context.guarded_reads(monkeypatch),
+        pytest.raises(ValueError, match="invalid recovery journal"),
+    ):
+        _verify_available_training(
+            run,
+            training=training,
+            config=case["config"],
+            source=case["source"],
+            unavailable=[],
+            evidence_context=context,
+        )
+    assert "file:" + journal_name in context.requests
+    assert context.payload_maximum == 1 and context.active == 0
 
 
 def compact_context(case, tmp_path):
