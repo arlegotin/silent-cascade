@@ -724,3 +724,24 @@ real storage integration still precede the Phase 4 production pilot. A genuine
 current-source end-to-end debug gate also needs a separately reviewed output
 bound, including its offline subprocess; old evidence is not relabeled to
 satisfy that obligation.
+
+### Cold training and compact gate inputs
+
+`b417c4b`, with integrity review fix `dc9d546`, lets the gate-input readers
+verify archived training checkpoints, portable weights, journals and compact
+episode shards through scoped reads. Available corruption now raises even
+when another input is missing. Gate reuse rejects both missing raw evidence
+and unavailable semantic checks, while preserving legitimate recorded
+nonpassing outcomes.
+
+The controller's fresh covering run passed 47 tests in 2.95 seconds;
+scoped lint/format checks and independent re-review passed. Review caught
+and corrected an index-validation gap in partial evidence. All prefixes,
+including failures, remain retained (720,896 allocated bytes), and the shared
+storage check passed. No new training, diagnostic or provider execution was
+needed for this slice.
+
+The production pilot still has not started. Next is bounded diagnostic
+subprocess logging and a durable completion fence, followed by child-output
+admission and the remaining aggregate/collection/recovery integration. A
+process or storage integrity test is not evidence of learning performance.

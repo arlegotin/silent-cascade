@@ -1235,3 +1235,135 @@ open. The Phase 4 production pilot has not started.
   retained6195077120 unchanged. Numeric reader slice complete, commits
   471d181..39a6467 plus milestone docs; wholeTask5/Task7/Phase4 remain open.
   Ownerrelease requested before any next reservation or implementation test.
+- Owner47503 finalcheck/release exited0: scratch256663552/logs1740800,
+  spool219099136/cache67153920/metadata52965376, pinned/emergency0; retained
+  6195077120 unchanged. Milestone/next scoped plan committed430520b; worktree
+  clean at handoff. Next sole writer task5_cold_gate_inputs dispatched from
+ 430520b, initially read/prepare-only with no project imports/tests. New4MiB
+  same-ledger gate-input reservation starts only after47503release; no overlap,
+  reclassification, deletion, prefix reuse or budget reset.
+- Gate-input owner13703 PID59276@1789779522.252494 admitted token
+  c1b050015f53f6981dfd2b6214206fa4: scratch4194304/metadata33562624/logs2097152,
+  other increments0. Before scratch256663552/logs1740800/spool219099136/
+  cache67153920/metadata52965376, pinned/emergency0; retained unchanged.
+  First no-copy training-equivalence RED admitted at fresh
+  scratch/task5-cold-gate-inputs/red-training-equivalence, <=1MiB rounded/
+  512KiB logical/32files/32dirs, full TMP/XDG/MPL/Hypothesis/archive containment.
+  Only genuine eager/cold codec comparison; no source edits before behaviorRED.
+  Future whole-slice4MiB forecast is not blanket execution permission.
+- Gate-input RED reproduced real missing cold archive/portable/journal labels
+  versus genuine eager[];1failed1.97s, wall4.18s. Preserved4096allocatedB/
+  797logicalB/1file/12dirs, no payload copy. Original42b8 debug_non_acceptance,
+  selectedabsent/latestpresent,129 authenticated training index entries.
+  No fixture correction; worker proceeds to implement named readers/predicate
+  and prepares separately bounded next test stage. No new run or provider.
+- Gate-input firstGREEN reached real_durable but the strict adapter lacked
+  lease.ref.unit_id needed by iter_journal_records;1failed2.24s, wall4.41s,
+  preserved4096B/1185logicalB/1file/12dirs. This is fixture contract evidence,
+  not success or a reason to bypass the real validator. Freshgreen-training-
+  adapter admitted same selector, <=1MiB/48files/40dirs/576KiB logical including
+  <=128KiB rounded/64KiB logical/16files/8dirs derived catalog metadata for
+  6original journals. Payloads remain borrowed; metadata is an adapter control,
+  not an original remote receipt. Actual schema has117 exact dependencies.
+  Worker narrows discovery to exact two-pass dependency intersection and adds
+  root-None RED before changing early-return ordering.
+- Read-only offline child admission recommendations recorded in
+  task5-offline-child-admission-preflight.md. No new source task or execution
+  is admitted by that recommendation; full-gate total remains to be justified.
+- Gate-input adapterGREEN passed1case2.43s, wall4.51s; stage12288allocatedB/
+  2561logicalB/3files/15dirs. Generated journal manifest1018B and inventory1416B
+  reference the original6journal payloads and hashes; no remote-receipt or new-
+  execution claim. Real_durable and journal validators ran without bypass.
+  Worker now prepares compact/reuse/root/corruption RED cases; no next command
+  admitted until exact controls and bounds are supplied.
+- Gate-input red-compact-reuse-root all6cases failed as intended0.97s,
+  wall2.96s: real None/context early-return and absent cold compact shard;
+  four missing-new-predicate API cases separately classified. Preserved16384B/
+  6754logicalB/3files/16dirs, no payload copy. Scoped fixes prepared: root
+  agreement first, compact full-consumption lease, used reusable-gate predicate,
+  two-pass exact journal dependency discovery (no entire attempt retention).
+  Freshgreen-compact-reuse-root admitted same <=1MiB/48files/40dirs/576KiB
+  logical plus original training equivalence selector,7cases expected.
+- Gate-input combinedGREEN passed7cases2.51s, wall4.62s; preserved12288B/
+  2561logicalB/3files/19dirs. Adverse whole-file19case stage is conditionally
+  admitted<=1MiB/64files/64dirs/768KiB logical after fixture uses explicit
+  <=64KiB metadata/<=16KiB page policy and asserts6 journals before sealing;
+  existing seal_unit then enforces bound before publication. No production
+  policy or raw evidence changes. Tiny gzip control must check bytes before
+  write. Missing/corrupt artifacts, inventory tails, leases, compact count/hash/
+  close/export isolation and reuse combinations are covered without large copies.
+- Gate-input adverse matrix passed19cases2.64s, wall4.59s; stage36864allocatedB/
+  2662logicalB/9files/50dirs. Controls are18B checkpoint,3B journal,3B artifact,
+  two37B gzips and2B gate, plus generated1018B/1416B metadata. Source/test scoped
+  lint/format passed. Controller inspected existing test_pilot_evidence.py:
+  only tiny bounded/unit cases, no fits/diagnostics. Freshfocused-cover admitted
+  exactly both evidence test files at<=2MiB rounded/1MiB logical/96files/96dirs.
+  Actual collection count will be recorded. Root fresh stage waits for measured
+  retained bytes and source commit; no blanket full-suite admission.
+- Gate-input source b417c4b/report8934f22 frozen. Worker focused39passed2.95s,
+  wall5.05s; stage126976B, full task212992B. Controller fresh main-cover
+  same two files passed39cases2.89s (wall5.14/user3.32/sys0.92); stage122880B,
+  all task335872B retained. Fresh scoped Rufflint/format and diffcheck pass.
+  Exact evidence in task5-cold-gate-inputs-main-evidence.md. Independent
+  sol/high task5_cold_gate_inputs_review reviews430520b..8934f22; owner13703
+  fullcheck underway. No remaining source writer. No full-gate execution.
+- Read-only astra/high task5_offline_bound_design examines the exact offline
+  child's writers to choose a workload-specific bound rather than grow a
+  generic quota framework. No source edits, imports, providers or execution
+  admitted by this design subtask; the old measured smoke is not a bound.
+- Gate-input round0 review has1Important: checkpoint-index lease/schema/latest
+  comparison is conditional on full journal availability, so a missing journal
+  dependency can hide corrupt/failing available index. Existing journal schema
+  checks must also apply to partial available records. Controller confirmed in
+  _durable and partial loop; fixround1/5 returned to original worker. Narrow
+  extraction of existing archive/readers journal-record validator allowed, no
+  new wire schema. Owner13703check passed scratch256999424/logs1798144; retain
+  ownership for bounded RED/GREEN and scoped re-review. Task not yet complete.
+- Fixround1 RED admitted at fresh fix-red-1, three named regression selectors
+  (4cases: invalid/mismatched index, advertised index lease failure, rehashed
+  invalid journal schema). Bound512KiB rounded/128KiB logical/48files/64dirs;
+  controls3B/4096B/256B maximum before writes plus fixed six-journal metadata.
+  Source remains frozen until all RED outcomes; no fail-fast, fits or providers.
+- Fixround1 RED reproduced all4 DID NOT RAISE failures2.59s, wall4.73s;
+  preserved24576B/6203logical/6files/24dirs. Actual index controls3B/1675B,
+  journal89B; generated metadata2434B. Root cause independently confirmed.
+  Fresh fix-green-1 admitted exact3regressions plus existing trainer malformed
+  journal selector (7cases), <=512KiB/160KiB logical/64files/72dirs. Existing
+  validator is extracted unchanged; available index receives independent real
+  typed parsing and latest comparison. Full durable closure remains required.
+- Fixround1 GREEN7passed0.96s, wall2.90s; preserved36864B/4598logical/
+  9files/26dirs. Root review noticed newly permitted index.latest=None despite
+  actual producer and durable/resume validators always requiring a descriptor.
+  Worker confirmed actual producer. Same-round refinement RED admitted at
+  fresh fix-red-2, exact null-latest regression,512KiB/96KiB logical/32files/
+  48dirs, <=4096B untrusted negative control. Finalcover waits for this fix.
+- Offline closed-writer design recorded in task5-offline-bound-design.md.
+  Existing generic trajectory/header caps do not justify completion within
+ 177.6MiB remaining normal headroom. Exact pre-publication lengths can enforce
+  a safe bounded failed attempt. No RNG changes or kernel-wide quota claim.
+  Read-only followup settles the smallest parent completion/failure fence so
+  partial/stale offline.json cannot become reusable after overflow or interruption.
+- Same-round null-index RED failed as expected1.19s, wall3.12s; retained16384B/
+  4535logical/4files/15dirs,1356B indexcontrol. Null bypass removed. Worker
+  fix-focused-cover-1 passed47cases2.93s,155648B; source dc9d546/report3302d29
+  committed. Controller fresh fix-main-1 same47passed2.95s (wall5.19/user3.44/
+  sys0.94),151552B; fourfileRufflint/format+diffcheckPASS. All task720896B.
+  Original reviewer rechecks scoped fix; owner13703fullcheck running.
+- Ruling: use immutable process intent plus one terminal outcome rather than
+  a mutable running-status loop. Bounded pipes/process completion can be
+  independently reviewed before child-writer accounting. Current-source
+  collection/full gate requires new diagnostic intent binding; historical v1
+  forensic readers retain only their original meaning. Versioned next slice
+  added to approved R2 plan under standing adjustment approval. No source task,
+  process execution or next reservation is admitted until current review closes.
+- Gate-input fixround1/5 re-review:1Importantaddressed,0Critical/Importantnew,
+  no deferred scoped findings. Read-only reviewer confirms package equals
+ 8934f22..dc9d546. Full13703check passed scratch257384448/logs1839104,
+  spool219099136/cache67153920/metadata52965376, pinned/emergency0; retained
+ 6195077120 unchanged. Slice complete only; Task5/Task7/Phase4 remain open.
+  Ownerrelease requested before new reservation; no overlap.
+- Owner13703 printed finalcheck and released context; process ended (a further
+  poll found no live process). Final scratch257384448/logs1847296/spool219099136/
+  cache67153920/metadata52965376, pinned/emergency0; retained6195077120 unchanged.
+  Every gate-input prefix remains; all720896B included. Root milestone/next
+  process plan documents commit before the next sole writer is dispatched.

@@ -1847,6 +1847,157 @@ binding, collection, recovery or execution work. A genuinely produced
 current-source debug gate is required for positive end-to-end proof; historical
 source rejection is a negative test only.
 
+#### Bounded offline-process capture and completion fence
+
+Ruling: the source-bound full-gate test needs one actual offline diagnostic,
+whose parent currently captures unlimited stdout/stderr and reuses merely
+present offline.json. First deliver a separately reviewable parent-process
+fence, then the closed child-writer allowance described in the operational
+design. This is an in-scope Task5 execution/verification correction under the
+standing approval; no scientific threshold, algorithm, RNG semantics or
+foundation-model boundary changes. This slice does NOT establish a child
+filesystem quota or authorize a fresh neural diagnostic.
+
+**Files:** create private `train/pilot_offline_process.py` and
+`tests/pilot/test_pilot_offline_process.py`. Modify `train/pilot_offline.py`
+for its exact bootstrap, measurement and report parsing;
+`train/pilot_checks.py` for pre-execution reuse admission; and
+`train/pilot_evidence.py` for collection, process-evidence validation and the
+new required source file. Extend existing offline tests only where their
+assertions depend on the exact bootstrap/report variant. No Make/CLI changes,
+CI, new archive wire format, general subprocess framework or second ledger.
+
+**Interfaces and records:**
+
+```python
+@dataclass(frozen=True)
+class OfflineProcessLimits:
+    stdout_bytes: int = 256 * 1024
+    stderr_bytes: int = 256 * 1024
+    record_bytes: int = 16 * 1024
+    timeout_seconds: int = 180
+
+def measure_pilot_offline(*, output_dir, process_limits=None): ...
+
+def read_offline_process_outcome(
+    run_dir, *, report, evidence_context=None, unavailable=None
+): ...
+```
+
+The limits must be positive plain integers no larger than these defaults
+(reject bool, unknown fields and enlarged overrides). Tests lower them.
+The caller must reserve their full parent publication peaks in the existing
+ledger before launch; this module neither reserves nor replenishes storage.
+The reader's run_dir is the existing session run root, with fixed prefix
+final/offline, not a new arbitrary-root resolver.
+
+Use strict records with these exact responsibilities:
+
+- Immutable `intent.json`, version
+  `phase4-offline-process-intent-v1`: attempt nonce, exact bootstrap hash,
+  Python executable identity, source revision/digest, limits and timeout.
+  This durable record precedes Popen and is the launch/incomplete fence.
+- Create-only `process-result.json`, version
+  `phase4-offline-process-result-v1`: completed/failed status, intent digest,
+  attempt and available child identity, actual return code, closed failure
+  reason, stdout/stderr byte counts and hashes. Only completed status carries
+  the verified offline.json digest. Missing terminal result is incomplete.
+- New diagnostic variant with evidence kind
+  `offline_smoke_diagnostic_v2` and required process-intent SHA-256 binding.
+  Keep the original `PilotOfflineReport` and parser for genuine historical
+  evidence. Factor a parser used by measurement, collection and semantic
+  verification; do not silently reinterpret old report bytes as v2.
+
+No current-source full-gate or collection path accepts a legacy report as a
+new process-completion proof. Artifact-only historical readers still retain
+the original v1 interpretation. Either a v2 report marker or authenticated
+v1-process intent selects the new process protocol; missing intent cannot
+downgrade a marked report, and contradictory markers fail.
+
+- [ ] **RED: bounded process primitive.** Write tiny fresh-interpreter controls
+  for stdout and stderr independently and simultaneously, timeout, nonzero
+  exit, launch failure and cancellation. Check captured prefixes, actual exit
+  state and that the exact child is joined. Example assertions:
+
+  ```python
+  assert len(captured.stdout) <= limits.stdout_bytes
+  assert len(captured.stderr) <= limits.stderr_bytes
+  assert captured.reason == "output_limit"
+  assert captured.returncode is not None
+  assert process.poll() is not None
+  ```
+
+  A primitive's successful zero-exit control is process evidence only; no
+  fabricated training result or diagnostic success is produced. Any optional
+  tiny child that writes offline.json writes an explicitly invalid sentinel
+  to demonstrate that file presence cannot override a failed process.
+- [ ] **Obtain exact test admission before execution.** Use one fresh retained
+  operational scratch prefix per RED/GREEN/controller stage, the established
+  closed Python -B launcher, plugins/cacheprovider disabled and explicit
+  TMP/XDG/MPL/Hypothesis/archive roots. Inventory control bytes, names and
+  directories before writes. No source checkout, real model forward, training,
+  replay, diagnostic, provider, copied historical corpus or full make verify.
+- [ ] **Implement concurrent bounded capture.** Keep only bounded prefix
+  buffers and a fixed-size read chunk. Drain both pipes without deadlock.
+  On overflow/timeout/cancellation terminate and join the exact child, with a
+  bounded terminate-to-kill grace. Do not use an unbounded communicate or
+  capture_output fallback. Overflow is failure even if exit is zero.
+  Preserve the actual return code; do not invent one for failed launch.
+- [ ] **Fence launch and completion.** Validate root/limits and refuse a
+  pre-existing incomplete/failed attempt before launching. Publish intent
+  durably, launch only the existing exact offline bootstrap, then publish
+  bounded stdout/stderr and finally the create-only terminal result.
+  Completed requires exit zero, EOF on both streams, no capture failure,
+  valid v2 diagnostic with exact intent/source binding, and durable log files.
+  Publication failure leaves no reusable completion. Parent death naturally
+  leaves intent without terminal success; no replacement/running-state loop.
+  Preserve existing output and propagate a bounded actionable error.
+- [ ] **Preserve bootstrap authority.** Bind the serialized intent digest to
+  the permitted nested command, current program hash, executable and exact
+  output root. Update the closed Popen allowlist without accepting arbitrary
+  commands, altered environments, foreign roots or enlarged limits. The worker
+  validates the intent before writing its v2 report. This does not grant
+  child byte/name allowance; the later closed-writer slice adds that separately.
+- [ ] **RED/GREEN: reuse and artifact integrity.** Before any new evaluation,
+  continuation, numerics or offline execution, reject an existing new-version
+  attempt lacking a valid completed outcome. Test the real reuse decision with
+  execution tripwires. Collection uses the same fence. At current-source full
+  gate verification require the v2 variant; do not weaken source authentication.
+
+  ```python
+  with pytest.raises(ValueError, match="offline process"):
+      reuse_with_execution_tripwires(incomplete_attempt)
+  assert no_new_scientific_work
+  ```
+
+  The test helper names above are local fixtures, not new production APIs.
+- [ ] **Validate all available process evidence independently.** Add intent,
+  terminal result and logs to the exact exhausted cold inventory. Keep one
+  payload lease and validate all available records/digests despite another
+  required member missing. Missing new-process records add existing-style
+  unavailable labels; present failed/inconsistent records raise. Cover wrong
+  intent/attempt/report/log binding, invalid status/return-code combinations,
+  advertised read failure, late inventory failure, wrong root and lease cleanup.
+  Corruption cannot become mere unavailability or select legacy behavior.
+  V1 historical equivalence remains an artifact-only test, not current proof.
+- [ ] **Bound diagnostics before launch.** Intent/result are each <=16 KiB;
+  stdout/stderr each <=256 KiB by default. Charge their existing bytes plus
+  full next temporary, old/new/link coexistence and directory/name cushions.
+  This separately reserved parent allowance is not consumed by later child
+  scientific writes. Record actual bytes/allocated peaks and preserve all
+  failures. Generic 64/128 MiB format limits do not authorize larger logs.
+- [ ] **GREEN/review/commit.** Run only the admitted process/reader controls
+  and named legacy offline regressions, then scoped Ruff/diff checks. Commit
+  source/tests and a report with exact identities, commands, timing, retained
+  allocation and limits. Controller repeats cheap checks and obtains an
+  independent task review. Real v2 worker/gate proof remains outstanding until
+  closed child writes and the complete source-bound run allowance are reviewed.
+
+Self-review: this slice covers bounded parent logs and process-completion
+admission only. Child publication/caches, outer gate/collection cold routing,
+recovery, actual current-source full gate and Task7 storage handoff remain
+open. The new module must be in the explicit current source inventory.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the
