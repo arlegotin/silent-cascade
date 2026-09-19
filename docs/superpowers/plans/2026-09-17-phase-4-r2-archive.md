@@ -2751,6 +2751,131 @@ supervisor/session/CLI schemas, scientific code or fixture capacities change.
    custody/production hold/full-gate work explicitly. Do not claim Task5/Phase4
    completion or run a new genuine diagnostic just to prove argument plumbing.
 
+##### Task D2: Admit final-evaluation control publications before writing
+
+**Prerequisite:** D1 is reviewed at `39ecdf4`; its verification is recorded at
+`8e5a62d`. This independent storage-only correction does not issue offline
+custody, introduce a hold, or admit a complete supervisor/pilot run. The
+whole-workflow feasibility audit continues separately. Standing approval for
+this Phase4 plan covers this bounded refinement; no scientific gate changes.
+
+**Files:** modify `src/silent_cascade/archive/producer.py` and
+`src/silent_cascade/train/pilot_checks.py`; create
+`tests/pilot/test_pilot_final_control_admission.py`. Do not change other source,
+tests, session schemas, CLI/config, model, diagnostic or ledger code.
+
+**Interfaces:** the existing `ArchiveProducer._before(operation)` sends the
+closed `status/{before_work}` request, and `_ArchiveServer._dispatch` derives
+the maximum from `before_work_bounds`. Add only fixed operation
+`final_evaluation_control` and parameterless
+`ArchiveProducer.before_final_evaluation_control() -> None`. It grants no
+caller-selected quantity/path or new authority. No new `_OPERATIONS` member.
+
+**Bound:** each `_publish_pilot_bytes` payload is already limited to64MiB.
+Its temporary and final hardlink may coexist and per-name accounting charges
+both, so preserve `2 * PILOT_BYTES + ALLOCATION_OVERHEAD` =134479872 spool
+bytes per control publication. Existing run ownership guarantees the run
+ancestor exists; request publication can add final/eval ancestors, and the
+completion's evaluation directory already exists. The existing256KiB overhead
+covers these bounded directory/name/native costs. This is a per-operation
+maximum, not a new reservation or complete final-evaluation peak. Keep every
+existing operation bound unchanged; source-derived complete job fit is separate.
+
+- [ ] **Step1 — RED the closed admission behavior.** Exercise the real
+  `before_work_bounds`, `ArchiveProducer._before` and server `before_work`
+  dispatch with tiny explicit session/budget doubles only. Exact remaining
+  134479872 permits the operation;134479871 rejects; one retained spool byte
+  consumes the exact margin. Repeated requests must not create capacity. A
+  response other than `{"admitted": True}` must propagate rejection.
+
+  ```python
+  @pytest.mark.parametrize("remaining, permitted", [(134479872, True), (134479871, False)])
+  def test_final_control_exact_admission(remaining, permitted):
+      from types import SimpleNamespace
+      from silent_cascade.archive.ledger import StorageBlocked
+      from silent_cascade.archive.supervisor import _ArchiveServer
+
+      server = object.__new__(_ArchiveServer)
+      active = {"before": {"spool": 0}, "amounts": {"spool": remaining},
+                "admission": {"source_bound_fixture": True}}
+      server.budget = SimpleNamespace(
+          active_reservation="fixture",
+          _state=lambda: {"reservations": {"fixture": active}},
+      )
+      server._check_budget = lambda: {"spool": 0}
+      request = {"before_work": "final_evaluation_control"}
+      if permitted:
+          assert server._dispatch("status", request) == {"admitted": True}
+      else:
+          with pytest.raises(StorageBlocked):
+              server._dispatch("status", request)
+  ```
+
+  This tests the real dispatch's remaining-capacity decision, not real authority
+  issuance. No ledger is initialized by these doubles. Also prove the operation
+  resolves exactly `{"spool": 134479872}` and the producer sends the closed
+  operation above without numeric capacity in the request.
+
+- [ ] **Step2 — RED publication ordering in the real `_evaluate`.** Use an
+  explicitly named wiring fixture: stub source bundle/identity construction,
+  neural evaluation and publishers, retaining `_evaluate`'s real branching.
+  Record admission, request publication, evaluation, execution publication and
+  `after_execution` in order. Denying the first admission must reach neither
+  publisher nor evaluator. Denying the second must retain the request/evaluation
+  observations but never publish execution or call `after_execution`.
+  Success must yield `admit, request, evaluate, admit, execution, after_execution`.
+  `archive_producer=None` must preserve `request, evaluate, execution` with no
+  admission calls. Completed reuse keeps the existing request-publication/reuse
+  validation order and does not admit/write execution again. Do not alter reuse
+  behavior merely to avoid its existing request publication. No actual model,
+  checkpoint, source checkout, report, recovery copy or scientific output is
+  created: spies capture attempted publications in memory. Document precisely
+  that these tests prove control admission/ordering, not final scientific output.
+
+- [ ] **Step3 — Run admitted RED.** Before executing, submit exact selectors,
+  case count, zero test-child count and finite allocation/name/directory/log
+  bounds. Use a fresh retained
+  `operational/scratch/task5-final-control-admission/red1` with closed runtime
+  paths, no pytest plugins/cache/bytecode and mechanical outer150s/32768B per
+  stream limits. Controller owns execution/admission. Expect unknown-operation,
+  missing-method or missing-admission-order failures, not fixture/setup failures.
+
+- [ ] **Step4 — GREEN minimal implementation.** Add the fixed mapping and
+  producer method, then place the same optional producer check immediately
+  before each of the two existing control `_publish` calls in `_evaluate`.
+
+  ```python
+  # before_work_bounds
+  if operation == "final_evaluation_control":
+      return {"spool": 2 * PILOT_BYTES + ALLOCATION_OVERHEAD}
+
+  # ArchiveProducer
+  def before_final_evaluation_control(self) -> None:
+      self._before("final_evaluation_control")
+
+  # _evaluate: once before .<name>.request.json and once before execution.json
+  if archive_producer is not None:
+      archive_producer.before_final_evaluation_control()
+  ```
+
+  Keep `_evaluate` identities, publication bytes, DONE/reuse checks, CPU checks,
+  evaluation arguments and `after_execution` ordering otherwise identical.
+
+- [ ] **Step5 — Verify, freeze and review.** Fresh admitted GREEN and controller
+  stages retain every attempt within a proposed2MiB total task scratch ceiling;
+  that ceiling is not per-stage execution approval. Run exact focused tests,
+  scoped Ruff/format/diff checks and independent frozen source equality. Commit
+  only the two source files and new focused test file, then independent task
+  review before closing D2. No full-file existing fixtures, genuine diagnostic,
+  provider, source-copy workload, full `make verify` or production run.
+
+**Self-review:** D1's `pilot_checks.py` work is complete before D2 editing.
+The two added calls consume one fixed producer interface, whose mapping feeds
+the existing server dispatch. No mismatch with earlier evaluation/episode
+maxima: control admission happens outside their spans. Every science/authority/
+retention/local-only constraint above remains binding. Remaining continuation,
+numerics, report/gate, workflow and recovery bounds are not certified by D2.
+
 ##### Primitive admission and execution instructions
 
 Use the existing closed Python `-B` launcher, disabled external pytest plugins/cacheprovider and explicit TMP/XDG/MPL/Hypothesis/archive roots under a fresh operational scratch prefix per RED/GREEN/controller stage. Select only the named new writer tests and named parent/legacy primitive tests; never select the entire offline test file if it contains the actual diagnostic. Example inner command after its containing launcher/environment has been admitted:
