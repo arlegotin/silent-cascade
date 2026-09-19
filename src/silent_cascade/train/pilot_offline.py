@@ -428,6 +428,9 @@ _worker(sys.argv[1], attempts, blocked)
 
 
 def measure_pilot_offline(*, output_dir):
+    output_dir = Path(output_dir)
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError("offline process attempt already exists; preserve its evidence")
     from silent_cascade.train.pilot_data import _publish_pilot_bytes, _read_pilot_bytes
 
     root = Path(__file__).resolve().parents[3]

@@ -246,6 +246,7 @@ REQUIRED_PACKAGE_FILES = (
     "src/silent_cascade/train/pilot_evidence_types.py",
     "src/silent_cascade/train/pilot_measurement.py",
     "src/silent_cascade/train/pilot_offline.py",
+    "src/silent_cascade/train/pilot_offline_process.py",
     "src/silent_cascade/train/pilot_overfit.py",
     "src/silent_cascade/train/pilot_provenance.py",
     "src/silent_cascade/train/pilot_state.py",
