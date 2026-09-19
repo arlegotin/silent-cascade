@@ -2481,3 +2481,51 @@ open. The Phase 4 production pilot has not started.
   scoped tests/code rework, never launch/cap/scientific-protocol expansion.
   Futurehold numeric examples are state-dependent, not actualnew admission;
   live missing-directory peaks must still be authenticated before execution.
+- D2 plan/brief committed0e92793 before source. Soleowner85648/PTY8892,
+  create_time1789806003.870707, token262fcaa5b6dd9b1488dfd587d3789b89:
+  scratch2097152/logs1048576/metadata33562624; before scratch264155136/
+  logs2793472/spool231063552/cache67153920/metadata52965376,others0;
+  frozen6195077120 authenticated. No perstage execution admitted yet.
+  One sourcewriter will close only two control-publication boundaries; parallel
+  read-only numerical/final-span analysis may write boundednotes, not code/imports.
+- D2 RED admitted aftercontrollerreadfull199linetestdraft and correctedtwo
+  testharness details beforeexecution: use originalPath.exists fornonmutation,
+  localdef insteadE731lambda. Exact4selectors/11cases,zero testchildren;
+  freshred1<=524288B/8file-linknames/32dirs underowner8892. Boundeddriver150s,
+  32768B perstream/65536B allstreams, closedroots/plugins/bytecodeoff. Test
+  doubles issue no actualauthority/ledger orscientificoutputs. GREEN/mainlater.
+- D2 RED10expectedfailures/1no-archivepass,1.75spytest/2.172swall;
+  stdout6255/stderr0,8192allocated/2files1link12dirs. Rootreadallfailures;
+  writerimplementedonlyfixedmapping/method/twoprechecks. GREEN nowadmitted:
+  same11cases/nochildren, freshgreen1<=524288B/20names/32dirs, sameouterlimits;
+  scoped3fileformatter thenpytest/Ruffcheck/formatcheck/diffcheck. No scientific
+  execution or broad tests. Separate final-span audit is analysis, notlaunchfit.
+- D2 GREEN1 behavior11passed1.12s/1.487swall; subsequentRuffI001 rejectedone
+  extra blank afterimports. Rawfailure retained:12288allocated/587logical,
+  6files1link12dirs,stderr0. Source behavior unchanged; writer removesonlyblank.
+  FreshGREEN2 admitted same11cases/statics/outerlimits,<=524288B/20names/32dirs.
+  Actualprior20480B +GREEN2/main bounds1048576B +root4096B <2MiBtaskhold.
+  Driver onlyaddsnewgreen2label; no oldrootreuse/cleanup/capchange.
+- D2 GREEN2 all11passed1.04s/1.409swall, scopedformatter/Ruffcheck/formatcheck/
+  diffcheck0;16384allocated/167logical,10files1link12dirs,stderr0. Writer
+  selfreview/report/scopedcommit underway; no furtherimplementation needed.
+- Read-only numerical audit found currentserializer ceilings do not establish
+  2GiBspool fit, not evidence ofactualoutput size. Root requested correction to
+  distinguish per-name ledger charge fromhardlink physicalinode allocation.
+  Remainingfinalspan audit records droppedexplicitcoldcontexts and nonconstant
+  continuation/shard cardinalities. None permitsweakercoverage orlargercaps.
+- D2 source frozen6ba9e687497ef31030977c30eaba46fa1c44570d; controller verified
+  three source hashes and writer report446618a9. Owner8892 fullcheck passed:
+  scratch264192000/logs2826240, othercategoriesunchanged/frozen6195077120.
+  MAIN1 admitted same11cases/zerochildren, freshmain1<=524288B/20names/32dirs,
+  150s/32768B perstream/65536B aggregate; pytest/Ruffcheck/formatcheck/diffcheck
+  plus scopedsourceequality tofreeze. No formatter/model/provider/fullgate.
+- D2 MAIN1 passed11/1.35s pytest/1.755s wall; all5commands0, empty stderr;
+  12288allocated/144logical/10files1link12dirs. Total49152B retained across
+  four attempts. Independent scoped spec/quality review requested on frozen
+  0e92793..6ba9e68 package; no production launch or broadened test authority.
+- Task D2: complete (0e92793..6ba9e68), independent specPASS/qualityApproved,
+  nofindings. Fullreviewread; broader limitations retained, no gatewaiver.
+  Owner8892 released/exited0 after fullfrozencheck6195077120; finalscratch
+  264204288/logs2854912/spool231063552/cache67153920/metadata52965376,others0.
+  Corrected13042B numerical note accepted with per-name atomic/failure peaks.
