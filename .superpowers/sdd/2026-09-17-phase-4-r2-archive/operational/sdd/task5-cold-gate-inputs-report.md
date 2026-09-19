@@ -8,8 +8,10 @@ Implemented only the approved bounded gate-input slice:
   context, rejects a mismatched or missing logical run root before discovery,
   fully exhausts authenticated discovery, leases/decodes genuine CPU training
   archives and portable weights one at a time, validates the complete available
-  journal chain and each available dependency independently, restores RNG state,
-  and calls the existing context-aware `_durable` only for a complete closure.
+  journal chain and each available dependency independently, validates every
+  available checkpoint index and journal record even when another closure member
+  is missing, restores RNG state, and calls the existing context-aware `_durable`
+  only for a complete closure.
 - Discovery retains only descriptors, `checkpoint-index.json`, journal names,
   and—on a second exhausted inventory pass—the exact dependency names learned
   from the authenticated journal records. It does not retain every `attempt-*`
@@ -26,6 +28,21 @@ Implemented only the approved bounded gate-input slice:
 Source/test commit:
 `b417c4b14aa286cd0cec63990d354d84ea7e9b2e`
 (`feat(pilot): authenticate cold gate inputs`).
+
+Independent-review integrity-fix commit:
+`dc9d54685c4f8814ff6f23a47486c4a088b6c5a5`
+(`fix(pilot): validate partial training closure inputs`).
+
+The review found that an available `checkpoint-index.json` was counted toward
+closure but parsed only inside `_durable`. A separately missing journal member
+therefore skipped parsing and could downgrade corrupt, mismatching, or
+unleasable advertised index evidence to ordinary unavailability. The partial
+journal path likewise applied only hash, artifact-map and predecessor checks.
+The fix independently leases and parses each available index through the real
+`PilotCheckpointDescriptor`, requires its real latest descriptor to equal
+`progress.latest`, and factors the existing full journal-record validator for
+use by both `iter_journal_records` and the partial reader. `_durable` remains the
+complete-closure check; no wire schema was added or weakened.
 
 ## Evidence identity and custody
 
@@ -89,30 +106,44 @@ preserved. Exact selectors/results:
 | `green-compact-reuse-root` | prior three selectors plus `tests/pilot/test_pilot_cold_gate_inputs.py::test_genuine_training_inputs_match_cold_reads` | GREEN, including changed exact two-pass training discovery | 7 passed in 2.51 / 4.62 | 3 / 19 / 2,561 / 12,288 |
 | `adverse-matrix` | `tests/pilot/test_pilot_cold_gate_inputs.py` | GREEN: complete adverse and cleanup matrix | 19 passed in 2.64 / 4.59 | 9 / 50 / 2,662 / 36,864 |
 | `focused-cover` | `tests/pilot/test_pilot_cold_gate_inputs.py tests/pilot/test_pilot_evidence.py` | Final focused new plus existing eager regression coverage | 39 passed in 2.95 / 5.05 | 31 / 72 / 3,521 / 126,976 |
+| `fix-red-1` | `tests/pilot/test_pilot_cold_gate_inputs.py::test_missing_journal_dependency_cannot_hide_bad_checkpoint_index tests/pilot/test_pilot_cold_gate_inputs.py::test_missing_journal_dependency_cannot_hide_checkpoint_index_lease_failure tests/pilot/test_pilot_cold_gate_inputs.py::test_incomplete_training_closure_rejects_rehashed_invalid_journal_schema` | RED: all four cases did not raise, proving independently available index and journal integrity was skipped when closure was incomplete | 4 failed in 2.59 / 4.73 | 6 / 24 / 6,203 / 24,576 |
+| `fix-green-1` | `tests/pilot/test_pilot_cold_gate_inputs.py::test_missing_journal_dependency_cannot_hide_bad_checkpoint_index tests/pilot/test_pilot_cold_gate_inputs.py::test_missing_journal_dependency_cannot_hide_checkpoint_index_lease_failure tests/pilot/test_pilot_cold_gate_inputs.py::test_incomplete_training_closure_rejects_rehashed_invalid_journal_schema tests/pilot/test_pilot_trainer.py::test_journal_rejects_malformed_record_shape` | GREEN: available indexes and partial journal records use the real descriptor and existing shared schema validator; includes the three-case extraction regression | 7 passed in 0.96 / 2.90 | 9 / 26 / 4,598 / 36,864 |
+| `fix-red-2` | `tests/pilot/test_pilot_cold_gate_inputs.py::test_available_checkpoint_index_requires_real_latest_descriptor` | RED: a synthetic untrusted `progress.latest=None` / `index.latest=None` negative control was accepted when closure was incomplete | 1 failed in 1.19 / 3.12 | 4 / 15 / 4,535 / 16,384 |
+| `fix-focused-cover-1` | `tests/pilot/test_pilot_cold_gate_inputs.py tests/pilot/test_pilot_evidence.py tests/pilot/test_pilot_trainer.py::test_journal_rejects_malformed_record_shape` | Final GREEN after requiring every available index latest value to parse as a real descriptor | 47 passed in 2.93 / 5.13 | 38 / 89 / 6,914 / 155,648 |
 
-The focused-cover CPU times were user 3.32 seconds and system 0.90 seconds.
-Across every retained Task 5 gate-input stage: 51 files, 197 directories,
-20,041 logical bytes and 212,992 allocated bytes, below the accepted 4 MiB
-prospective rounded envelope. The largest generated metadata members were the
+The original focused-cover CPU times were user 3.32 seconds and system 0.90
+seconds. The final fix cover CPU times were user 3.41 seconds and system 0.92
+seconds. The four worker-owned review-fix stages added 233,472 allocated bytes.
+Across the retained Task 5 prefix after the fix: 138 files, 417 directories,
+45,684 logical bytes and 569,344 allocated bytes, below the accepted 4 MiB
+prospective rounded envelope. That inclusive total contains the controller's
+separate `main-cover` prefix (122,880 allocated bytes); this report makes no
+test-result claim for that controller-created stage. The original worker stages
+used 212,992 allocated bytes. The largest generated metadata members were the
 1,416-byte inventory and 1,018-byte manifest. Corrupt controls were 18, 3, 3,
 37 and 37 bytes; the invalid reuse-branch gate was 2 bytes. The fixture policy
-enforced a 64 KiB metadata and 16 KiB page limit before sealing.
+enforced a 64 KiB metadata and 16 KiB page limit before sealing. New tiny
+controls were prechecked before writes: corrupt index 3 bytes, mismatching index
+1,675 bytes, invalid rehashed journal 89 bytes, and null-latest index 1,356
+bytes.
 
 Fresh post-test static and diff checks:
 
 ```sh
 .venv/bin/ruff check --no-cache \
+  src/silent_cascade/archive/readers.py \
   src/silent_cascade/train/pilot_evidence.py \
   src/silent_cascade/train/pilot_checks.py \
   tests/pilot/test_pilot_cold_gate_inputs.py
 .venv/bin/ruff format --check --no-cache \
+  src/silent_cascade/archive/readers.py \
   src/silent_cascade/train/pilot_evidence.py \
   src/silent_cascade/train/pilot_checks.py \
   tests/pilot/test_pilot_cold_gate_inputs.py
 git diff --check
 ```
 
-Results: `All checks passed!`, all three files already formatted, and no diff
+Results: `All checks passed!`, all four files already formatted, and no diff
 whitespace errors.
 
 ## Coverage and self-review
@@ -122,6 +153,12 @@ labels, actual CPU codecs, RNG restoration, one-payload maximum, fully exhausted
 inventory, wrong and absent context roots before reads, late inventory failure,
 advertised lease failure, legacy missing labels, and a missing dependency paired
 independently with a corrupt available checkpoint, journal, and journal artifact.
+Review-fix cases additionally prove that another missing journal dependency
+cannot hide an invalid or mismatching checkpoint index, an advertised index
+lease failure, or a correctly rehashed journal record with invalid existing
+schema. The null-latest case is explicitly a synthetic untrusted negative
+control, not a relabeling of historical evidence; the real producer always
+writes a `PilotCheckpointDescriptor`.
 
 Compact tests exercise genuine 242,409-byte shard equivalence, final hash and
 row-count failures, exhaustion/error/explicit-close cleanup, and export
