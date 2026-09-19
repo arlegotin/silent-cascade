@@ -515,18 +515,22 @@ def _compact_rows(episodes):
         }
 
 
-def compact_attachment_records(root, attachments):
+def compact_attachment_records(root, attachments, *, evidence_context=None):
     """Fully validate each bounded shard while yielding every row in order."""
+    from silent_cascade.archive.readers import evidence_path, logical_root
+
+    if evidence_context is not None and logical_root(root, evidence_context) != ".":
+        raise ValueError("compact attachment context run root differs")
     for attachment in attachments:
-        path = child(root, attachment.path)
-        if sha256_bytes(read_bytes(path, limit=MAX_BYTES)) != attachment.sha256:
-            raise ValueError("compact attachment hash mismatch")
-        count = 0
-        for record in read_compact_rows(path):
-            count += 1
-            yield record
-        if count != attachment.rows:
-            raise ValueError("episode inventory mismatch")
+        with evidence_path(root, attachment.path, evidence_context=evidence_context) as path:
+            if sha256_bytes(read_bytes(path, limit=MAX_BYTES)) != attachment.sha256:
+                raise ValueError("compact attachment hash mismatch")
+            count = 0
+            for record in read_compact_rows(path):
+                count += 1
+                yield record
+            if count != attachment.rows:
+                raise ValueError("episode inventory mismatch")
 
 
 def _observe_records(records, *, digests, projections, retained, continuation_ids):
@@ -1172,19 +1176,53 @@ def verify_offline_evidence(
     return True
 
 
-def _verify_available_training(run_dir, *, training, config, source, unavailable):
+def _verify_available_training(
+    run_dir, *, training, config, source, unavailable, evidence_context=None
+):
     """Archive/weights authentication must not depend on old trajectory availability."""
+    import re
+
+    from silent_cascade.archive.readers import evidence_path, logical_root
     from silent_cascade.eventflow.checkpoint_rng import restore_rng_snapshot
     from silent_cascade.eventflow.neural import NeuralModelIdentity
     from silent_cascade.eventflow.neural_weights import load_neural_weights
     from silent_cascade.rng import snapshot_global_rng
     from silent_cascade.train.pilot_checkpoints import load_pilot_checkpoint
     from silent_cascade.train.pilot_state import PilotProgress
+    from silent_cascade.train.pilot_trainer import _artifact_sha256
     from silent_cascade.train.pilot_workflow import _durable
 
+    if evidence_context is not None and (
+        run_dir is None or logical_root(run_dir, evidence_context) != "."
+    ):
+        raise ValueError("training context run root differs")
     if run_dir is None:
         unavailable.extend(("training.archives", "training.weights", "training.durable_journal"))
         return
+
+    descriptor_paths = {
+        descriptor["path"]
+        for descriptor in (
+            training["selected_checkpoint"],
+            training["progress"]["latest"],
+            training["selected_weights"],
+            training["latest_weights"],
+        )
+        if descriptor is not None
+    }
+    discovered = set()
+    if evidence_context is not None:
+        for entry in evidence_context.entries():
+            if (
+                entry.path == "checkpoint-index.json"
+                or entry.path in descriptor_paths
+                or re.fullmatch(r"journal-[0-9a-f]{64}\.json", entry.path)
+            ):
+                discovered.add(entry.path)
+
+    def available(name):
+        return child(run_dir, name).exists() or name in discovered
+
     progress = PilotProgress.model_validate_json(canonical_json_bytes(training["progress"]))
     for label, descriptor in (
         ("selected", training["selected_checkpoint"]),
@@ -1192,19 +1230,21 @@ def _verify_available_training(run_dir, *, training, config, source, unavailable
     ):
         if descriptor is None:
             continue
-        path = child(run_dir, descriptor["path"])
-        if not path.exists():
+        if not available(descriptor["path"]):
             unavailable.append("training.archive:" + label)
             continue
         before = snapshot_global_rng()
         try:
-            session = load_pilot_checkpoint(
-                path,
-                expected_sha256=descriptor["sha256"],
-                config=config,
-                source=source,
-                device="cpu",
-            )
+            with evidence_path(
+                run_dir, descriptor["path"], evidence_context=evidence_context
+            ) as path:
+                session = load_pilot_checkpoint(
+                    path,
+                    expected_sha256=descriptor["sha256"],
+                    config=config,
+                    source=source,
+                    device="cpu",
+                )
         finally:
             restore_rng_snapshot(before, restore_mps=False)
         identity = NeuralModelIdentity.from_model(
@@ -1236,40 +1276,62 @@ def _verify_available_training(run_dir, *, training, config, source, unavailable
         descriptor = training[label]
         if descriptor is None:
             continue
-        path = child(run_dir, descriptor["path"])
-        if not path.exists():
+        if not available(descriptor["path"]):
             unavailable.append("training.weights:" + label)
             continue
-        weights = load_neural_weights(path, expected_sha256=descriptor["sha256"], device="cpu")
+        with evidence_path(run_dir, descriptor["path"], evidence_context=evidence_context) as path:
+            weights = load_neural_weights(path, expected_sha256=descriptor["sha256"], device="cpu")
         if (
             weights.identity.model_state_sha256 != descriptor["model_state_sha256"]
             or weights.identity.source_revision != source.source_commit
         ):
             raise ValueError("available training portable identity differs")
-    complete = (run_dir / "checkpoint-index.json").exists()
-    cursor, seen = progress.journal_sha256, set()
+    complete = available("checkpoint-index.json")
+    cursor, seen, journal_dependencies = progress.journal_sha256, set(), []
     while cursor is not None:
         if cursor in seen:
             raise ValueError("available training journal is cyclic")
         seen.add(cursor)
-        path = child(run_dir, "journal-" + cursor + ".json")
-        if not path.exists():
+        journal_name = "journal-" + cursor + ".json"
+        if not available(journal_name):
             complete = False
             break
-        raw = read_bytes(path)
-        if sha256_bytes(raw) != cursor:
-            raise ValueError("available training journal hash differs")
-        record = strict_json(path)
-        complete = complete and all(
-            child(run_dir, name).exists() for name in record.get("artifacts", {})
-        )
+        with evidence_path(
+            run_dir, journal_name, evidence_context=evidence_context
+        ) as journal_path:
+            raw = read_bytes(journal_path)
+            if sha256_bytes(raw) != cursor:
+                raise ValueError("available training journal hash differs")
+            record = strict_json(journal_path)
+        artifacts = record.get("artifacts", {})
+        if not isinstance(artifacts, dict):
+            raise ValueError("available training journal artifacts differ")
+        journal_dependencies.extend(artifacts.items())
         cursor = record["prior"]
+    if evidence_context is not None and journal_dependencies:
+        dependency_names = {name for name, _ in journal_dependencies}
+        for entry in evidence_context.entries():
+            if entry.path in dependency_names:
+                discovered.add(entry.path)
+    for name, digest in journal_dependencies:
+        if not available(name):
+            complete = False
+            continue
+        if _artifact_sha256(run_dir, name, evidence_context=evidence_context) != digest:
+            raise ValueError("available training journal artifact differs")
     latest = progress.latest
-    complete = complete and latest is not None and child(run_dir, latest.path).exists()
+    complete = complete and latest is not None and available(latest.path)
     if complete:
         before = snapshot_global_rng()
         try:
-            _durable(run_dir, config, source, "cpu", result=training)
+            _durable(
+                run_dir,
+                config,
+                source,
+                "cpu",
+                result=training,
+                evidence_context=evidence_context,
+            )
         finally:
             restore_rng_snapshot(before, restore_mps=False)
     else:

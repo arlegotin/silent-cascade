@@ -338,6 +338,11 @@ def _continuations(*, run_dir, config, source, result, manifests, weights):
     _publish(path, {"schema_version": "phase4-continuation-evidence-v1", "records": records})
 
 
+def _require_reusable_gate(verified):
+    if verified["missing_raw_attachments"] or verified["unavailable_semantic_checks"]:
+        raise ValueError("missing raw or semantic evidence prevents compatible execution reuse")
+
+
 def _run_pilot_checks_owned(
     *, run_dir, config, output_path, archive_producer=None, evidence_context=None
 ):
@@ -345,8 +350,7 @@ def _run_pilot_checks_owned(
     root, source, result, manifests, weights, archive = authenticate_run(run_dir, config)
     if output_path.exists():
         verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
-        if verified["missing_raw_attachments"]:
-            raise ValueError("missing raw evidence prevents compatible execution reuse")
+        _require_reusable_gate(verified)
         return Phase4GateArtifact.model_validate_json(read_bytes(output_path, limit=MAX_BYTES))
     if weights is not None:
         for name in SUITES:
