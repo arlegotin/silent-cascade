@@ -208,27 +208,32 @@ their defaults are `runs/phase4-pilot-v1/event_flow/11/pilot`,
 `manifests/validation/phase4` and `cpu`. The smoke target appends `-smoke` to the
 run and manifest directories to keep the two profiles distinct.
 
-Start from committed, compatible source. The first workflow invocation produces
-the missing `one_hop.json`, `two_hop.json`, `primary.json`, `robustness.json` and
-`audits/<stage>/report.json` inputs, then stops with a **commit-data precondition**.
-The raw audit auxiliary manifest/index remain under `audit-raw/`; introduce only
-the four canonical stage manifests and the four exact audit reports. The
-authorized revision sequence is committed producer source, exact eight-file data
-introduction, then a meaningful compatible verification-evidence/documentation
-revision before optimization. The local-verification recorder can supply that
-meaningful evidence revision at the data revision; do not substitute an empty
-commit. Run the same workflow command again only after that sequence. No command
-auto-commits Git state. Debug data preserve this introduction chain while their
-small-corpus audits explicitly remain non-acceptance. Production statistical
-audit acceptance is required before fitting; no training command reruns probes
-to replace failed or missing evidence.
+Start from committed, compatible source. The preparation workflow generated
+`one_hop.json`, `two_hop.json`, `primary.json`, `robustness.json` and the four
+`audits/<stage>/report.json` inputs, then stopped at its deliberate
+**commit-data precondition**. Producer source `a140fac14da9493b06ce0de2154dcca44c17fbd5`
+and the exact eight-file data introduction
+`f8982b5fc4168e515bbf6651bc7dec88b1476193` are now committed. The raw audit
+manifest/report/index triplets remain as intentionally untracked local evidence
+under `audit-raw/<stage>/`; the data commit contains only the four canonical
+stage manifests and four exact public audit reports.
+
+The corrected revision and verification order is producer `P`, compatible
+ordinary documentation, data introduction `D`, this meaningful data-readiness
+documentation revision `T`, one seed-11 CPU pilot at unchanged `T`, one fresh
+full local-verification recorder at final `T`, a new canonical gate, then final
+evidence and documentation. `T` is the eventual commit containing this update;
+no not-yet-known self-referential commit identity is asserted here. No extra
+full recorder at `D` was run or is required. No command auto-commits Git state.
+Debug data preserve this introduction chain while their small-corpus audits
+explicitly remain non-acceptance. Production statistical audit acceptance is
+required before fitting; no training command reruns probes to replace failed or
+missing evidence.
 
 ```sh
-make pilot-smoke
-# After reviewing and explicitly introducing the eight printed input paths:
-UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py
-# Review and commit the compatible verification evidence and documentation.
-make pilot-smoke
+# Preparation has completed and the eight public inputs are committed at D.
+# After committing the meaningful readiness revision T and admitting its real run root:
+OMP_NUM_THREADS=1 make pilot PILOT_DEVICE=cpu PILOT_RUN_DIR="$PILOT_RUN_DIR"
 ```
 
 Production command forms, once their stated inputs exist:
@@ -575,12 +580,76 @@ regression ran, rather than skipping. Its gate remained `debug_non_acceptance`;
 the additional fresh-destination recovery fixture was intentionally CPU-only.
 These are software/evidence-integration checks, not selected-weight production
 acceptance, convergence or throughput evidence. No production fit, new full
-profile, production audit or Task 12 execution was started. **Phase 4 remains
-incomplete.** The storage-blocked conclusion belongs to this historical Task 11
-closure under the then-current Task 10 headroom result; its historical native
-parameter-parity failure is retained. Current continuation follows the revised
-local-disk authority above and still requires all four production audits, exact
-data introduction, a compatible verification-evidence/documentation revision,
-and a measured destination check before optimization. Those audits are still
-being prepared: no production optimizer has started and no selected checkpoint
-exists.
+profile, production audit or Task 12 execution had started at Task 11 closure.
+The storage-blocked conclusion belongs to that historical closure under the
+then-current Task 10 headroom result; its historical native parameter-parity
+failure is retained.
+
+## Task 12 production data readiness (2026-09-19)
+
+The four full production validation profiles have now passed strict sequential
+acceptance. The producing source is
+`a140fac14da9493b06ce0de2154dcca44c17fbd5`; the distinct eight-file data
+introduction is `f8982b5fc4168e515bbf6651bc7dec88b1476193`. Every artifact binds
+canonical configuration
+`62b892f07b07b8b943121a7084d2492e33bb4e295e5dc311f50f9bed23b57729`
+and the unchanged 139-file source closure
+`ded91049848a2e64c10da7239013fab91734b2f2f49df540931644e9ba5dcbd9`.
+
+| Stage | Public manifest and SHA-256 | Public report and SHA-256 |
+| --- | --- | --- |
+| One hop | `manifests/validation/phase4/one_hop.json` — `f8de7c47659f7c4cee00a7bbda40ea8a1201cac6e98d27b9787128e51328fbe7` | `manifests/validation/phase4/audits/one_hop/report.json` — `16c7eafe785346be1c2e99bc22f0648e97d52f0cc05decc19fe2111d355109d4` |
+| Two hop | `manifests/validation/phase4/two_hop.json` — `28f41950c27ae2090894659effa00ce7c131c51c4191a7f8dc17313a39c44cfa` | `manifests/validation/phase4/audits/two_hop/report.json` — `7b6a41e21ec7fe0075a93bd0bfc2406389726582d24ae1f65bdbc7af5dbe6520` |
+| Primary | `manifests/validation/phase4/primary.json` — `6862125bc21fa933e62c731ef17981e30d8fe5f7f255074ebc898f474219ada6` | `manifests/validation/phase4/audits/primary/report.json` — `863e5f41729138160b5dbca29ad315bb40cd92cbad99f6b131fa67b48c6026d4` |
+| Robustness | `manifests/validation/phase4/robustness.json` — `c875afa585b64d6da840696805ed4b634efb2f98de6fb3b8acdad87f276fb817` | `manifests/validation/phase4/audits/robustness/report.json` — `da2b172de01c1cbf775bf77dc39f313c3fe21fa609892f0294ec055668ef2c2c` |
+
+The acceptance command exited 0 after independently regenerating and matching
+all 40,000 examples and oracle traces. Each stage contains 10,000 examples:
+5,000 positive, 2,500 safe-negative and 2,500 disconnected-negative. Canonical
+reports, raw copies, indexes, source inventories, configuration, corpus and
+projection bindings passed; every clean and shuffled probe and the injected
+control passed. Foundation-model calls were exactly zero. The retained local
+`audit-raw/<stage>/` triplets are intentionally untracked; the data commit has
+exactly the eight public files listed above. This is pilot validation data, not
+a Phase 6 test or architecture freeze.
+
+The original preparation owner is inactive and its PID is absent. Preparation
+produced 0 stdout bytes and 645 stderr bytes, ending at the expected commit-data
+precondition before any training. Its original terminal handle was unavailable,
+so no original process exit code was captured; this record does not infer one.
+No production optimizer has started and no selected checkpoint exists.
+
+CPU and seed 11 remain selected under the unchanged model, optimizer and gates.
+Supply a real whole-run System Data directory externally with `PILOT_RUN_DIR`;
+do not commit a personal absolute path or a symlink shim. All available local
+disk is authorized, but the 29,132,422,170-byte (about 27.13 GiB) first-boundary
+allowance remains conditional rather than measured consumption or a formal
+whole-run bound. The implementation has no total-run storage limiter. Fresh
+admission at the actual destination and monitoring through the first boundary
+and final workloads remain required.
+
+The historical `f9fa6ed955797971f75c53a1a0370fb9b3e52cae` local-verification
+receipt, logs and 292-input inventory were authenticated. The current inventory
+differs only by the 22-line operational plan addition. This is historical
+preflight evidence, not current final acceptance;
+`discover_local_verification` normally returns `None` for the present revision.
+The unchanged workflow and trainer each run the full post-introduction
+`verify_pilot_data` check before creating or optimizing a model. Do not add a
+third standalone full regeneration merely to authenticate metadata.
+
+The initial workflow artifact at `RUN/phase4-gate.json` may therefore honestly
+report `local_verification_unmet`. Preserve that artifact. After the pilot at
+unchanged `T`, run exactly one fresh full local recorder at final `T`, then build
+the still-absent canonical gate with the shared checker and its required config:
+
+```sh
+UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py
+uv run python scripts/check_phase4_pilot.py --config configs/train/pilot.yaml --run-dir "$PILOT_RUN_DIR" --output manifests/validation/phase4/autonomous-gate-v1.json
+uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir "$PILOT_RUN_DIR"
+```
+
+Missing or failed selected-weight evidence, including a natural no-selection
+outcome, remains an honest failed gate. Do not substitute latest weights, restart
+seed 11, or weaken a gate. The required final `make verify` remains mandatory.
+Only the new canonical gate and final evidence documentation can establish the
+actual outcome. **Phase 4 remains incomplete.**
