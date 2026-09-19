@@ -681,6 +681,24 @@ learning-gate pass.
 Independent review found no issues. Fresh controller verification passed in
 16.32 seconds using the retained fixture's own source, without another fit;
 scoped lint/format checks and full shared-ledger accounting passed. These are
-cold-path reader tests, not new provider/IPC qualification. Remaining gate,
-numeric/offline/continuation consumers, recovery, full local verification and
-storage qualification still precede the Phase 4 production fit.
+cold-path reader tests, not new provider/IPC qualification. Remaining gate
+consumers, recovery, full local verification and storage qualification still
+precede the Phase 4 production fit; the next reader milestone is below.
+
+### Cold continuation and offline semantic checks
+
+`f08b161` makes the continuation and offline validators consume archived inputs
+through scoped reads. It retains their source, checkpoint, trace, timing and
+compute checks. A present checkpoint's shared weights remain mandatory; missing
+or corrupt dependencies raise instead of skipping validation. The existing
+offline scanner checks the complete evaluation one episode at a time.
+
+The scoped tests use genuine retained debug evidence without training or replay
+execution. All 11 passed, including a fresh controller run in 5.10 seconds;
+independent review approved with no findings. All test prefixes, including
+failures, were retained (10,899,456 allocated bytes total), and the shared storage
+check passed. Original evidence and its negative/debug status remain unchanged.
+
+This completes only these semantic readers. Numerical readers, aggregate caller
+integration, cold recovery, full local verification and real storage integration
+remain open. The production Phase 4 pilot has not started.

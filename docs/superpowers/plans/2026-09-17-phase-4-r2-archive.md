@@ -1671,6 +1671,79 @@ and keeps new writes small; the cost is no claim of complete gate validation.
 Historical bytes test semantic-reader equivalence, not present-source scientific
 execution or provider transport.
 
+#### Artifact-only numerical semantic readers
+
+After continuation/offline review, finish the numerical reader dependency group
+before aggregate callers. Modify `train/pilot_verification.py` and
+`train/pilot_evidence.py::verify_numeric_evidence`. Add focused
+`tests/pilot/test_pilot_cold_numerics.py` and a small adjacent fixture adapter;
+reuse the reviewed strict read-only fixture machinery where applicable, without
+broadening production transport. Do not change numerical execution or tolerances.
+
+- [ ] Thread optional `evidence_context=None` through `read_numeric_report`,
+  `_check_artifact_closure`, `_runtime_artifact_inventory`, `_runtime_rows`,
+  `_read_capture_operations`, `_read_capture`, `_bind_resume_start`,
+  `_read_resume`, `_read_checked_archive` and `verify_numeric_evidence`.
+  Local weight/checkpoint/JSON/tensor codecs retain their existing APIs.
+- [ ] Add narrow private path/bytes/JSON adapters in pilot_verification. Derive
+  names from the context run root, reject escapes before reading, and preserve
+  each existing byte limit. Fully exhaust authenticated discovery, retaining
+  only names under the required numerical prefix; union resident files, reject
+  extras/symlinks and never turn an advertised lease/integrity failure into
+  unavailable evidence. Share one discovery result within a top-level check
+  rather than repeatedly scanning the full training corpus for every input.
+
+  ```python
+  @contextmanager
+  def _numeric_path(path, *, evidence_context=None):
+      if evidence_context is None:
+          yield path
+      else:
+          name = logical_root(path, evidence_context)
+          with evidence_path(evidence_context.run_dir, name,
+                             evidence_context=evidence_context) as local:
+              yield local
+  ```
+
+- [ ] Read report/DONE separately; input checkpoint and portable weights
+  sequentially. Retain decoded session/digest/metadata, not released paths.
+  Read manifest/subset/batch records individually. Decode capture tensors inside
+  one lease and operations JSON inside the next; preserve all inventory, dtype,
+  finite-value exceptions, objective and compute comparisons.
+- [ ] `_read_resume` uses `_read_checked_archive`'s digest and reads observations,
+  captures, optional bootstrap and summary sequentially. `_bind_resume_start`
+  forwards context to bootstrap capture reads without changing its existing
+  disposable CPU optimizer/clipping arithmetic, RNG checks or tolerances.
+- [ ] Use real evaluation header/episode scanning for runtime inventory and
+  row projections. Preserve the additional diagnostic identity, required-file
+  set, crash-public-ID and canonical checkpoint-name checks. Read extra crash
+  metadata in separate leases, never while holding another episode payload.
+  Project already-verified sidecars without reopening released paths.
+- [ ] Keep complete and partial verifier branches and every unavailable label.
+  Missing unindexed capture tensors must not hide corrupt available operations
+  JSON. Preserve `device_checks_passed` and missing-device results unchanged.
+- [ ] RED/GREEN on the original frozen smoke `final/numerics` tree: compare
+  complete eager/cold report and verifier outputs, explicitly preserving missing
+  MPS and false comparison status; compare runtime-cpu rows directly; test one
+  missing capture tensor, independently corrupt operations, final runtime
+  corruption, substituted DONE binding, extra inventory and wrong root. Assert
+  exact lease cleanup and one payload at a time under actual read guards.
+- [ ] Borrow the original 83681280B tree read-only. Never copy its tensor tree,
+  alter source identity, move retained files or run new diagnostics. Tripwire
+  training, model forward, event and replay execution; existing artifact-only
+  tensor comparisons, batch reconstruction and CPU optimizer arithmetic remain
+  allowed. Admit exact small-control output bounds under the current shared
+  ledger before each test stage. Preserve all failed prefixes.
+- [ ] Scoped local checks, fresh controller verification, independent review
+  and commit. Document limits: this CPU fixture does not establish MPS parity,
+  empty-optimizer bootstrap, current-source diagnostic production, 64 production
+  runtime episodes, complete gate, recovery or provider/transport integration.
+
+Ruling: implement the actual numerical reader closure, not just context
+forwarding in the outer gate. Genuine old artifacts are sufficient to test
+artifact-only equivalence but never certify current-source execution. The
+remaining full gate and recovery obligations stay open until independently run.
+
 **Prerequisite accounting/archive slice (before remaining Task5 work if needed):**
 Preserve completed engineering history remotely or locally without treating it
 as pre-existing baseline. Measured retained task/test output already exceeds the

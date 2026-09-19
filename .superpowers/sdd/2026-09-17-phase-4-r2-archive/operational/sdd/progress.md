@@ -1043,3 +1043,60 @@ open. The Phase 4 production pilot has not started.
   existing scanner consumes the same context relative to the run root. Shared
   runtime weights need explicit materialization without changing runtime
   semantics. Numeric verifier and later aggregate callers remain unchanged.
+- Continuation/offline owner20818 PID54904@1789775047.8516 admitted token
+  86e66fa44e5b17acb2f492ec319c45da: scratch28311552/metadata33562624/
+  logs2097152, other increments0. Before scratch235225088/logs1482752/
+  spool219099136/cache67153920/metadata52965376; retained6195077120 unchanged.
+  Sole writer task5_cold_semantics prepares tests/bounds before any invocation;
+  read-only task5_remaining_gate_slice designs later numeric reader interfaces.
+  No scientific execution, provider call or test command admitted by capacity
+  reservation alone. Generic SDD helpers remain excluded by frozen custody.
+- Reader test preflight corrected fixture metadata+one-payload nesting and
+  actual descriptor-relative read guards before execution. Initial signature
+  assertion replaced with real resident-only cold behavior for RED. First
+  single equivalence selector admitted at scratch/task5-cold-semantics/red-1,
+  <=1MiB administration/64files/24dirs and <=256KiB diagnostics, no evidence
+  copies. Use existing .venv directly with bytecode/plugins disabled and all
+  temporary/cache paths scoped. Full adverse matrix not yet admitted.
+- Semantic RED reproduced realbehavior in2.01s: eager unavailable[] versus
+  cold8unavailableinputs, first final/runtime/0.safetensors. No signature-only
+  failure or numerical execution; red-1 retained0B/0files/11dirs. GREEN green-1
+  full10casefile admitted <=8MiB/96files/48dirs plus256KiBdiagnostics. Its only
+  substantial write is one4file offlineepisode control:3316018logicalB,
+  3358720B conservative4KiB file/directory bound, plus tiny7B/<=256B controls.
+  Parent20818check passed scratch235225088/logs1490944, othercategoriesunchanged.
+- Ruling: a present runtime checkpoint's declared shared-weight dependency is
+  mandatory, not a new optional unavailable category. Missing dependency must
+  raise as it did eagerly; never bypass full runtime validation based on it.
+  Communicated to sole writer during pre-GREEN work. Top-level absent checkpoint
+  and replay retain their existing unavailable labels. This preserves the
+  protocol and costs only a bounded explicit dependency read.
+- green-1 first equivalencecase passed, then test-only regex differed from
+  guard message;1pass/1fail3.15s, retained0B/13dirs. Corrected assertion only.
+  green-2 full10cases passed5.02s, retained3633152B/7files/43dirs; no execution
+  tripwire fired. Includes original referenced checkpoint reader and a bounded
+  298016B missing-sibling copy, plus single episode corruption. Whole scope
+  total3633152B; frozen originals unchanged. Exact4file no-cache lint/format
+  checks admitted; source/test writer preparing report and commit. Controller
+  fresh artifact-only verification and independent review still required.
+- Optional materialized-weight API device regression RED0.99s proved wrong
+  acceptance of CPUweights for requestedmps without running that backend.
+  Only prematuredeviceguard was removed forRED and restored afterward; no other
+  source reverted. Device-red retained0B. Valid suppliedweights also succeed
+  against isolated checkpointwithout sibling, proving no hidden siblingread.
+  Final-cover11passed5.10s;3633152B retained. Source/tests/report committed
+  f08b161; scopedRuff/format/diffchecks passed. Implementer stopped.
+- Controllerfresh main-cover11passed5.10s, freshRufflint/format/diffpassed;
+  3633152B retained, allsixprefixes10899456B. Admission recomputed from measured
+  growth, not a reset:7266304+8MiB fits28311552. Fullcommand/evidence in
+  task5-cold-semantics-main-evidence.md. Independent reviewer
+  task5_cold_semantics_review active; parent20818fullcheck underway. Broader
+  Task5/Task7/Phase4 remain incomplete; no productionfit or provideroperation.
+- Continuation/offline independent review PASS/APPROVE,0findings, againstf08b161.
+  Controller fresh tests already passed; original four key inputSHA256 values
+  independently match retained report. Full20818postcheck passed
+  spool219099136/cache67153920/metadata52965376/scratch246124544/logs1572864,
+  pinned0/emergency0; retained6195077120 unchanged. Reader slice complete;
+  wholeTask5 remains open. Ownerrelease requested before next reservation.
+  Next numerical plan/brief/preflight defines actual semantic-reader closure,
+  not aggregate forwarding. Fresh numerical test admission still required.
