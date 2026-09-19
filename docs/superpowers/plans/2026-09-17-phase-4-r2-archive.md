@@ -2696,6 +2696,61 @@ launch. Use the same fixed same-owner operational parent with only these
 root/attempt/peak changes; retain its exact command and result separately.
 No source copy, larger limit, automatic further retry or full-pilot authority.
 
+##### Task D1: Forward the explicit offline allowance without new authority
+
+Prerequisite: Diagnostic02 passed at2e5b96d with unchanged16MiB/180s limits,
+one genuine CPU update/16 debug evaluations/replay/report and zero network/FM
+calls. This qualifies the primitive, not the inherited main workflow. A
+read-only caller map confirms the next independent gap: existing high-level
+calls carry process custody but drop the child write allowance.
+
+**Design decision:** transport the caller's exact immutable allowance along the
+existing custody edges. Do not infer child bytes from parent-publication P,
+install a default16MiB capacity, serialize a capability or create a new hold.
+This is plumbing and early argument validation only. Inherited descriptors,
+production hold equality and full-workflow admission remain later work.
+
+**Files:** `train/pilot_workflow.py`, `train/pilot_checks.py`,
+`train/pilot_verification.py`, `train/pilot_offline_process.py`; focused tests
+in `tests/pilot/test_pilot_offline_process.py`. No other source/test files,
+supervisor/session/CLI schemas, scientific code or fixture capacities change.
+
+1. Add optional `offline_write_allowance=None` to `_workflow`, `run_pilot`,
+   `_run_pilot_checks_owned`, `run_pilot_checks`, `recover_pilot_checks`, and the
+   verification module's `measure_pilot_offline` wrapper. Forward the identical
+   object on every existing custody edge. At the two low-level measurement
+   calls use its existing `write_allowance` keyword. No copying/coercion.
+2. Extend `preflight_offline_process(run_dir, custody=None, *,
+   write_allowance=None)`: if present, require exact `OfflineWriteAllowance`
+   type before the existing completed-artifact/custody checks. Pass the object
+   at all four existing early preflight sites (workflow, owned/public checks,
+   recovery). Invalid mappings/derived dataclasses must fail before costly
+   source/training/evaluation/recovery work. Keep low-level validation intact.
+3. Preserve `None` compatibility and completed safe reuse without a new launch
+   or live capability. Do not require a custody/allowance pair in this transport
+   slice, infer a limit, or change historical forensic/read semantics. Future
+   production callers must supply the explicit held allowance; these arguments
+   alone do not prove that hold and must not be described as launch authority.
+4. RED with tiny spies: every forwarding edge retains object identity;
+   malformed/derived allowances stop before expensive tripwires; omitted/None
+   behavior and completed-reuse skipping remain unchanged. Stub numerical,
+   source/Git and publication operations rather than generating a new model,
+   checkout, diagnostic, recovery copy or fabricated benchmark result. Use real
+   existing schemas where needed; keep the tests explicitly wiring tests.
+5. GREEN minimal signatures/forwarding/type check only. Review all call sites
+   including recovery's final owned-check call. No new fields in workflow,
+   process reports, gate, recovery intent, job JSON, session or manifests.
+6. Before each RED/GREEN/controller execution, record exact selectors, cases,
+   child/process count and finite output/directory/native bounds under one
+   unchanged global admission and fresh retained stage. New tests need no child
+   process. Mechanically bound every outer stream and timeout from the outset;
+   do not repeat Diagnostic01's historical RED harness omission. No whole file
+   or full local gate is admitted by this slice.
+7. Freeze a scoped commit, independently repeat affected checks and statics,
+   request task review, and retain any fixes/failures. Record remaining delegated
+   custody/production hold/full-gate work explicitly. Do not claim Task5/Phase4
+   completion or run a new genuine diagnostic just to prove argument plumbing.
+
 ##### Primitive admission and execution instructions
 
 Use the existing closed Python `-B` launcher, disabled external pytest plugins/cacheprovider and explicit TMP/XDG/MPL/Hypothesis/archive roots under a fresh operational scratch prefix per RED/GREEN/controller stage. Select only the named new writer tests and named parent/legacy primitive tests; never select the entire offline test file if it contains the actual diagnostic. Example inner command after its containing launcher/environment has been admitted:

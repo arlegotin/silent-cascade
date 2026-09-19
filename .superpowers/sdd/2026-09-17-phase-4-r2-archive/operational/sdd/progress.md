@@ -2425,3 +2425,9 @@ open. The Phase 4 production pilot has not started.
   spool231063552/cache67153920/metadata52965376/scratch264118272/logs2699264,
   pinned/emergency0. No quota enlargement/provider/deletion/fullgate/pilot.
   Next bounded preflight maps explicitallowance forwarding; no source work yet.
+- D1 read-only mapping complete: sixexistingcustodyAPIs/two lowlevelmeasurecalls
+  drop childallowance. Controller read source/preflightseams and selected exact
+  optionalobjectforwarding + earlyexacttypecheck, preservingNone/reuse semantics.
+  Versioned narrowTaskD1/brief written beforeimplementation. No descriptor/job/
+  session/CLI/newhold or scientific change; no newdiagnostic needed. Task5 and
+  Phase4 remainopen; fullprototypepilotnotstarted.
