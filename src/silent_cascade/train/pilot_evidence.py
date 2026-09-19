@@ -266,6 +266,7 @@ REQUIRED_PACKAGE_FILES = (
 # Preserve the historical source inventory while adding the current storage closure.
 HISTORICAL_REQUIRED_PACKAGE_FILES = REQUIRED_PACKAGE_FILES
 STORAGE_PACKAGE_FILES = (
+    "src/silent_cascade/train/pilot_offline_writes.py",
     "src/silent_cascade/archive/__init__.py",
     "src/silent_cascade/archive/_qualification.py",
     "src/silent_cascade/archive/_qualification_continuation.py",

@@ -271,6 +271,10 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
     trusted_environment = offline_environment(Path(os.environ["TMPDIR"]), git_pin=pin)
     original_popen = subprocess.Popen
 
+    from silent_cascade.train.pilot_offline_writes import active_offline_writes
+
+    writes = active_offline_writes()
+
     def closed_popen(args, *positional, **kwargs):
         if isinstance(args, (list, tuple)) and args and args[0] in {"git", pin.executable}:
             if (
@@ -290,10 +294,14 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
             descriptor_open.git_batch_pipe = (
                 arguments == ("cat-file", "--batch") and kwargs.get("stdin") == subprocess.PIPE
             )
+            if writes is not None:
+                writes._git_batch_pipe = descriptor_open.git_batch_pipe
         try:
             return original_popen(args, *positional, **kwargs)
         finally:
             descriptor_open.git_batch_pipe = False
+            if writes is not None:
+                writes._git_batch_pipe = False
 
     def descriptor_path(descriptor):
         if sys.platform == "darwin":
@@ -303,6 +311,8 @@ def install_offline_boundary(*, workspace_root: Path | None = None):
         return Path(os.readlink(f"/proc/self/fd/{descriptor}"))
 
     def check_write(path, directory_fd=None, *, mkdir=False):
+        if writes is not None and not isinstance(path, int):
+            writes._path(path, directory_fd, ancestor=mkdir)
         if workspace is None:
             return
         if isinstance(path, int):
