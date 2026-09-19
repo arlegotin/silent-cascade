@@ -1506,6 +1506,441 @@ def test_privacy_public_callers_forward_or_reject_custody(
             assert not output.exists()
 
 
+@pytest.mark.parametrize("invalid", ["mapping", "derived"])
+def test_allowance_preflight_rejects_invalid_type_before_reuse(tmp_path, monkeypatch, invalid):
+    from silent_cascade.train import pilot_offline_process as process
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    class DerivedAllowance(OfflineWriteAllowance):
+        pass
+
+    value = {} if invalid == "mapping" else DerivedAllowance(65536)
+
+    def reuse_tripwire(*args, **kwargs):
+        raise AssertionError("reuse inspection reached before allowance validation")
+
+    monkeypatch.setattr(process, "require_completed_offline_process", reuse_tripwire)
+    with pytest.raises(ValueError, match="invalid offline write allowance"):
+        process.preflight_offline_process(tmp_path, write_allowance=value)
+
+
+@pytest.mark.parametrize("caller", ["workflow", "owned", "public_checks", "recovery"])
+def test_allowance_preflight_sites_reject_before_expensive_work(tmp_path, monkeypatch, caller):
+    from silent_cascade.train import pilot_checks, pilot_workflow
+
+    def expensive(*args, **kwargs):
+        raise AssertionError("expensive work reached before allowance validation")
+
+    with pytest.raises(ValueError, match="invalid offline write allowance"):
+        if caller == "workflow":
+            monkeypatch.setattr(pilot_workflow, "_source", expensive)
+            pilot_workflow._workflow(
+                None,
+                tmp_path / "manifests",
+                tmp_path / "run",
+                "cpu",
+                complete=True,
+                offline_write_allowance={},
+            )
+        elif caller == "owned":
+            monkeypatch.setattr(pilot_checks, "authenticate_run", expensive)
+            pilot_checks._run_pilot_checks_owned(
+                run_dir=tmp_path / "run",
+                config=None,
+                output_path=tmp_path / "gate.json",
+                offline_write_allowance={},
+            )
+        elif caller == "public_checks":
+            monkeypatch.setattr(pilot_checks, "strict_json", expensive)
+            pilot_checks.run_pilot_checks(
+                run_dir=tmp_path / "run",
+                config=None,
+                output_path=tmp_path / "gate.json",
+                offline_write_allowance={},
+            )
+        else:
+            monkeypatch.setattr(pilot_checks, "verify_phase4_gate_artifact", expensive)
+            pilot_checks.recover_pilot_checks(
+                artifact_path=tmp_path / "gate.json",
+                raw_run_dir=tmp_path / "raw",
+                destination=tmp_path / "run",
+                offline_write_allowance={},
+            )
+
+
+@pytest.mark.parametrize("mode", ["omitted", "explicit_none", "completed"])
+def test_allowance_preflight_preserves_none_and_completed_reuse(tmp_path, monkeypatch, mode):
+    from silent_cascade.train import pilot_offline_process as process
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    custody = object()
+    calls = []
+    monkeypatch.setattr(process, "require_completed_offline_process", lambda _: mode == "completed")
+    monkeypatch.setattr(
+        process,
+        "require_offline_process_custody",
+        lambda value, *, output_dir: calls.append((value, output_dir)),
+    )
+    kwargs = (
+        {}
+        if mode == "omitted"
+        else {"write_allowance": (OfflineWriteAllowance(65536) if mode == "completed" else None)}
+    )
+    assert process.preflight_offline_process(tmp_path, custody, **kwargs) is (mode == "completed")
+    assert calls == ([] if mode == "completed" else [(custody, tmp_path / "final/offline")])
+
+
+def test_run_pilot_forwards_allowance_identity_to_workflow(tmp_path, monkeypatch):
+    from silent_cascade.train import pilot_workflow
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    allowance = OfflineWriteAllowance(65536)
+    marker = object()
+    seen = []
+
+    def workflow(*args, **kwargs):
+        seen.append(kwargs["offline_write_allowance"])
+        return marker
+
+    monkeypatch.setattr(pilot_workflow, "resolve_pilot_path", lambda _: object())
+    monkeypatch.setattr(pilot_workflow, "_workflow", workflow)
+    assert (
+        pilot_workflow.run_pilot(
+            config_path=tmp_path / "config",
+            manifest_dir=tmp_path / "manifests",
+            run_dir=tmp_path / "run",
+            device="cpu",
+            offline_write_allowance=allowance,
+        )
+        is marker
+    )
+    assert seen == [allowance] and seen[0] is allowance
+
+
+def test_workflow_forwards_allowance_identity_to_preflight_and_owned_checks(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from silent_cascade.report import pilot as pilot_report
+    from silent_cascade.train import pilot_checks, pilot_offline_process, pilot_workflow
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    allowance = OfflineWriteAllowance(65536)
+    custody = object()
+    source = SimpleNamespace(source_sha256="c" * 64)
+    config = SimpleNamespace(sha256="a" * 64)
+    marker = object()
+    preflight = []
+    owned = []
+
+    monkeypatch.setattr(
+        pilot_offline_process,
+        "preflight_offline_process",
+        lambda run_dir, value, *, write_allowance: (
+            preflight.append((run_dir, value, write_allowance)) or False
+        ),
+    )
+    monkeypatch.setattr(pilot_workflow, "_check_path", lambda _: None)
+    monkeypatch.setattr(pilot_workflow, "_source", lambda _: (tmp_path, "b" * 40, source))
+    monkeypatch.setattr(
+        pilot_workflow,
+        "_inputs",
+        lambda *args, **kwargs: ("b" * 40, source, {}, {"primary": {"count": 1}}),
+    )
+    monkeypatch.setattr(pilot_workflow, "pilot_ownership", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(pilot_workflow, "_train", lambda *args, **kwargs: marker)
+    monkeypatch.setattr(pilot_workflow, "_publish_pilot_bytes", lambda *args: None)
+    monkeypatch.setattr(pilot_report, "build_pilot_report", lambda **kwargs: None)
+
+    def owned_checks(**kwargs):
+        owned.append(kwargs["offline_write_allowance"])
+
+    monkeypatch.setattr(pilot_checks, "_run_pilot_checks_owned", owned_checks)
+    assert (
+        pilot_workflow._workflow(
+            config,
+            tmp_path / "manifests",
+            tmp_path / "run",
+            "cpu",
+            complete=True,
+            offline_process_custody=custody,
+            offline_write_allowance=allowance,
+        )
+        is marker
+    )
+    assert preflight == [(tmp_path / "run", custody, allowance)]
+    assert preflight[0][2] is allowance
+    assert owned == [allowance] and owned[0] is allowance
+
+
+def test_public_checks_forwards_allowance_identity_to_preflight_and_owned_checks(
+    tmp_path, monkeypatch
+):
+    from contextlib import nullcontext
+
+    from silent_cascade.train import pilot_checks, pilot_offline_process, pilot_workflow
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    allowance = OfflineWriteAllowance(65536)
+    custody = object()
+    marker = object()
+    preflight = []
+    owned = []
+    source = SimpleNamespace(
+        source_sha256="a" * 64,
+        data_introductions={"primary/manifest": {"path": "manifests/primary.json"}},
+    )
+
+    monkeypatch.setattr(
+        pilot_offline_process,
+        "preflight_offline_process",
+        lambda run_dir, value, *, write_allowance: preflight.append(
+            (run_dir, value, write_allowance)
+        ),
+    )
+    monkeypatch.setattr(
+        pilot_checks,
+        "strict_json",
+        lambda path: (
+            {"run_identity": "identity"} if path.name.startswith(".") else {"device": "cpu"}
+        ),
+    )
+    monkeypatch.setattr(pilot_workflow, "pilot_ownership", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(
+        pilot_checks,
+        "authenticate_run",
+        lambda *args, **kwargs: (tmp_path, source, None, None, None, None),
+    )
+    monkeypatch.setattr(pilot_checks, "sha256_bytes", lambda _: "identity")
+
+    def owned_checks(**kwargs):
+        owned.append(kwargs["offline_write_allowance"])
+        return marker
+
+    monkeypatch.setattr(pilot_checks, "_run_pilot_checks_owned", owned_checks)
+    assert (
+        pilot_checks.run_pilot_checks(
+            run_dir=tmp_path / "run",
+            config=SimpleNamespace(sha256="config"),
+            output_path=tmp_path / "gate.json",
+            offline_process_custody=custody,
+            offline_write_allowance=allowance,
+        )
+        is marker
+    )
+    assert preflight == [(tmp_path / "run", custody, allowance)]
+    assert preflight[0][2] is allowance
+    assert owned == [allowance] and owned[0] is allowance
+
+
+def test_recovery_forwards_allowance_identity_without_copy(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from silent_cascade.eventflow import neural_weights
+    from silent_cascade.train import (
+        checkpoints,
+        pilot_artifact_index,
+        pilot_checks,
+        pilot_config,
+        pilot_offline_process,
+        pilot_workflow,
+    )
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    allowance = OfflineWriteAllowance(65536)
+    custody = object()
+    marker = object()
+    preflight = []
+    copied = []
+    source = SimpleNamespace(
+        source_sha256="source",
+        source_commit="c" * 40,
+        data_introductions={"primary/manifest": {"path": "manifests/primary.json"}},
+    )
+    original = SimpleNamespace(
+        config_canonical_json='{"profile":"phase4_smoke"}',
+        training_result={},
+        source=source,
+        selected_weights_sha256="selected",
+        model_state_sha256="model",
+    )
+    artifact_index = SimpleNamespace(shards=(), model_dump=lambda *, mode: {})
+    envelope = SimpleNamespace(
+        selected_checkpoint=None,
+        selected_weights=None,
+        latest_weights=None,
+        progress={"latest": {"path": "checkpoint.bin", "sha256": "digest"}},
+        artifact_index=artifact_index,
+    )
+
+    class ExistingPath:
+        def __init__(self, name):
+            self.name = name
+
+        def exists(self):
+            return True
+
+        def is_symlink(self):
+            return False
+
+    monkeypatch.setattr(
+        pilot_offline_process,
+        "preflight_offline_process",
+        lambda run_dir, value, *, write_allowance: preflight.append(
+            (run_dir, value, write_allowance)
+        ),
+    )
+    monkeypatch.setattr(
+        pilot_checks,
+        "verify_phase4_gate_artifact",
+        lambda *args, **kwargs: {"artifact_sha256": "digest"},
+    )
+    monkeypatch.setattr(pilot_checks, "read_bytes", lambda *args, **kwargs: b"fixture")
+    monkeypatch.setattr(pilot_checks, "sha256_bytes", lambda _: "digest")
+    monkeypatch.setattr(
+        pilot_checks,
+        "Phase4GateArtifact",
+        SimpleNamespace(model_validate_json=lambda _: original),
+    )
+    monkeypatch.setattr(pilot_checks, "child", lambda parent, name: ExistingPath(name))
+    monkeypatch.setattr(pilot_checks, "_publish_pilot_bytes", lambda *args: copied.append(args))
+    monkeypatch.setattr(pilot_checks, "_publish", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        pilot_checks,
+        "authenticate_run",
+        lambda *args, **kwargs: (None, source, None, {"primary": {}}, None, None),
+    )
+    monkeypatch.setattr(pilot_artifact_index, "parse_training_envelope", lambda _: envelope)
+    monkeypatch.setattr(pilot_artifact_index, "iter_artifact_index", lambda *args: ())
+    monkeypatch.setattr(
+        neural_weights,
+        "decode_archive",
+        lambda *args: (SimpleNamespace(environment={}), None),
+    )
+    monkeypatch.setattr(
+        checkpoints,
+        "_Environment",
+        SimpleNamespace(model_validate=lambda _: SimpleNamespace(device="cpu")),
+    )
+    monkeypatch.setattr(
+        pilot_config,
+        "resolve_pilot_config",
+        lambda _: SimpleNamespace(sha256="config"),
+    )
+    monkeypatch.setattr(pilot_workflow, "pilot_ownership", lambda *args, **kwargs: nullcontext())
+
+    def owned_checks(**kwargs):
+        assert kwargs["offline_write_allowance"] is allowance
+        return marker
+
+    monkeypatch.setattr(pilot_checks, "_run_pilot_checks_owned", owned_checks)
+    destination = tmp_path / "destination"
+    assert (
+        pilot_checks.recover_pilot_checks(
+            artifact_path=tmp_path / "gate.json",
+            raw_run_dir=tmp_path / "raw",
+            destination=destination,
+            offline_process_custody=custody,
+            offline_write_allowance=allowance,
+        )
+        is marker
+    )
+    assert preflight == [(destination, custody, allowance)]
+    assert preflight[0][2] is allowance
+    assert len(copied) == 2
+    assert not destination.exists()
+
+
+def test_owned_checks_forward_allowance_identity_to_lowlevel_measurement(tmp_path, monkeypatch):
+    from silent_cascade.train import (
+        pilot_checks,
+        pilot_offline,
+        pilot_offline_process,
+        pilot_verification,
+    )
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    allowance = OfflineWriteAllowance(65536)
+    custody = object()
+    marker = object()
+    preflight = []
+    measured = []
+    monkeypatch.setattr(
+        pilot_offline_process,
+        "preflight_offline_process",
+        lambda run_dir, value, *, write_allowance: (
+            preflight.append((run_dir, value, write_allowance)) or False
+        ),
+    )
+    monkeypatch.setattr(
+        pilot_checks,
+        "authenticate_run",
+        lambda *args, **kwargs: (None, None, None, None, object(), None),
+    )
+    monkeypatch.setattr(pilot_checks, "SUITES", ())
+    monkeypatch.setattr(pilot_checks, "_continuations", lambda **kwargs: None)
+    monkeypatch.setattr(pilot_verification, "verify_pilot_numerics", lambda *args, **kwargs: None)
+
+    def measure(**kwargs):
+        measured.append(kwargs)
+
+    monkeypatch.setattr(pilot_offline, "measure_pilot_offline", measure)
+    monkeypatch.setattr(pilot_checks, "collect_pilot_evidence", lambda **kwargs: marker)
+    assert (
+        pilot_checks._run_pilot_checks_owned(
+            run_dir=tmp_path / "run",
+            config=None,
+            output_path=tmp_path / "gate.json",
+            offline_process_custody=custody,
+            offline_write_allowance=allowance,
+        )
+        is marker
+    )
+    assert preflight == [(tmp_path / "run", custody, allowance)]
+    assert preflight[0][2] is allowance
+    assert measured == [
+        {
+            "output_dir": tmp_path / "run/final/offline",
+            "process_custody": custody,
+            "write_allowance": allowance,
+        }
+    ]
+    assert measured[0]["write_allowance"] is allowance
+
+
+def test_verification_wrapper_forwards_allowance_identity_to_lowlevel_measurement(
+    tmp_path, monkeypatch
+):
+    from silent_cascade.train import pilot_offline, pilot_verification
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    allowance = OfflineWriteAllowance(65536)
+    custody = object()
+    marker = object()
+    calls = []
+
+    def measure(**kwargs):
+        calls.append(kwargs)
+        return marker
+
+    monkeypatch.setattr(pilot_offline, "measure_pilot_offline", measure)
+    assert (
+        pilot_verification.measure_pilot_offline(
+            output_dir=tmp_path / "offline",
+            offline_process_custody=custody,
+            offline_write_allowance=allowance,
+        )
+        is marker
+    )
+    assert calls == [
+        {
+            "output_dir": tmp_path / "offline",
+            "process_custody": custody,
+            "write_allowance": allowance,
+        }
+    ]
+    assert calls[0]["write_allowance"] is allowance
+
+
 @pytest.mark.parametrize(
     "mode",
     [

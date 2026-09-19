@@ -684,8 +684,13 @@ def require_completed_offline_process(run_dir):
     return True
 
 
-def preflight_offline_process(run_dir, custody=None):
+def preflight_offline_process(run_dir, custody=None, *, write_allowance=None):
     """Safe reuse needs no new authority; fresh work fails before costly inputs."""
+    if write_allowance is not None:
+        from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+        if type(write_allowance) is not OfflineWriteAllowance:
+            raise ValueError("invalid offline write allowance")
     completed = require_completed_offline_process(run_dir)
     if not completed:
         require_offline_process_custody(custody, output_dir=run_dir / "final/offline")

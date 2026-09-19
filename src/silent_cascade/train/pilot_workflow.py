@@ -407,11 +407,16 @@ def _workflow(
     archive_producer=None,
     evidence_context=None,
     offline_process_custody=None,
+    offline_write_allowance=None,
 ):
     if complete:
         from silent_cascade.train.pilot_offline_process import preflight_offline_process
 
-        preflight_offline_process(run_dir, offline_process_custody)
+        preflight_offline_process(
+            run_dir,
+            offline_process_custody,
+            write_allowance=offline_write_allowance,
+        )
     if device not in {"cpu", "mps"}:
         raise ValueError("pilot device must be cpu or mps")
     _check_path(manifest_dir)
@@ -476,6 +481,7 @@ def _workflow(
                 archive_producer=archive_producer,
                 evidence_context=evidence_context,
                 offline_process_custody=offline_process_custody,
+                offline_write_allowance=offline_write_allowance,
             )
             build_pilot_report(
                 run_dir=run_dir, output_dir=run_dir / "report", evidence_context=evidence_context
@@ -492,6 +498,7 @@ def run_pilot(
     archive_producer=None,
     evidence_context=None,
     offline_process_custody=None,
+    offline_write_allowance=None,
 ) -> PilotTrainingResult:
     """Fresh complete workflows require explicit same-owner diagnostic custody."""
     return _workflow(
@@ -503,6 +510,7 @@ def run_pilot(
         archive_producer=archive_producer,
         evidence_context=evidence_context,
         offline_process_custody=offline_process_custody,
+        offline_write_allowance=offline_write_allowance,
     )
 
 
