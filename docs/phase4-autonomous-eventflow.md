@@ -212,9 +212,12 @@ Start from committed, compatible source. The first workflow invocation produces
 the missing `one_hop.json`, `two_hop.json`, `primary.json`, `robustness.json` and
 `audits/<stage>/report.json` inputs, then stops with a **commit-data precondition**.
 The raw audit auxiliary manifest/index remain under `audit-raw/`; introduce only
-the four canonical stage manifests and the four exact audit reports. Review and
-commit those eight files, then create a distinct compatible training revision
-(an explicit empty commit is sufficient). Run the same command again. No command
+the four canonical stage manifests and the four exact audit reports. The
+authorized revision sequence is committed producer source, exact eight-file data
+introduction, then a meaningful compatible verification-evidence/documentation
+revision before optimization. The local-verification recorder can supply that
+meaningful evidence revision at the data revision; do not substitute an empty
+commit. Run the same workflow command again only after that sequence. No command
 auto-commits Git state. Debug data preserve this introduction chain while their
 small-corpus audits explicitly remain non-acceptance. Production statistical
 audit acceptance is required before fitting; no training command reruns probes
@@ -223,7 +226,8 @@ to replace failed or missing evidence.
 ```sh
 make pilot-smoke
 # After reviewing and explicitly introducing the eight printed input paths:
-git commit --allow-empty -m "Record compatible pilot training revision"
+UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py
+# Review and commit the compatible verification evidence and documentation.
 make pilot-smoke
 ```
 
@@ -498,10 +502,21 @@ were not deleted.
 
 The historical 4.4 TB figure above remains a worst-case whole-run forecast, not
 actual storage consumption or a requirement for dataset preparation. Continue
-Task 12 locally under the plan's bounded preparation ruling: prepare and audit
-the four immutable 10,000-episode validation manifests first. Production fitting
-still needs a separate measured space check. No R2 calls, changed learning gates,
-or claim that Phase 4 is complete follow from this cleanup.
+Task 12 locally by preparing and auditing the four immutable 10,000-episode
+validation manifests first. The user now authorizes all available local-disk
+space; the earlier 10 GiB working-space cap no longer applies. Available capacity
+and retained-output growth still require measurement. A real absolute whole-run
+root on the same disk's System Data volume can avoid the separate project-volume
+quota, but its machine-specific path is supplied externally and never committed.
+Published manifests and audits remain in the repository, references within the
+run remain relative, and no symlink shim is used.
+
+The existing first-boundary measurements conditionally allow
+29,132,422,170 bytes (about 27.13 GiB). This is neither measured consumption nor
+a formal upper bound or proof that the complete run fits; remeasure the chosen
+stable destination before production fitting and monitor retained growth. This
+authority introduces no R2 call or new storage framework, runtime limiter,
+evidence pruning, changed learning gate, or Phase 4 completion claim.
 
 Raw evidence remains under the ignored stable local path
 `runs/phase4-task10-measurements/6444632-seed11-20260917/profile`, not system temp.
@@ -561,5 +576,11 @@ the additional fresh-destination recovery fixture was intentionally CPU-only.
 These are software/evidence-integration checks, not selected-weight production
 acceptance, convergence or throughput evidence. No production fit, new full
 profile, production audit or Task 12 execution was started. **Phase 4 remains
-incomplete and production remains storage-blocked** under the unchanged Task 10
-headroom result above; its historical native parameter-parity failure is retained.
+incomplete.** The storage-blocked conclusion belongs to this historical Task 11
+closure under the then-current Task 10 headroom result; its historical native
+parameter-parity failure is retained. Current continuation follows the revised
+local-disk authority above and still requires all four production audits, exact
+data introduction, a compatible verification-evidence/documentation revision,
+and a measured destination check before optimization. Those audits are still
+being prepared: no production optimizer has started and no selected checkpoint
+exists.

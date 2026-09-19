@@ -25,6 +25,33 @@ selection nor scientific protocol is relaxed. See Phase 3 plan Section 8.
 
 ## Current status
 
+## 2026-09-19 — Phase 4 local-disk authority
+
+The user removed the prior 10 GiB working-space cap and authorized use of all
+available local-disk space for Task 12. Available filesystem capacity and
+retained-output growth remain measurements, not assumptions. A real absolute
+whole-run root on the same disk's System Data volume may avoid the separate
+project-volume quota; its personal path is supplied externally and is not
+committed. Published manifests and audits stay in the repository, run-internal
+references stay relative, and no symlink shim is introduced.
+
+The existing first-boundary measurements conditionally allow
+29,132,422,170 bytes (about 27.13 GiB). This is not measured consumption, a
+formal upper bound, or proof that the complete run fits. The historical Task 10
+whole-run forecast and native numerical failure remain unchanged, and the actual
+stable destination must be measured before optimization. This ruling adds no R2
+or storage framework, runtime limiter, evidence pruning, or scientific gate
+change. Cost if wrong: retained evidence may exhaust the selected local volume;
+the run must pause incomplete without deleting failures or weakening gates.
+
+The authorized order is committed producer source, exact introduction of the
+four production manifests and four audit reports, then a meaningful compatible
+verification-evidence/documentation revision, then optimization. The recorder
+at the data revision can provide the meaningful evidence commit; an empty
+training-revision commit is not sufficient. All four production audits are still
+being prepared. No production optimizer has started, no selected checkpoint
+exists, and Phase 4 remains incomplete.
+
 ## 2026-09-15 — Close independent Phase 3 numeric and raw-position coverage
 
 Return D review identified incomplete independently required tensor inventories
