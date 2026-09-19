@@ -2183,6 +2183,15 @@ F=14 covers seven finals plus seven temporaries. D is exact missing directories
 including fixed parents; +1 writer cushion. Defaults S=E=262144,R=16384,D=2
 give P=1216512 bytes, NOT an admission.
 Split P by actual category mapping, including temporary/name/directory peaks.
+Public publication uses random sibling `.pilot-[0-9a-f]{32}.tmp` names.
+Before custody creation, reject a public final-name binding or any binding
+matching that sibling temporary namespace whose category differs from the
+public output directory's category. Same-category bindings are harmless;
+unrelated child subtrees retain their existing mappings. This narrow
+restriction makes the public final/temporary pair's existing category forecast
+valid without inventing a dynamic temporary-routing service. Recheck it at
+prelaunch/publication boundaries with the existing custody validation. The
+private route and its fixed members must still count as logs.
 Private bytes charge existing logs; public bytes their existing category.
 U counts existing bytes once; remaining reservation covers P plus separately
 reserved child peaks within existing global/physical headroom checks.

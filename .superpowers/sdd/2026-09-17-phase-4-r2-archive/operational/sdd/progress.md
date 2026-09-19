@@ -1704,3 +1704,116 @@ open. The Phase 4 production pilot has not started.
   All622592B/fifteen prefixes retained. Release requested for owner65407 before
   new privacy-correction admission/sole writer. No real diagnostic/fullgate,
   provider or Phase4production run. Private-custody brief prepared from5298eff.
+- Owner65407 finalcheck passed and exited0 after release: scratch258875392/
+  logs2162688/spool219099136/cache67153920/metadata52965376,pinned/emergency0,
+  frozenretained6195077120 unchanged. TaskA closure/privacy brief committed
+  89e987a; source/test worktree clean. Next sole reservation requests the same
+  bounded4MiB scratch/metadata33562624/logs2MiB increments for parent privacy
+  primitives only; no inherited production custody or genuine diagnostic.
+- Parent privacy correction active: same original implementer task5_offline_process
+  is sole source/test writer, integrated brief89e987a. New soleholder61737,
+  PID69085@1789787541.419908, token03bea4da9c9a4ef7bc4d5859e29cc494 admitted
+  scratch4MiB/metadata33562624/logs2MiB, other increments0. Before scratch258875392/
+  logs2162688/spool219099136/cache67153920/metadata52965376,pinned/emergency0,
+  retained6195077120 unchanged. Exact per-stage execution admission remains
+  required; no real diagnostic, inherited supervisor/custody, TaskB/C or providers.
+- Privacy RED1 prospectively admitted three exact test_pilot_offline_process.py
+  nodes: test_privacy_requires_custody_before_git,
+  test_privacy_intent_hashes_replace_paths,
+  test_privacy_nonempty_capture_never_enters_public_logs. Fresh privacy/red1
+  <=512KiB/<48KiB logical/20file-link-temp names/24dirs; outer30s/log16KiB each,
+  records<=4096B. One joined stdlib child emits15B controlled sentinel/empty
+  stderr and7B invalid report; never scientific worker/Git/provider. Existing
+  production unmodified for RED, first stage under owner61737's4MiB increment.
+- Privacy RED1 reproduced two behavior defects and one version gap: no-custody
+  measurement reached Git; a joined exit0 sentinel child published public raw
+  stdout; intent-v2 fields failed the old schema. Three failed1.54s/wall2.141,
+  4633logical/20480allocated,7files/3links/13dirs (14 with new task parent),
+  stderr empty. Evidence retained. Hash-only intent implementation began only
+  after this RED; custody/caller guards remain unchanged before RED2.
+- Privacy RED2 prospectively admitted exact custody_pins_counted_private_directory
+  (1), custody_rejects_unadmitted_targets (8), terminal_disposition_is_strict (1),
+  callers_stop_before_expensive_work (2), with test_privacy_ prefix in the same
+  test file. Freshred2 <=2MiB/<96KiB logical/96names/96dirs, outer30s/log16KiB
+  each, no children. Nine isolated tiny real ledger fixtures/page4096; existing
+  host-authority seam only, no production authority bypass. Keep original result
+  symbol available during RED so caller failures are behavioral, not a temporary
+  rename ImportError. Owner61737 measure scratch258895872/logs2162688 and other
+  categories unchanged; prior20480B+2MiB fits held4MiB. No real worker/provider.
+- Privacy RED2 retained12failed2.66s/wall3.265: nine missing custody-API cases
+  after real isolated ledger setup; strict result-v2 rejection by originalV1;
+  checks/workflow both hit expensive-boundary tripwires.14170logical/49152
+  allocated,20files/4links/48dirs, stderr empty, no children. Implementation of
+  the narrow custody/publication/current-reader path follows; GREEN admission
+  remains separate. Cumulative stage retention69632allocated. Original result
+  alias was preserved for this RED to avoid incidental import errors.
+- Privacy GREEN1 prospectively admitted the same15cases/seven test functions
+  from RED1/RED2, freshgreen1 <=2MiB/<128KiB logical/96names/96dirs, outer30s
+  and16KiB logs each. One joined stdlib child emits15B sentinel and writes7B
+  invalid report, now using real prepared fixture custody;10 tiny ledger fixtures,
+  records<=4096B/raw<=64B. Conservative names cover ledger/public/private finals,
+  replace temps and fixture links; dirs63 before cushion. Prior69632B+2MiB fits
+  held4MiB. Current-reader/measurement/early-guard implementation drafted;
+  old controls are not selected or claimed as passing yet. No genuine diagnostic.
+- Privacy GREEN1 passed15/15 in2.68s/wall3.249;6895logical/65536allocated,
+  28files/7links/63dirs, stderr empty. Tiny sentinel child joined;15B raw prefix
+  retained0600 in private custody, corresponding public log absent, other empty
+  log and failedv2 outcome retained. Missing-custody tripwires stayed untouched.
+  Cumulative135168allocated. Source not frozen: remaining reader/custody-failure
+  controls and explicit forensic compatibility updates precede final qualification.
+- Privacy FINAL1 prospectively admitted frozen94process cases plus4exact safe
+  legacy selectors in worker report:98total, freshfinal1 <=3MiB/<256KiB logical,
+  320names/384dirs,60s/log16KiB each. Derivation24ledger+19cold+26otherfixtures,
+  estimated282dirs/183files+<=72links plus temp/name cushion. Ledger2048B,
+  measured records1024B, cold intent1536B/result1024B, other records<=4096B.
+  Native f_frsize independently4096;256KiB+4096*(320+384)=3MiB.17 Python
+  controls and<=32trusted read-only Git calls; no genuine worker. Correction:
+  three unchanged legacy boundary children use subprocess.run timeout30s,
+  expectedstdout<=512B/stderr0/two6Bfiles, not new bounded capture; nested
+  audit retains256/4096B,10s. Launcher gains XDG_CONFIG_HOME/DATA_HOME at
+  admitted xdg, PYTHONHASHSEED0/preserve-scratch1. Prior135168B+3MiB fits4MiB.
+  Scoped Ruff/diff passed before execution. TaskB brief prepared from approved
+  extract, not dispatched; privacy review remains the dependency gate.
+- FINAL1 preflight halted before mkdir/imports/tests/children: literal_eval of
+  parameter values containing string multiplication raised ValueError. This is
+  a launcher defect, not test evidence. Controller independently confirmedfinal1
+  absent (including symlink). Re-admitted unchanged98case/envelope at still-fresh
+  final1 after counting literal list/tuple .elts without evaluating values;
+  require literal container shape and retain AST94 assertion. No source/test
+  semantic correction or extra artifact consumption; failure recorded here.
+- Privacy FINAL1 passed98/98 in12.40s/wall13.135, pytestexit0/stderr0;
+  55012logical/507904allocated,183files/36links/306dirs. All ceilings passed,
+  AST94+4 forecast matched execution. Cumulative643072allocated retained.
+  Controller inspected retained output. Scoped static/self-review and source
+  commit/freeze follow, then a fresh controller repeat and independent review;
+  this is not genuine diagnostic/fullworkflow/Phase4 completion.
+- Privacy source/tests frozen71eabfe;8owned files committed, controller docs
+  excluded. Controller source equality to commit passed. MAIN1 prospectively
+  admitted exact same98case launcher at freshmain1,3MiB/<256KiB/320names/
+  384dirs/60s/log16KiB,17tiny Python controls/<=32read-only Git calls. Preserve
+  updated closed environment and AST94 assertion. Prior643072B+3145728B=
+  3788800B <held4194304B. No real diagnostic/numerics/provider. Actual FINAL1
+ 306dirs includes24ledger-lock dirs omitted from282 core forecast, within384.
+- Privacy MAIN1 passed98/98 in12.11s/wall12.859, pytestexit0/stderr0;
+  54976logical/507904allocated,183files/36links/306dirs. Cumulative1150976B
+  retained. Scoped7file Ruff lint/format, diffcheck and8file equality71eabfe
+  passed. Exact command/hashes recorded in main-evidence;87011char review package
+  covers89e987a..71eabfe. Full owner61737 frozen-custody check underway; worker
+  completing report-only limitations before independent privacy review.
+- Privacy report-only handoff4006c9a complete. Independent privacy review found
+  one Important: final-name category incorrectly receives random sibling temp's
+  allowance under mixed exact bindings. Root checked actual publisher/ledger
+  prefix semantics and accepts finding. Owner61737 fullcheck passed scratch
+  260026368/logs2301952/spool219099136/cache67153920/metadata52965376,
+  pinned/emergency0; frozen6195077120 unchanged. Review saved.
+- Ruling: reject ambiguous differing category bindings for the four public
+  final names and the sibling .pilot-hex32.tmp namespace before custody creation,
+  preserving normal uniform public/private split and unrelated child mappings.
+  This is smaller than a dynamic random-temp routing mechanism; cost is rejecting
+  specialized per-file layouts this diagnostic does not need. Approved privacy P
+  requirement and review allow this fail-closed path. Plan clarified under
+  standing approval; bounded fix goes to original implementer with TDD.
+- Task5 privacy: fix round1/5 (0 addressed,1 open; temp category accounting).
+- Task5 privacy: minor (deferred): add private-prefix overflow/cancellation
+  publication controls alongside TaskB combined-fence tests/final review.
+  Current in-memory capture controls alone are not that publication proof.

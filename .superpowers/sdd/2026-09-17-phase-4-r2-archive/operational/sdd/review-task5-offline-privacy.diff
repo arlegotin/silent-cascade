@@ -1,0 +1,2047 @@
+71eabfe fix(pilot): keep offline process paths and captures private
+ .gitignore                                        |   1 +
+ src/silent_cascade/train/pilot_checks.py          |  37 +-
+ src/silent_cascade/train/pilot_evidence.py        |  12 +-
+ src/silent_cascade/train/pilot_offline.py         |  84 ++-
+ src/silent_cascade/train/pilot_offline_process.py | 417 ++++++++++++++-
+ src/silent_cascade/train/pilot_verification.py    |   4 +-
+ src/silent_cascade/train/pilot_workflow.py        |   9 +
+ tests/pilot/test_pilot_offline_process.py         | 621 +++++++++++++++++++---
+ 8 files changed, 1083 insertions(+), 102 deletions(-)
+diff --git a/.gitignore b/.gitignore
+index a056513..69f26e8 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,10 +12,11 @@ build/
+ *.egg-info/
+ runs/
+ reports/
+ assets/
+ *.safetensors
+ *.ckpt
+ *.pt
+ *.pth
+ *.mlx
+ .silent-cascade-storage/
++**/logs/offline-process-private/
+diff --git a/src/silent_cascade/train/pilot_checks.py b/src/silent_cascade/train/pilot_checks.py
+index be95bbb..253fb86 100644
+--- a/src/silent_cascade/train/pilot_checks.py
++++ b/src/silent_cascade/train/pilot_checks.py
+@@ -337,26 +337,32 @@ def _continuations(*, run_dir, config, source, result, manifests, weights):
+             break
+     _publish(path, {"schema_version": "phase4-continuation-evidence-v1", "records": records})
+ 
+ 
+ def _require_reusable_gate(verified):
+     if verified["missing_raw_attachments"] or verified["unavailable_semantic_checks"]:
+         raise ValueError("missing raw or semantic evidence prevents compatible execution reuse")
+ 
+ 
+ def _run_pilot_checks_owned(
+-    *, run_dir, config, output_path, archive_producer=None, evidence_context=None
++    *,
++    run_dir,
++    config,
++    output_path,
++    archive_producer=None,
++    evidence_context=None,
++    offline_process_custody=None,
+ ):
+     """Called only under the workflow's existing permanent run ownership."""
+-    from silent_cascade.train.pilot_offline_process import require_completed_offline_process
++    from silent_cascade.train.pilot_offline_process import preflight_offline_process
+ 
+-    offline_completed = require_completed_offline_process(run_dir)
++    offline_completed = preflight_offline_process(run_dir, offline_process_custody)
+     root, source, result, manifests, weights, archive = authenticate_run(run_dir, config)
+     if output_path.exists():
+         verified = verify_phase4_gate_artifact(output_path, repo_root=root, raw_run_dir=run_dir)
+         _require_reusable_gate(verified)
+         return Phase4GateArtifact.model_validate_json(read_bytes(output_path, limit=MAX_BYTES))
+     if weights is not None:
+         for name in SUITES:
+             _evaluate(
+                 run_dir=run_dir,
+                 config=config,
+@@ -375,29 +381,40 @@ def _run_pilot_checks_owned(
+             result=result,
+             manifests=manifests,
+             weights=weights,
+         )
+         from silent_cascade.train.pilot_offline import measure_pilot_offline
+         from silent_cascade.train.pilot_verification import verify_pilot_numerics
+ 
+         if not (run_dir / "final/numerics/DONE").exists():
+             verify_pilot_numerics(config, checkpoint=archive, output_dir=run_dir / "final/numerics")
+         if not offline_completed:
+-            measure_pilot_offline(output_dir=run_dir / "final/offline")
++            measure_pilot_offline(
++                output_dir=run_dir / "final/offline", process_custody=offline_process_custody
++            )
+     return collect_pilot_evidence(run_dir=run_dir, config=config, output_path=output_path)
+ 
+ 
+ def run_pilot_checks(
+-    *, run_dir: Path, config, output_path: Path, archive_producer=None, evidence_context=None
++    *,
++    run_dir: Path,
++    config,
++    output_path: Path,
++    archive_producer=None,
++    evidence_context=None,
++    offline_process_custody=None,
+ ) -> Phase4GateArtifact:
++    """Fresh checks require same-owner custody until inherited integration exists."""
++    from silent_cascade.train.pilot_offline_process import preflight_offline_process
+     from silent_cascade.train.pilot_workflow import pilot_ownership
+ 
++    preflight_offline_process(run_dir, offline_process_custody)
+     owner = strict_json(run_dir.parent / ("." + run_dir.name + ".owner.json"))
+     with pilot_ownership(
+         run_dir,
+         run_identity=owner["run_identity"],
+         recover=lambda: authenticate_run(run_dir, config),
+     ):
+         _, source, _, _, _, _ = authenticate_run(run_dir, config)
+         workflow = strict_json(run_dir / "workflow.json")
+         manifest = source.data_introductions["primary/manifest"]["path"]
+         identity = sha256_bytes(
+@@ -411,31 +428,36 @@ def run_pilot_checks(
+             )
+         )
+         if identity != owner["run_identity"]:
+             raise ValueError("standalone ownership identity differs")
+         return _run_pilot_checks_owned(
+             run_dir=run_dir,
+             config=config,
+             output_path=output_path,
+             archive_producer=archive_producer,
+             evidence_context=evidence_context,
++            offline_process_custody=offline_process_custody,
+         )
+ 
+ 
+ def recover_pilot_checks(
+     *,
+     artifact_path: Path,
+     raw_run_dir: Path,
+     destination: Path,
+     retained_run_dir: Path | None = None,
++    offline_process_custody=None,
+ ) -> Phase4GateArtifact:
+     """Restore immutable training inputs; rerun only final checks in a fresh run."""
++    from silent_cascade.train.pilot_offline_process import preflight_offline_process
++
++    preflight_offline_process(destination, offline_process_custody)
+     from silent_cascade.eventflow.neural_weights import decode_archive
+     from silent_cascade.train.checkpoints import _Environment
+     from silent_cascade.train.pilot_artifact_index import (
+         iter_artifact_index,
+         parse_training_envelope,
+     )
+     from silent_cascade.train.pilot_checkpoints import PilotCheckpoint
+     from silent_cascade.train.pilot_config import resolve_pilot_config
+     from silent_cascade.train.pilot_workflow import pilot_ownership
+ 
+@@ -540,12 +562,15 @@ def recover_pilot_checks(
+                 source_commit=original.source.source_commit,
+                 config_sha256=config.sha256,
+                 selected_weights_sha256=original.selected_weights_sha256,
+                 model_state_sha256=original.model_state_sha256,
+                 training_result_sha256=sha256_bytes(canonical_json_bytes(original.training_result)),
+                 artifact_index=envelope.artifact_index.model_dump(mode="json"),
+                 checkpoint_descriptors=descriptors,
+             ),
+         )
+         return _run_pilot_checks_owned(
+-            run_dir=destination, config=config, output_path=destination / "phase4-gate.json"
++            run_dir=destination,
++            config=config,
++            output_path=destination / "phase4-gate.json",
++            offline_process_custody=offline_process_custody,
+         )
+diff --git a/src/silent_cascade/train/pilot_evidence.py b/src/silent_cascade/train/pilot_evidence.py
+index 86e70fe..8c2621f 100644
+--- a/src/silent_cascade/train/pilot_evidence.py
++++ b/src/silent_cascade/train/pilot_evidence.py
+@@ -1057,35 +1057,40 @@ def verify_numeric_evidence(
+ 
+ 
+ def verify_offline_evidence(
+     value,
+     *,
+     source,
+     run_dir=None,
+     missing_raw=(),
+     unavailable=None,
+     evidence_context=None,
++    require_safe_process=False,
+ ):
+     from silent_cascade.archive.readers import evidence_path, logical_root
+     from silent_cascade.train.pilot_offline import parse_offline_report
+     from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
+ 
+     if evidence_context is not None and (
+         run_dir is None or logical_root(run_dir, evidence_context) != "."
+     ):
+         raise ValueError("offline evidence context run root differs")
+     report = parse_offline_report(canonical_json_bytes(value))
+     if report.source_commit != source.source_commit or report.forbidden_modules:
+         raise ValueError("offline source/import evidence differs")
+     unavailable = [] if unavailable is None else unavailable
+     read_offline_process_outcome(
+-        run_dir, report=report, evidence_context=evidence_context, unavailable=unavailable
++        run_dir,
++        report=report,
++        evidence_context=evidence_context,
++        unavailable=unavailable,
++        require_safe_process=require_safe_process,
+     )
+     if run_dir is not None:
+         from silent_cascade.eventflow.neural_replay import _parse
+ 
+         root_name = "final/offline"
+         root = run_dir / root_name
+         direct_names = {
+             root_name + "/executed-source.json",
+             root_name + "/step.json",
+             root_name + "/replay.json",
+@@ -1485,21 +1490,23 @@ def collect_pilot_evidence(*, run_dir, config, output_path):
+         )
+         executed = strict_json(run_dir / "final/offline/executed-source.json")
+         expected = {p: h for p, h in source.source_files.items() if p.startswith("src/")}
+         if (
+             executed != expected
+             or report.executed_source_sha256 != sha256_bytes(canonical_json_bytes(executed))
+             or report.source_commit != source.source_commit
+         ):
+             raise ValueError("offline executing source differs")
+         offline_evidence = report.model_dump(mode="json")
+-        offline = verify_offline_evidence(offline_evidence, source=source, run_dir=run_dir)
++        offline = verify_offline_evidence(
++            offline_evidence, source=source, run_dir=run_dir, require_safe_process=True
++        )
+         for path in (run_dir / "final/offline").rglob("*"):
+             if path.is_file():
+                 upstream[path.relative_to(run_dir).as_posix()] = sha256_bytes(
+                     read_bytes(path, limit=1024**3)
+                 )
+     suites = {name: suite_counts(rows) for name, rows in rows_by_suite.items()}
+     local_verification = discover_local_verification(
+         repo_root=root, source_commit=source.source_commit
+     )
+     failures = acceptance_failures(
+@@ -1840,20 +1847,21 @@ def verify_phase4_gate_artifact(artifact_path, *, repo_root, raw_run_dir=None):
+         checkpoint=selected_checkpoint or artifact.training_result["progress"]["latest"],
+         run_dir=raw_run_dir,
+         unavailable=unavailable,
+     )
+     offline = artifact.offline_evidence is not None and verify_offline_evidence(
+         artifact.offline_evidence,
+         source=source,
+         run_dir=raw_run_dir,
+         missing_raw=missing,
+         unavailable=unavailable,
++        require_safe_process=True,
+     )
+     if (
+         coverage != artifact.coverage
+         or numeric != artifact.numeric_passed
+         or offline != artifact.offline_passed
+     ):
+         raise ValueError("gate execution evidence differs from recorded comparisons")
+     local_verification = discover_local_verification(
+         repo_root=repo_root, source_commit=source.source_commit
+     )
+diff --git a/src/silent_cascade/train/pilot_offline.py b/src/silent_cascade/train/pilot_offline.py
+index 46567e9..9cb12bf 100644
+--- a/src/silent_cascade/train/pilot_offline.py
++++ b/src/silent_cascade/train/pilot_offline.py
+@@ -1,21 +1,20 @@
+ """Fresh-interpreter network/import denial around actual train/eval/replay/report."""
+ 
+ import hashlib
+ import json
+ import os
+ import re
+ import shutil
+ import stat
+ import subprocess
+ import sys
+-import uuid
+ from dataclasses import asdict, dataclass
+ from pathlib import Path
+ from typing import Literal
+ 
+ from pydantic import Field
+ 
+ from silent_cascade.validation import StrictModel
+ 
+ 
+ class PilotOfflineReport(StrictModel):
+@@ -492,144 +491,191 @@ def _offline_source_identity():
+         str(path.relative_to(root)): sha256_bytes(path.read_bytes())
+         for path in sorted((root / "src/silent_cascade").rglob("*.py"))
+     }
+     return revision.decode().strip(), sha256_bytes(canonical_json_bytes(source))
+ 
+ 
+ def validate_offline_launch(output_dir, intent_sha256):
+     """The exact parent-authorized bootstrap is checked before any worker import."""
+     from silent_cascade.hashing import sha256_bytes
+     from silent_cascade.train.evidence_types import read_bytes
+-    from silent_cascade.train.pilot_offline_process import OfflineProcessIntent, _parse_record
++    from silent_cascade.train.pilot_offline_process import (
++        OfflineProcessIntent,
++        _parse_record,
++        path_identity,
++    )
+ 
+     output_dir = Path(output_dir).absolute()
+     raw = read_bytes(output_dir / "intent.json", limit=16384)
+     intent = _parse_record(raw, OfflineProcessIntent)
+     if (
+         sha256_bytes(raw) != intent_sha256
+         or len(raw) > intent.limits["record_bytes"]
+-        or intent.output_root != str(output_dir)
++        or intent.output_root_sha256 != path_identity(b"output-root", str(output_dir))
+         or output_dir.resolve() != output_dir
+         or intent.bootstrap_sha256 != sha256_bytes(_PROGRAM.encode())
+-        or intent.python_executable != sys.executable
++        or intent.python_executable_sha256 != path_identity(b"python-executable", sys.executable)
+         or intent.python_sha256 != _python_sha256()
+         or (intent.source_commit, intent.executed_source_sha256) != _offline_source_identity()
+         or (output_dir / "process-result.json").exists()
+     ):
+         raise ValueError("offline process launch authority differs")
+     return intent
+ 
+ 
+-def measure_pilot_offline(*, output_dir, process_limits=None):
+-    from silent_cascade.train.pilot_offline_process import OfflineProcessLimits
++def measure_pilot_offline(*, output_dir, process_limits=None, process_custody=None):
++    """Fresh launches require private same-owner custody; inherited routing is deferred."""
++    from silent_cascade.train.pilot_offline_process import (
++        OfflineProcessCustody,
++        OfflineProcessLimits,
++        require_offline_process_custody,
++    )
+ 
+     global _PENDING_OFFLINE_LAUNCH
+     output_dir = Path(output_dir).absolute()
+-    limits = OfflineProcessLimits() if process_limits is None else process_limits
++    limits = process_limits
++    if limits is None:
++        limits = (
++            process_custody.limits
++            if type(process_custody) is OfflineProcessCustody
++            else OfflineProcessLimits()
++        )
+     if type(limits) is not OfflineProcessLimits:
+         raise ValueError("invalid offline process limits")
+     if output_dir.resolve() != output_dir or ".." in output_dir.parts:
+         raise ValueError("offline process output root must be canonical")
+     if _PENDING_OFFLINE_LAUNCH is not None:
+         raise ValueError("offline process launch already active")
+     if output_dir.exists() and any(output_dir.iterdir()):
+         raise ValueError("offline process attempt already exists; preserve its evidence")
++    custody = require_offline_process_custody(process_custody, output_dir=output_dir, limits=limits)
+     from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+     from silent_cascade.train.evidence_types import read_bytes
+     from silent_cascade.train.pilot_data import _publish_pilot_bytes
+     from silent_cascade.train.pilot_offline_process import (
+         OfflineProcessIntent,
+         OfflineProcessResult,
++        _publish_private_process_bytes,
+         capture_offline_process,
++        path_identity,
+     )
+ 
+     root = Path(__file__).resolve().parents[3]
+     git_pin = _BOUNDARY_GIT_PIN or resolve_offline_git()
+     revision, source_sha256 = _offline_source_identity()
+     intent = OfflineProcessIntent(
+-        schema_version="phase4-offline-process-intent-v1",
+-        attempt=uuid.uuid4().hex,
+-        output_root=str(output_dir),
++        schema_version="phase4-offline-process-intent-v2",
++        attempt=custody.attempt_id,
++        output_root_sha256=path_identity(b"output-root", str(output_dir)),
+         bootstrap_sha256=sha256_bytes(_PROGRAM.encode()),
+-        python_executable=sys.executable,
++        python_executable_sha256=path_identity(b"python-executable", sys.executable),
+         python_sha256=_python_sha256(),
+         source_commit=revision,
+         executed_source_sha256=source_sha256,
+         limits=asdict(limits),
+     )
+     intent_raw = canonical_json_bytes(intent)
+     if len(intent_raw) > limits.record_bytes:
+         raise ValueError("offline process intent exceeds reserved record limit")
+-    # Intent and result each need their full durable-publication peak reserved
+-    # by the caller; no storage reservation is created or replenished here.
++    digest = sha256_bytes(intent_raw)
+     try:
++        require_offline_process_custody(custody, output_dir=output_dir, phase=0)
++        _publish_private_process_bytes(
++            custody,
++            "binding.json",
++            canonical_json_bytes(
++                {
++                    "attempt": intent.attempt,
++                    "intent_sha256": digest,
++                    "limits": asdict(limits),
++                }
++            ),
++        )
++        require_offline_process_custody(custody, output_dir=output_dir, phase=1)
+         _publish_pilot_bytes(output_dir / "intent.json", intent_raw)
+     except Exception as error:
+         raise ValueError("offline process intent publication failed") from error
+-    digest = sha256_bytes(intent_raw)
++    require_offline_process_custody(custody, output_dir=output_dir, phase=2)
+     _PENDING_OFFLINE_LAUNCH = (str(output_dir), digest)
+     try:
+         captured = capture_offline_process(
+             [sys.executable, "-B", "-c", _PROGRAM, str(output_dir), digest],
+             cwd=root,
+             env=offline_environment(output_dir, git_pin=git_pin),
+             limits=limits,
+         )
+     except Exception as error:
+         raise ValueError(
+             "offline process capture/join failed; attempt remains incomplete"
+         ) from error
+     finally:
+         _PENDING_OFFLINE_LAUNCH = None
+-    reason = captured.reason
++    reason = captured.reason or (
++        "private_output_rejected" if captured.stdout or captured.stderr else None
++    )
+     report, report_sha256 = None, None
+     if reason is None:
+         try:
+             if read_bytes(output_dir / "intent.json", limit=limits.record_bytes) != intent_raw:
+                 raise ValueError("offline process intent changed during capture")
+             raw = read_bytes(output_dir / "offline.json", limit=16384)
+             report = parse_offline_report(raw, require_process=True)
+             if (
+                 not captured.eof
+                 or not isinstance(report, PilotOfflineReportV2)
+                 or report.process_intent_sha256 != digest
+                 or report.source_commit != revision
+                 or report.executed_source_sha256 != source_sha256
+             ):
+                 raise ValueError("offline process report binding differs")
+             report_sha256 = sha256_bytes(raw)
+         except Exception:
+             reason = "invalid_report"
+-    for name in ("stdout", "stderr"):
++    for phase, name in enumerate(("stdout", "stderr"), 2):
++        payload = getattr(captured, name)
++        if not payload:
++            continue
++        try:
++            require_offline_process_custody(custody, output_dir=output_dir, phase=phase)
++            _publish_private_process_bytes(custody, name + ".raw", payload)
++        except Exception:
++            reason = captured.reason or "private_custody_failure"
++    for phase, name in enumerate(("stdout", "stderr"), 4):
++        if getattr(captured, name):
++            continue
+         try:
+-            _publish_pilot_bytes(output_dir / (name + ".txt"), getattr(captured, name))
++            require_offline_process_custody(custody, output_dir=output_dir, phase=phase)
++            _publish_pilot_bytes(output_dir / (name + ".txt"), b"")
+         except Exception:
+-            reason = captured.reason or "publication_failure"
++            reason = reason or "publication_failure"
+     result = OfflineProcessResult(
+-        schema_version="phase4-offline-process-result-v1",
++        schema_version="phase4-offline-process-result-v2",
+         status="completed" if reason is None else "failed",
+         intent_sha256=digest,
+         attempt=intent.attempt,
+         pid=captured.pid,
+         returncode=captured.returncode,
+         reason=reason,
+         eof=captured.eof,
+         stdout_bytes=len(captured.stdout),
+         stderr_bytes=len(captured.stderr),
+         stdout_sha256=sha256_bytes(captured.stdout),
+         stderr_sha256=sha256_bytes(captured.stderr),
++        stdout_disposition="private_rejected" if captured.stdout else "empty_public",
++        stderr_disposition="private_rejected" if captured.stderr else "empty_public",
+         offline_sha256=report_sha256 if reason is None else None,
+     )
+     raw_result = canonical_json_bytes(result)
+     if len(raw_result) > limits.record_bytes:
+         raise ValueError("offline process result exceeds reserved record limit")
+     try:
++        require_offline_process_custody(custody, output_dir=output_dir, phase=6)
+         _publish_pilot_bytes(output_dir / "process-result.json", raw_result)
+     except Exception as error:
+         raise ValueError("offline process terminal publication failed") from error
+     if reason is not None:
+         raise ValueError("offline process failed: " + reason)
+     return report
+ 
+ 
+ def _worker(directory, attempts, blocked, *, process_intent_sha256):
+     validate_offline_launch(directory, process_intent_sha256)
+diff --git a/src/silent_cascade/train/pilot_offline_process.py b/src/silent_cascade/train/pilot_offline_process.py
+index e299298..9f5cf1b 100644
+--- a/src/silent_cascade/train/pilot_offline_process.py
++++ b/src/silent_cascade/train/pilot_offline_process.py
+@@ -1,29 +1,38 @@
+ """Bounded parent process evidence; callers reserve publication space before launch.
+ 
+ This is not a child filesystem quota. No scientific modules are imported here.
+ """
+ 
+ import os
++import re
+ import selectors
++import stat
+ import subprocess
+ import time
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Annotated, Literal
++from typing import TYPE_CHECKING, Annotated, Literal
+ 
+ from pydantic import Field, model_validator
+ 
+ from silent_cascade.errors import ArtifactIntegrityError
+ from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+ from silent_cascade.validation import StrictModel
+ 
++if TYPE_CHECKING:
++    from silent_cascade.archive.ledger import (
++        _RetainedHistoryScope,
++        _ScopedAdmission,
++        _StorageBudget,
++    )
++
+ 
+ @dataclass(frozen=True)
+ class OfflineProcessLimits:
+     stdout_bytes: int = 256 * 1024
+     stderr_bytes: int = 256 * 1024
+     record_bytes: int = 16 * 1024
+     timeout_seconds: int = 180
+ 
+     def __post_init__(self):
+         for name, maximum in (
+@@ -34,21 +43,21 @@ class OfflineProcessLimits:
+         ):
+             value = getattr(self, name)
+             if type(value) is not int or not 0 < value <= maximum:
+                 raise ValueError("invalid offline process limit: " + name)
+ 
+ 
+ Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+ Attempt = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+ 
+ 
+-class OfflineProcessIntent(StrictModel):
++class OfflineProcessIntentV1(StrictModel):
+     schema_version: Literal["phase4-offline-process-intent-v1"]
+     attempt: Attempt
+     output_root: str = Field(min_length=1, max_length=4096)
+     bootstrap_sha256: Hash
+     python_executable: str = Field(min_length=1, max_length=4096)
+     python_sha256: Hash
+     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+     executed_source_sha256: Hash
+     limits: dict[str, int]
+ 
+@@ -58,21 +67,46 @@ class OfflineProcessIntent(StrictModel):
+             raise ValueError("offline process intent limits differ")
+         OfflineProcessLimits(**self.limits)
+         if any(
+             not Path(path).is_absolute() or ".." in Path(path).parts
+             for path in (self.output_root, self.python_executable)
+         ):
+             raise ValueError("offline process intent paths must be absolute")
+         return self
+ 
+ 
+-class OfflineProcessResult(StrictModel):
++class OfflineProcessIntent(StrictModel):
++    schema_version: Literal["phase4-offline-process-intent-v2"]
++    attempt: Attempt
++    output_root_sha256: Hash
++    bootstrap_sha256: Hash
++    python_executable_sha256: Hash
++    python_sha256: Hash
++    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
++    executed_source_sha256: Hash
++    limits: dict[str, int]
++
++    @model_validator(mode="after")
++    def closed_limits(self):
++        if set(self.limits) != {"stdout_bytes", "stderr_bytes", "record_bytes", "timeout_seconds"}:
++            raise ValueError("offline process intent limits differ")
++        OfflineProcessLimits(**self.limits)
++        return self
++
++
++def path_identity(kind: bytes, value: str) -> str:
++    if kind not in {b"output-root", b"python-executable"}:
++        raise ValueError("offline process identity kind differs")
++    return sha256_bytes(b"phase4-offline-process-v2\0" + kind + b"\0" + os.fsencode(value))
++
++
++class OfflineProcessResultV1(StrictModel):
+     schema_version: Literal["phase4-offline-process-result-v1"]
+     status: Literal["completed", "failed"]
+     intent_sha256: Hash
+     attempt: Attempt
+     pid: int | None = Field(ge=1)
+     returncode: int | None
+     reason: (
+         Literal[
+             "output_limit",
+             "timeout",
+@@ -109,37 +143,367 @@ class OfflineProcessResult(StrictModel):
+             raise ValueError("offline process child identity/exit differs")
+         if self.reason == "launch_failure" and (self.pid is not None or self.eof):
+             raise ValueError("offline process failed launch has child identity")
+         if self.pid is None and self.reason not in {"launch_failure", "cancelled"}:
+             raise ValueError("offline process child identity missing")
+         if self.reason == "nonzero_exit" and self.returncode == 0:
+             raise ValueError("offline process nonzero exit is zero")
+         return self
+ 
+ 
++class OfflineProcessResult(OfflineProcessResultV1):
++    schema_version: Literal["phase4-offline-process-result-v2"]
++    stdout_disposition: Literal["empty_public", "private_rejected"]
++    stderr_disposition: Literal["empty_public", "private_rejected"]
++    reason: (
++        Literal[
++            "output_limit",
++            "timeout",
++            "nonzero_exit",
++            "launch_failure",
++            "cancelled",
++            "capture_failure",
++            "invalid_report",
++            "publication_failure",
++            "private_output_rejected",
++            "private_custody_failure",
++        ]
++        | None
++    )
++
++    @model_validator(mode="after")
++    def private_streams_are_failures(self):
++        for name in ("stdout", "stderr"):
++            count = getattr(self, name + "_bytes")
++            digest = getattr(self, name + "_sha256")
++            if getattr(self, name + "_disposition") == "empty_public":
++                if count != 0 or digest != sha256_bytes(b""):
++                    raise ValueError("offline process empty stream differs")
++            elif count <= 0 or self.status != "failed" or self.offline_sha256 is not None:
++                raise ValueError("offline process private stream differs")
++        return self
++
++
++# Fixed publication sequence; no caller-supplied names or private locators.
++_PUBLICATION_NAMES = (
++    "binding.json",
++    "intent.json",
++    "stdout.raw",
++    "stderr.raw",
++    "stdout.txt",
++    "stderr.txt",
++    "process-result.json",
++)
++_PRIVATE_NAMES = {"binding.json", "stdout.raw", "stderr.raw"}
++_BLOCK = 4096
++
++
++def _category(budget, state, path):
++    relative = path.relative_to(budget.workspace)
++    if relative.parts[:1] == (budget.root.name,):
++        return "metadata"
++    for prefix, category in sorted(
++        state["paths"].items(), key=lambda item: len(Path(item[0]).parts), reverse=True
++    ):
++        if relative.is_relative_to(prefix):
++            return category
++    return "scratch"
++
++
++def _custody_paths(budget, output, attempt):
++    if (
++        output.name != "offline"
++        or output.parent.name != "final"
++        or output.resolve() != output
++        or ".." in output.parts
++        or re.fullmatch(r"[0-9a-f]{32}", attempt) is None
++    ):
++        raise ValueError("offline process custody root differs")
++    budget.require_path(output)
++    private = budget.workspace / "logs/offline-process-private" / attempt
++    budget.require_path(private)
++    run = output.parent.parent
++    state = budget._state()
++    forbidden = [budget.root, budget.workspace / "logs"] + [
++        budget.workspace / path
++        for path, category in state["paths"].items()
++        if category in {"spool", "cache"}
++    ]
++    if any(run.is_relative_to(path) or path.is_relative_to(run) for path in forbidden):
++        raise ValueError("offline process custody overlaps public run")
++    if _category(budget, state, private) != "logs":
++        raise ValueError("offline process private custody must count as logs")
++    if any(_category(budget, state, private / name) != "logs" for name in _PRIVATE_NAMES):
++        raise ValueError("offline process private member category differs")
++    # Frozen engineering inventories exclude this live workspace, not individual
++    # filenames. check_scoped authenticates that workspace/snapshot relationship.
++    return private, state
++
++
++def _publication_peaks(budget, state, output, private, limits, phase=0):
++    if type(phase) is not int or not 0 <= phase <= len(_PUBLICATION_NAMES):
++        raise ValueError("offline process publication phase differs")
++    peaks = {}
++    missing_dirs = set()
++    for name in _PUBLICATION_NAMES[phase:]:
++        parent = private if name in _PRIVATE_NAMES else output
++        category = _category(budget, state, parent / name)
++        size = (
++            limits.record_bytes
++            if name.endswith(".json")
++            else getattr(limits, name.split(".")[0] + "_bytes")
++            if name.endswith(".raw")
++            else 0
++        )
++        peaks[category] = peaks.get(category, 0) + 2 * ((size + _BLOCK - 1) // _BLOCK) * _BLOCK
++        peaks[category] += 2 * _BLOCK  # final and possible temporary name
++        for directory in (parent, *parent.parents):
++            if directory.exists():
++                break
++            missing_dirs.add(directory)
++    for directory in missing_dirs:
++        category = _category(budget, state, directory)
++        peaks[category] = peaks.get(category, 0) + _BLOCK
++    category = _category(budget, state, output)
++    peaks[category] = peaks.get(category, 0) + _BLOCK
++    return tuple(sorted(peaks.items()))
++
++
++def _check_custody_reservation(budget, retained, token, peaks):
++    if budget.active_reservation != token or retained.reservation_token != token:
++        raise ValueError("offline process custody reservation differs")
++    if retained.owner_pid != os.getpid():
++        raise ValueError("offline process custody requires its original owner")
++    allocated = budget.check_scoped(retained)
++    active = budget._state()["reservations"][token]
++    if (active["pid"], active["create_time"]) != (retained.owner_pid, retained.owner_create_time):
++        raise ValueError("offline process custody owner differs")
++    for category, peak in peaks:
++        remaining = active["amounts"].get(category, 0) - max(
++            0, allocated[category] - active["before"][category]
++        )
++        if remaining < peak:
++            raise ValueError("offline process custody allowance exhausted")
++
++
++@dataclass(frozen=True, slots=True, repr=False)
++class OfflineProcessCustody:
++    budget: "_StorageBudget"
++    retained: "_RetainedHistoryScope"
++    token: str
++    owner_pid: int
++    owner_create_time: float
++    workspace_device: int
++    workspace_inode: int
++    directory_fd: int
++    directory_device: int
++    directory_inode: int
++    attempt_id: str
++    output_root_sha256: str
++    limits: OfflineProcessLimits
++    category_peaks: tuple[tuple[str, int], ...]
++
++    def __reduce_ex__(self, protocol):
++        raise TypeError("offline process custody is private operational state")
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *exception):
++        self.close()
++
++    def close(self):
++        # Descriptor ownership ends here; retained bytes are never removed.
++        os.close(self.directory_fd)
++
++
++def prepare_offline_process_custody(
++    *,
++    budget: "_StorageBudget",
++    admission: "_ScopedAdmission",
++    output_dir: Path,
++    limits: OfflineProcessLimits,
++    attempt_id: str,
++) -> OfflineProcessCustody:
++    """Suballocate an already held same-owner reservation; never create a ledger."""
++    from silent_cascade.archive.catalog import _pinned_directory
++    from silent_cascade.archive.ledger import _ScopedAdmission, _StorageBudget
++    from silent_cascade.archive.transport import _lock
++
++    if type(budget) is not _StorageBudget or type(admission) is not _ScopedAdmission:
++        raise ValueError("offline process custody admission differs")
++    if type(limits) is not OfflineProcessLimits:
++        raise ValueError("offline process custody limits differ")
++    output = Path(output_dir).absolute()
++    private, state = _custody_paths(budget, output, attempt_id)
++    if private.exists() or private.is_symlink() or (output.exists() and any(output.iterdir())):
++        raise ValueError("offline process custody attempt already exists")
++    if os.statvfs(budget.workspace).f_frsize > _BLOCK:
++        raise ValueError("offline process custody allocation granule unsupported")
++    peaks = _publication_peaks(budget, state, output, private, limits)
++    with _lock(control_dir=budget.root, relative=("workspace.lock",), shared=False, blocking=True):
++        _check_custody_reservation(budget, admission.retained, admission.token, peaks)
++        with _pinned_directory(budget.workspace) as workspace_fd:
++            workspace_info = os.fstat(workspace_fd)
++            parent = os.dup(workspace_fd)
++            try:
++                for part in ("logs", "offline-process-private", attempt_id):
++                    try:
++                        os.mkdir(part, mode=0o700, dir_fd=parent)
++                        os.fsync(parent)
++                    except FileExistsError:
++                        if part == attempt_id:
++                            raise ValueError(
++                                "offline process custody attempt already exists"
++                            ) from None
++                    child = os.open(
++                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
++                    )
++                    os.close(parent)
++                    parent = child
++                    info = os.fstat(parent)
++                    if info.st_dev != budget.device or (
++                        part != "logs" and stat.S_IMODE(info.st_mode) != 0o700
++                    ):
++                        raise ValueError("offline process private directory differs")
++                descriptor = os.dup(parent)
++            finally:
++                os.close(parent)
++    return OfflineProcessCustody(
++        budget,
++        admission.retained,
++        admission.token,
++        admission.retained.owner_pid,
++        admission.retained.owner_create_time,
++        workspace_info.st_dev,
++        workspace_info.st_ino,
++        descriptor,
++        info.st_dev,
++        info.st_ino,
++        attempt_id,
++        path_identity(b"output-root", str(output)),
++        limits,
++        peaks,
++    )
++
++
++def require_offline_process_custody(custody, *, output_dir, limits=None, phase=0):
++    """Check live authority before costly work and every parent publication."""
++    from silent_cascade.archive.transport import _lock
++
++    if type(custody) is not OfflineProcessCustody:
++        raise ValueError("offline process custody required")
++    output = Path(output_dir).absolute()
++    if (
++        custody.output_root_sha256 != path_identity(b"output-root", str(output))
++        or (limits is not None and limits != custody.limits)
++        or (custody.owner_pid, custody.owner_create_time)
++        != (custody.retained.owner_pid, custody.retained.owner_create_time)
++    ):
++        raise ValueError("offline process custody binding differs")
++    budget = custody.budget
++    private, state = _custody_paths(budget, output, custody.attempt_id)
++    info, current = os.fstat(custody.directory_fd), private.stat(follow_symlinks=False)
++    workspace = budget.workspace.stat(follow_symlinks=False)
++    if (
++        (workspace.st_dev, workspace.st_ino) != (custody.workspace_device, custody.workspace_inode)
++        or (info.st_dev, info.st_ino) != (custody.directory_device, custody.directory_inode)
++        or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)
++        or stat.S_IMODE(info.st_mode) != 0o700
++        or set(os.listdir(custody.directory_fd)) - _PRIVATE_NAMES
++        or (phase == 0 and os.listdir(custody.directory_fd))
++    ):
++        raise ValueError("offline process private directory changed")
++    with _lock(control_dir=budget.root, relative=("workspace.lock",), shared=False, blocking=True):
++        _check_custody_reservation(
++            budget,
++            custody.retained,
++            custody.token,
++            _publication_peaks(budget, state, output, private, custody.limits, phase),
++        )
++    return custody
++
++
++def _publish_private_process_bytes(custody, name, payload):
++    if name not in _PRIVATE_NAMES or type(payload) is not bytes:
++        raise ValueError("offline process private member differs")
++    bound = (
++        custody.limits.record_bytes
++        if name == "binding.json"
++        else getattr(custody.limits, name.split(".")[0] + "_bytes")
++    )
++    if len(payload) > bound:
++        raise ValueError("offline process private member exceeds bound")
++    descriptor = os.open(
++        name,
++        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
++        0o600,
++        dir_fd=custody.directory_fd,
++    )
++    try:
++        view = memoryview(payload)
++        while view:
++            written = os.write(descriptor, view)
++            if written <= 0:
++                raise OSError("offline process private write failed")
++            view = view[written:]
++        os.fsync(descriptor)
++    finally:
++        os.close(descriptor)
++    os.fsync(custody.directory_fd)
++
++
+ _PROCESS_NAMES = ("intent.json", "process-result.json", "stdout.txt", "stderr.txt", "offline.json")
+ 
+ 
+ def _parse_record(raw, model):
+     from silent_cascade.train.evidence_types import decode_json
+ 
+     try:
+         return model.model_validate_json(canonical_json_bytes(decode_json(raw, limit=16384)))
+     except (ValueError, TypeError, ArtifactIntegrityError) as error:
+         raise ValueError("invalid offline process record") from error
+ 
+ 
+-def read_offline_process_outcome(run_dir, *, report, evidence_context=None, unavailable=None):
++def _parse_versioned_process_record(raw, *, intent):
++    from silent_cascade.train.evidence_types import decode_json
++
++    value = decode_json(raw, limit=16384)
++    version = value.get("schema_version") if isinstance(value, dict) else None
++    models = (
++        {
++            "phase4-offline-process-intent-v1": OfflineProcessIntentV1,
++            "phase4-offline-process-intent-v2": OfflineProcessIntent,
++        }
++        if intent
++        else {
++            "phase4-offline-process-result-v1": OfflineProcessResultV1,
++            "phase4-offline-process-result-v2": OfflineProcessResult,
++        }
++    )
++    if version not in models:
++        raise ValueError("offline process record version differs")
++    return _parse_record(raw, models[version])
++
++
++def read_offline_process_outcome(
++    run_dir,
++    *,
++    report,
++    evidence_context=None,
++    unavailable=None,
++    require_safe_process=False,
++):
+     """Verify all available process members, retaining only one cold lease at a time.
+ 
+-    Recorded machine paths identify the original launch; cold verification can run
+-    on another machine or after export. Only the logical session root is current.
++    Forensic v1 records remain readable. Current proof requires privacy-safe v2;
++    neither version compares machine identities with the verifier's local paths.
+     """
+     from silent_cascade.archive.readers import evidence_path, logical_root
+     from silent_cascade.train.evidence_types import decode_json, read_bytes
+     from silent_cascade.train.pilot_offline import parse_offline_report
+ 
+     if evidence_context is not None and (
+         run_dir is None or logical_root(run_dir, evidence_context) != "."
+     ):
+         raise ValueError("offline process evidence context root differs")
+     if run_dir is not None and (run_dir / "final/offline").is_symlink():
+@@ -179,47 +543,66 @@ def read_offline_process_outcome(run_dir, *, report, evidence_context=None, unav
+         if report is not None and parsed_report != report:
+             raise ValueError("offline process report projection differs")
+         report = parsed_report
+     marked = report is not None and report.evidence_kind == "offline_smoke_diagnostic_v2"
+     intent = None
+     if intent_raw is not None:
+         legacy = decode_json(intent_raw, limit=16384) == {
+             "evidence_kind": "offline_smoke_diagnostic"
+         }
+         if not legacy:
+-            intent = _parse_record(intent_raw, OfflineProcessIntent)
+-        elif marked or result_raw is not None:
++            intent = _parse_versioned_process_record(intent_raw, intent=True)
++        elif marked or result_raw is not None or require_safe_process:
+             raise ValueError("offline process intent/report markers contradict")
+-    protocol = marked or intent is not None or result_raw is not None
++    protocol = marked or intent is not None or result_raw is not None or require_safe_process
+     if not protocol:
+         return None
+     if report is not None and not marked:
+         raise ValueError("offline process cannot use legacy diagnostic report")
+-    result = None if result_raw is None else _parse_record(result_raw, OfflineProcessResult)
++    result = (
++        None if result_raw is None else _parse_versioned_process_record(result_raw, intent=False)
++    )
++    if require_safe_process and (
++        (intent is not None and type(intent) is not OfflineProcessIntent)
++        or (result is not None and type(result) is not OfflineProcessResult)
++    ):
++        raise ValueError("offline process privacy-safe version required")
++    if (
++        intent is not None
++        and result is not None
++        and ((type(intent) is OfflineProcessIntent) != (type(result) is OfflineProcessResult))
++    ):
++        raise ValueError("offline process intent/result versions differ")
+     limits = OfflineProcessLimits(**intent.limits) if intent is not None else OfflineProcessLimits()
+     for name, raw in (("intent.json", intent_raw), ("process-result.json", result_raw)):
+         if raw is not None and len(raw) > limits.record_bytes:
+             raise ValueError("offline process record exceeds intent limit")
+         if raw is None:
+             unavailable.append("offline.process:" + name)
+     for name in ("stdout", "stderr"):
+         bound = getattr(limits, name + "_bytes")
+         raw = read(name + ".txt", bound)
++        private = (
++            type(result) is OfflineProcessResult
++            and getattr(result, name + "_disposition") == "private_rejected"
++        )
++        if private and raw is not None:
++            raise ValueError("offline process private stream has public attachment")
+         if result is not None:
+             if getattr(result, name + "_bytes") > bound:
+                 raise ValueError("offline process log exceeds limit: " + name)
+             if raw is not None and (
+                 len(raw) != getattr(result, name + "_bytes")
+                 or sha256_bytes(raw) != getattr(result, name + "_sha256")
+             ):
+                 raise ValueError("offline process log differs: " + name)
+-        if raw is None:
++        if raw is None and not private:
+             unavailable.append("offline.process:" + name + ".txt")
+     if raw_report is None:
+         unavailable.append("offline.process:offline.json")
+     if intent is not None:
+         digest = sha256_bytes(intent_raw)
+         if result is not None and (
+             result.intent_sha256 != digest or result.attempt != intent.attempt
+         ):
+             raise ValueError("offline process intent/attempt binding differs")
+         if report is not None and (
+@@ -250,32 +633,42 @@ def require_completed_offline_process(run_dir):
+     if not root.exists():
+         return False
+     if not any(root.iterdir()):
+         return False
+     try:
+         report = (
+             parse_offline_report(read_bytes(root / "offline.json", limit=16384))
+             if (root / "offline.json").exists()
+             else None
+         )
+-        result = read_offline_process_outcome(run_dir, report=report, unavailable=[])
++        result = read_offline_process_outcome(
++            run_dir, report=report, unavailable=[], require_safe_process=True
++        )
+         if (
+             report is None
+             or report.evidence_kind != "offline_smoke_diagnostic_v2"
+             or result is None
+         ):
+             raise ValueError("missing completed outcome")
+     except (ValueError, OSError, ArtifactIntegrityError) as error:
+         raise ValueError("offline process attempt is not reusable") from error
+     return True
+ 
+ 
++def preflight_offline_process(run_dir, custody=None):
++    """Safe reuse needs no new authority; fresh work fails before costly inputs."""
++    completed = require_completed_offline_process(run_dir)
++    if not completed:
++        require_offline_process_custody(custody, output_dir=run_dir / "final/offline")
++    return completed
++
++
+ @dataclass(frozen=True)
+ class CapturedOfflineProcess:
+     stdout: bytes
+     stderr: bytes
+     pid: int | None
+     returncode: int | None
+     reason: str | None
+     eof: bool
+ 
+ 
+diff --git a/src/silent_cascade/train/pilot_verification.py b/src/silent_cascade/train/pilot_verification.py
+index f4a6881..9a87b12 100644
+--- a/src/silent_cascade/train/pilot_verification.py
++++ b/src/silent_cascade/train/pilot_verification.py
+@@ -585,24 +585,24 @@ def measure_resume(config, *, model, optimizer, progress, source, device, output
+     publish_json(output_dir / "resume.json", result)
+     return result
+ 
+ 
+ def forecast_workload(**kwargs):
+     from silent_cascade.train.pilot_measurement import forecast_workload as forecast
+ 
+     return forecast(**kwargs)
+ 
+ 
+-def measure_pilot_offline(*, output_dir):
++def measure_pilot_offline(*, output_dir, offline_process_custody=None):
+     from silent_cascade.train.pilot_offline import measure_pilot_offline as measure
+ 
+-    return measure(output_dir=output_dir)
++    return measure(output_dir=output_dir, process_custody=offline_process_custody)
+ 
+ 
+ class DiagnosticSubset(StrictModel):
+     parent_manifest_sha256: str
+     parent_count: int
+     indices: tuple[int, ...]
+     episode_sha256s: tuple[str, ...]
+     variant_counts: dict[str, int]
+     purpose: Literal["action_diagnostic"] = "action_diagnostic"
+ 
+diff --git a/src/silent_cascade/train/pilot_workflow.py b/src/silent_cascade/train/pilot_workflow.py
+index 3fac730..a2e450b 100644
+--- a/src/silent_cascade/train/pilot_workflow.py
++++ b/src/silent_cascade/train/pilot_workflow.py
+@@ -399,21 +399,26 @@ def train_pilot(
+ def _workflow(
+     config,
+     manifest_dir,
+     run_dir,
+     device,
+     *,
+     resume=None,
+     complete,
+     archive_producer=None,
+     evidence_context=None,
++    offline_process_custody=None,
+ ):
++    if complete:
++        from silent_cascade.train.pilot_offline_process import preflight_offline_process
++
++        preflight_offline_process(run_dir, offline_process_custody)
+     if device not in {"cpu", "mps"}:
+         raise ValueError("pilot device must be cpu or mps")
+     _check_path(manifest_dir)
+     root, _, source = _source(config)
+     locator = manifest_dir.absolute().relative_to(root).as_posix()
+     identity = sha256_bytes(
+         canonical_json_bytes(
+             {
+                 "config_sha256": config.sha256,
+                 "executable_sha256": source.source_sha256,
+@@ -463,44 +468,48 @@ def _workflow(
+         if complete:
+             from silent_cascade.report.pilot import build_pilot_report
+             from silent_cascade.train.pilot_checks import _run_pilot_checks_owned
+ 
+             _run_pilot_checks_owned(
+                 run_dir=run_dir,
+                 config=config,
+                 output_path=run_dir / "phase4-gate.json",
+                 archive_producer=archive_producer,
+                 evidence_context=evidence_context,
++                offline_process_custody=offline_process_custody,
+             )
+             build_pilot_report(
+                 run_dir=run_dir, output_dir=run_dir / "report", evidence_context=evidence_context
+             )
+         return result
+ 
+ 
+ def run_pilot(
+     *,
+     config_path: Path,
+     manifest_dir: Path,
+     run_dir: Path,
+     device: str,
+     archive_producer=None,
+     evidence_context=None,
++    offline_process_custody=None,
+ ) -> PilotTrainingResult:
++    """Fresh complete workflows require explicit same-owner diagnostic custody."""
+     return _workflow(
+         resolve_pilot_path(config_path),
+         manifest_dir,
+         run_dir,
+         device,
+         complete=True,
+         archive_producer=archive_producer,
+         evidence_context=evidence_context,
++        offline_process_custody=offline_process_custody,
+     )
+ 
+ 
+ def evaluate_pilot(*, checkpoint: Path, manifest: Path, output: Path, device: str):
+     """Authenticate current source, introduced data and a concrete portable descriptor."""
+     for path in (checkpoint, manifest, output):
+         _check_path(path)
+     descriptor = PilotCheckpointDescriptor.model_validate_json(_read_pilot_bytes(checkpoint))
+     raw_manifest = read_json(manifest)
+     config = resolve_pilot_config(
+diff --git a/tests/pilot/test_pilot_offline_process.py b/tests/pilot/test_pilot_offline_process.py
+index 154f443..a337590 100644
+--- a/tests/pilot/test_pilot_offline_process.py
++++ b/tests/pilot/test_pilot_offline_process.py
+@@ -208,53 +208,67 @@ def _control_intent(root):
+ 
+ 
+ def _encoded(value):
+     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+ 
+ 
+ def _digest(raw):
+     return hashlib.sha256(raw).hexdigest()
+ 
+ 
++def _safe_control_intent(root):
++    value = _control_intent(root)
++    value["schema_version"] = "phase4-offline-process-intent-v2"
++    for field, kind in (
++        ("output_root", b"output-root"),
++        ("python_executable", b"python-executable"),
++    ):
++        value[field + "_sha256"] = _digest(
++            b"phase4-offline-process-v2\0" + kind + b"\0" + os.fsencode(value.pop(field))
++        )
++    return value
++
++
+ @pytest.mark.parametrize(
+     "mutation",
+     [
+         {"status": "completed", "returncode": 7},
+         {"status": "completed", "reason": "timeout"},
+         {"status": "completed", "eof": False},
+         {"status": "completed", "offline_sha256": None},
+         {"status": "failed", "reason": None},
+         {"status": "failed", "reason": "launch_failure", "pid": None, "returncode": 0},
+         {"status": "failed", "reason": "unknown"},
+         {"stdout_bytes": True},
+     ],
+ )
+ def test_terminal_record_rejects_impossible_completion(mutation):
+-    from silent_cascade.train.pilot_offline_process import OfflineProcessResult
++    from silent_cascade.train.pilot_offline_process import OfflineProcessResultV1
+ 
+     value = dict(
+         schema_version="phase4-offline-process-result-v1",
+         status="completed",
+         intent_sha256="a" * 64,
+         attempt="b" * 32,
+         pid=123,
+         returncode=0,
+         reason=None,
+         eof=True,
+         stdout_bytes=0,
+         stderr_bytes=0,
+         stdout_sha256=_digest(b""),
+         stderr_sha256=_digest(b""),
+         offline_sha256="c" * 64,
+     )
++    assert OfflineProcessResultV1.model_validate_json(_encoded(value)).model_dump() == value
+     with pytest.raises(ValueError):
+-        OfflineProcessResult.model_validate_json(_encoded(value | mutation))
++        OfflineProcessResultV1.model_validate_json(_encoded(value | mutation))
+ 
+ 
+ def test_marked_report_cannot_downgrade_to_legacy():
+     from silent_cascade.train.pilot_offline import parse_offline_report
+ 
+     # Deliberately invalid sentinel; this must never become scientific evidence.
+     with pytest.raises(ValueError):
+         parse_offline_report(b'{"evidence_kind":"offline_smoke_diagnostic_v2"}')
+ 
+ 
+@@ -319,58 +333,70 @@ class ProcessControlContext:
+             return fd
+ 
+         with monkeypatch.context() as patch:
+             patch.setattr(self, "entries", lambda: iter(entries))
+             patch.setattr(Path, "open", path_open)
+             patch.setattr(os, "open", descriptor_open)
+             yield
+         assert self.active == 0
+ 
+ 
+-def _cold_process_controls(tmp_path, *, failed=False):
++def _cold_process_controls(tmp_path, *, failed=False, safe=False, private=False):
+     run, backing = tmp_path / "run", tmp_path / "backing"
+     output = backing / "final/offline"
+-    intent = _encoded(_control_intent(run / "final/offline"))
++    intent = _encoded((_safe_control_intent if safe else _control_intent)(run / "final/offline"))
++    stdout = b"ok" if not safe or private else b""
+     # A terminal process control, intentionally lacking any offline.json report.
+     result = _encoded(
+         dict(
+-            schema_version="phase4-offline-process-result-v1",
++            schema_version="phase4-offline-process-result-v2"
++            if safe
++            else "phase4-offline-process-result-v1",
+             status="failed" if failed else "completed",
+             intent_sha256=_digest(intent),
+             attempt="a" * 32,
+             pid=123,
+             returncode=7 if failed else 0,
+             reason="nonzero_exit" if failed else None,
+             eof=True,
+-            stdout_bytes=2,
++            stdout_bytes=len(stdout),
+             stderr_bytes=0,
+-            stdout_sha256=_digest(b"ok"),
++            stdout_sha256=_digest(stdout),
+             stderr_sha256=_digest(b""),
+             offline_sha256=None if failed else _digest(b"invalid"),
++            **(
++                {
++                    "stdout_disposition": "private_rejected" if private else "empty_public",
++                    "stderr_disposition": "empty_public",
++                }
++                if safe
++                else {}
++            ),
+         )
+     )
+-    payloads = (
+-        ("intent.json", intent),
+-        ("process-result.json", result),
+-        ("stdout.txt", b"ok"),
+-        ("stderr.txt", b""),
++    payloads = tuple(
++        (name, raw)
++        for name, raw in (
++            ("intent.json", intent),
++            ("process-result.json", result),
++            ("stdout.txt", stdout),
++            ("stderr.txt", b""),
++        )
++        if not private or name != "stdout.txt"
+     )
+-    assert len(intent) <= 4096 and len(result) <= 4096
+-    assert sum(len(raw) for _, raw in payloads) <= 8194
++    assert len(intent) <= 1536 and len(result) <= 1024
++    assert sum(len(raw) for _, raw in payloads) <= 2562
+     run.mkdir()
+     output.mkdir(parents=True)
+     for name, raw in payloads:
+         (output / name).write_bytes(raw)
+-    names = [
+-        "final/offline/" + name
+-        for name in ("intent.json", "process-result.json", "stdout.txt", "stderr.txt")
+-    ]
++    names = ["final/offline/" + name for name, _ in payloads]
+     return run, output, ProcessControlContext(run, backing, names)
+ 
+ 
+ def test_cold_process_missing_report_is_unavailable_and_releases_lease(tmp_path):
+     from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
+ 
+     run, _, context = _cold_process_controls(tmp_path)
+     unavailable = []
+     assert (
+         read_offline_process_outcome(
+@@ -416,21 +442,30 @@ def test_process_reader_exhausts_inventory_before_payloads(tmp_path):
+ 
+ def test_process_reader_rejects_wrong_run_root_before_inventory(tmp_path):
+     from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
+ 
+     run, _, context = _cold_process_controls(tmp_path)
+     with pytest.raises(ValueError, match="root"):
+         read_offline_process_outcome(run / "wrong", report=None, evidence_context=context)
+     assert context.requests == [] and context.active == 0
+ 
+ 
+-def _measurement_control(monkeypatch, output, *, launch_failure=False):
++def _measurement_control(
++    monkeypatch,
++    output,
++    *,
++    launch_failure=False,
++    payload=b"ok",
++    descriptor=1,
++    exitcode=0,
++    pause=False,
++):
+     """Replace only the scientific command with a real invalid-sentinel child."""
+     from silent_cascade.train import pilot_offline
+ 
+     original = pilot_offline.subprocess.Popen
+     launched = []
+     monkeypatch.setattr(
+         pilot_offline,
+         "_BOUNDARY_GIT_PIN",
+         pilot_offline.OfflineGitPin(sys.executable, "2.45.0", "a" * 64),
+     )
+@@ -440,88 +475,98 @@ def _measurement_control(monkeypatch, output, *, launch_failure=False):
+         lambda: ("d" * 40, "e" * 64),
+         raising=False,
+     )
+ 
+     def tiny_child(command, *args, **kwargs):
+         assert command[:4] == [sys.executable, "-B", "-c", pilot_offline._PROGRAM]
+         assert command[4] == str(output)
+         assert (output / "intent.json").is_file()
+         if launch_failure:
+             raise OSError("control launch denied")
++        assert len(payload) <= 64
++        assert descriptor in {1, 2} and exitcode in {0, 7}
+         command = [
+             sys.executable,
+             "-B",
+             "-c",
+             "import os,sys; from pathlib import Path; "
+-            "Path(sys.argv[1],'offline.json').write_bytes(b'invalid'); os.write(1,b'ok')",
++            "Path(sys.argv[1],'offline.json').write_bytes(b'invalid'); "
++            f"os.write({descriptor},{payload!r}); "
++            + ("import time; time.sleep(10); " if pause else "")
++            + f"sys.exit({exitcode})",
+             str(output),
+         ]
+         process = original(command, *args, **kwargs)
+         launched.append(process)
+         return process
+ 
+     monkeypatch.setattr(pilot_offline.subprocess, "Popen", tiny_child)
+     return pilot_offline, launched
+ 
+ 
+ def test_measurement_persists_failed_invalid_report_and_fences_reuse(tmp_path, monkeypatch):
+-    output = tmp_path / "offline"
+-    module, launched = _measurement_control(monkeypatch, output)
+-    with pytest.raises(ValueError):
+-        module.measure_pilot_offline(output_dir=output)
+-    assert (output / "process-result.json").exists(), "failed process terminal record missing"
+-    record = json.loads((output / "process-result.json").read_bytes())
+-    assert record["status"] == "failed" and record["reason"] == "invalid_report"
+-    assert record["returncode"] == 0
+-    assert record["offline_sha256"] is None
+-    assert (output / "stdout.txt").read_bytes() == b"ok"
+-    before = {p.name: p.read_bytes() for p in output.iterdir() if p.is_file()}
+-    with pytest.raises(ValueError, match="offline process"):
+-        module.measure_pilot_offline(output_dir=output)
+-    assert before == {p.name: p.read_bytes() for p in output.iterdir() if p.is_file()}
+-    assert len(launched) == 1 and launched[0].poll() == 0
+-    with pytest.raises(ChildProcessError):
+-        os.waitpid(launched[0].pid, os.WNOHANG)
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        module, launched = _measurement_control(monkeypatch, output, payload=b"")
++        with pytest.raises(ValueError):
++            module.measure_pilot_offline(output_dir=output, process_custody=custody)
++        record = json.loads((output / "process-result.json").read_bytes())
++        assert record["status"] == "failed" and record["reason"] == "invalid_report"
++        assert record["returncode"] == 0 and record["offline_sha256"] is None
++        assert (output / "stdout.txt").read_bytes() == b""
++        assert record["stdout_disposition"] == record["stderr_disposition"] == "empty_public"
++        before = {p.name: p.read_bytes() for p in output.iterdir() if p.is_file()}
++        with pytest.raises(ValueError, match="offline process"):
++            module.measure_pilot_offline(output_dir=output, process_custody=custody)
++        assert before == {p.name: p.read_bytes() for p in output.iterdir() if p.is_file()}
++        assert len(launched) == 1 and launched[0].poll() == 0
++        with pytest.raises(ChildProcessError):
++            os.waitpid(launched[0].pid, os.WNOHANG)
+ 
+ 
+ def test_measurement_records_launch_failure_without_return_code(tmp_path, monkeypatch):
+-    output = tmp_path / "offline"
+-    module, launched = _measurement_control(monkeypatch, output, launch_failure=True)
+-    with pytest.raises(ValueError, match="offline process"):
+-        module.measure_pilot_offline(output_dir=output)
+-    record = json.loads((output / "process-result.json").read_bytes())
+-    assert record["reason"] == "launch_failure"
+-    assert record["returncode"] is None and record["pid"] is None
+-    assert launched == []
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        module, launched = _measurement_control(monkeypatch, output, launch_failure=True)
++        with pytest.raises(ValueError, match="offline process"):
++            module.measure_pilot_offline(output_dir=output, process_custody=custody)
++        record = json.loads((output / "process-result.json").read_bytes())
++        assert record["reason"] == "launch_failure"
++        assert record["returncode"] is None and record["pid"] is None
++        assert launched == []
+ 
+ 
+ @pytest.mark.parametrize(
+     "field,value",
+     [
+         ("bootstrap_sha256", "0" * 64),
+-        ("python_executable", "/other/python"),
+-        ("output_root", "/other/output"),
++        ("python_executable_sha256", "0" * 64),
++        ("output_root_sha256", "0" * 64),
+         ("python_sha256", "0" * 64),
+         ("source_commit", "0" * 40),
+         ("executed_source_sha256", "0" * 64),
+         (
+             "limits",
+             dict(stdout_bytes=262145, stderr_bytes=64, record_bytes=4096, timeout_seconds=2),
+         ),
+     ],
+ )
+ def test_bootstrap_rejects_changed_launch_authority(tmp_path, monkeypatch, field, value):
+     from silent_cascade.train import pilot_offline
+     from silent_cascade.train.pilot_offline import validate_offline_launch
+ 
+     monkeypatch.setattr(pilot_offline, "_offline_source_identity", lambda: ("d" * 40, "e" * 64))
+-    intent = _control_intent(tmp_path)
++    intent = _safe_control_intent(tmp_path)
+     with open(sys.executable, "rb") as executable:
+         python_sha256 = hashlib.file_digest(executable, "sha256").hexdigest()
+     intent.update(
+         bootstrap_sha256=_digest(pilot_offline._PROGRAM.encode()), python_sha256=python_sha256
+     )
+     intent[field] = value
+     raw = _encoded(intent)
+     assert len(raw) <= 4096
+     (tmp_path / "intent.json").write_bytes(raw)
+     with pytest.raises(ValueError, match="offline process"):
+@@ -574,41 +619,49 @@ def test_capture_cancellation_before_launch_has_no_child(monkeypatch):
+         limits=module.OfflineProcessLimits(),
+     )
+     assert captured.reason == "cancelled"
+     assert captured.pid is None and captured.returncode is None
+ 
+ 
+ @pytest.mark.parametrize("launch_failure", [False, True])
+ def test_log_publication_failure_never_publishes_completion(tmp_path, monkeypatch, launch_failure):
+     from silent_cascade.train import pilot_data
+ 
+-    output = tmp_path / "offline"
+-    module, launched = _measurement_control(monkeypatch, output, launch_failure=launch_failure)
+     original = pilot_data._publish_pilot_bytes
++    denied_names = []
+ 
+     def denied(path, raw):
+         if path.name == "stdout.txt":
++            denied_names.append(path.name)
+             raise OSError("control log publication denied")
+         original(path, raw)
+ 
+     monkeypatch.setattr(pilot_data, "_publish_pilot_bytes", denied)
+-    with pytest.raises(ValueError, match="offline process"):
+-        module.measure_pilot_offline(output_dir=output)
+-    record = json.loads((output / "process-result.json").read_bytes())
+-    assert record["status"] == "failed"
+-    assert record["reason"] == ("launch_failure" if launch_failure else "publication_failure")
+-    assert record["offline_sha256"] is None
+-    if launch_failure:
+-        assert launched == []
+-        assert record["pid"] is None and record["returncode"] is None
+-    else:
+-        assert len(launched) == 1 and launched[0].poll() == 0
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        module, launched = _measurement_control(
++            monkeypatch, output, launch_failure=launch_failure, payload=b""
++        )
++        with pytest.raises(ValueError, match="offline process"):
++            module.measure_pilot_offline(output_dir=output, process_custody=custody)
++        record = json.loads((output / "process-result.json").read_bytes())
++        assert record["status"] == "failed"
++        assert record["reason"] == ("launch_failure" if launch_failure else "invalid_report")
++        assert record["offline_sha256"] is None and denied_names == ["stdout.txt"]
++        assert not (output / "stdout.txt").exists()
++        if launch_failure:
++            assert launched == []
++            assert record["pid"] is None and record["returncode"] is None
++        else:
++            assert len(launched) == 1 and launched[0].poll() == 0
+ 
+ 
+ def test_cold_process_uses_only_active_declared_payload_lease(tmp_path, monkeypatch):
+     from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
+ 
+     run, output, context = _cold_process_controls(tmp_path)
+     with context.guarded_reads(monkeypatch):
+         assert (
+             read_offline_process_outcome(run, report=None, evidence_context=context, unavailable=[])
+             is None
+@@ -716,10 +769,456 @@ def test_broken_offline_root_cannot_admit_new_execution(tmp_path):
+ 
+ def test_broken_process_member_is_corruption_not_unavailability(tmp_path):
+     from silent_cascade.errors import ArtifactIntegrityError
+     from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
+ 
+     output = tmp_path / "final/offline"
+     output.mkdir(parents=True)
+     (output / "intent.json").symlink_to(tmp_path / "missing")
+     with pytest.raises((ValueError, ArtifactIntegrityError)):
+         read_offline_process_outcome(tmp_path, report=None, unavailable=[])
++
++
++def test_privacy_requires_custody_before_git(tmp_path, monkeypatch):
++    from silent_cascade.train import pilot_offline
++
++    def forbidden(*args, **kwargs):
++        raise AssertionError("Git reached without private capture custody")
++
++    monkeypatch.setattr(pilot_offline, "resolve_offline_git", forbidden)
++    monkeypatch.setattr(pilot_offline, "_offline_source_identity", forbidden)
++    with pytest.raises(ValueError, match="custody required"):
++        pilot_offline.measure_pilot_offline(output_dir=tmp_path / "run/final/offline")
++    assert not (tmp_path / "run").exists()
++
++
++def test_privacy_intent_hashes_replace_paths(tmp_path):
++    from silent_cascade.train.pilot_offline_process import OfflineProcessIntent
++
++    value = _control_intent(tmp_path)
++    root = value.pop("output_root")
++    executable = value.pop("python_executable")
++    value.update(
++        schema_version="phase4-offline-process-intent-v2",
++        output_root_sha256=_digest(b"phase4-offline-process-v2\0output-root\0" + os.fsencode(root)),
++        python_executable_sha256=_digest(
++            b"phase4-offline-process-v2\0python-executable\0" + os.fsencode(executable)
++        ),
++    )
++    intent = OfflineProcessIntent.model_validate_json(_encoded(value))
++    assert intent.model_dump() == value
++    assert os.fsencode(root) not in _encoded(intent.model_dump())
++    assert os.fsencode(executable) not in _encoded(intent.model_dump())
++    with pytest.raises(ValueError):
++        OfflineProcessIntent.model_validate_json(_encoded(value | {"output_root": root}))
++
++
++def test_privacy_nonempty_capture_never_enters_public_logs(tmp_path, monkeypatch):
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        module, launched = _measurement_control(monkeypatch, output, payload=b"/private/SECRET")
++        with pytest.raises(ValueError, match="private_output_rejected"):
++            module.measure_pilot_offline(output_dir=output, process_custody=custody)
++        private = budget.workspace / "logs/offline-process-private" / custody.attempt_id
++        assert (private / "stdout.raw").read_bytes() == b"/private/SECRET"
++        assert (private / "stdout.raw").stat().st_mode & 0o777 == 0o600
++        assert budget.measure()["logs"] >= sum(
++            path.stat().st_blocks * 512 for path in private.iterdir()
++        )
++        assert len(launched) == 1 and launched[0].poll() == 0
++        with pytest.raises(ChildProcessError):
++            os.waitpid(launched[0].pid, os.WNOHANG)
++        assert not (output / "stdout.txt").exists()
++        result = json.loads((output / "process-result.json").read_bytes())
++        assert result["status"] == "failed"
++        assert result["stdout_disposition"] == "private_rejected"
++        assert result["stdout_bytes"] == 15
++        assert result["stdout_sha256"] == _digest(b"/private/SECRET")
++        assert result["offline_sha256"] is None
++        intent_raw = (output / "intent.json").read_bytes()
++        assert os.fsencode(output) not in intent_raw
++        assert os.fsencode(sys.executable) not in intent_raw
++        assert (output / "stderr.txt").read_bytes() == b""
++
++
++@contextmanager
++def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144):
++    """Tiny ledger fixture; isolate only existing host ancestor authorities."""
++    import runpy
++
++    from silent_cascade.archive.ledger import _StorageBudget, initialize_workspace_ledger
++    from silent_cascade.archive.types import ArchivePolicy
++
++    helpers = runpy.run_path(str(Path(__file__).parents[1] / "archive/conftest.py"))
++    boundary = helpers["_authority_boundary"](tmp_path)
++    policy = ArchivePolicy(
++        workspace_bytes=16 * 1024**2,
++        spool_bytes=4096,
++        cache_bytes=4096,
++        pinned_bytes=4096,
++        metadata_bytes=1024**2,
++        scratch_bytes=1024**2,
++        logs_bytes=1024**2,
++        emergency_bytes=4096,
++        reserve_bytes=1024**2,
++        episode_bytes=2048,
++        pack_target_bytes=512,
++        journal_bytes=256,
++        chunk_bytes=64,
++        page_bytes=2048,
++    )
++    assert len(_encoded(policy.model_dump())) <= 4096
++    with helpers["_hide_host_authorities"](boundary):
++        workspace = tmp_path / "workspace"
++        initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
++        budget = _StorageBudget(workspace=workspace, policy=policy)
++        budget.bind(workspace / "run", category="metadata")
++        with budget._scoped_reservation(
++            admission={"control": "offline-privacy"}, logs=logs, metadata=metadata, scratch=65536
++        ) as admission:
++            yield budget, admission, workspace / "run/final/offline"
++
++
++def _prepare_privacy(budget, admission, output):
++    from silent_cascade.train import pilot_offline_process as process
++
++    return process.prepare_offline_process_custody(
++        budget=budget,
++        admission=admission,
++        output_dir=output,
++        limits=process.OfflineProcessLimits(
++            stdout_bytes=64, stderr_bytes=64, record_bytes=1024, timeout_seconds=2
++        ),
++        attempt_id="a" * 32,
++    )
++
++
++def test_privacy_custody_pins_counted_private_directory(tmp_path):
++    from dataclasses import FrozenInstanceError
++
++    from silent_cascade.hashing import canonical_json_bytes
++
++    with _privacy_ledger(tmp_path) as (budget, admission, output):
++        before = budget.measure()
++        custody = _prepare_privacy(budget, admission, output)
++        private = budget.workspace / "logs/offline-process-private" / ("a" * 32)
++        assert private.is_dir() and list(private.iterdir()) == []
++        assert os.fstat(custody.directory_fd).st_ino == private.stat().st_ino
++        assert private.stat().st_mode & 0o777 == 0o700
++        assert budget.measure()["logs"] >= before["logs"]
++        assert str(budget.workspace) not in repr(custody)
++        with pytest.raises((TypeError, ValueError)):
++            canonical_json_bytes(custody)
++        with pytest.raises(FrozenInstanceError):
++            custody.attempt_id = "b" * 32
++        fd = custody.directory_fd
++        custody.close()
++        with pytest.raises(OSError):
++            os.fstat(fd)
++        assert private.exists()
++
++
++@pytest.mark.parametrize(
++    "bad",
++    ["shape", "overlap", "spool", "symlink", "hardlink", "existing", "owner", "logs", "metadata"],
++)
++def test_privacy_custody_rejects_unadmitted_targets(tmp_path, bad):
++    from dataclasses import replace
++
++    from silent_cascade.archive.ledger import StorageBlocked
++
++    with _privacy_ledger(
++        tmp_path, logs=1 if bad == "logs" else 262144, metadata=1 if bad == "metadata" else 262144
++    ) as (budget, admission, output):
++        private = budget.workspace / "logs/offline-process-private" / ("a" * 32)
++        if bad == "shape":
++            output = budget.workspace / "wrong"
++        elif bad == "overlap":
++            output = budget.workspace / "logs/final/offline"
++        elif bad == "spool":
++            output = budget.workspace / "spool/run/final/offline"
++        elif bad == "symlink":
++            (budget.workspace / "run").symlink_to(budget.workspace / "absent")
++        elif bad == "hardlink":
++            (budget.workspace / "run").mkdir()
++            (budget.workspace / "run/first").write_bytes(b"x")
++            os.link(budget.workspace / "run/first", budget.workspace / "run/second")
++        elif bad == "existing":
++            private.mkdir(parents=True)
++        elif bad == "owner":
++            admission = replace(
++                admission, retained=replace(admission.retained, owner_create_time=0.0)
++            )
++        before = set(budget.workspace.rglob("*"))
++        with pytest.raises((ValueError, OSError, StorageBlocked)):
++            _prepare_privacy(budget, admission, output)
++        assert set(budget.workspace.rglob("*")) == before
++
++
++def test_privacy_terminal_disposition_is_strict():
++    from silent_cascade.train.pilot_offline_process import OfflineProcessResult
++
++    value = dict(
++        schema_version="phase4-offline-process-result-v2",
++        status="failed",
++        intent_sha256="a" * 64,
++        attempt="b" * 32,
++        pid=123,
++        returncode=0,
++        reason="private_output_rejected",
++        eof=True,
++        stdout_bytes=15,
++        stderr_bytes=0,
++        stdout_sha256=_digest(b"/private/SECRET"),
++        stderr_sha256=_digest(b""),
++        stdout_disposition="private_rejected",
++        stderr_disposition="empty_public",
++        offline_sha256=None,
++    )
++    assert OfflineProcessResult.model_validate_json(_encoded(value)).model_dump() == value
++    for mutation in (
++        {"stdout_disposition": "empty_public"},
++        {"stdout_bytes": 0},
++        {"stderr_disposition": "private_rejected"},
++        {"stderr_sha256": "f" * 64},
++        {"stdout_disposition": "redacted"},
++        {"status": "completed", "reason": None, "offline_sha256": "c" * 64},
++    ):
++        with pytest.raises(ValueError):
++            OfflineProcessResult.model_validate_json(_encoded(value | mutation))
++
++
++@pytest.mark.parametrize("caller", ["checks", "workflow"])
++def test_privacy_callers_stop_before_expensive_work(tmp_path, monkeypatch, caller):
++    def expensive(*args, **kwargs):
++        raise AssertionError("expensive boundary reached without custody")
++
++    with pytest.raises(ValueError, match="custody required"):
++        if caller == "checks":
++            from silent_cascade.train import pilot_checks
++
++            monkeypatch.setattr(pilot_checks, "authenticate_run", expensive)
++            monkeypatch.setattr(pilot_checks, "_evaluate", expensive)
++            pilot_checks._run_pilot_checks_owned(
++                run_dir=tmp_path / "run", config=None, output_path=tmp_path / "gate.json"
++            )
++        else:
++            from silent_cascade.train import pilot_workflow
++
++            monkeypatch.setattr(pilot_workflow, "_source", expensive)
++            monkeypatch.setattr(pilot_workflow, "_train", expensive)
++            pilot_workflow._workflow(
++                None, tmp_path / "manifest", tmp_path / "run", "cpu", complete=True
++            )
++
++
++@pytest.mark.parametrize("caller", ["public_checks", "recovery", "run", "verification"])
++@pytest.mark.parametrize("authorized", [False, True])
++def test_privacy_public_callers_forward_or_reject_custody(
++    tmp_path, monkeypatch, caller, authorized
++):
++    from contextlib import nullcontext
++
++    from silent_cascade.train import pilot_checks, pilot_offline, pilot_verification, pilot_workflow
++
++    class AdmittedBoundary(Exception):
++        pass
++
++    def stop(*args, **kwargs):
++        if not authorized:
++            raise AssertionError("caller reached work without custody")
++        raise AdmittedBoundary
++
++    monkeypatch.setattr(pilot_checks, "strict_json", stop)
++    monkeypatch.setattr(pilot_checks, "verify_phase4_gate_artifact", stop)
++    monkeypatch.setattr(pilot_workflow, "resolve_pilot_path", lambda _: None)
++    monkeypatch.setattr(pilot_workflow, "_source", stop)
++    monkeypatch.setattr(pilot_offline, "resolve_offline_git", stop)
++    monkeypatch.setattr(pilot_offline, "_offline_source_identity", stop)
++    ledger = (
++        _privacy_ledger(tmp_path)
++        if authorized
++        else nullcontext((None, None, tmp_path / "run/final/offline"))
++    )
++    with ledger as (budget, admission, output):
++        prepared = _prepare_privacy(budget, admission, output) if authorized else nullcontext(None)
++        with prepared as custody:
++            expected = (
++                pytest.raises(AdmittedBoundary)
++                if authorized
++                else pytest.raises(ValueError, match="custody required")
++            )
++            with expected:
++                if caller == "public_checks":
++                    pilot_checks.run_pilot_checks(
++                        run_dir=output.parent.parent,
++                        config=None,
++                        output_path=tmp_path / "gate.json",
++                        offline_process_custody=custody,
++                    )
++                elif caller == "recovery":
++                    pilot_checks.recover_pilot_checks(
++                        artifact_path=tmp_path / "gate.json",
++                        raw_run_dir=tmp_path / "original",
++                        destination=output.parent.parent,
++                        offline_process_custody=custody,
++                    )
++                elif caller == "run":
++                    pilot_workflow.run_pilot(
++                        config_path=tmp_path / "config",
++                        manifest_dir=tmp_path / "manifest",
++                        run_dir=output.parent.parent,
++                        device="cpu",
++                        offline_process_custody=custody,
++                    )
++                else:
++                    pilot_verification.measure_pilot_offline(
++                        output_dir=output,
++                        offline_process_custody=custody,
++                    )
++            assert not output.exists()
++
++
++@pytest.mark.parametrize(
++    "mode",
++    [
++        "empty",
++        "private",
++        "public_private",
++        "old_current",
++        "missing_intent",
++        "missing_result",
++        "missing_stdout",
++        "corrupt_stderr",
++    ],
++)
++def test_privacy_cold_reader_safe_and_forensic_controls(tmp_path, monkeypatch, mode):
++    from silent_cascade.train.pilot_offline_process import read_offline_process_outcome
++
++    private = mode in {"private", "public_private"}
++    run, output, context = _cold_process_controls(
++        tmp_path, safe=mode != "old_current", failed=private, private=private
++    )
++    if mode.startswith("missing_"):
++        name = {
++            "missing_intent": "intent.json",
++            "missing_result": "process-result.json",
++            "missing_stdout": "stdout.txt",
++        }[mode]
++        context.names.remove("final/offline/" + name)
++    elif mode == "public_private":
++        (output / "stdout.txt").write_bytes(b"")
++        context.names.append("final/offline/stdout.txt")
++    elif mode == "corrupt_stderr":
++        context.names.remove("final/offline/intent.json")
++        (output / "stderr.txt").write_bytes(b"bad")
++    unavailable = []
++    with context.guarded_reads(monkeypatch):
++        if mode in {"private", "public_private", "old_current", "corrupt_stderr"}:
++            with pytest.raises(ValueError):
++                read_offline_process_outcome(
++                    run,
++                    report=None,
++                    evidence_context=context,
++                    unavailable=unavailable,
++                    require_safe_process=True,
++                )
++        else:
++            assert (
++                read_offline_process_outcome(
++                    run,
++                    report=None,
++                    evidence_context=context,
++                    unavailable=unavailable,
++                    require_safe_process=True,
++                )
++                is None
++            )
++            assert "offline.process:offline.json" in unavailable
++        with pytest.raises(AssertionError, match="outside process lease"):
++            (output / "stderr.txt").read_bytes()
++    assert context.active == 0 and context.maximum <= 1
++    assert all(".raw" not in name and "binding.json" not in name for name in context.requests)
++
++
++def test_privacy_bootstrap_accepts_bound_hash_identities(tmp_path, monkeypatch):
++    from silent_cascade.train import pilot_offline
++
++    monkeypatch.setattr(pilot_offline, "_offline_source_identity", lambda: ("d" * 40, "e" * 64))
++    value = _safe_control_intent(tmp_path)
++    with open(sys.executable, "rb") as executable:
++        value["python_sha256"] = hashlib.file_digest(executable, "sha256").hexdigest()
++    value["bootstrap_sha256"] = _digest(pilot_offline._PROGRAM.encode())
++    raw = _encoded(value)
++    assert len(raw) <= 4096
++    (tmp_path / "intent.json").write_bytes(raw)
++    assert pilot_offline.validate_offline_launch(tmp_path, _digest(raw)).model_dump() == value
++
++
++@pytest.mark.parametrize("failure", ["nonzero", "timeout", "private_write"])
++def test_privacy_nonempty_failure_retains_closed_outcome(tmp_path, monkeypatch, failure):
++    from silent_cascade.train import pilot_offline_process as process
++
++    with (
++        _privacy_ledger(tmp_path) as (budget, admission, output),
++        _prepare_privacy(budget, admission, output) as custody,
++    ):
++        module, launched = _measurement_control(
++            monkeypatch,
++            output,
++            payload=b"/private/SECRET",
++            descriptor=2,
++            exitcode=7 if failure == "nonzero" else 0,
++            pause=failure == "timeout",
++        )
++        original = process._publish_private_process_bytes
++
++        def publish(capability, name, payload):
++            if failure == "private_write" and name == "stderr.raw":
++                raise OSError("control private storage denied /SECRET")
++            original(capability, name, payload)
++
++        monkeypatch.setattr(process, "_publish_private_process_bytes", publish)
++        with pytest.raises(ValueError, match="offline process failed"):
++            module.measure_pilot_offline(output_dir=output, process_custody=custody)
++        result = json.loads((output / "process-result.json").read_bytes())
++        reason = {
++            "nonzero": "nonzero_exit",
++            "timeout": "timeout",
++            "private_write": "private_custody_failure",
++        }[failure]
++        assert result["status"] == "failed" and result["reason"] == reason
++        assert result["stderr_disposition"] == "private_rejected"
++        assert result["stderr_bytes"] == 15 and result["offline_sha256"] is None
++        assert not (output / "stderr.txt").exists()
++        private = budget.workspace / "logs/offline-process-private" / custody.attempt_id
++        if failure == "private_write":
++            assert not (private / "stderr.raw").exists()
++        else:
++            assert (private / "stderr.raw").read_bytes() == b"/private/SECRET"
++        assert b"SECRET" not in (output / "process-result.json").read_bytes()
++        assert len(launched) == 1 and launched[0].poll() is not None
++        with pytest.raises(ChildProcessError):
++            os.waitpid(launched[0].pid, os.WNOHANG)
++
++
++@pytest.mark.parametrize("change", ["released", "directory"])
++def test_privacy_prepared_custody_cannot_survive_authority_change(tmp_path, change):
++    from silent_cascade.archive.ledger import StorageBlocked
++    from silent_cascade.train.pilot_offline_process import require_offline_process_custody
++
++    with _privacy_ledger(tmp_path) as (budget, admission, output):
++        custody = _prepare_privacy(budget, admission, output)
++        if change == "directory":
++            private = budget.workspace / "logs/offline-process-private" / custody.attempt_id
++            private.rename(private.with_name("stopped"))
++            private.mkdir(mode=0o700)
++            with pytest.raises((ValueError, StorageBlocked)):
++                require_offline_process_custody(custody, output_dir=output)
++    try:
++        with pytest.raises((ValueError, StorageBlocked)):
++            require_offline_process_custody(custody, output_dir=output)
++        assert not output.exists()
++    finally:
++        custody.close()
+
