@@ -88,6 +88,33 @@ def denied(reason=None):
 
 
 @contextmanager
+def _held_fixture_attempt(tmp_path, *, extra_spool=0, bindings=()):
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    from . import cold_authentication_fixture as fixture
+    from .test_pilot_offline_process import _prepare_privacy, _privacy_ledger
+
+    allowance = OfflineWriteAllowance(65536, file_names=8, directories=9)
+    with (
+        _privacy_ledger(
+            tmp_path,
+            logs=0,
+            metadata=0,
+            scratch=0,
+            spool=0,
+            run_category="spool",
+            privacy_spool_short=0,
+            privacy_spool_extra=allowance.allocated_bytes + extra_spool,
+            bindings=bindings,
+        ) as (budget, admission, output),
+        _prepare_privacy(budget, admission, output) as custody,
+    ):
+        guard = fixture.FitGuard(budget.workspace / "run", budget.workspace / "cache")
+        hold = allowance.allocated_bytes + sum(peak for _, peak in custody.category_peaks)
+        yield fixture, guard, custody, output, allowance, hold
+
+
+@contextmanager
 def _replace_owned_inode(root, *, rows):
     """A bounded external actor preserves then replaces one stage-local inode."""
     replacement, displaced = root.parent / "replacement", root.parent / "displaced"
@@ -232,6 +259,285 @@ assert not list(root.iterdir())
 """,
         tmp_path / "child",
     )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "silent_cascade.train.pilot_checks",
+        "silent_cascade.train.pilot_evidence",
+        "silent_cascade.report.pilot",
+    ],
+)
+def test_fit_guard_binds_existing_publisher_aliases(tmp_path, monkeypatch, module_name):
+    from . import cold_authentication_fixture as fixture
+
+    publisher = __import__(module_name, fromlist=["_publish_pilot_bytes"])
+    run = tmp_path / "run"
+    run.mkdir()
+    guard = fixture.FitGuard(tmp_path, tmp_path / "cache")
+    monkeypatch.setattr(fixture, "FIT_BYTES", 0)
+    with guard.installed(run), pytest.raises(AssertionError, match="before write"):
+        publisher._publish_pilot_bytes(run / "blocked.json", b"x")
+    assert list(run.iterdir()) == []
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_fit_guard_reserves_exact_offline_hold_before_publication(tmp_path, monkeypatch, short):
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        guard.cache.mkdir()
+        (guard.cache / "retained").write_bytes(b"x")
+        used, files, directories = fixture.allocation(guard.cache)
+        exact = hold + used + (files + directories) * fixture.BLOCK
+        monkeypatch.setattr(fixture, "FIT_BYTES", exact - short)
+        monkeypatch.setattr(fixture, "FIT_NAMES", allowance.file_names + 14 + files)
+        # Child directories start at offline; two missing public ancestors and
+        # the three prepared private-custody directories remain parent-held.
+        monkeypatch.setattr(
+            fixture,
+            "FIT_DIRECTORIES",
+            allowance.directories + 5 + directories,
+        )
+        if short:
+            with pytest.raises(AssertionError, match="before write"):
+                guard.reserve_offline_attempt(
+                    output,
+                    write_allowance=allowance,
+                    process_limits=custody.limits,
+                    process_custody=custody,
+                )
+        else:
+            guard.reserve_offline_attempt(
+                output,
+                write_allowance=allowance,
+                process_limits=custody.limits,
+                process_custody=custody,
+            )
+            assert guard.maximum == exact
+        assert not output.exists()
+        assert os.listdir(custody.directory_fd) == []
+
+
+def test_fit_guard_real_parent_publication_creates_fresh_held_root(tmp_path, monkeypatch):
+    from silent_cascade.train import pilot_data
+    from silent_cascade.train import pilot_offline_process as process
+
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold)
+        monkeypatch.setattr(fixture, "FIT_NAMES", allowance.file_names + 14)
+        monkeypatch.setattr(fixture, "FIT_DIRECTORIES", allowance.directories + 5)
+        guard.reserve_offline_attempt(
+            output,
+            write_allowance=allowance,
+            process_limits=custody.limits,
+            process_custody=custody,
+        )
+        process._publish_private_process_bytes(custody, "binding.json", b"x")
+        with guard.installed(guard.spool):
+            pilot_data._publish_pilot_bytes(output / "intent.json", b"x")
+        assert (output / "intent.json").read_bytes() == b"x"
+        assert guard.blocked is None
+
+
+def test_fit_guard_offline_hold_cannot_be_rebound_or_replenished(tmp_path, monkeypatch):
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold * 2)
+        guard.reserve_offline_attempt(
+            output,
+            write_allowance=allowance,
+            process_limits=custody.limits,
+            process_custody=custody,
+        )
+        with pytest.raises(AssertionError, match="already held"):
+            guard.reserve_offline_attempt(
+                output,
+                write_allowance=allowance,
+                process_limits=custody.limits,
+                process_custody=custody,
+            )
+        assert guard.maximum == hold
+
+
+@pytest.mark.parametrize("short", ["names", "directories"])
+def test_fit_guard_offline_hold_rejects_short_inventory(tmp_path, monkeypatch, short):
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold)
+        monkeypatch.setattr(
+            fixture,
+            "FIT_NAMES",
+            allowance.file_names + 14 - (short == "names"),
+        )
+        monkeypatch.setattr(
+            fixture,
+            "FIT_DIRECTORIES",
+            allowance.directories + 5 - (short == "directories"),
+        )
+        with pytest.raises(AssertionError, match=r"file name bound|directory bound"):
+            guard.reserve_offline_attempt(
+                output,
+                write_allowance=allowance,
+                process_limits=custody.limits,
+                process_custody=custody,
+            )
+        assert not output.exists()
+        assert os.listdir(custody.directory_fd) == []
+
+
+def test_fit_guard_live_child_bytes_are_not_double_counted(tmp_path, monkeypatch):
+    with _held_fixture_attempt(tmp_path, extra_spool=32768) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold + 32768)
+        guard.reserve_offline_attempt(
+            output,
+            write_allowance=allowance,
+            process_limits=custody.limits,
+            process_custody=custody,
+        )
+        output.mkdir(parents=True)
+        (output / "step.json").write_bytes(b"x" * 4096)
+        guard.admit(guard.spool / "outer.json", 1)
+        assert guard.blocked is None
+
+
+def test_fit_guard_unrelated_output_cannot_spend_offline_hold(tmp_path, monkeypatch):
+    with _held_fixture_attempt(tmp_path, extra_spool=24576) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold + 24576)
+        guard.reserve_offline_attempt(
+            output,
+            write_allowance=allowance,
+            process_limits=custody.limits,
+            process_custody=custody,
+        )
+        first = guard.spool / "outer.json"
+        guard.admit(first, 1)
+        first.parent.mkdir(parents=True)
+        first.write_bytes(b"x")
+        with pytest.raises(AssertionError, match="before write"):
+            guard.admit(guard.spool / "second.json", 1)
+        assert not (guard.spool / "second.json").exists()
+
+
+def test_fit_guard_routes_parent_publications_through_held_process_peak(tmp_path, monkeypatch):
+    from silent_cascade.train import pilot_offline_process as process
+
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold)
+        guard.reserve_offline_attempt(
+            output,
+            write_allowance=allowance,
+            process_limits=custody.limits,
+            process_custody=custody,
+        )
+        process._publish_private_process_bytes(custody, "binding.json", b"x")
+        for name, size in (
+            ("intent.json", custody.limits.record_bytes),
+            ("stdout.txt", 0),
+            ("stderr.txt", 0),
+            ("process-result.json", custody.limits.record_bytes),
+        ):
+            guard.admit(output / name, size)
+            output.mkdir(parents=True, exist_ok=True)
+            (output / name).write_bytes(b"x" * size)
+        assert guard.blocked is None
+
+
+def test_fit_guard_rejects_split_child_categories(tmp_path, monkeypatch):
+    with _held_fixture_attempt(
+        tmp_path,
+        bindings=(("run/final/offline/child", "scratch"),),
+    ) as (fixture, guard, custody, output, allowance, hold):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold * 2)
+        with pytest.raises(AssertionError, match="child category"):
+            guard.reserve_offline_attempt(
+                output,
+                write_allowance=allowance,
+                process_limits=custody.limits,
+                process_custody=custody,
+            )
+
+
+@pytest.mark.parametrize("invalid", ["allowance", "limits", "output"])
+def test_fit_guard_validates_exact_offline_hold_bindings(tmp_path, monkeypatch, invalid):
+    from silent_cascade.train.pilot_offline_process import OfflineProcessLimits
+    from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+    class DerivedAllowance(OfflineWriteAllowance):
+        pass
+
+    class DerivedLimits(OfflineProcessLimits):
+        pass
+
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        monkeypatch.setattr(fixture, "FIT_BYTES", hold * 2)
+        selected_allowance = (
+            DerivedAllowance(**allowance.__dict__) if invalid == "allowance" else allowance
+        )
+        selected_limits = (
+            DerivedLimits(**custody.limits.__dict__) if invalid == "limits" else custody.limits
+        )
+        selected_output = output.with_name("different") if invalid == "output" else output
+        with pytest.raises((AssertionError, ValueError), match=r"offline|custody|root"):
+            guard.reserve_offline_attempt(
+                selected_output,
+                write_allowance=selected_allowance,
+                process_limits=selected_limits,
+                process_custody=custody,
+            )
 
 
 @pytest.mark.parametrize(

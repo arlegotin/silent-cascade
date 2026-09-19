@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -207,10 +208,170 @@ class FitGuard:
     """Reserve full next publication against current live names, never total history."""
 
     def __init__(self, spool, cache):
-        self.spool, self.cache = spool, cache
+        self.spool, self.cache = Path(spool).absolute(), Path(cache).absolute()
         self.maximum = 0
         self.calls = {}
         self.blocked = None
+        self.offline = None
+
+    def reserve_offline_attempt(
+        self, output_dir, *, write_allowance, process_limits, process_custody
+    ):
+        from silent_cascade.train.pilot_offline_process import (
+            OfflineProcessCustody,
+            OfflineProcessLimits,
+            _category,
+            _custody_paths,
+            _publication_peaks,
+            require_offline_process_custody,
+        )
+        from silent_cascade.train.pilot_offline_writes import OfflineWriteAllowance
+
+        assert self.blocked is None, "fixture guard remains blocked: " + str(self.blocked)
+        try:
+            assert self.offline is None, "fixture offline hold already held"
+            assert type(write_allowance) is OfflineWriteAllowance, "fixture offline allowance"
+            assert type(process_limits) is OfflineProcessLimits, "fixture offline limits"
+            assert type(process_custody) is OfflineProcessCustody, "fixture offline custody"
+            output = Path(output_dir)
+            assert output == output.absolute() and output.resolve() == output, (
+                "fixture offline root"
+            )
+            assert output.is_relative_to(self.spool), "fixture offline root"
+            assert not output.exists() and not output.is_symlink(), "fixture offline root"
+            custody = require_offline_process_custody(
+                process_custody,
+                output_dir=output,
+                limits=process_limits,
+                phase=0,
+            )
+            budget = custody.budget
+            private, state = _custody_paths(budget, output, custody.attempt_id)
+            public_category = _category(budget, state, output)
+            relative = output.relative_to(budget.workspace)
+            assert not any(
+                Path(prefix).is_relative_to(relative) and category != public_category
+                for prefix, category in state["paths"].items()
+            ), "fixture offline child category differs"
+
+            original_peaks = dict(custody.category_peaks)
+            current_peaks = dict(
+                _publication_peaks(
+                    budget,
+                    state,
+                    output,
+                    private,
+                    process_limits,
+                    phase=0,
+                )
+            )
+            assert original_peaks and set(current_peaks) <= set(original_peaks), (
+                "fixture offline custody peaks differ"
+            )
+            allocated = budget.check_scoped(custody.retained)
+            active = budget._state()["reservations"][custody.token]
+            for category, original_peak in original_peaks.items():
+                remaining_peak = current_peaks.get(category, 0)
+                assert 0 <= remaining_peak <= original_peak, "fixture offline custody peaks differ"
+                growth = max(0, allocated[category] - active["before"][category])
+                required = growth + remaining_peak
+                if category == public_category:
+                    required += write_allowance.allocated_bytes
+                assert required <= active["amounts"].get(category, 0), (
+                    "fixture offline category allowance"
+                )
+
+            held_bytes = write_allowance.allocated_bytes + sum(original_peaks.values())
+            public_missing = tuple(
+                parent
+                for parent in output.parents
+                if parent.is_relative_to(self.spool) and not parent.exists()
+            )
+            private_directories = tuple(
+                parent
+                for parent in (private, *private.parents)
+                if parent != budget.workspace
+                and parent.is_relative_to(budget.workspace)
+                and parent.is_dir()
+            )
+            held_names = write_allowance.file_names + 14
+            held_directories = (
+                write_allowance.directories + len(public_missing) + len(private_directories)
+            )
+            used = files = directories = 0
+            for root in (self.spool, self.cache):
+                values = allocation(root)
+                used += values[0]
+                files += values[1]
+                directories += values[2]
+            projected = used + held_bytes + (files + directories) * BLOCK
+            assert files + held_names <= FIT_NAMES, "fixture file name bound"
+            assert directories + held_directories <= FIT_DIRECTORIES, "fixture directory bound"
+            assert projected <= FIT_BYTES, (
+                "fixture live allocation blocked before write",
+                projected,
+            )
+            self.offline = dict(
+                root=output,
+                private=private,
+                allowance=write_allowance,
+                limits=process_limits,
+                custody=custody,
+                held_bytes=held_bytes,
+                held_names=held_names,
+                held_directories=held_directories,
+                missing_ancestors=frozenset(public_missing),
+            )
+            self.maximum = max(self.maximum, projected)
+        except AssertionError as error:
+            self.blocked = str(error)
+            raise
+
+    def _outer_allocation(self):
+        total = files = directories = 0
+        held = self.offline
+        for root in (self.spool, self.cache):
+            if not root.exists():
+                continue
+            for path in (root, *root.rglob("*")):
+                if held is not None and (
+                    path == held["root"]
+                    or path.is_relative_to(held["root"])
+                    or path in held["missing_ancestors"]
+                ):
+                    continue
+                info = path.lstat()
+                assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
+                total += info.st_blocks * 512
+                files += stat.S_ISREG(info.st_mode)
+                directories += stat.S_ISDIR(info.st_mode)
+        return total, files, directories
+
+    def _validate_offline_inventory(self):
+        held = self.offline
+        if held is None or not held["root"].exists():
+            return
+        used = files = directories = 0
+        parent_names = {"intent.json", "stdout.txt", "stderr.txt", "process-result.json"}
+        for path in (held["root"], *held["root"].rglob("*")):
+            info = path.lstat()
+            assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
+            if stat.S_ISDIR(info.st_mode):
+                directories += 1
+                used += info.st_blocks * 512
+                continue
+            relative = path.relative_to(held["root"])
+            if (len(relative.parts) == 1 and path.name in parent_names) or (
+                len(relative.parts) == 1
+                and re.fullmatch(r"\.pilot-[0-9a-f]{32}\.tmp", path.name) is not None
+            ):
+                continue
+            files += 1
+            used += info.st_blocks * 512
+        allowance = held["allowance"]
+        assert files <= allowance.file_names, "fixture offline file name bound"
+        assert directories <= allowance.directories, "fixture offline directory bound"
+        assert used <= allowance.allocated_bytes, "fixture offline byte bound"
 
     def admit(self, path, size, *, temporary=True):
         assert self.blocked is None, "fixture guard remains blocked: " + str(self.blocked)
@@ -224,14 +385,52 @@ class FitGuard:
         path = path.absolute()
         assert path.is_relative_to(self.spool) or path.is_relative_to(self.cache), path
         assert size <= 16 * MIB, "fixture input exceeds admitted single-file lease"
-        used = files = directories = 0
-        for root in (self.spool, self.cache):
-            values = allocation(root)
-            used += values[0]
-            files += values[1]
-            directories += values[2]
+        self._validate_offline_inventory()
+        held = self.offline
+        if (
+            held is not None
+            and path.parent == held["root"]
+            and path.name
+            in {
+                "intent.json",
+                "stdout.txt",
+                "stderr.txt",
+                "process-result.json",
+            }
+        ):
+            from silent_cascade.train.pilot_offline_process import (
+                require_offline_process_custody,
+            )
+
+            phase = {"intent.json": 1, "stdout.txt": 4, "stderr.txt": 5, "process-result.json": 6}[
+                path.name
+            ]
+            bound = held["limits"].record_bytes if path.name.endswith(".json") else 0
+            assert size <= bound, "fixture offline parent publication bound"
+            require_offline_process_custody(
+                held["custody"],
+                output_dir=held["root"],
+                limits=held["limits"],
+                phase=phase,
+            )
+            used, files, directories = self._outer_allocation()
+            projected = used + held["held_bytes"] + (files + directories) * BLOCK
+            assert files + held["held_names"] <= FIT_NAMES, "fixture file name bound"
+            assert directories + held["held_directories"] <= FIT_DIRECTORIES, (
+                "fixture directory bound"
+            )
+            assert projected <= FIT_BYTES, (
+                "fixture live allocation blocked before write",
+                projected,
+            )
+            self.maximum = max(self.maximum, projected)
+            self.calls[path.suffix] = self.calls.get(path.suffix, 0) + 1
+            return
+        if held is not None:
+            assert not path.is_relative_to(held["root"]), "fixture offline parent path"
+        used, files, directories = self._outer_allocation()
         missing = sum(
-            not parent.exists()
+            not parent.exists() and (held is None or parent not in held["missing_ancestors"])
             for parent in path.parents
             if parent.is_relative_to(self.spool) or parent.is_relative_to(self.cache)
         )
@@ -240,10 +439,18 @@ class FitGuard:
         # charged twice conservatively, without calling the parent ledger here.
         names = 2 if temporary else 1
         projected = (
-            used + 2 * rounded(size) + BLOCK + (directories + missing + files + names) * BLOCK
+            used
+            + (0 if held is None else held["held_bytes"])
+            + 2 * rounded(size)
+            + BLOCK
+            + (directories + missing + files + names) * BLOCK
         )
-        assert files + names <= FIT_NAMES, "fixture file name bound"
-        assert directories + missing <= FIT_DIRECTORIES, "fixture directory bound"
+        held_names = 0 if held is None else held["held_names"]
+        held_directories = 0 if held is None else held["held_directories"]
+        assert files + names + held_names <= FIT_NAMES, "fixture file name bound"
+        assert directories + missing + held_directories <= FIT_DIRECTORIES, (
+            "fixture directory bound"
+        )
         assert projected <= FIT_BYTES, ("fixture live allocation blocked before write", projected)
         self.maximum = max(self.maximum, projected)
         self.calls[path.suffix] = self.calls.get(path.suffix, 0) + 1
@@ -253,9 +460,12 @@ class FitGuard:
         from contextlib import ExitStack
 
         from silent_cascade import io
+        from silent_cascade.report import pilot as pilot_report
         from silent_cascade.train import (
             pilot_checkpoints,
+            pilot_checks,
             pilot_data,
+            pilot_evidence,
             pilot_evidence_types,
             pilot_trainer,
             pilot_workflow,
@@ -321,7 +531,10 @@ class FitGuard:
                 pilot_trainer,
                 pilot_checkpoints,
                 pilot_workflow,
+                pilot_checks,
+                pilot_evidence,
                 pilot_evidence_types,
+                pilot_report,
             ):
                 stack.enter_context(
                     patch.object(

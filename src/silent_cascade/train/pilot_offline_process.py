@@ -230,13 +230,22 @@ def _custody_paths(budget, output, attempt):
     budget.require_path(private)
     run = output.parent.parent
     state = budget._state()
-    forbidden = [budget.root, budget.workspace / "logs"] + [
+    public_forbidden = [budget.root, budget.workspace / "logs"] + [
+        budget.workspace / path
+        for path, category in state["paths"].items()
+        if category in {"logs", "cache"}
+    ]
+    if any(run.is_relative_to(path) or path.is_relative_to(run) for path in public_forbidden):
+        raise ValueError("offline process custody overlaps public run")
+    private_forbidden = [budget.root, run] + [
         budget.workspace / path
         for path, category in state["paths"].items()
         if category in {"spool", "cache"}
     ]
-    if any(run.is_relative_to(path) or path.is_relative_to(run) for path in forbidden):
-        raise ValueError("offline process custody overlaps public run")
+    if any(
+        private.is_relative_to(path) or path.is_relative_to(private) for path in private_forbidden
+    ):
+        raise ValueError("offline process private custody overlaps public storage")
     public_category = _category(budget, state, output)
     if any(
         _category(budget, state, output / name) != public_category

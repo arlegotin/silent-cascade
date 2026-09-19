@@ -1068,7 +1068,18 @@ def test_privacy_nonempty_capture_never_enters_public_logs(tmp_path, monkeypatch
 
 
 @contextmanager
-def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144, scratch=65536, bindings=()):
+def _privacy_ledger(
+    tmp_path,
+    *,
+    logs=262144,
+    metadata=262144,
+    scratch=65536,
+    spool=0,
+    run_category="metadata",
+    privacy_spool_short=None,
+    privacy_spool_extra=0,
+    bindings=(),
+):
     """Tiny ledger fixture; isolate only existing host ancestor authorities."""
     import runpy
 
@@ -1079,7 +1090,7 @@ def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144, scratch=65536, bi
     boundary = helpers["_authority_boundary"](tmp_path)
     policy = ArchivePolicy(
         workspace_bytes=16 * 1024**2,
-        spool_bytes=4096,
+        spool_bytes=1024**2,
         cache_bytes=4096,
         pinned_bytes=4096,
         metadata_bytes=1024**2,
@@ -1098,11 +1109,36 @@ def _privacy_ledger(tmp_path, *, logs=262144, metadata=262144, scratch=65536, bi
         workspace = tmp_path / "workspace"
         initialize_workspace_ledger(workspace_root=workspace, policy=policy, baseline=())
         budget = _StorageBudget(workspace=workspace, policy=policy)
-        budget.bind(workspace / "run", category="metadata")
+        budget.bind(workspace / "run", category=run_category)
         for relative, category in bindings:
             budget.bind(workspace / relative, category=category)
+        if privacy_spool_short is not None:
+            from silent_cascade.train import pilot_offline_process as process
+
+            output = workspace / "run/final/offline"
+            private = workspace / "logs/offline-process-private" / ("a" * 32)
+            peaks = dict(
+                process._publication_peaks(
+                    budget,
+                    budget._state(),
+                    output,
+                    private,
+                    process.OfflineProcessLimits(
+                        stdout_bytes=64,
+                        stderr_bytes=64,
+                        record_bytes=1024,
+                        timeout_seconds=2,
+                    ),
+                )
+            )
+            logs = peaks["logs"]
+            spool = peaks["spool"] + privacy_spool_extra - privacy_spool_short
         with budget._scoped_reservation(
-            admission={"control": "offline-privacy"}, logs=logs, metadata=metadata, scratch=scratch
+            admission={"control": "offline-privacy"},
+            logs=logs,
+            metadata=metadata,
+            scratch=scratch,
+            spool=spool,
         ) as admission:
             yield budget, admission, workspace / "run/final/offline"
 
@@ -1121,6 +1157,69 @@ def _prepare_privacy(budget, admission, output, *, limits=None):
         limits=limits,
         attempt_id="a" * 32,
     )
+
+
+def test_privacy_custody_accepts_admitted_public_spool(tmp_path):
+    from silent_cascade.train import pilot_offline_process as process
+
+    with (
+        _privacy_ledger(
+            tmp_path,
+            logs=61440,
+            metadata=0,
+            scratch=0,
+            spool=0,
+            run_category="spool",
+            privacy_spool_short=0,
+        ) as (budget, admission, output),
+        _prepare_privacy(budget, admission, output) as custody,
+    ):
+        assert custody.category_peaks == (("logs", 61440), ("spool", 65536))
+        assert process.require_offline_process_custody(custody, output_dir=output) is custody
+        assert not output.exists()
+        assert os.listdir(custody.directory_fd) == []
+
+
+def test_privacy_custody_rejects_public_spool_one_byte_short(tmp_path):
+    with _privacy_ledger(
+        tmp_path,
+        logs=61440,
+        metadata=0,
+        scratch=0,
+        spool=0,
+        run_category="spool",
+        privacy_spool_short=1,
+    ) as (budget, admission, output):
+        before = set(budget.workspace.rglob("*"))
+        with pytest.raises(ValueError, match="allowance exhausted"):
+            _prepare_privacy(budget, admission, output)
+        assert set(budget.workspace.rglob("*")) == before
+        assert not output.exists()
+
+
+def test_privacy_custody_rejects_fixed_logs_even_with_spool_subbinding(tmp_path):
+    with _privacy_ledger(
+        tmp_path,
+        spool=65536,
+        bindings=(("logs/run", "spool"),),
+    ) as (budget, admission, _output):
+        output = budget.workspace / "logs/run/final/offline"
+        before = set(budget.workspace.rglob("*"))
+        with pytest.raises(ValueError, match="overlaps public run"):
+            _prepare_privacy(budget, admission, output)
+        assert set(budget.workspace.rglob("*")) == before
+
+
+@pytest.mark.parametrize("category", ["spool", "cache"])
+def test_privacy_custody_rejects_private_storage_overlap(tmp_path, category):
+    with _privacy_ledger(
+        tmp_path,
+        bindings=(("logs/offline-process-private", category),),
+    ) as (budget, admission, output):
+        before = set(budget.workspace.rglob("*"))
+        with pytest.raises(ValueError, match="private custody overlaps public storage"):
+            _prepare_privacy(budget, admission, output)
+        assert set(budget.workspace.rglob("*")) == before
 
 
 @pytest.mark.parametrize(
@@ -1232,7 +1331,19 @@ def test_privacy_custody_pins_counted_private_directory(tmp_path):
 
 @pytest.mark.parametrize(
     "bad",
-    ["shape", "overlap", "spool", "symlink", "hardlink", "existing", "owner", "logs", "metadata"],
+    [
+        "shape",
+        "overlap",
+        "spool",
+        "cache",
+        "control",
+        "symlink",
+        "hardlink",
+        "existing",
+        "owner",
+        "logs",
+        "metadata",
+    ],
 )
 def test_privacy_custody_rejects_unadmitted_targets(tmp_path, bad):
     from dataclasses import replace
@@ -1249,6 +1360,10 @@ def test_privacy_custody_rejects_unadmitted_targets(tmp_path, bad):
             output = budget.workspace / "logs/final/offline"
         elif bad == "spool":
             output = budget.workspace / "spool/run/final/offline"
+        elif bad == "cache":
+            output = budget.workspace / "cache/run/final/offline"
+        elif bad == "control":
+            output = budget.root / "run/final/offline"
         elif bad == "symlink":
             (budget.workspace / "run").symlink_to(budget.workspace / "absent")
         elif bad == "hardlink":
