@@ -325,6 +325,52 @@ def test_fit_guard_reserves_exact_offline_hold_before_publication(tmp_path, monk
         assert os.listdir(custody.directory_fd) == []
 
 
+@pytest.mark.parametrize("existing", [False, True], ids=["missing", "existing-shared"])
+@pytest.mark.parametrize("directory_limit, accepted", [(13, False), (14, True)])
+def test_fit_guard_counts_public_ancestors_outside_spool(
+    tmp_path, monkeypatch, existing, directory_limit, accepted
+):
+    with _held_fixture_attempt(tmp_path) as (
+        fixture,
+        original_guard,
+        custody,
+        output,
+        allowance,
+        hold,
+    ):
+        if existing:
+            output.parent.mkdir(parents=True)
+        assert output.parent.exists() is existing
+        assert output.parent.parent.exists() is existing
+
+        guard = fixture.FitGuard(output.parent, original_guard.cache)
+        used, files, directories = fixture.allocation(guard.spool)
+        exact = hold + used + (files + directories) * fixture.BLOCK
+        monkeypatch.setattr(fixture, "FIT_BYTES", exact)
+        monkeypatch.setattr(fixture, "FIT_NAMES", allowance.file_names + 14 + files)
+        monkeypatch.setattr(fixture, "FIT_DIRECTORIES", directory_limit)
+
+        if accepted:
+            guard.reserve_offline_attempt(
+                output,
+                write_allowance=allowance,
+                process_limits=custody.limits,
+                process_custody=custody,
+            )
+            assert guard.maximum == exact
+            assert guard.blocked is None
+        else:
+            with pytest.raises(AssertionError, match="directory bound"):
+                guard.reserve_offline_attempt(
+                    output,
+                    write_allowance=allowance,
+                    process_limits=custody.limits,
+                    process_custody=custody,
+                )
+        assert not output.exists()
+        assert os.listdir(custody.directory_fd) == []
+
+
 def test_fit_guard_real_parent_publication_creates_fresh_held_root(tmp_path, monkeypatch):
     from silent_cascade.train import pilot_data
     from silent_cascade.train import pilot_offline_process as process

@@ -282,31 +282,39 @@ class FitGuard:
                 )
 
             held_bytes = write_allowance.allocated_bytes + sum(original_peaks.values())
-            public_missing = tuple(
+            public_directories = {
                 parent
                 for parent in output.parents
-                if parent.is_relative_to(self.spool) and not parent.exists()
-            )
-            private_directories = tuple(
+                if parent != budget.workspace and parent.is_relative_to(budget.workspace)
+            }
+            public_missing = {parent for parent in public_directories if not parent.exists()}
+            private_directories = {
                 parent
                 for parent in (private, *private.parents)
                 if parent != budget.workspace
                 and parent.is_relative_to(budget.workspace)
                 and parent.is_dir()
-            )
+            }
             held_names = write_allowance.file_names + 14
-            held_directories = (
-                write_allowance.directories + len(public_missing) + len(private_directories)
-            )
             used = files = directories = 0
+            retained_directories = set()
+            retained_paths = set()
             for root in (self.spool, self.cache):
-                values = allocation(root)
-                used += values[0]
-                files += values[1]
-                directories += values[2]
+                if root.exists():
+                    retained_paths.update((root, *root.rglob("*")))
+            for path in retained_paths:
+                info = path.lstat()
+                assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
+                used += info.st_blocks * 512
+                files += stat.S_ISREG(info.st_mode)
+                directories += stat.S_ISDIR(info.st_mode)
+                if stat.S_ISDIR(info.st_mode):
+                    retained_directories.add(path)
+            directory_hold_paths = retained_directories | public_directories | private_directories
+            held_directories = write_allowance.directories + len(directory_hold_paths)
             projected = used + held_bytes + (files + directories) * BLOCK
             assert files + held_names <= FIT_NAMES, "fixture file name bound"
-            assert directories + held_directories <= FIT_DIRECTORIES, "fixture directory bound"
+            assert held_directories <= FIT_DIRECTORIES, "fixture directory bound"
             assert projected <= FIT_BYTES, (
                 "fixture live allocation blocked before write",
                 projected,
@@ -320,6 +328,8 @@ class FitGuard:
                 held_bytes=held_bytes,
                 held_names=held_names,
                 held_directories=held_directories,
+                held_directory_cushion=directories * BLOCK,
+                directory_hold_paths=frozenset(directory_hold_paths),
                 missing_ancestors=frozenset(public_missing),
             )
             self.maximum = max(self.maximum, projected)
@@ -330,21 +340,24 @@ class FitGuard:
     def _outer_allocation(self):
         total = files = directories = 0
         held = self.offline
+        paths = set()
         for root in (self.spool, self.cache):
-            if not root.exists():
+            if root.exists():
+                paths.update((root, *root.rglob("*")))
+        for path in paths:
+            if held is not None and (
+                path == held["root"]
+                or path.is_relative_to(held["root"])
+                or path in held["missing_ancestors"]
+            ):
                 continue
-            for path in (root, *root.rglob("*")):
-                if held is not None and (
-                    path == held["root"]
-                    or path.is_relative_to(held["root"])
-                    or path in held["missing_ancestors"]
-                ):
-                    continue
-                info = path.lstat()
-                assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
-                total += info.st_blocks * 512
-                files += stat.S_ISREG(info.st_mode)
-                directories += stat.S_ISDIR(info.st_mode)
+            info = path.lstat()
+            assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode), path
+            total += info.st_blocks * 512
+            files += stat.S_ISREG(info.st_mode)
+            directories += stat.S_ISDIR(info.st_mode) and (
+                held is None or path not in held["directory_hold_paths"]
+            )
         return total, files, directories
 
     def _validate_offline_inventory(self):
@@ -414,7 +427,12 @@ class FitGuard:
                 phase=phase,
             )
             used, files, directories = self._outer_allocation()
-            projected = used + held["held_bytes"] + (files + directories) * BLOCK
+            projected = (
+                used
+                + held["held_bytes"]
+                + held["held_directory_cushion"]
+                + (files + directories) * BLOCK
+            )
             assert files + held["held_names"] <= FIT_NAMES, "fixture file name bound"
             assert directories + held["held_directories"] <= FIT_DIRECTORIES, (
                 "fixture directory bound"
@@ -441,6 +459,7 @@ class FitGuard:
         projected = (
             used
             + (0 if held is None else held["held_bytes"])
+            + (0 if held is None else held["held_directory_cushion"])
             + 2 * rounded(size)
             + BLOCK
             + (directories + missing + files + names) * BLOCK
