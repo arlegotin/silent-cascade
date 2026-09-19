@@ -314,3 +314,125 @@ followed FINAL1. Git index writes initially hit the sandbox's read-only .git
 boundary; scoped escalation then staged/committed only the eight owned files.
 Controller progress and other docs were not staged. This report is a separate
 report-only handoff; controller repeat/review is independent evidence.
+
+## Review fix round 1 — public temporary category closure
+
+Important review finding from source71eabfe addressed under clarified
+brief/plan89b558d. Source/test freeze:
+6754bd8d1ad7a67c741db9391c363987f7a7869c. Only
+pilot_offline_process.py and test_pilot_offline_process.py changed.
+
+The publisher's random immediate sibling .pilot-<32 lowercase hex>.tmp was
+previously forecast in the final member's category, even when exact descendant
+bindings routed the two differently. _custody_paths now rejects any effective
+category mismatch for intent.json, process-result.json, stdout.txt or stderr.txt,
+and any differing-category exact binding for that immediate temporary namespace,
+against the public output directory's category. Validation occurs before private
+custody creation and again through require_offline_process_custody at existing
+prelaunch/publication boundaries. Same-category bindings and unrelated deeper
+subtrees remain intact. No routing framework, cap change, new authority channel,
+scientific change or historical rewrite was introduced.
+
+### RED and covering evidence
+
+Before changing production, the existing helper gained pre-reservation bindings
+and a scratch allowance keyword; defaults remained unchanged. Exactly two
+parametrized cases of
+test_privacy_custody_rejects_split_publication_categories_before_writes ran:
+process-result.json and .pilot-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.tmp. The latter
+had only1B scratch admission; old preparation omitted the temporary category and
+still created custody. The final-name case had ample scratch, independently
+proving rejection of unsupported routing. Both failed with DID NOT RAISE
+ValueError. These are true behavioral RED, not missing-API failures.
+
+Fresh prefixes are under operational/scratch/task5-offline-privacy.
+All logs, erroneous RED custody directories and later artifacts remain retained.
+
+| Stage | Pytest | Seconds pytest / wall | Logical B | Allocated B | Files / links / dirs |
+| --- | --- | --- | ---: | ---: | --- |
+| fix1-red | 2 failed, exit1 | 0.39 / 0.638 | 2476 | 12288 | 6 / 1 / 21 |
+| fix1-green | 32 passed, exit0 | 5.35 / 5.985 | 29575 | 278528 | 111 / 12 / 218 |
+
+Both stderr logs were empty. RED admitted512KiB/<48KiB logical,
+20 file-link-temp names/32 dirs; prewrite48KiB+8192*(20+32)=475136B.
+GREEN admitted2.5MiB/<192KiB logical,256 file-link-temp names/320 dirs,
+30s outer timeout and16KiB per launcher stream. Native statvfs granule was
+asserted<=4096 before writes; production B remains4096. Prospective formula:
+192KiB+4096*(256+320)=2555904B<=2621440B.
+
+GREEN's conservative peak names:64 ledger finals+32 ledger temporary peaks+
+32 pytest links+1 pytest lock+2 launcher logs+56 measurement finals+
+32 public publication temporary peaks=219, plus37 cushion.
+Directories:7 stage/environment/pytest+32 fixture+96 ledger (including locks)+
+81 possible private+24 public+1 replacement=241, plus79 cushion.
+Records retain the existing<=4096 prewrite bounds; payload allowance includes
+logs and fixture/control exceptions. Six joined stdlib sentinel children each
+write only7B deliberately invalid report and<=15B pipe payload; one uses the
+existing2s parent timeout. No real worker, Git subprocess, scientific execution
+or provider ran in either fix stage.
+
+The32 covering cases are5 rejection+3 compatible mapping+4 boundary recheck+
+12 existing custody+8 existing measurement cases. Recheck fault injection
+changes only returned read-only state at phases0 and6, restored before fixture
+reservation teardown; it does not mutate live ledger bindings. Positive controls
+preserve all four same-category final bindings, a same-category temporary binding
+and an unrelated child subtree's differing category. Every rejection checks
+unchanged workspace names, absent public output and no new private publication.
+
+The previous98-case baseline evidence remains separate. This fix ran32 covering
+cases, NOT a fresh110-case aggregate. Minor overflow/cancellation private-prefix
+coverage remains explicitly deferred to TaskB; inherited supervisor/FitGuard
+custody wiring, full workflow/scientific execution and future operational-export
+qualification remain open as recorded above.
+
+After GREEN, the following each returned0 without further source edits:
+.venv/bin/ruff check --no-cache <the two owned Python files>;
+.venv/bin/ruff format --check --no-cache <the same two>;
+git diff --check. Ruff formatting occurred before GREEN. The source commit
+contains only those two files; controller progress remained unstaged.
+Holder61737 retained1150976B before this fix; both stages added290816B, giving
+1441792B task scratch. No cleanup or cap increase. Root repeat/re-review is
+independent evidence and is not claimed here.
+
+### Exact covering launcher
+
+Root may independently repeat only after its admission, with the fresh
+fix1-main prefix replacing fix1-green. This records execution text, not authority
+for an additional run. --noconftest avoids implicit fixture imports; read-only
+transitive imports remain possible, with no scientific execution.
+
+```sh
+env -i PATH=/opt/homebrew/bin:/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH="$PWD/src" .venv/bin/python -B - <<'PY'
+import os, pathlib, selectors, subprocess, time
+root=pathlib.Path.cwd()
+stage=root/'.superpowers/sdd/2026-09-17-phase-4-r2-archive/operational/scratch/task5-offline-privacy/fix1-green'
+assert not stage.exists() and not stage.is_symlink()
+assert os.statvfs(root).f_frsize <= 4096
+assert 192*1024+4096*(256+320)<=2560*1024
+stage.mkdir(parents=True)
+for name in ('tmp','xdg','mpl','hypothesis','archive'): (stage/name).mkdir()
+env=dict(os.environ,TMPDIR=str(stage/'tmp'),TMP=str(stage/'tmp'),TEMP=str(stage/'tmp'),XDG_CACHE_HOME=str(stage/'xdg'),MPLCONFIGDIR=str(stage/'mpl'),HYPOTHESIS_STORAGE_DIRECTORY=str(stage/'hypothesis'),SILENT_CASCADE_ARCHIVE_CACHE=str(stage/'archive'),OMP_NUM_THREADS='1',XDG_CONFIG_HOME=str(stage/'xdg'),XDG_DATA_HOME=str(stage/'xdg'),PYTHONHASHSEED='0',SILENT_CASCADE_ARCHIVE_TEST_PRESERVE_SCRATCH='1')
+names=["test_privacy_custody_rejects_split_publication_categories_before_writes","test_privacy_custody_preserves_compatible_publication_categories","test_privacy_custody_rechecks_publication_categories","test_privacy_custody_pins_counted_private_directory","test_privacy_custody_rejects_unadmitted_targets","test_privacy_prepared_custody_cannot_survive_authority_change","test_measurement_persists_failed_invalid_report_and_fences_reuse","test_measurement_records_launch_failure_without_return_code","test_log_publication_failure_never_publishes_completion","test_privacy_nonempty_capture_never_enters_public_logs","test_privacy_nonempty_failure_retains_closed_outcome"]
+args=[str(root/'.venv/bin/python'),'-B','-m','pytest','-p','no:cacheprovider','--noconftest','-q','--tb=short','--basetemp',str(stage/'pytest'),*['tests/pilot/test_pilot_offline_process.py::'+name for name in names]]
+start=time.monotonic(); p=subprocess.Popen(args,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE); sel=selectors.DefaultSelector(); buffers={}
+for name,s in [('stdout',p.stdout),('stderr',p.stderr)]: sel.register(s,selectors.EVENT_READ,name); buffers[name]=bytearray()
+try:
+ while sel.get_map():
+  for key,_ in sel.select(0.2):
+   chunk=os.read(key.fileobj.fileno(),4096)
+   if not chunk: sel.unregister(key.fileobj); continue
+   if len(buffers[key.data])+len(chunk)>16384: p.kill(); raise RuntimeError('output bound')
+   buffers[key.data].extend(chunk)
+  if time.monotonic()-start>30: p.kill(); raise RuntimeError('timeout')
+finally:
+ p.wait(); sel.close()
+ for name,payload in buffers.items():
+  with (stage/(name+'.log')).open('xb') as f: f.write(payload)
+for name,payload in buffers.items(): print(name+':\n'+payload.decode())
+items=list(stage.rglob('*')); files=[q for q in items if q.is_file() and not q.is_symlink()]
+counts=dict(exit=p.returncode,seconds=round(time.monotonic()-start,3),logical=sum(q.stat().st_size for q in files),allocated=sum(q.lstat().st_blocks*512 for q in [stage,*items]),files=len(files),links=sum(q.is_symlink() for q in items),dirs=sum(q.is_dir() and not q.is_symlink() for q in [stage,*items]))
+print(counts)
+assert counts['logical']<192*1024 and counts['allocated']<=2560*1024
+assert counts['files']+counts['links']<=256 and counts['dirs']<=320
+PY
+```
