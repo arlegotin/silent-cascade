@@ -813,3 +813,42 @@ versus executing identities, raw artifact hashes, losses, gradients and limits.
 This is diagnostic/non-acceptance evidence from old trained one-hop weights.
 It changes neither the historical five-way score nor any Phase 4 gate and does
 not justify a new loss/head, an action-solved claim or a Phase 4 completion claim.
+
+## 2026-09-20 — Reproduce seed 11 after the promotion-artifact reader defect
+
+The first production Phase 4 trajectory at
+`a654dad847fbbc9333df4af408f69895db64c656` reached the prescribed paired
+robustness/primary curriculum gate at 12,000 updates. The selected weights and
+terminal checkpoint were durably published. The workflow then refused the
+76,133,773-byte paired promotion certificate while building its final training
+inventory: that reader incorrectly applied the 67,108,864-byte manifest limit.
+Ordinary resume encounters the same error while authenticating the journal.
+The actual process returned Make exit 2; no final selected-checkpoint evaluations
+ran. The original run, failure, weights, manifests and audits remain evidence.
+
+The reviewed engineering choice is a small artifact-boundary correction followed
+by explicit same-seed reproduction through the existing source/data/training
+introduction sequence. Task 8 distinguishes changed-source attempts from ordinary
+interruption recovery; Task 12 requires invalidated evidence to be regenerated.
+Repository standing approval covers this reversible correction. The prohibition
+on restarting seed 11 continues to forbid rerolling or rescuing failed learning;
+it does not prevent this documented reproduction of successful learning after a
+reproducible publication defect.
+
+The corrected producer, data introduction and training revision must all be
+distinct, committed and authenticated. Regenerated manifests must retain the
+original curriculum keys, examples, projections and configuration. The new run
+uses a separate real path and the unchanged fresh seed-11 initialization. It must
+reproduce the original scientific trajectory and natural 12,000-update selection;
+unexpected divergence triggers investigation before further fitting. Historical
+passes are not relabeled as current-source evidence, and all existing exact
+source checks remain in force.
+
+This costs another full set of source-bound audits and the same deterministic
+training/validation work. Expected actual optimizer compute is 24,000 updates
+across the two source attempts, with 12,000 updates in each learned trajectory.
+There is no new unrestricted 75,000-update budget, extra seed, tuning, or choice
+between outcomes. Repeated work is reported as engineering regeneration rather
+than independent scientific replication. All final selected-checkpoint gates,
+fresh local verification and independent review remain required on the corrected
+source. Phase 4 remains in progress.

@@ -218,31 +218,35 @@ manifest/report/index triplets remain as intentionally untracked local evidence
 under `audit-raw/<stage>/`; the data commit contains only the four canonical
 stage manifests and four exact public audit reports.
 
-The corrected revision and verification order is producer `P`, compatible
-ordinary documentation, data introduction `D`, this meaningful data-readiness
-documentation revision `T`, one seed-11 CPU pilot at unchanged `T`, one fresh
-full local-verification recorder at final `T`, a new canonical gate, then final
-evidence and documentation. `T` is the eventual commit containing this update;
-no not-yet-known self-referential commit identity is asserted here. No extra
-full recorder at `D` was run or is required. No command auto-commits Git state.
-Debug data preserve this introduction chain while their small-corpus audits
-explicitly remain non-acceptance. Production statistical audit acceptance is
-required before fitting; no training command reruns probes to replace failed or
-missing evidence.
+The original revision sequence was producer `P`, compatible ordinary
+documentation, data introduction `D`, and training revision `T`. The real
+seed-11 CPU pilot subsequently ran at `T`
+`a654dad847fbbc9333df4af408f69895db64c656`; its current outcome is recorded in
+the Task 12 section below. A source-bound corrected attempt is now planned as a
+distinct `P2`–`D2`–`T2` sequence. No command auto-commits Git state. Debug data
+preserve their introduction chain while their small-corpus audits explicitly
+remain non-acceptance. Production statistical audit acceptance is required
+before fitting; no training command reruns probes to replace failed or missing
+evidence.
+
+After the corrected manifests and audits are committed at `D2` and the compatible
+readiness revision `T2` is committed, set `PILOT_RUN_DIR` to the admitted real
+absolute root ending `phase4-pilot-artifact-fix-v1/event_flow/11/pilot`:
 
 ```sh
-# Preparation has completed and the eight public inputs are committed at D.
-# After committing the meaningful readiness revision T and admitting its real run root:
-OMP_NUM_THREADS=1 make pilot PILOT_DEVICE=cpu PILOT_RUN_DIR="$PILOT_RUN_DIR"
+OMP_NUM_THREADS=1 make pilot \
+  PILOT_DEVICE=cpu \
+  PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1 \
+  PILOT_RUN_DIR="${PILOT_RUN_DIR:?set the admitted corrected-source run path}"
 ```
 
 Production command forms, once their stated inputs exist:
 
 ```sh
-uv run silent-cascade data freeze --pilot-stage primary --config configs/train/pilot.yaml --output manifests/validation/phase4/primary.json
-uv run silent-cascade train --config configs/train/pilot.yaml --manifest-dir manifests/validation/phase4 --run-dir runs/phase4-pilot-v1/event_flow/11/pilot --seed 11 --device cpu
-uv run silent-cascade evaluate --checkpoint runs/phase4-pilot-v1/event_flow/11/pilot/selected.json --manifest manifests/validation/phase4/primary.json --output runs/phase4-pilot-v1/event_flow/11/pilot/eval/primary --device cpu
-uv run silent-cascade report build --pilot --run-dir runs/phase4-pilot-v1/event_flow/11/pilot --output reports/phase4-pilot-v1
+uv run silent-cascade data freeze --pilot-stage primary --config configs/train/pilot.yaml --output manifests/validation/phase4-artifact-fix-v1/primary.json
+uv run silent-cascade train --config configs/train/pilot.yaml --manifest-dir manifests/validation/phase4-artifact-fix-v1 --run-dir "${PILOT_RUN_DIR:?set the admitted corrected-source run path}" --seed 11 --device cpu
+uv run silent-cascade evaluate --checkpoint "${PILOT_RUN_DIR:?set the admitted corrected-source run path}/selected.json" --manifest manifests/validation/phase4-artifact-fix-v1/primary.json --output "${PILOT_RUN_DIR:?set the admitted corrected-source run path}/eval/primary" --device cpu
+uv run silent-cascade report build --pilot --run-dir "${PILOT_RUN_DIR:?set the admitted corrected-source run path}" --output reports/phase4-pilot-v1
 ```
 
 `selected.json` binds an eligible checkpoint by hash; debug or unsuccessful runs
@@ -615,32 +619,24 @@ a Phase 6 test or architecture freeze.
 
 The original preparation owner is inactive and its PID is absent. Preparation
 produced 0 stdout bytes and 645 stderr bytes, ending at the expected commit-data
-precondition before any training. Its original terminal handle was unavailable,
-so no original process exit code was captured; this record does not infer one.
-No production optimizer has started and no selected checkpoint exists.
-
-CPU and seed 11 remain selected under the unchanged model, optimizer and gates.
-Supply a real whole-run System Data directory externally with `PILOT_RUN_DIR`;
-do not commit a personal absolute path or a symlink shim. All available local
-disk is authorized, but the 29,132,422,170-byte (about 27.13 GiB) first-boundary
-allowance remains conditional rather than measured consumption or a formal
-whole-run bound. The implementation has no total-run storage limiter. Fresh
-admission at the actual destination and monitoring through the first boundary
-and final workloads remain required.
+precondition before training. Its original terminal handle was unavailable, so
+no original process exit code was captured; this record does not infer one.
 
 The historical `f9fa6ed955797971f75c53a1a0370fb9b3e52cae` local-verification
-receipt, logs and 292-input inventory were authenticated. The current inventory
-differs only by the 22-line operational plan addition. This is historical
-preflight evidence, not current final acceptance;
+receipt, logs and 292-input inventory were authenticated. At original training
+revision `T`, the inventory differed only by the 22-line operational plan
+addition. This is historical preflight evidence, not current final acceptance;
+the current correction also requires source fixes and new verification before
+production.
 `discover_local_verification` normally returns `None` for the present revision.
 The unchanged workflow and trainer each run the full post-introduction
 `verify_pilot_data` check before creating or optimizing a model. Do not add a
 third standalone full regeneration merely to authenticate metadata.
 
-The initial workflow artifact at `RUN/phase4-gate.json` may therefore honestly
-report `local_verification_unmet`. Preserve that artifact. After the pilot at
-unchanged `T`, run exactly one fresh full local recorder at final `T`, then build
-the still-absent canonical gate with the shared checker and its required config:
+The initial workflow artifact at `RUN/phase4-gate.json` was never published.
+After a valid corrected-source reproduction, run exactly one fresh full local
+recorder at final `T2`, then build the still-absent canonical gate with the
+shared checker and its required config:
 
 ```sh
 UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 uv run python scripts/record_phase4_local_verify.py
@@ -648,8 +644,66 @@ uv run python scripts/check_phase4_pilot.py --config configs/train/pilot.yaml --
 uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir "$PILOT_RUN_DIR"
 ```
 
+### Task 12 learning evidence and publication stop (2026-09-20)
+
+The real offline CPU pilot at source
+`a654dad847fbbc9333df4af408f69895db64c656` reached natural curriculum
+completion after 12,000 optimizer updates. Its curriculum status is
+`robustness_complete`, and its 12,000-update weights were selected before the
+workflow stopped. These compact
+receipts retain the authenticated boundaries without committing the large raw
+run:
+
+| Boundary | Observed result | Receipt SHA-256 |
+| --- | --- | --- |
+| One hop, 9,000 updates | Content chain 9,945/10,000 (99.45%); recall 17,492/17,500; composition 17,437/17,500; autonomous timed success 9,993/10,000 | [`one-hop-boundary-9000.json`](../artifacts/phase4-pilot-observations/a654dad847fbbc9333df4af408f69895db64c656/one-hop-boundary-9000.json) — `5d034e88fcf07bc62e32a255561c79f3ad240fa46c74a75c057dfd6974876596` |
+| Two hop, 10,000 updates | 9,998/10,000 timed successes | [`two-hop-boundary-10000.json`](../artifacts/phase4-pilot-observations/a654dad847fbbc9333df4af408f69895db64c656/two-hop-boundary-10000.json) — `d062960f3a8f46373c8e38fa999d1c68717be4d90b009f77dd5653339f93dcda` |
+| Primary, 11,000 updates | 9,996/10,000 timed successes | [`primary-boundary-11000.json`](../artifacts/phase4-pilot-observations/a654dad847fbbc9333df4af408f69895db64c656/primary-boundary-11000.json) — `743ce6dca5064b694717d2df653bc3094fe615993d34ac257fdd87d493080389` |
+| Paired selection, 12,000 updates | Primary 9,994/10,000 and robustness 9,966/10,000; each corpus had one false action among 5,000 negatives | [`paired-boundary-12000.json`](../artifacts/phase4-pilot-observations/a654dad847fbbc9333df4af408f69895db64c656/paired-boundary-12000.json) — `2538410341047e8ebb77a4e62fd21ad6495c67c042d488e78f4336f7c6e6b507` |
+
+Every listed autonomous evaluation recorded zero runtime/dynamics errors and
+zero foundation-model calls. The paired receipt binds selected weight SHA-256
+`159e57c76dbbe56576635a88d4089fa9b323144a72a6e9f36971a83e64ef7cf6`
+and logical model SHA-256
+`2c5e5b2a0cb3749404ec3f2a5b70dc20c00fd8a2560a4035f577311fa375e30f`.
+This is positive evidence that the taught curriculum produced the intended
+timed behavior. It is not evidence of zero-shot behavior, general continuity,
+causal necessity of EventFlow, or advantage over a baseline.
+
+The original Make invocation returned 2 at
+`2026-09-20T06:14:16.821804+00:00` while inventorying artifacts after durable
+selection. The exact paired promotion
+certificate is 76,133,773 bytes, larger than the ordinary reader's 67,108,864-byte
+limit. The failure is reproduced and bound by
+[`workflow-stop.json`](../artifacts/phase4-pilot-observations/a654dad847fbbc9333df4af408f69895db64c656/workflow-stop.json), SHA-256
+`544b98971bf88c47c9a290fa007b356e3abeb1bf04054284bc6613b431851340`.
+No `final/` directory, training result, workflow envelope or canonical gate was
+published. The selected boundary is learning evidence, not final Phase 4
+acceptance; all selected-checkpoint final suites, selected numerics, the fresh
+local gate and the canonical gate remain pending.
+
+The corrected-source reproduction is planned and has not started. It limits
+implementation work to three artifact-I/O corrections, followed by verification
+and independent review, then freezes corrected producer `P2`, regenerates all
+four source-bound manifests and audits under
+`manifests/validation/phase4-artifact-fix-v1/` as `D2`, and records a compatible
+training revision `T2`. A fresh run root ending
+`phase4-pilot-artifact-fix-v1/event_flow/11/pilot` will reproduce seed 11 from
+the beginning without importing old weights or optimizer state. The original run
+and every old artifact remain preserved.
+
+The predeclared expectation is the same scientific trajectory and 12,000-update
+selection. Any divergence must be investigated before further fitting. If the
+reproduction matches, total accounted scientific training will be 24,000 updates:
+12,000 original plus 12,000 reproduced. The correction grants no new seed,
+tuning, unrestricted 75,000-update allowance or extended-learning rescue.
+Repeated audits and evaluations are engineering regeneration cost rather than
+independent scientific replications.
+
 Missing or failed selected-weight evidence, including a natural no-selection
-outcome, remains an honest failed gate. Do not substitute latest weights, restart
-seed 11, or weaken a gate. The required final `make verify` remains mandatory.
-Only the new canonical gate and final evidence documentation can establish the
-actual outcome. **Phase 4 remains incomplete.**
+outcome in any ordinary attempt, remains an honest failed gate. The earlier
+instruction not to restart seed 11 still applies generally; the approved
+source-bound reproduction is the explicit exception for this reproducible I/O
+defect. Do not substitute latest weights or weaken a gate. The required final
+`make verify` remains mandatory. Only the new canonical gate and final evidence
+documentation can establish the actual outcome. **Phase 4 remains in progress.**

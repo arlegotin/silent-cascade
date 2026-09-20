@@ -1878,10 +1878,127 @@ pilot fits in 10 GiB, lower validation counts, or introduce another storage
 subsystem. Any necessary source correction follows the existing TDD/review
 workflow; source-bound evidence is regenerated when compatibility requires it.
 
+#### Task 12 correction — production artifact bounds, 2026-09-20
+
+The original seed-11 run at `a654dad847fbbc9333df4af408f69895db64c656`
+reached `robustness_complete` at 12,000 updates and published its durable
+checkpoint and selected weights. Final training inventory then failed because
+the paired promotion certificate contains 76,133,773 bytes and the reader applies
+the 67,108,864-byte manifest limit. The retained failure receipt is
+`artifacts/phase4-pilot-observations/a654dad847fbbc9333df4af408f69895db64c656/workflow-stop.json`.
+This is a reproduced artifact-I/O defect after successful curriculum learning;
+no final selected-checkpoint gate has run or passed.
+
+**Engineering ruling and authority.** Apply the existing changed-source rule in
+Task 8 and Task 12 Step 3 under the repository's standing approval for reversible
+engineering corrections. Preserve the original run and identities. Correct the
+bounded readers, then regenerate source-bound data and reproduce the same seed-11
+scientific trajectory in a separately identified corrected-source attempt. Keep
+all existing source-equality checks; do not add cross-revision checkpoint reuse,
+source exceptions, a recovery subsystem, or a new acceptance criterion. This
+ruling distinguishes diagnosed defect reproduction from retrying failed learning.
+It supersedes the ordinary guide's unconditional prohibition on restarting seed
+11 only for this explicitly recorded correction. The canonical specification,
+scientific code paths, configuration, data recipe/root seeds, gates and selection
+stay fixed. Physical manifest and run directories change to preserve the originals.
+
+**Correction files and responsibilities:**
+
+- `src/silent_cascade/train/pilot_trainer.py`: route exact attempt-local
+  `promotion-<step>.json` artifacts through the existing bounded 128 MiB evaluation
+  reader in `_artifact_sha256`, shared by inventory and journal verification.
+  Ordinary metadata/manifests retain their 64 MiB limit. Preserve all path,
+  symlink, frozen-namespace and hash checks.
+- `src/silent_cascade/train/pilot_data.py`: when create-only publication encounters
+  an existing destination, bound the comparison by the known payload length
+  (at least one byte for the empty case), then require exact byte equality.
+  Preserve pinned directory descriptors, no-follow reads, exclusive linking,
+  durability and refusal to replace different bytes. Domain publishers retain
+  their existing admission limits; this is not an unbounded file reader.
+- `src/silent_cascade/train/pilot_evidence.py`: align available-journal byte
+  authentication and parsing with the trainer's 64 MiB journal contract. The
+  actual original maximum journal is 7,231,461 bytes; the current 8 MiB default
+  happens to suffice for it but contradicts the existing writer/reader contract.
+- `tests/pilot/test_pilot_trainer.py`,
+  `tests/pilot/test_pilot_artifact_bounds.py`: exercise real bounded file I/O and
+  its production consumers using synthetic boundary fixtures, without fitting
+  another scientific model. Existing pilot evidence and publication tests remain
+  relevant regression coverage.
+
+**Review focus:** accept full paired certificates without admitting oversized
+ordinary metadata; reject oversized/corrupt or unsafe-path certificates; retain
+create-only equality for large and empty payloads; reject growth and changed
+bytes on duplicate publication; authenticate every available journal at the same
+bound used by its producer. No metric, denominator, eligibility, provenance or
+checkpoint-retention change is part of this correction.
+
+- [ ] **Correction 1: Write and observe focused failing regressions.** Reuse the
+  real sparse-byte fixture and consumers already in `test_pilot_trainer.py`:
+
+  ```python
+  @pytest.mark.parametrize("consumer", ["journal", "inventory"])
+  @pytest.mark.parametrize("size", [64 * 1024**2 + 1, 128 * 1024**2])
+  def test_paired_promotion_uses_evaluation_limit(tmp_path, consumer, size):
+      name = "attempt-test/promotion-12000.json"
+      _, digest = _sparse_artifact(tmp_path, name, size)
+      _check_artifact_consumer(tmp_path, name, digest, consumer)
+  ```
+
+  Add rejection at 128 MiB + 1 and unchanged ordinary 64 MiB + 1 rejection;
+  exercise promotion tampering, leaf/parent symlinks, traversal and frozen paths.
+  Add real repeated publication tests for equal/different payloads above 64 MiB,
+  empty payloads and a destination larger than the expected payload. Exercise a
+  production gate publisher with a valid admitted payload above 64 MiB. Add a
+  valid available-journal fixture above 8 MiB that reaches the real verifier,
+  together with changed-hash and over-64-MiB rejection. Tests must observe
+  production behavior, not assert a patched function was called.
+  Run the new tests offline and retain the expected red results before edits.
+- [ ] **Correction 2: Implement only those three artifact-boundary corrections.**
+  Use the existing evaluation reader, strict path handling and manifest bound.
+  Add no runtime monkeypatch, migration, alternate authentication mode or new
+  dependency. Run the focused tests, the affected pilot regression suites and
+  local lint/format checks. Preserve exact command/results and obtain fresh
+  independent spec/quality review before freezing the corrected producer.
+- [ ] **Correction 3: Freeze and regenerate through the original sequence.**
+  Commit reviewed corrected source and this operational ruling as producer P2.
+  Use fresh `manifests/validation/phase4-artifact-fix-v1/` and a fresh real run path
+  ending `phase4-pilot-artifact-fix-v1/event_flow/11/pilot`. Retain every original
+  artifact. Prepare all four full audits offline through the existing entry
+  point and its deliberate commit-data barrier. Verify the corrected manifests'
+  keys, entries, example/projection identities, counts and config against the
+  originals: source-bearing metadata may differ, scientific content must not.
+  Commit exact new manifests/reports as D2, then a meaningful compatible training
+  readiness revision T2. No ordinary P-to-T compatibility check is bypassed.
+- [ ] **Correction 4: Explicitly reproduce and compare the corrected attempt.**
+  Recheck space for both retained original evidence and new outputs; the user's
+  available-disk authorization supersedes the historical 10 GiB restriction.
+  Fresh seed remains 11, without old weights or optimizer state. Predeclare the
+  original complete scientific trajectory and natural 12,000-update selection
+  as the expected reproduction. At durable boundaries compare model tensor
+  identities, losses, curriculum progress and semantic rows after excluding only
+  declared source/path identities and telemetry. Any unexpected scientific
+  divergence is a defect to investigate before further fitting, not permission
+  to train longer, tune or choose the more favorable attempt. Record all actual
+  compute: the expected aggregate is 24,000 optimizer updates (12,000 original
+  plus 12,000 reproduced), with one 12,000-update learned trajectory per source.
+  This grants no additional unrestricted 75,000-update budget, new seed or
+  retry after a natural learning failure. Repeated data audits/evaluations are
+  engineering regeneration cost, not independent scientific replications.
+- [ ] **Correction 5: Complete the unchanged final workload at T2.** Run all
+  selected-checkpoint suites, repeat, delay pairs, continuation, native numerical
+  and offline checks, then a fresh T2-bound local verification recorder, the
+  independent canonical gate and whole-phase review. Original T observations
+  remain historical evidence and cannot satisfy the corrected source's final
+  gate. Keep the canonical output at
+  `manifests/validation/phase4/autonomous-gate-v1.json`, as required by the closed
+  delivery schema; the new manifest directory does not change that locator.
+  Report any final failure honestly; Phase 4 remains in progress until the
+  complete unchanged gate passes.
+
 **Files:**
 
-- Generate: `manifests/validation/phase4/{one_hop,two_hop,primary,robustness}.json`.
-- Generate: `manifests/validation/phase4/audits/{one_hop,two_hop,primary,robustness}/report.json` from the actual verified Task6 audit outputs, preserving exact bytes.
+- Generate: `manifests/validation/phase4-artifact-fix-v1/{one_hop,two_hop,primary,robustness}.json` for the corrected-source attempt; preserve the original `phase4/` data.
+- Generate: `manifests/validation/phase4-artifact-fix-v1/audits/{one_hop,two_hop,primary,robustness}/report.json` from the actual verified Task6 audit outputs, preserving exact bytes.
 - Generate: `manifests/validation/phase4/autonomous-gate-v1.json`,
   `manifests/validation/phase4/delivery.json`,
   `manifests/validation/phase4/compact/` acceptance rows, `reports/phase4-pilot-v1/`.
@@ -1914,8 +2031,15 @@ reports instead of repeating the statistical fits at startup.
 
 - [ ] **Step 2: Start or resume exactly one authenticated pilot.**
 
+For the corrected-source reproduction, set `PILOT_RUN_DIR` to the admitted real
+absolute whole-run path ending
+`phase4-pilot-artifact-fix-v1/event_flow/11/pilot`. Use that same value for all
+commands below. The historical `phase4-pilot-v1` run remains preserved; it is not
+the destination for corrected-source execution. The explicit manifest argument
+selects D2 instead of the Make target's historical default.
+
 ```bash
-OMP_NUM_THREADS=1 make pilot PILOT_DEVICE=cpu PILOT_RUN_DIR=runs/phase4-pilot-v1/event_flow/11/pilot
+OMP_NUM_THREADS=1 make pilot PILOT_DEVICE=cpu PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1 PILOT_RUN_DIR="${PILOT_RUN_DIR:?set the admitted corrected-source run path}"
 ```
 
 Use `PILOT_DEVICE=mps` only if Task 10 selected it from real measurements. Record
@@ -1933,9 +2057,9 @@ completed. Keep user updates concise while the real compute is running.
 - [ ] **Step 3: Evaluate the selected frozen weights and collect real evidence.**
 
 ```bash
-uv run python scripts/check_phase4_pilot.py --run-dir runs/phase4-pilot-v1/event_flow/11/pilot --output manifests/validation/phase4/autonomous-gate-v1.json
-uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir runs/phase4-pilot-v1/event_flow/11/pilot
-uv run silent-cascade report build --pilot --run-dir runs/phase4-pilot-v1/event_flow/11/pilot --output reports/phase4-pilot-v1
+uv run python scripts/check_phase4_pilot.py --config configs/train/pilot.yaml --run-dir "$PILOT_RUN_DIR" --output manifests/validation/phase4/autonomous-gate-v1.json
+uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir "$PILOT_RUN_DIR"
+uv run silent-cascade report build --pilot --run-dir "$PILOT_RUN_DIR" --output reports/phase4-pilot-v1
 ```
 
 Run the complete Section 3 acceptance workload: final primary, two-hop and
@@ -1962,7 +2086,7 @@ to strong-baseline training while this phase gate is unsatisfied.
 ```bash
 uv run python scripts/record_phase4_local_verify.py
 git diff --check
-uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir runs/phase4-pilot-v1/event_flow/11/pilot
+uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir "$PILOT_RUN_DIR"
 ```
 
 The recorder executes the unchanged local `make verify` command and preserves its
