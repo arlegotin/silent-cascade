@@ -208,36 +208,45 @@ their defaults are `runs/phase4-pilot-v1/event_flow/11/pilot`,
 `manifests/validation/phase4` and `cpu`. The smoke target appends `-smoke` to the
 run and manifest directories to keep the two profiles distinct.
 
-Start from committed, compatible source. The preparation workflow generated
-`one_hop.json`, `two_hop.json`, `primary.json`, `robustness.json` and the four
-`audits/<stage>/report.json` inputs, then stopped at its deliberate
-**commit-data precondition**. Producer source `a140fac14da9493b06ce0de2154dcca44c17fbd5`
-and the exact eight-file data introduction
-`f8982b5fc4168e515bbf6651bc7dec88b1476193` are now committed. The raw audit
-manifest/report/index triplets remain as intentionally untracked local evidence
-under `audit-raw/<stage>/`; the data commit contains only the four canonical
-stage manifests and four exact public audit reports.
+Start from committed, compatible source. The original preparation workflow
+generated `one_hop.json`, `two_hop.json`, `primary.json`, `robustness.json` and
+the four `audits/<stage>/report.json` inputs, then stopped at its deliberate
+**commit-data precondition**. Its producer was
+`a140fac14da9493b06ce0de2154dcca44c17fbd5` and its exact eight-file data
+introduction was `f8982b5fc4168e515bbf6651bc7dec88b1476193`.
+
+Correction 3 has now produced the corresponding corrected inputs. Reviewed
+producer `P2` is `bc3afa619bfde45a759f753e79d06b6c7d81c6f2`; the exact eight
+corrected public manifests and full audit reports are committed as `D2`
+`168d62a00811b1b8cc6157a7b1c45fdd1c1531e2`. The corrected preparation exited
+1 at `2026-09-20T16:02:04.063204+00:00` at that same commit-data barrier, before
+any optimizer or corrected run directory existed. Both the original and
+corrected raw audit manifest/report/index triplets remain intentionally
+untracked local evidence under `audit-raw/<stage>/`; each data commit contains
+only four canonical stage manifests and four exact public audit reports.
 
 The original revision sequence was producer `P`, compatible ordinary
 documentation, data introduction `D`, and training revision `T`. The real
 seed-11 CPU pilot subsequently ran at `T`
 `a654dad847fbbc9333df4af408f69895db64c656`; its current outcome is recorded in
-the Task 12 section below. A source-bound corrected attempt is now planned as a
-distinct `P2`–`D2`–`T2` sequence. No command auto-commits Git state. Debug data
+the Task 12 section below. The corrected sequence is now `P2`–`D2`–`T2`:
+this meaningful readiness documentation becomes `T2` only when it is committed,
+so no `T2` hash is claimed here. No command auto-commits Git state. Debug data
 preserve their introduction chain while their small-corpus audits explicitly
 remain non-acceptance. Production statistical audit acceptance is required
 before fitting; no training command reruns probes to replace failed or missing
 evidence.
 
-After the corrected manifests and audits are committed at `D2` and the compatible
-readiness revision `T2` is committed, set `PILOT_RUN_DIR` to the admitted real
-absolute root ending `phase4-pilot-artifact-fix-v1/event_flow/11/pilot`:
+After `T2` is committed and a fresh capacity recheck admits launch, use the
+real corrected-run root:
 
 ```sh
-OMP_NUM_THREADS=1 make pilot \
+UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  MKL_NUM_THREADS=1 PYTORCH_ENABLE_MPS_FALLBACK=0 \
+  make pilot \
   PILOT_DEVICE=cpu \
   PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1 \
-  PILOT_RUN_DIR="${PILOT_RUN_DIR:?set the admitted corrected-source run path}"
+  PILOT_RUN_DIR='/Users/artemlegotin/Library/Application Support/silent-cascade/runs/phase4-pilot-artifact-fix-v1/event_flow/11/pilot'
 ```
 
 Production command forms, once their stated inputs exist:
@@ -682,15 +691,53 @@ published. The selected boundary is learning evidence, not final Phase 4
 acceptance; all selected-checkpoint final suites, selected numerics, the fresh
 local gate and the canonical gate remain pending.
 
-The corrected-source reproduction is planned and has not started. It limits
-implementation work to three artifact-I/O corrections, followed by verification
-and independent review, then freezes corrected producer `P2`, regenerates all
-four source-bound manifests and audits under
-`manifests/validation/phase4-artifact-fix-v1/` as `D2`, and records a compatible
-training revision `T2`. A fresh run root ending
-`phase4-pilot-artifact-fix-v1/event_flow/11/pilot` will reproduce seed 11 from
-the beginning without importing old weights or optimizer state. The original run
-and every old artifact remain preserved.
+### Corrected-source data readiness (2026-09-20)
+
+Approved Task 12 Correction 3 is now complete through corrected data
+introduction. The three reviewed artifact-I/O corrections were frozen in
+producer `P2` `bc3afa619bfde45a759f753e79d06b6c7d81c6f2`, whose source closure is
+`757aaaecedf64b9ed4f9e11f571ee93dd732a49367e2023a36fd1aa86e09b7ec`.
+The P2 local preflight passed 3,501 tests (3,192 main, 93 service and 216
+leakage); its receipt is
+`.superpowers/sdd/2026-09-16-phase-4-autonomous-eventflow/task-12-artifact-bounds-full-verify-bc3afa619bfde45a759f753e79d06b6c7d81c6f2/receipt.json`,
+SHA-256 `b2e90837537bfb7edb5774e56c404a220a4b082eecfa38238fe3255c2eb3b365`.
+That preflight is not the corrected attempt's final `T2` gate.
+
+The source-bound preparation ended with actual exit 1 at
+`2026-09-20T16:02:04.063204+00:00`, exactly at the deliberate commit-data
+barrier; it did not start optimization. Strict acceptance then exited 0 at
+`2026-09-20T16:13:42.591697+00:00`. It regenerated and matched all 40,000
+example and oracle identities, and each corrected full scientific manifest and
+audit equals its original counterpart apart from declared source-bearing
+wrappers. Every profile has `acceptance=true`, 10,000 examples (5,000 positive,
+2,500 safe-negative and 2,500 disconnected-negative), and zero foundation-model
+calls.
+
+| Stage | Corrected public manifest and SHA-256 | Corrected public audit and SHA-256 |
+| --- | --- | --- |
+| One hop | `manifests/validation/phase4-artifact-fix-v1/one_hop.json` — `292a1bf67bbba850db52ff644c6992d520620c08d04191aaa36dcbba8e1e5aa6` | `manifests/validation/phase4-artifact-fix-v1/audits/one_hop/report.json` — `92b5e85579e12cca2b3a39dd4c916a096ff8348f26b43c2edcb71d8a42313292` |
+| Two hop | `manifests/validation/phase4-artifact-fix-v1/two_hop.json` — `1cfb1f613578eafc0e6ef7c2c664006e4ee7331e9ae324ba65f3376783a50c45` | `manifests/validation/phase4-artifact-fix-v1/audits/two_hop/report.json` — `d190ace486d07bd48c461aa4b9e05fa7563188ac2d060f2211cc346284ba8a9f` |
+| Primary | `manifests/validation/phase4-artifact-fix-v1/primary.json` — `b0e884d4e62acb4e2f9ad39d0b9fa77e9e064264ef1d9b4da0503302a31ce89f` | `manifests/validation/phase4-artifact-fix-v1/audits/primary/report.json` — `61f566159ca628e22b25f564902db55c3c54372dac11d0ed8ddea9a685b209af` |
+| Robustness | `manifests/validation/phase4-artifact-fix-v1/robustness.json` — `6ca3e94add1e3f193e2a9bc96b477643e222e6569dce86851743f76f7e6b48d3` | `manifests/validation/phase4-artifact-fix-v1/audits/robustness/report.json` — `21482f72931b0de0a9802308f9ee1556fa48cfb99e9208e0e7605beb17aaf902` |
+
+The exact acceptance receipt is
+`.superpowers/sdd/2026-09-16-phase-4-autonomous-eventflow/task-12-corrected-data-acceptance-20260920T160438Z.jsonl`,
+SHA-256 `0e047b45a4560f307348295823db4c41d5452fe84ca919ff8ca55b69e9d0a6ca`.
+The eight public files above are committed as `D2`
+`168d62a00811b1b8cc6157a7b1c45fdd1c1531e2`. This documentation revision is the
+meaningful compatible `T2` only after its commit; no `T2` SHA is invented.
+
+Corrected optimization has not started; no corrected selected checkpoint or
+final result exists. The fresh corrected attempt will reproduce seed 11 from
+the beginning at the stated CPU/offline/single-thread/no-MPS-fallback command,
+without old weights, optimizer state, a new seed or tuning. The original run and
+every old artifact remain preserved.
+
+The preliminary free-space snapshot is 93,686,632,448 bytes (about 93.7 GB),
+versus the conditional post-preparation allowance of 75,807,819,517 bytes. It
+is neither a hard bound nor an implemented limiter; root must recheck capacity
+before launch. A fresh final `T2` recorder executing the real `make verify`,
+followed by the canonical gate, remains mandatory.
 
 The predeclared expectation is the same scientific trajectory and 12,000-update
 selection. Any divergence must be investigated before further fitting. If the
