@@ -44,6 +44,14 @@ def test_autonomous_hash_consumers_accept_larger_than_manifest_limit(
 
 
 @pytest.mark.parametrize("consumer", ["journal", "inventory"])
+@pytest.mark.parametrize("size", [64 * 1024**2 + 1, 128 * 1024**2])
+def test_paired_promotion_uses_evaluation_limit(tmp_path, consumer, size):
+    name = "attempt-test/promotion-12000.json"
+    _, digest = _sparse_artifact(tmp_path, name, size)
+    _check_artifact_consumer(tmp_path, name, digest, consumer)
+
+
+@pytest.mark.parametrize("consumer", ["journal", "inventory"])
 @pytest.mark.parametrize(
     ("name", "size"),
     [
@@ -52,6 +60,21 @@ def test_autonomous_hash_consumers_accept_larger_than_manifest_limit(
     ],
 )
 def test_artifact_consumers_keep_domain_byte_limits(tmp_path, consumer, name, size):
+    _, digest = _sparse_artifact(tmp_path, name, size)
+    with pytest.raises(ValueError, match="byte_limit"):
+        _check_artifact_consumer(tmp_path, name, digest, consumer)
+
+
+@pytest.mark.parametrize("consumer", ["journal", "inventory"])
+@pytest.mark.parametrize(
+    ("name", "size"),
+    [
+        pytest.param("attempt-test/promotion-12000.json", 128 * 1024**2 + 1, id="exact-over-limit"),
+        pytest.param("attempt-test/promotion-final.json", 64 * 1024**2 + 1, id="nondecimal"),
+        pytest.param("attempt-test/nested/promotion-12000.json", 64 * 1024**2 + 1, id="nested"),
+    ],
+)
+def test_promotion_reader_requires_exact_bounded_name(tmp_path, consumer, name, size):
     _, digest = _sparse_artifact(tmp_path, name, size)
     with pytest.raises(ValueError, match="byte_limit"):
         _check_artifact_consumer(tmp_path, name, digest, consumer)
@@ -86,6 +109,33 @@ def test_journal_artifact_hash_and_path_guards(tmp_path, kind):
         name = "attempt-test/../" + name
     else:
         name = "attempt-test/validation-0-one_hop/autonomous/frozen/rows.jsonl"
+        _sparse_artifact(tmp_path, name, 1)
+    with pytest.raises((TrainingError, ValueError, OSError)):
+        _check_artifact_consumer(tmp_path, name, digest, "journal")
+
+
+@pytest.mark.parametrize(
+    "kind", ["changed", "leaf_symlink", "parent_symlink", "traversal", "frozen"]
+)
+def test_paired_promotion_keeps_hash_and_path_guards(tmp_path, kind):
+    from silent_cascade.train.state import TrainingError
+
+    name = "attempt-test/promotion-12000.json"
+    path, digest = _sparse_artifact(tmp_path, name, 1)
+    if kind == "changed":
+        path.write_bytes(b"x")
+    elif kind == "leaf_symlink":
+        outside = tmp_path / "unrelated"
+        path.rename(outside)
+        path.symlink_to(outside)
+    elif kind == "parent_symlink":
+        outside = tmp_path / "unrelated"
+        path.parent.rename(outside)
+        path.parent.symlink_to(outside, target_is_directory=True)
+    elif kind == "traversal":
+        name = "attempt-test/../attempt-test/promotion-12000.json"
+    else:
+        name = "attempt-test/frozen/promotion-12000.json"
         _sparse_artifact(tmp_path, name, 1)
     with pytest.raises((TrainingError, ValueError, OSError)):
         _check_artifact_consumer(tmp_path, name, digest, "journal")

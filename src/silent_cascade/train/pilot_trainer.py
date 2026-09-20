@@ -169,7 +169,15 @@ def _artifact_sha256(run_dir, name):
         and parts[1].startswith("validation-")
         and parts[2] == "autonomous"
     )
-    reader = read_evaluation_artifact if autonomous else _read_pilot_bytes
+    promotion = (
+        len(parts) == 2
+        and parts[0].startswith("attempt-")
+        and parts[1].startswith("promotion-")
+        and parts[1].endswith(".json")
+        and parts[1][len("promotion-") : -len(".json")].isascii()
+        and parts[1][len("promotion-") : -len(".json")].isdecimal()
+    )
+    reader = read_evaluation_artifact if autonomous or promotion else _read_pilot_bytes
     return sha256_bytes(reader(path))
 
 

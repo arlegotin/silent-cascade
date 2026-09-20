@@ -182,7 +182,7 @@ def _publish_pilot_bytes(path: Path, payload: bytes) -> None:
                     read_archive_at(
                         descriptor,
                         absolute.name,
-                        max_bytes=MAX_PILOT_MANIFEST_BYTES,
+                        max_bytes=max(len(payload), 1),
                         error_factory=ValueError,
                     )
                     != payload

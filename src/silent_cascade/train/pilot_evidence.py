@@ -15,9 +15,13 @@ from silent_cascade.report.pilot_artifacts import (
     load_training_result,
     validate_training_result,
 )
-from silent_cascade.train.evidence_types import read_bytes
+from silent_cascade.train.evidence_types import decode_json, read_bytes
 from silent_cascade.train.pilot_artifact_index import iter_artifact_index, parse_training_envelope
-from silent_cascade.train.pilot_data import _publish_pilot_bytes, iter_pilot_examples
+from silent_cascade.train.pilot_data import (
+    MAX_PILOT_MANIFEST_BYTES,
+    _publish_pilot_bytes,
+    iter_pilot_examples,
+)
 from silent_cascade.train.pilot_evidence_types import (
     MAX_BYTES,
     MAX_FILE_BYTES,
@@ -1048,10 +1052,13 @@ def _verify_available_training(run_dir, *, training, config, source, unavailable
         if not path.exists():
             complete = False
             break
-        raw = read_bytes(path)
+        raw = read_bytes(path, limit=MAX_PILOT_MANIFEST_BYTES)
         if sha256_bytes(raw) != cursor:
             raise ValueError("available training journal hash differs")
-        record = strict_json(path)
+        try:
+            record = decode_json(raw, limit=MAX_PILOT_MANIFEST_BYTES)
+        except Exception as error:
+            raise ValueError(f"invalid evidence JSON: {error}") from error
         complete = complete and all(
             child(run_dir, name).exists() for name in record.get("artifacts", {})
         )
