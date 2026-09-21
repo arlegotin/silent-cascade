@@ -2,11 +2,16 @@
 
 Silent Cascade is a public research project testing persistent, learned event-flow computation on the Observation-Free Deadline benchmark.
 
-The repository contains Phase 1 data-generator, oracle, leakage-audit, and
-reproducibility infrastructure plus the Phase 2 EventFlow runtime. Phase 2 is
-non-neural runtime engineering evidence, not learned-model or benchmark
-evidence. The project reports no learned benchmark results and makes no claim
-about consciousness, sentience, biological fidelity, or general intelligence.
+The corrected, offline, one-seed Phase 4 autonomous pilot passed its unchanged
+engineering gate. Its selected 12,000-update model achieved 9,994/10,000 timed
+successes on primary validation, 9,991/10,000 on two-hop validation and
+9,966/10,000 on robustness validation, with zero dynamics failures and zero
+foundation-model calls. See the [measured pilot and adverse history](docs/phase4-autonomous-eventflow.md),
+[canonical gate](manifests/validation/phase4/autonomous-gate-v1.json), and
+[published report](reports/phase4-pilot-v1/report.md). These are training-exposed
+validation results from one seed. Baseline and ablation comparisons and frozen
+final-test results have not been run; no claim about consciousness, sentience,
+biological fidelity, or general intelligence follows.
 
 ## Current working path
 
@@ -53,10 +58,24 @@ and package builds run only in the local workspace.
 - [Research and claim boundary](docs/research-boundary.md)
 - [Approved deviations](docs/deviations.md)
 
-The local Phase 4 pilot workflow is available through `make pilot` and
-`make pilot-smoke`. Both first require separately introduced immutable manifests
-and audit reports, followed by a distinct compatible training revision. Initial
-setup creates missing inputs and stops before fitting; it never commits your
-checkout. See [pilot setup and command details](docs/phase4-autonomous-eventflow.md).
-The four-update smoke is debug engineering evidence, not a passed production
-learning gate. Intervention, general reporting and demo commands remain future work.
+The accepted corrected run used `PILOT_DEVICE=cpu` and
+`PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1`. A fresh pilot
+uses an absent `PILOT_RUN_DIR` and a compatible committed data/source sequence:
+
+```sh
+make pilot PILOT_DEVICE=cpu PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1 PILOT_RUN_DIR="$PILOT_RUN_DIR"
+```
+
+The fresh run needs its own source-bound local verification before separate gate
+collection; follow the [pilot guide](docs/phase4-autonomous-eventflow.md). To
+verify the published canonical gate, set `PILOT_RUN_DIR` to the retained corrected
+raw run, then use:
+
+```sh
+uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir "$PILOT_RUN_DIR"
+```
+
+Artifact-only verification without the raw run reports missing coverage.
+`make pilot-smoke` remains debug engineering evidence. The guide records the
+exact run history, local verification receipt and source-bound setup.
+Intervention, general reporting and demo commands remain future work.
