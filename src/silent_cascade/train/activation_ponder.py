@@ -989,13 +989,17 @@ def _evaluate_primary_boundary(
     """Stream all 10,000 accepted primary rows, preserving every adverse outcome."""
     destination = run_dir / f"validation-{step:04d}"
     receipt_path = destination / "receipt.json"
+    manifest_sha = sha256_file(
+        Path(__file__).resolve().parents[3] / "manifests/validation/phase4/primary.json"
+    )
     if receipt_path.exists():
-        receipt = json.loads(receipt_path.read_bytes())
-        if receipt["checkpoint_sha256"] != checkpoint_sha256 or receipt[
-            "rows_sha256"
-        ] != sha256_file(destination / "rows.jsonl.gz"):
-            raise ValueError("primary validation receipt or rows differ")
-        return receipt, 0.0
+        return validate_primary_validation_receipt(
+            receipt_path,
+            entries=manifest.entries,
+            update=step,
+            checkpoint_sha256=checkpoint_sha256,
+            manifest_sha256=manifest_sha,
+        ), 0.0
     destination.mkdir(exist_ok=True)
     temporary = destination / "rows.jsonl.gz.tmp"
     successes = 0
@@ -1037,14 +1041,118 @@ def _evaluate_primary_boundary(
         "negative_false_actions": false_actions,
         "foundation_model_calls": 0,
         "checkpoint_sha256": checkpoint_sha256,
-        "manifest_sha256": sha256_file(
-            Path(__file__).resolve().parents[3] / "manifests/validation/phase4/primary.json"
-        ),
+        "manifest_sha256": manifest_sha,
         "rows_sha256": sha256_file(destination / "rows.jsonl.gz"),
         "elapsed_seconds": elapsed,
     }
     atomic_create_bytes(receipt_path, canonical_json_bytes(receipt) + b"\n")
-    return receipt, elapsed
+    return validate_primary_validation_receipt(
+        receipt_path,
+        entries=manifest.entries,
+        update=step,
+        checkpoint_sha256=checkpoint_sha256,
+        manifest_sha256=manifest_sha,
+    ), elapsed
+
+
+def validate_primary_validation_receipt(
+    receipt_path: Path,
+    *,
+    entries: Sequence,
+    update: int,
+    checkpoint_sha256: str,
+    manifest_sha256: str,
+) -> dict:
+    """Recount every bound validation row before using its checkpoint rank."""
+    receipt = json.loads(receipt_path.read_bytes())
+    rows_path = receipt_path.parent / "rows.jsonl.gz"
+    if (
+        receipt.get("schema_version") != "phase5a-ponder-primary-validation-v1"
+        or receipt.get("update") != update
+        or receipt.get("cap") != 24
+        or receipt.get("denominator") != len(entries)
+        or receipt.get("checkpoint_sha256") != checkpoint_sha256
+        or receipt.get("manifest_sha256") != manifest_sha256
+        or receipt.get("rows_sha256") != sha256_file(rows_path)
+        or receipt.get("foundation_model_calls") != 0
+    ):
+        raise ValueError("primary validation receipt binding differs")
+    successes = false_actions = 0
+    with gzip.open(rows_path, "rt") as handle:
+        for index, (line, entry) in enumerate(zip(handle, entries, strict=True)):
+            row = json.loads(line)
+            projected = entry.projected
+            if (
+                row.get("public_id") != projected.public_id
+                or row.get("episode_sha256") != projected.episode_sha256
+                or row.get("variant") != projected.variant
+                or row.get("path_length") != projected.path_length
+                or row.get("compute", {}).get("foundation_model_calls") != 0
+                or type(row.get("timed_success")) is not bool
+                or (row.get("score_reason") in {"success", "negative_abstention"})
+                != row["timed_success"]
+                or (
+                    projected.variant == "positive"
+                    and row.get("score_reason") not in {"success", "incorrect", "action_count"}
+                )
+                or (
+                    projected.variant != "positive"
+                    and row.get("score_reason")
+                    not in {"negative_abstention", "negative_false_action"}
+                )
+                or not isinstance(row.get("actions"), list)
+            ):
+                raise ValueError(f"primary validation row {index} binding differs")
+            successes += int(row["timed_success"])
+            false_actions += int(projected.variant != "positive" and bool(row["actions"]))
+    if (
+        receipt.get("timed_successes") != successes
+        or receipt.get("negative_false_actions") != false_actions
+    ):
+        raise ValueError("primary validation receipt count differs from bound rows")
+    return receipt
+
+
+def recover_orphan_main_boundary(
+    main_dir: Path,
+    *,
+    latest_step: int,
+    budget: BudgetLedger,
+    model: ActivationPonderModel,
+    optimizer: torch.optim.Optimizer,
+    config_sha256: str,
+    source_revision: str,
+) -> tuple[int, Path] | None:
+    """Restore a complete immutable boundary written before its progress pointer."""
+    future = sorted(
+        path
+        for path in main_dir.glob("main-[0-9][0-9][0-9][0-9].pt")
+        if int(path.stem.split("-")[1]) > latest_step
+    )
+    if not future:
+        return None
+    expected = 1000 if latest_step < 1000 else latest_step + 1000
+    if len(future) != 1 or future[0].name != f"main-{expected:04d}.pt":
+        raise ValueError("orphaned main checkpoint is not the next validation boundary")
+    path = future[0]
+    if not path.with_suffix(".json").is_file():
+        raise ValueError("orphaned main checkpoint lacks its immutable descriptor")
+    step, checkpoint_budget = load_main_checkpoint(
+        path,
+        model,
+        optimizer,
+        config_sha256=config_sha256,
+        source_revision=source_revision,
+    )
+    if (
+        step != expected
+        or checkpoint_budget.updates != expected
+        or budget.updates != expected
+        or budget.elapsed_scientific_seconds < checkpoint_budget.elapsed_scientific_seconds
+        or budget.retained_bytes < checkpoint_budget.retained_bytes
+    ):
+        raise ValueError("orphaned main checkpoint differs from physical progress")
+    return step, path
 
 
 def fit_ponder(
@@ -1179,6 +1287,27 @@ def fit_ponder(
                 }
             )
             _write_json(result_path, result)
+        orphan = recover_orphan_main_boundary(
+            main_dir,
+            latest_step=step,
+            budget=budget,
+            model=model,
+            optimizer=optimizer,
+            config_sha256=config.config_sha256,
+            source_revision=source,
+        )
+        if orphan is not None:
+            step, checkpoint = orphan
+            result = result.model_copy(
+                update={
+                    "completed_updates": step,
+                    "last_stage": main_training_stage(step),
+                    "latest_checkpoint": checkpoint.name,
+                    "latest_checkpoint_sha256": sha256_file(checkpoint),
+                }
+            )
+            _write_json(result_path, result)
+            save_budget()
     else:
         if resume is not None or budget.updates != 0:
             raise ValueError("fresh ponder trajectory cannot resume or inherit main updates")

@@ -1,5 +1,9 @@
 """Masked teacher projections and finite shared recurrent supervision."""
 
+import gzip
+import json
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -220,6 +224,75 @@ def test_selection_uses_only_primary_validation_and_fixed_cap24() -> None:
         ponder_checkpoint_rank(update=1000, cap=8, primary_successes=9000, negative_false_actions=0)
 
 
+def test_primary_validation_receipt_recounts_bound_rows(tmp_path) -> None:
+    from silent_cascade.hashing import sha256_file
+    from silent_cascade.train.activation_ponder import validate_primary_validation_receipt
+
+    entries = tuple(
+        SimpleNamespace(
+            projected=SimpleNamespace(
+                episode_sha256=letter * 64,
+                variant=variant,
+                path_length=2,
+                public_id=f"public-{letter}",
+            ),
+        )
+        for letter, variant in (("a", "positive"), ("b", "safe_negative"))
+    )
+    rows = [
+        {
+            "public_id": entry.projected.public_id,
+            "episode_sha256": entry.projected.episode_sha256,
+            "variant": entry.projected.variant,
+            "path_length": 2,
+            "timed_success": True,
+            "score_reason": "success" if index == 0 else "negative_abstention",
+            "actions": [] if index else [{"hazard_type": 1}],
+            "compute": {"foundation_model_calls": 0},
+        }
+        for index, entry in enumerate(entries)
+    ]
+    folder = tmp_path / "validation-1000"
+    folder.mkdir()
+    with gzip.open(folder / "rows.jsonl.gz", "wt") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    receipt = {
+        "schema_version": "phase5a-ponder-primary-validation-v1",
+        "update": 1000,
+        "cap": 24,
+        "denominator": 2,
+        "timed_successes": 2,
+        "negative_false_actions": 0,
+        "foundation_model_calls": 0,
+        "checkpoint_sha256": "c" * 64,
+        "manifest_sha256": "d" * 64,
+        "rows_sha256": sha256_file(folder / "rows.jsonl.gz"),
+    }
+    path = folder / "receipt.json"
+    path.write_text(json.dumps(receipt))
+    assert (
+        validate_primary_validation_receipt(
+            path,
+            entries=entries,
+            update=1000,
+            checkpoint_sha256="c" * 64,
+            manifest_sha256="d" * 64,
+        )["timed_successes"]
+        == 2
+    )
+    receipt["timed_successes"] = 1
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="count"):
+        validate_primary_validation_receipt(
+            path,
+            entries=entries,
+            update=1000,
+            checkpoint_sha256="c" * 64,
+            manifest_sha256="d" * 64,
+        )
+
+
 def test_nearest_compute_uses_measured_iid_only_and_ten_percent_overlap() -> None:
     assert nearest_ponder_cap(100.0, {4: 40.0, 8: 95.0, 12: 105.0, 16: 200.0, 24: 300.0}) == 8
     assert nearest_ponder_cap(100.0, {4: 40.0, 8: 80.0, 12: 120.0, 16: 200.0, 24: 300.0}) is None
@@ -273,6 +346,49 @@ def test_main_checkpoint_preserves_next_batch_optimizer_and_consumed_budget(tmp_
             checkpoint,
             restored,
             restored_optimizer,
+            config_sha256="a" * 64,
+            source_revision="b" * 40,
+        )
+
+
+def test_complete_orphaned_validation_boundary_is_restored_without_retraining(tmp_path) -> None:
+    from silent_cascade.train.activation_ponder import recover_orphan_main_boundary
+
+    torch.manual_seed(11)
+    model = ActivationPonderModel(PonderModelConfig(width=800))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    budget = BudgetLedger(updates=1000, attempts=2, elapsed_scientific_seconds=500.0)
+    path = tmp_path / "main-1000.pt"
+    save_main_checkpoint(
+        path,
+        model,
+        optimizer,
+        step=1000,
+        budget=budget,
+        config_sha256="a" * 64,
+        source_revision="b" * 40,
+    )
+    expected = {name: value.clone() for name, value in model.state_dict().items()}
+    for parameter in model.parameters():
+        parameter.data.zero_()
+    recovered = recover_orphan_main_boundary(
+        tmp_path,
+        latest_step=100,
+        budget=budget,
+        model=model,
+        optimizer=optimizer,
+        config_sha256="a" * 64,
+        source_revision="b" * 40,
+    )
+    assert recovered == (1000, path)
+    assert all(torch.equal(value, expected[name]) for name, value in model.state_dict().items())
+    with pytest.raises(ValueError, match="orphan"):
+        recover_orphan_main_boundary(
+            tmp_path,
+            latest_step=100,
+            budget=budget.model_copy(update={"updates": 999}),
+            model=model,
+            optimizer=optimizer,
             config_sha256="a" * 64,
             source_revision="b" * 40,
         )

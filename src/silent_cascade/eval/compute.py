@@ -95,7 +95,7 @@ def _record_ponder_retrieval(valid_mask: torch.Tensor, query_dim: int) -> None:
     for meter in _ACTIVE_METERS.get():
         meter._forward_macs += macs
         meter._operation_estimates["bilinear_dot_macs"] += macs
-        meter._records_scored += int(valid_mask.sum())
+        meter._records_scored += rows * (slots + 1)
         meter._eligibility_references.append(
             meter._capture_versioned_tensor(valid_mask, "ponder valid memory")
         )

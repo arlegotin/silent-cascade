@@ -34,7 +34,7 @@ from silent_cascade.eval.compute import (
     aggregate_runtime_compute,
 )
 from silent_cascade.eval.metrics import EvaluationError
-from silent_cascade.eval.ponder_policy import ponder_public
+from silent_cascade.eval.ponder_policy import PonderExecutionError, ponder_public
 from silent_cascade.eventflow.compressed import (
     CompressedExecutionError,
     compressed_state_sha256,
@@ -140,6 +140,30 @@ def run_ponder_episode(
             post_activation_compute=decision.compute,
             inference_wall_seconds=perf_counter() - started,
         )
+    except PonderExecutionError as caught:
+        trace_steps = tuple(asdict(step) for step in caught.steps)
+        steps = tuple(
+            ComparisonStep(
+                event_id=bundle.public.events[-1].event_id + index + 1,
+                kind="ponder",
+                timestamp=step.cognitive_timestamp,
+                state_sha256=sha256_bytes(canonical_json_bytes(asdict(step))),
+                selected_record_id=step.selected_record_id,
+                halt_probability=step.halt_probability,
+                action_class=step.action_class,
+                action_offset=step.action_offset,
+            )
+            for index, step in enumerate(caught.steps)
+        )
+        result = ConditionResult(
+            stop_reason="dynamics_error",
+            steps=steps,
+            trace_sha256=sha256_bytes(canonical_json_bytes({"steps": list(trace_steps)})),
+            end_to_end_compute=caught.compute,
+            post_activation_compute=caught.compute,
+            error=EvaluationError(code="dynamics_error", invariant=caught.cause_type),
+            inference_wall_seconds=perf_counter() - started,
+        )
     except Exception as caught:
         result = ConditionResult(
             stop_reason="dynamics_error",
@@ -196,7 +220,7 @@ def run_intact_episode(
                     finished = engine.step(session, agent)
             finally:
                 snapshots.append(current_meter.snapshot())
-                if before_mode is Mode.SEARCHING:
+                if before_mode is not Mode.OBSERVING:
                     post_snapshots.append(snapshots[-1])
             if before_mode is Mode.OBSERVING and session.state.core.mode is Mode.SEARCHING:
                 activation_counters = session.state.core.counters

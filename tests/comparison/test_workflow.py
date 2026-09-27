@@ -288,6 +288,49 @@ def test_cli_competence_routes_fixed_config_and_committed_source(tmp_path, monke
     assert seen[0]["source_revision"] == "a" * 40
 
 
+def test_evaluate_selected_command_uses_completed_checkpoint_without_refitting(
+    tmp_path, monkeypatch
+) -> None:
+    script = Path(__file__).parents[2] / "scripts/run_phase5a.py"
+    spec = importlib.util.spec_from_file_location("run_phase5a_selected", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (tmp_path / "report").mkdir()
+    (tmp_path / "report/decision.json").write_text('{"proceed_to_b":true}')
+    (tmp_path / "ponder").mkdir()
+    (tmp_path / "ponder/result.json").write_text(
+        json.dumps(
+            {
+                "status": "completed_exploratory",
+                "source_revision": "a" * 40,
+                "config_sha256": ComparisonConfig().config_sha256,
+                "completed_updates": 12000,
+                "chosen_updates": 12000,
+                "last_stage": "robustness",
+                "selected_checkpoint": "main-12000.pt",
+                "selected_checkpoint_sha256": "b" * 64,
+                "selected_update": 12000,
+                "execution_complete": True,
+            }
+        )
+    )
+    seen = []
+    monkeypatch.setattr(
+        module,
+        "fit_ponder",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("selected evaluation must not fit")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_evaluate_selected_ponder",
+        lambda args, trained, config: seen.append((trained.selected_update, config.config_sha256)),
+        raising=False,
+    )
+    assert module.main(["evaluate-selected", "--run-dir", str(tmp_path)]) == 0
+    assert seen == [(12000, ComparisonConfig().config_sha256)]
+
+
 def test_checkpoint_check_authenticates_frozen_producer_without_current_tree(tmp_path, monkeypatch):
     retained = Path(
         "/Users/artemlegotin/Library/Application Support/silent-cascade/runs/"

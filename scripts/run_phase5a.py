@@ -27,6 +27,7 @@ from silent_cascade.eval.comparison_types import (
     ComparisonConfig,
     ComparisonIdentity,
     ComparisonManifest,
+    PonderTrainingResult,
 )
 from silent_cascade.eval.metrics import TimedEpisodeRow
 from silent_cascade.eventflow.neural_weights import load_neural_weights
@@ -325,6 +326,31 @@ def _ponder(args: argparse.Namespace) -> None:
     if trained.status == "profiling" or trained.status == "inconclusive_budget":
         print(f"Ponderer main trajectory: {trained.status}; updates={trained.completed_updates}")
         return
+    _evaluate_selected_ponder(args, trained, config)
+
+
+def _evaluate_selected(args: argparse.Namespace) -> None:
+    """Reevaluate the frozen selected weights after an executor accounting correction."""
+    decision = json.loads((args.run_dir / "report/decision.json").read_bytes())
+    if not decision.get("proceed_to_b"):
+        raise ValueError("Milestone B was not admitted")
+    config = _config(args.config)
+    trained = PonderTrainingResult.model_validate_json(
+        (args.run_dir / "ponder/result.json").read_bytes()
+    )
+    if (
+        trained.status != "completed_exploratory"
+        or not trained.execution_complete
+        or trained.config_sha256 != config.config_sha256
+    ):
+        raise ValueError("selected ponder trajectory is not complete under this protocol")
+    _evaluate_selected_ponder(args, trained, config)
+
+
+def _evaluate_selected_ponder(
+    args: argparse.Namespace, trained: PonderTrainingResult, config: ComparisonConfig
+) -> None:
+    """Load immutable producer weights; bind all fresh rows to the current executor."""
     if trained.completed_updates != trained.chosen_updates or not trained.selected_checkpoint:
         raise ValueError("ponder training has no completed selected checkpoint")
     model = ActivationPonderModel(matched_ponder_config()).to("cpu")
@@ -416,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         "report",
         "competence",
         "ponder",
+        "evaluate-selected",
     ):
         sub = commands.add_parser(command)
         sub.add_argument("--run-dir", type=Path, required=True)
@@ -426,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
             "evaluate-a",
             "competence",
             "ponder",
+            "evaluate-selected",
         }:
             sub.add_argument("--config", type=Path, default=ROOT / "configs/eval/phase5a.yaml")
         if command in {"checkpoint-check", "compatibility-check"}:
@@ -445,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         "report": _report,
         "competence": _competence,
         "ponder": _ponder,
+        "evaluate-selected": _evaluate_selected,
     }[args.command](args)
     return 0
 

@@ -22,6 +22,8 @@ from silent_cascade.eval.comparison_types import (
 )
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.io import atomic_create_bytes
+from silent_cascade.train.activation_ponder import validate_primary_validation_receipt
+from silent_cascade.train.pilot_data import PilotManifest
 
 
 def _read_condition(
@@ -304,18 +306,21 @@ def build_ponder_report(run_dir: Path, output_dir: Path) -> Path:
         raise ValueError("primary selection lacks complete validation boundaries")
     ranked = []
     validation_receipts = {}
+    primary_path = Path(__file__).resolve().parents[3] / "manifests/validation/phase4/primary.json"
+    primary_manifest = PilotManifest.model_validate_json(primary_path.read_bytes())
+    if primary_manifest.count != 10000 or primary_manifest.stage != "primary":
+        raise ValueError("accepted primary validation manifest differs")
+    primary_sha = sha256_file(primary_path)
     for update in expected_boundaries:
         path = run_dir / "ponder" / f"validation-{update:04d}/receipt.json"
-        receipt = json.loads(path.read_bytes())
         checkpoint = run_dir / "ponder" / f"main-{update:04d}.pt"
-        if (
-            receipt.get("denominator") != 10000
-            or receipt.get("cap") != 24
-            or receipt.get("foundation_model_calls") != 0
-            or receipt.get("checkpoint_sha256") != sha256_file(checkpoint)
-            or receipt.get("rows_sha256") != sha256_file(path.parent / "rows.jsonl.gz")
-        ):
-            raise ValueError("primary validation receipt is incomplete or corrupt")
+        receipt = validate_primary_validation_receipt(
+            path,
+            entries=primary_manifest.entries,
+            update=update,
+            checkpoint_sha256=sha256_file(checkpoint),
+            manifest_sha256=primary_sha,
+        )
         rank = ponder_checkpoint_rank(
             update=update,
             cap=24,
