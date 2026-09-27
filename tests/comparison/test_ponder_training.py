@@ -22,9 +22,11 @@ from silent_cascade.train.activation_ponder import (
     evaluate_competence,
     load_debug_checkpoint,
     load_main_checkpoint,
+    main_training_batch,
     main_training_stage,
     ponder_loss,
     project_ponder_batch,
+    rebind_zero_update_checkpoint,
     require_clean_main_source,
     save_debug_checkpoint,
     save_main_checkpoint,
@@ -297,3 +299,61 @@ def test_main_stage_schedule_and_dirty_source_rejection(monkeypatch) -> None:
     monkeypatch.setattr(activation_ponder.subprocess, "call", lambda *a, **k: 1)
     with pytest.raises(ValueError, match="uncommitted"):
         require_clean_main_source()
+
+
+def test_phase4_main_batch_uses_exact_train_namespace_and_counter() -> None:
+    config = ComparisonConfig()
+    batch = main_training_batch(config, step=1)
+    assert len(batch.example_keys) == config.phase4_config.pilot.batch_size == 128
+    assert [
+        (key.split, key.root_seed, key.public_id_seed, key.episode_index, key.stage)
+        for key in (batch.example_keys[0], batch.example_keys[-1])
+    ] == [
+        ("train", 431, 433, 0, "one_hop"),
+        ("train", 431, 433, 127, "one_hop"),
+    ]
+
+
+def test_zero_update_source_rebind_preserves_seed11_initialization(tmp_path) -> None:
+    torch.manual_seed(11)
+    model = ActivationPonderModel(PonderModelConfig(width=800))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    original = tmp_path / "main-0000.pt"
+    repaired = tmp_path / "main-0000-rebound.pt"
+    budget = BudgetLedger(attempts=1)
+    save_main_checkpoint(
+        original,
+        model,
+        optimizer,
+        step=0,
+        budget=budget,
+        config_sha256="a" * 64,
+        source_revision="b" * 40,
+    )
+    rng = torch.get_rng_state().clone()
+    state = {name: value.clone() for name, value in model.state_dict().items()}
+    rebind_zero_update_checkpoint(
+        original,
+        repaired,
+        model,
+        optimizer,
+        config_sha256="a" * 64,
+        prior_source="b" * 40,
+        corrected_source="c" * 40,
+    )
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert all(torch.equal(state[name], value) for name, value in model.state_dict().items())
+    step, restored_budget = load_main_checkpoint(
+        repaired, model, optimizer, config_sha256="a" * 64, source_revision="c" * 40
+    )
+    assert step == 0 and restored_budget.updates == 0
+    with pytest.raises(ValueError):
+        rebind_zero_update_checkpoint(
+            repaired,
+            tmp_path / "bad.pt",
+            model,
+            optimizer,
+            config_sha256="a" * 64,
+            prior_source="c" * 40,
+            corrected_source="d" * 40,
+        )

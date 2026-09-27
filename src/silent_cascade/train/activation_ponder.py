@@ -19,7 +19,11 @@ from silent_cascade.env.episode import EpisodeBundle, episode_sha256
 from silent_cascade.env.pilot import curriculum_to_bundle
 from silent_cascade.env.reward import score_actions
 from silent_cascade.eval.comparison_protocol import admit_ponder_budget, ponder_checkpoint_rank
-from silent_cascade.eval.comparison_runner import PublicProposal, arbitrate_proposal
+from silent_cascade.eval.comparison_runner import (
+    PublicProposal,
+    arbitrate_proposal,
+    ponder_state_sha256,
+)
 from silent_cascade.eval.comparison_types import (
     BudgetLedger,
     ComparisonConfig,
@@ -37,7 +41,7 @@ from silent_cascade.models.activation_ponder import (
 )
 from silent_cascade.models.types import PublicInputBatch
 from silent_cascade.schemas import InternalEventKind
-from silent_cascade.train.batches import TrainingBatch, next_training_batch, pack_training_examples
+from silent_cascade.train.batches import TrainingBatch, pack_training_examples
 from silent_cascade.train.curriculum_data import (
     CURRICULUM_VERSION,
     CurriculumKey,
@@ -297,6 +301,54 @@ def load_main_checkpoint(
     )
 
 
+def rebind_zero_update_checkpoint(
+    original: Path,
+    corrected: Path,
+    model: ActivationPonderModel,
+    optimizer: torch.optim.Optimizer,
+    *,
+    config_sha256: str,
+    prior_source: str,
+    corrected_source: str,
+) -> dict:
+    """Preserve the sole seed-11 initialization across a pre-update wiring correction."""
+    if original.name != "main-0000.pt" or corrected_source == prior_source:
+        raise ValueError("only the original zero-update capsule can be rebound once")
+    step, budget = load_main_checkpoint(
+        original,
+        model,
+        optimizer,
+        config_sha256=config_sha256,
+        source_revision=prior_source,
+    )
+    if step != 0 or budget.updates != 0:
+        raise ValueError("a learned checkpoint cannot cross source revisions")
+    state_sha = ponder_state_sha256(model)
+    rng = torch.get_rng_state().clone()
+    save_main_checkpoint(
+        corrected,
+        model,
+        optimizer,
+        step=0,
+        budget=budget,
+        config_sha256=config_sha256,
+        source_revision=corrected_source,
+    )
+    if ponder_state_sha256(model) != state_sha or not torch.equal(torch.get_rng_state(), rng):
+        raise ValueError("source rebind mutated model state or RNG")
+    return {
+        "schema_version": "phase5a-ponder-zero-update-source-correction-v1",
+        "reason": "Phase 4 pilot config uses pilot, not the Phase 3 training field",
+        "prior_source_revision": prior_source,
+        "corrected_source_revision": corrected_source,
+        "prior_checkpoint_sha256": sha256_file(original),
+        "corrected_checkpoint_sha256": sha256_file(corrected),
+        "model_state_sha256": state_sha,
+        "completed_updates": 0,
+        "foundation_model_calls": 0,
+    }
+
+
 def main_training_stage(step: int) -> str:
     """Fixed Phase 4 exposure schedule, indexed by the next optimizer update."""
     if type(step) is not int or not 1 <= step <= 12000:
@@ -308,6 +360,30 @@ def main_training_stage(step: int) -> str:
     if step <= 11000:
         return "primary"
     return "robustness"
+
+
+def main_training_batch(config: ComparisonConfig, *, step: int) -> TrainingBatch:
+    """Reuse Phase 4's exact train roots, batch size, and counter-addressed IDs."""
+    if not isinstance(config, ComparisonConfig):
+        raise TypeError("main training batch requires the fixed comparison config")
+    stage = main_training_stage(step)
+    training = config.phase4_config.pilot
+    first_index = (step - 1) * training.batch_size
+    examples = tuple(
+        make_curriculum_example(
+            config.phase4_config,
+            CurriculumKey(
+                CURRICULUM_VERSION,
+                "train",
+                training.train_root_seed,
+                training.train_public_id_seed,
+                first_index + offset,
+                stage,
+            ),
+        )
+        for offset in range(training.batch_size)
+    )
+    return pack_training_examples(examples, next_batch_counter=step)
 
 
 def require_clean_main_source() -> str:
@@ -791,11 +867,7 @@ def _main_update(
 ) -> tuple[float, float, float]:
     """One and only one counter-addressed train batch and optimizer update."""
     started = perf_counter()
-    batch = next_training_batch(
-        config.phase4_config,
-        stage=main_training_stage(step),
-        batch_counter=step - 1,
-    )
+    batch = main_training_batch(config, step=step)
     generated = perf_counter() - started
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -1018,8 +1090,48 @@ def fit_ponder(
 
     if result_path.exists():
         result = PonderTrainingResult.model_validate_json(result_path.read_bytes())
-        if result.source_revision != source or result.config_sha256 != config.config_sha256:
-            raise ValueError("existing ponder trajectory has incompatible source or config")
+        if result.config_sha256 != config.config_sha256:
+            raise ValueError("existing ponder trajectory has incompatible config")
+        if result.source_revision != source:
+            recorded = BudgetLedger.model_validate_json(budget_path.read_bytes())
+            if (
+                result.completed_updates != 0
+                or recorded.updates != 0
+                or result.latest_checkpoint != "main-0000.pt"
+            ):
+                raise ValueError("learned ponder trajectory cannot change source revision")
+            correction = main_dir / "main-0000-rebound.pt"
+            receipt_path = main_dir / "zero-update-source-correction.json"
+            if correction.exists() or receipt_path.exists():
+                if not correction.exists() or not receipt_path.exists():
+                    raise ValueError("incomplete zero-update source correction")
+                receipt = json.loads(receipt_path.read_bytes())
+                if (
+                    receipt.get("prior_source_revision") != result.source_revision
+                    or receipt.get("corrected_source_revision") != source
+                    or receipt.get("prior_checkpoint_sha256") != result.latest_checkpoint_sha256
+                    or receipt.get("corrected_checkpoint_sha256") != sha256_file(correction)
+                ):
+                    raise ValueError("existing zero-update correction differs")
+            else:
+                receipt = rebind_zero_update_checkpoint(
+                    main_dir / "main-0000.pt",
+                    correction,
+                    model,
+                    optimizer,
+                    config_sha256=config.config_sha256,
+                    prior_source=result.source_revision,
+                    corrected_source=source,
+                )
+                atomic_create_bytes(receipt_path, canonical_json_bytes(receipt) + b"\n")
+            result = result.model_copy(
+                update={
+                    "source_revision": source,
+                    "latest_checkpoint": correction.name,
+                    "latest_checkpoint_sha256": sha256_file(correction),
+                }
+            )
+            _write_json(result_path, result)
         if result.latest_checkpoint is None:
             raise ValueError("existing ponder trajectory lacks a checkpoint")
         checkpoint = resume or main_dir / result.latest_checkpoint
