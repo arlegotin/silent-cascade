@@ -7,9 +7,9 @@ Decision: **admitted_to_b**; reasons: none.
 
 | Corpus | Condition | Timed success | Errors | Inference seconds |
 | --- | --- | ---: | ---: | ---: |
-| iid | intact_eventflow | 512/512 | 0 | 145.528 |
-| iid | compressed_eventflow | 319/512 | 0 | 115.776 |
-| depth | intact_eventflow | 504/512 | 0 | 220.553 |
-| depth | compressed_eventflow | 289/512 | 0 | 153.401 |
+| iid | intact_eventflow | 512/512 | 0 | 144.209 |
+| iid | compressed_eventflow | 319/512 | 0 | 114.311 |
+| depth | intact_eventflow | 504/512 | 0 | 219.350 |
+| depth | compressed_eventflow | 289/512 | 0 | 151.584 |
 
 Same-checkpoint execution-regime diagnostic only; no competitive architectural merit, final Phase 5 gate, or confirmatory scientific-support claim.
