@@ -3,6 +3,7 @@
 import copy
 import gzip
 import os
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -23,9 +24,19 @@ from silent_cascade.eval.comparison_types import (
     ComparisonStep,
     ConditionResult,
 )
-from silent_cascade.eval.compute import NeuralComputeMeter, aggregate_runtime_compute
+from silent_cascade.eval.compute import (
+    NeuralComputeMeter,
+    RuntimeCompute,
+    aggregate_runtime_compute,
+)
 from silent_cascade.eval.metrics import EvaluationError
+from silent_cascade.eventflow.compressed import (
+    CompressedExecutionError,
+    compressed_state_sha256,
+    run_compressed_from_activation,
+)
 from silent_cascade.eventflow.engine import EventEngine
+from silent_cascade.eventflow.invariants import validate_post_jump, validate_session_boundary
 from silent_cascade.eventflow.neural import NeuralEventFlowAgent, NeuralModelIdentity
 from silent_cascade.eventflow.state import ComputeCounters
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
@@ -179,6 +190,221 @@ def _row(
     )
 
 
+def _sum_compute(*parts: RuntimeCompute) -> RuntimeCompute:
+    """Combine disjoint measured scopes while retaining the peak memory and model size."""
+    if not parts:
+        return RuntimeCompute()
+    engine = ComputeCounters(
+        **{
+            item.name: sum(getattr(part.engine, item.name) for part in parts)
+            for item in fields(ComputeCounters)
+        }
+    )
+    modules: Counter[str] = Counter()
+    operations: Counter[str] = Counter()
+    for part in parts:
+        modules.update(part.module_calls)
+        operations.update(part.operation_estimates)
+    special = {
+        "engine",
+        "module_calls",
+        "operation_estimates",
+        "parameters",
+        "entity_parameters",
+        "memory_bytes",
+    }
+    totals = {
+        name: sum(getattr(part, name) for part in parts)
+        for name in RuntimeCompute.model_fields
+        if name not in special
+    }
+    return RuntimeCompute(
+        engine=engine,
+        module_calls=dict(modules),
+        operation_estimates=dict(operations),
+        parameters=max(part.parameters for part in parts),
+        entity_parameters=max(part.entity_parameters for part in parts),
+        memory_bytes=max(part.memory_bytes for part in parts),
+        **totals,
+    )
+
+
+def _run_compressed_episode(
+    bundle: EpisodeBundle, *, model: EventFlowModel, config: ComparisonConfig
+) -> ConditionResult:
+    """Own terminal arbitration; pass only a detached public runtime state to compression."""
+    identity = NeuralModelIdentity.from_model(model, source_revision=ACCEPTED_PHASE4_SOURCE)
+    agent = NeuralEventFlowAgent(model, identity=identity, device="cpu")
+    engine = EventEngine(config.phase4_config.event_flow)
+    entity_parameters = model.record_encoder.entity_embedding.weight.numel()
+    prefix_snapshots = []
+    session = None
+    try:
+        meter = NeuralComputeMeter(model)
+        with meter, torch.no_grad():
+            session = engine.start_episode(bundle, agent)
+        prefix_snapshots.append(meter.snapshot())
+        while session.state.core.mode is Mode.OBSERVING:
+            meter = NeuralComputeMeter(model)
+            try:
+                with meter, torch.no_grad():
+                    engine.step(session, agent)
+            finally:
+                prefix_snapshots.append(meter.snapshot())
+        if session.state.core.mode is not Mode.SEARCHING:
+            raise ValueError("diagnostic episode did not reach public activation")
+        activation = session.state
+        prefix_flows = engine.operational_compute_snapshot().causal_flow_evaluations
+        prefix = aggregate_runtime_compute(
+            activation.core.counters,
+            tuple(prefix_snapshots),
+            entity_parameters=entity_parameters,
+            causal_flow_evaluations=prefix_flows,
+        )
+        decision = run_compressed_from_activation(agent, copy.deepcopy(activation))
+        steps = [
+            ComparisonStep(
+                event_id=event.event_id,
+                kind=event.kind,
+                timestamp=event.timestamp,
+                state_sha256=event.state_sha256,
+            )
+            for event in session.trace.snapshot().events
+        ]
+        steps.extend(
+            ComparisonStep(
+                event_id=step.event_id,
+                kind=step.kind.value,
+                timestamp=step.executed_at,
+                state_sha256=step.state_sha256,
+                predicted_crossing_at=step.predicted_crossing_at,
+                predicted_delta=step.predicted_delta,
+                bypassed_refractory_until=step.bypassed_refractory_until,
+                selected_record_id=step.selected_record_id,
+            )
+            for step in decision.steps
+        )
+        current = decision.final_state
+        post = decision.compute
+        actions = ()
+        predicted = decision.predicted_act
+        terminal = bundle.truth.private_terminal
+        if predicted is not None and predicted.timestamp < terminal.timestamp:
+            validate_session_boundary(current, next_event=predicted)
+            before_flows = engine.operational_compute_snapshot().causal_flow_evaluations
+            before = engine.advance_to(current, predicted.timestamp)
+            meter = NeuralComputeMeter(model)
+            with meter, torch.no_grad():
+                after, emitted = agent.on_internal(before, predicted)
+            validate_post_jump(before, predicted, after)
+            if tuple(emitted) != after.core.actions[len(before.core.actions) :]:
+                raise ValueError("compressed ACT emission differs from runtime state")
+            actions = tuple(emitted)
+            post = _sum_compute(
+                post,
+                aggregate_runtime_compute(
+                    _counter_delta(after.core.counters, current.core.counters),
+                    (meter.snapshot(),),
+                    entity_parameters=entity_parameters,
+                    causal_flow_evaluations=(
+                        engine.operational_compute_snapshot().causal_flow_evaluations - before_flows
+                    ),
+                ),
+            )
+            current = after
+            steps.append(
+                ComparisonStep(
+                    event_id=predicted.event_id,
+                    kind="act",
+                    timestamp=predicted.timestamp,
+                    state_sha256=compressed_state_sha256(after),
+                    predicted_crossing_at=predicted.timestamp,
+                    predicted_delta=predicted.predicted_delta,
+                )
+            )
+        before_flows = engine.operational_compute_snapshot().causal_flow_evaluations
+        after_terminal_advance = engine.advance_to(current, terminal.timestamp)
+        post = _sum_compute(
+            post,
+            aggregate_runtime_compute(
+                _counter_delta(after_terminal_advance.core.counters, current.core.counters),
+                (),
+                entity_parameters=entity_parameters,
+                causal_flow_evaluations=(
+                    engine.operational_compute_snapshot().causal_flow_evaluations - before_flows
+                ),
+            ),
+        )
+        steps.append(
+            ComparisonStep(
+                event_id=terminal.event_id,
+                kind="terminal",
+                timestamp=terminal.timestamp,
+                state_sha256=compressed_state_sha256(after_terminal_advance),
+            )
+        )
+        ordered = tuple(steps)
+        return ConditionResult(
+            actions=actions,
+            stop_reason=decision.stop_reason,
+            steps=ordered,
+            trace_sha256=sha256_bytes(
+                canonical_json_bytes({"steps": [step.model_dump(mode="json") for step in ordered]})
+            ),
+            end_to_end_compute=_sum_compute(prefix, post),
+            post_activation_compute=post,
+        )
+    except Exception as caught:
+        counters = session.state.core.counters if session is not None else ComputeCounters()
+        prefix = aggregate_runtime_compute(
+            counters,
+            tuple(prefix_snapshots),
+            entity_parameters=entity_parameters,
+            causal_flow_evaluations=engine.operational_compute_snapshot().causal_flow_evaluations,
+        )
+        if isinstance(caught, CompressedExecutionError) and session is not None:
+            partial = caught.partial
+            prefix_steps = [
+                ComparisonStep(
+                    event_id=event.event_id,
+                    kind=event.kind,
+                    timestamp=event.timestamp,
+                    state_sha256=event.state_sha256,
+                )
+                for event in session.trace.snapshot().events
+            ]
+            prefix_steps.extend(
+                ComparisonStep(
+                    event_id=step.event_id,
+                    kind=step.kind.value,
+                    timestamp=step.executed_at,
+                    state_sha256=step.state_sha256,
+                    predicted_crossing_at=step.predicted_crossing_at,
+                    predicted_delta=step.predicted_delta,
+                    bypassed_refractory_until=step.bypassed_refractory_until,
+                    selected_record_id=step.selected_record_id,
+                )
+                for step in partial.steps
+            )
+            return ConditionResult(
+                actions=(),
+                stop_reason="dynamics_error",
+                steps=tuple(prefix_steps),
+                end_to_end_compute=_sum_compute(prefix, partial.compute),
+                post_activation_compute=partial.compute,
+                error=EvaluationError(
+                    code="dynamics_error",
+                    invariant=type(caught.__cause__).__name__ if caught.__cause__ else None,
+                ),
+            )
+        return ConditionResult(
+            actions=(),
+            stop_reason="dynamics_error",
+            end_to_end_compute=prefix,
+            error=EvaluationError(code="dynamics_error", invariant=type(caught).__name__),
+        )
+
+
 def run_comparison(
     *,
     config: ComparisonConfig,
@@ -201,7 +427,7 @@ def run_comparison(
         raise ValueError("comparison identity generator mismatch")
     if identity.manifest_sha256 != sha256_bytes(canonical_json_bytes(manifest)):
         raise ValueError("comparison identity manifest mismatch")
-    if identity.condition != "intact_eventflow":
+    if identity.condition not in {"intact_eventflow", "compressed_eventflow"}:
         raise NotImplementedError("condition implementation is assigned to a later task")
     if type(model) is not EventFlowModel or model.config != config.phase4_config.neural:
         raise TypeError("intact comparison requires the accepted EventFlow architecture")
@@ -221,7 +447,11 @@ def run_comparison(
         gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed,
     ):
         for bundle in iter_bundles(manifest, config):
-            result = run_intact_episode(bundle, model=inference, config=config)
+            result = (
+                run_intact_episode(bundle, model=inference, config=config)
+                if identity.condition == "intact_eventflow"
+                else _run_compressed_episode(bundle, model=inference, config=config)
+            )
             row = _row(bundle, identity, result)
             compressed.write(canonical_json_bytes(row) + b"\n")
             count += 1

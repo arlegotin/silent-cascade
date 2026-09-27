@@ -165,6 +165,10 @@ class ComparisonStep(StrictModel):
     kind: str
     timestamp: float
     state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    predicted_crossing_at: float | None = None
+    predicted_delta: float | None = Field(default=None, ge=0.0)
+    bypassed_refractory_until: float | None = None
+    selected_record_id: int | None = Field(default=None, ge=0)
 
 
 class ConditionResult(StrictModel):
