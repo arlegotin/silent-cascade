@@ -1,0 +1,14 @@
+experiment_version: phase5a-v1
+purpose: exploratory_comparison
+gate_eligible: false
+iid_root_seed: 7919
+iid_public_id_seed: 7927
+depth_root_seed: 7933
+depth_public_id_seed: 7937
+analysis_seed: 8009
+scientific_seed: 11
+milestone_a_time_target_seconds: 7200
+milestone_b_time_target_seconds: 21600
+retained_artifact_target_bytes: 10737418240
+working_reserve_bytes: 2147483648
+main_update_ceiling: 12000
