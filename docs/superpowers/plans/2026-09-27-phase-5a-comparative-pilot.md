@@ -4,13 +4,13 @@
 
 **Goal:** Obtain an inexpensive, reproducible development comparison of the accepted EventFlow checkpoint, its compressed-time intervention, and, if the first results justify the cost, one separately trained activation ponderer.
 
-**Architecture:** Preserve the accepted Phase 4 execution and artifact formats. Add a small comparison driver with public-input-only condition adapters, paired diagnostic manifests, measured compute, and artifact-derived reports. Execute the checkpoint-only milestone before implementing and training the competitive ponderer; its architecture, losses, selection rule, and resource limits are fixed by this plan before viewing diagnostic results.
+**Architecture:** Preserve the accepted Phase 4 execution and artifact formats. Add a small comparison driver with public-input-only condition adapters, paired diagnostic manifests, measured compute, and artifact-derived reports. Execute the checkpoint-only milestone before implementing and training the competitive ponderer; its architecture, losses, selection rule, and update limits are fixed by this plan before viewing diagnostic results. Time and storage are measured planning targets, with recorded extensions.
 
 **Tech Stack:** Existing locked Python 3.12, float32 PyTorch on CPU, NumPy, Pydantic, safetensors, pytest, and uv. No new dependency, network service, hosted automation, or foundation model.
 
 **Spec:** [Canonical design v1.0.2](../specs/2026-08-30-silent-cascade-design.md), especially Sections 4, 8, 9.1–9.5, 10.1/10.3/10.9/10.11/10.12, 11.1, 16, and Phase 5 in Section 17. The canonical specification is unchanged; the smaller corpora and resource stops below belong to a separate exploratory pilot, not replacement acceptance gates.
 
-**Status:** DRAFT — awaiting explicit user approval. The user authorized writing this plan and waiting on 2026-09-27. No implementation or experiment execution is authorized by that instruction.
+**Status:** APPROVED FOR EXECUTION — the user explicitly said “execute” on 2026-09-27, then authorized flexible time and artifact placement. The resource targets below are amended before new diagnostic results are viewed.
 
 **Starting checkout:** `main` at `f16e4d1f039bd5eaaa672c8f7158ac90bbf9b81b`. Two existing untracked `manifests/validation/phase4*/audit-raw/` trees are retained evidence. Work on the current branch, with meaningful local commits.
 
@@ -110,7 +110,7 @@ The new depth corpus is never used for optimization, checkpoint/budget selection
 
 For every condition, manifest, and ponder cap retain all episode outcomes, positive/negative denominators, error categories, selected actions/timestamps, halt/cap reason, and per-episode compute. Report timed success by variant and depth; operations, records scored, actual recurrent/jump work, parameter count, and synchronized wall time. Keep setup/report/verification time separate from inference time. Include all preactivation encoding work in end-to-end compute and show post-activation work separately.
 
-Retain compact rows and event summaries for every episode, full traces for 32 deterministically selected successful episodes per condition/corpus plus every failure/dynamics error, and the config/environment/checkpoint identities needed for CPU replay. Stream compressed shards and hash them at completion; never build one unbounded JSON artifact. If required retention exceeds the resource cap, stop with incomplete coverage rather than dropping failure traces.
+Retain compact rows and event summaries for every episode, full traces for 32 deterministically selected successful episodes per condition/corpus plus every failure/dynamics error, and the config/environment/checkpoint identities needed for CPU replay. Stream compressed shards and hash them at completion; never build one unbounded JSON artifact. If required retention exceeds available space after using the authorized artifact volume, stop with incomplete coverage rather than dropping failure traces.
 
 Report paired differences with 10,000 episode-bootstrap replicates, fixed analysis seed 8009, preserving the predeclared depth/variant strata. Label intervals **single-seed exploratory episode intervals**, not the five-seed hierarchical intervals or confirmatory tests in Section 10.8. No Holm-adjusted scientific-support declaration or final equivalence claim follows.
 
@@ -125,20 +125,20 @@ Use the canonical distinctions in interpretation:
 
 ## 3. Budgets and Automatic Decision Points
 
-These are new pilot resource limits, not changes to the final scientific gates.
+These are pilot planning targets and fixed scientific update/seed limits, not changes to the final scientific gates. The user authorized flexible elapsed time and storage on 2026-09-27. Extensions are decided and logged at complete episode/update boundaries using remaining work, measured throughput, disk availability, and artifact completeness; observed success rates, depth performance, or desired comparative outcome cannot influence an extension. Report actual cost and every extension, including its reason, before continuing. No extension changes the dataset, model, update ceiling, selection rule, or admission threshold.
 
 | Resource | Limit |
 | --- | --- |
 | Milestone A model optimization | Exactly zero steps |
-| Milestone A scientific execution | 2 hours, including preparation/evaluation/reporting |
-| Milestone B scientific execution | 6 hours, including competence fit, profiling, training, validation, and comparison |
+| Milestone A scientific execution | 2-hour planning target, including preparation/evaluation/reporting; extend transparently to finish complete paired corpora when practical |
+| Milestone B scientific execution | 6-hour planning target, including competence fit, profiling, training, validation, and comparison; extend transparently toward the fixed 12,000-update ceiling and complete cap sweep when practical |
 | Ponderer scientific seed | 11 only; fresh independent initialization |
-| Ponderer main-trajectory updates | At most 12,000, also subject to the measured budget below |
+| Ponderer main-trajectory updates | At most 12,000, with progress and cost measured at every validation boundary |
 | Tiny-set competence fit | Separate debug weights; at most 1,000 updates; never promoted |
-| New retained artifacts for both milestones | 10 GiB; require an additional 2 GiB working reserve before starting each unit |
+| New retained artifacts for both milestones | 10-GiB planning target; use an explicit local artifact directory on a volume with sufficient free space, and retain at least 2 GiB working reserve before starting each unit |
 | Full local quality gate | One `make verify` on final source; its engineering cost is separate from the scientific limits |
 
-Time caps use elapsed execution time and persist across interruption/resume. Stop at a safe episode/update boundary, allowing at most one in-flight unit to finish. Enforce storage before starting a unit; keep all already written evidence. Do not delete adverse evidence or suppress required failure traces to fit. No automatic extra seeds, hyperparameter sweeps, budget increases, or source-change restarts of a learned run. Charge actual scientific work across attempts to the same ledger.
+Track elapsed execution time and retained bytes across interruption/resume. At the planning targets, record remaining work, projected cost, free space, and the extension decision before starting the next unit. Stop at a safe episode/update boundary if a complete result is impractical or storage reserve cannot be maintained, allowing at most one in-flight unit to finish. Keep all already written evidence; do not delete adverse evidence or suppress required failure traces. No automatic extra seeds, hyperparameter sweeps, update-ceiling increases, or source-change restarts of a learned run. Charge actual scientific work across attempts to the same ledger.
 
 **A -> B rule:** Proceed automatically only if A completed both paired corpora, every episode has a valid result, no dynamics/integrity/offline check failed, intact IID timed success is >=90%, and intact depth timed success is >=75%. These are resource-allocation heuristics for this pilot, not scientific acceptance thresholds. Compression's score does not decide whether to train the competitor. Otherwise finish the A report, mark B deferred with the measured reason, and stop this plan's scientific execution; do not repair generalization by tuning on depth.
 
@@ -146,7 +146,7 @@ Time caps use elapsed execution time and persist across interruption/resume. Sto
 
 Also measure the later curriculum shapes on disposable model/optimizer copies using three forward/backward/update trials per stage, restoring scientific model/optimizer/RNG/batch state exactly. These are counted profiling operations, not additional training examples on the main trajectory. Reserve worst-cap runtime for the final cap sweep; include generation and failure-trace storage rather than extrapolating only the cheap one-hop update.
 
-Calculate the largest total update count `N` in `{1000,2000,...,12000}` that fits the remaining six-hour/10-GiB allowance with a 2x safety factor. Include every planned 10,000-row validation boundary, final evaluation of all five caps on all 1,024 diagnostic episodes, checkpoint writes, report generation, and Task 7's 16-episode replays for each condition/cap. Publish the calculation and `N` before advancing past update 100. If no candidate fits, publish `budget_insufficient` and the existing diagnostic weights. Never shorten a completed evaluation denominator or treat the cost estimate as a runtime guarantee.
+Calculate projected cost for each total update count `N` in `{1000,2000,...,12000}` with a 2x planning margin. Include every planned 10,000-row validation boundary, final evaluation of all five caps on all 1,024 diagnostic episodes, checkpoint writes, report generation, and Task 7's 16-episode replays for each condition/cap. Publish the calculation and chosen `N` before advancing past update 100. Prefer the largest `N` that fits the 6-hour/10-GiB targets; if none fits, publish the estimate and choose a transparent extension or an `inconclusive_budget` stop based on practical completion and available storage. Never shorten a completed evaluation denominator or treat the cost estimate as a runtime guarantee.
 
 This exposure-matched schedule may leave the budgeted ponderer in the one-hop stage. Record the last completed stage prominently; such a result cannot serve as a competent primary/OOD baseline. It is an honest cost/learning diagnostic, not a reason to change the agreed curriculum or silently grant a larger budget.
 
@@ -263,10 +263,10 @@ Common types used by tasks:
 **Interfaces:** `decide_after_a(rows: Sequence[ComparisonRow], *, protocol_sha256: str) -> MilestoneDecision`; `build_comparison_report(run_dir: Path, output_dir: Path) -> Path`. `MilestoneDecision` stores measured denominators, engineering/resource status, and the exact Section 3 decision.
 
 - [ ] Write `test_a_admission_is_predeclared`: complete valid fixtures at IID 90%/depth 75% admit B; lower scores, missing rows, dynamics failure, protocol mismatch, or offline failure defer it. Compression score alone never affects admission.
-- [ ] Write `test_report_is_artifact_only_and_never_certifies_phase5`: reject corruption/missing pairs, reconstruct integer numerators, preserve failed rows, and never emit a final scientific-support claim. Add budget/resume tests proving caps persist and partial corpora are not reported as full results.
+- [ ] Write `test_report_is_artifact_only_and_never_certifies_phase5`: reject corruption/missing pairs, reconstruct integer numerators, preserve failed rows, and never emit a final scientific-support claim. Add budget/resume tests proving usage and extensions persist and partial corpora are not reported as full results.
 - [ ] Run the new report/workflow tests, confirm failures, implement admission/report/CLI, and make them pass. Commit the executable source and protocol before data generation.
-- [ ] Execute `prepare`, authenticate legacy weights, audit all 1,024 new episodes, publish the manifests, and commit their hashes before the comparison. Record generator time; stop if A's resource limit is reached.
-- [ ] Execute the retained 32-row intact compatibility check and fixed timing subsets. Then run intact/compressed on both complete corpora within the same A budget, retaining sample and failure traces.
+- [ ] Execute `prepare`, authenticate legacy weights, audit all 1,024 new episodes, publish the manifests, and commit their hashes before the comparison. Record generator time and any extension before continuation.
+- [ ] Execute the retained 32-row intact compatibility check and fixed timing subsets. Then run intact/compressed on both complete corpora, retaining sample and failure traces and recording actual cost.
 - [ ] Build the A report and immutable decision from artifacts; commit compact results and documentation. If B is deferred, proceed directly to Task 7 with that outcome. Do not implement Tasks 5–6 speculatively before this checkpoint.
 
 ### Task 5: Implement and establish ponderer competence
@@ -288,11 +288,11 @@ Common types used by tasks:
 
 **Interfaces:** `fit_ponder(*, config: ComparisonConfig, run_dir: Path, budget: BudgetLedger, resume: Path | None = None) -> PonderTrainingResult`; `admit_ponder_budget(profile: CostProfile, budget: BudgetLedger) -> TrainingAdmission`. Define result/profile/admission records in `comparison_types.py`; bind selected/latest descriptors, counters, selection evidence, projected cost, and stop reason.
 
-- [ ] Write `test_budget_admission_counts_full_validation_and_final_caps`: the 2x estimate includes every 10,000-row validation and all 5,120 final episode executions; no fitting N yields `budget_insufficient`. Add `test_resume_preserves_next_batch_optimizer_and_consumed_budget`.
+- [ ] Write `test_budget_admission_counts_full_validation_and_final_caps`: the 2x estimate includes every 10,000-row validation and all 5,120 final episode executions; a plan above the targets requires a recorded extension or yields `budget_insufficient` when impractical. Add `test_resume_preserves_next_batch_optimizer_and_consumed_budget`.
 - [ ] Add `test_selection_uses_only_primary_validation_and_fixed_cap24`; a superior depth/IID diagnostic result cannot change checkpoint rank, update budget, or training configuration. Add corrupt/incompatible checkpoint and dirty-source tests.
 - [ ] Run these tests, confirm failures, implement deterministic checkpoints, latest/selection handling, resource stops, and the Phase 4 exposure schedule, then rerun all comparison tests and commit the training source.
 - [ ] Start the one fresh seed-11 trajectory; profile its first 100 counted updates and the fixed cap-24 timing rows. Publish the admission calculation, architecture parameter count, and selected `N`. Do not reset initialization/optimizer after profiling.
-- [ ] Continue only through the admitted boundaries, running complete primary validations at 1,000-step intervals and preserving failure evidence. On interruption resume the exact durable CPU checkpoint and remaining budget. On resource exhaustion publish the appropriate inconclusive status.
+- [ ] Continue only through recorded update boundaries, running complete primary validations at 1,000-step intervals and preserving failure evidence. On interruption resume the exact durable CPU checkpoint and cumulative ledger. At planning targets record an extension decision; on actual resource exhaustion publish the appropriate inconclusive status.
 - [ ] Select by the fixed primary-validation rule. Evaluate the selected checkpoint at all five caps on both diagnostic corpora only after selection. If the resource budget cannot complete them, retain partial evidence without silently narrowing the planned comparison.
 - [ ] Build the paired report, including training exposure/budget asymmetry, competence result, every cap, missing compute overlap, and all adverse outcomes. Commit compact result artifacts and the guide; do not start another seed or baseline family.
 
@@ -303,13 +303,13 @@ Common types used by tasks:
 - [ ] Run `uv run pytest -q tests/comparison` and relevant existing regression tests for every touched shared module; use the full local gate below as the final software check.
 - [ ] Request one independent whole-change code review using `superpowers:requesting-code-review`; focus on the five Review Focus items, precise compressed semantics, fairness, and resource bounds. Fix substantiated findings and record their validation.
 - [ ] Run **`make verify` locally on the final source**. Retain real output, exit status, and revision. This gate may take roughly the historical 97 minutes or longer; it is not hidden inside the scientific budget. A failed required check blocks a software-complete claim.
-- [ ] Independently reload the small comparison artifact inventory, verify hashes/identities and recompute scores, paired denominators, counters, selected checkpoint rank, admission decision, and report values. Reexecute a deterministic 16-episode sample per executed condition/cap on CPU, with identical decisions and semantic traces; charge this scientific replay to the relevant milestone's budget and reserve it in profiling.
+- [ ] Independently reload the small comparison artifact inventory, verify hashes/identities and recompute scores, paired denominators, counters, selected checkpoint rank, admission decision, and report values. Reexecute a deterministic 16-episode sample per executed condition/cap on CPU, with identical decisions and semantic traces; charge this scientific replay to the relevant milestone's ledger and reserve it in profiling.
 - [ ] Confirm the accepted Phase 4 artifacts remain untouched, no final-test manifests exist from this work, and zero foundation-model calls are recorded throughout. Do not rerun the full historical Phase 4 verifier merely because new phase-scoped source exists.
 - [ ] Commit the final outcome and reproduction commands. Mark Phase 5A complete only for its actually executed scope; if B was deferred/inconclusive say so explicitly. Keep full Phase 5 and Phase 6 pending. Summarize measured cost, limitations, and the evidence-based next research decision.
 
 ## 7. Commands to Deliver During Implementation
 
-These commands are proposed interfaces, not currently implemented commands. All execution requires approval of this plan first.
+These commands are proposed interfaces, not currently implemented commands. The user approved execution on 2026-09-27.
 
 ```sh
 UV_OFFLINE=1 UV_FROZEN=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
@@ -340,4 +340,4 @@ Only this document and the plan index are being changed during plan preparation.
 
 Recommend native execution with `superpowers:executing-plans`, sequential task commits, and one independent final review: the tasks share tight runtime/data interfaces, and the first milestone can avoid unnecessary baseline work. An alternative execution method may be specified with approval.
 
-**Wait for the user's explicit approval of this written plan before Task 1.** Approval covers both milestones subject to the fixed admission and resource rules; a deferral or inconclusive result is a valid stopping point, not permission to expand the experiment.
+**Approval recorded:** The user approved this written plan by saying “execute” on 2026-09-27, then authorized flexible elapsed time and placement of heavy artifacts on another volume. Approval covers both milestones subject to the fixed scientific rules above; a deferral or inconclusive result remains a valid stopping point.
