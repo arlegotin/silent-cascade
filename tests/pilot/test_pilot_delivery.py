@@ -181,38 +181,33 @@ def test_phase4_delivery_map_accepts_only_canonical_gate_path(canonical):
 
 
 @pytest.mark.parametrize(
-    "damage", ["missing_gate", "old_name", "hash", "source", "weights", "failed"]
+    "damage", ["missing_gate", "old_name", "hash", "source", "weights", "receipt"]
 )
-def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeypatch, damage):
-    from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
-    from silent_cascade.train import pilot_evidence
-    from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap
+def test_phase4_delivery_binds_independently_verified_identity(tmp_path, damage):
+    import json
+    import shutil
+
+    from silent_cascade.hashing import canonical_json_bytes
 
     namespace = run_path(str(Path(__file__).parents[1] / "integration/test_phase0_repository.py"))
     check = namespace["_assert_phase4_delivery_state"]
     gate = tmp_path / "manifests/validation/phase4/autonomous-gate-v1.json"
     gate.parent.mkdir(parents=True)
-    gate.write_bytes(b"fixture gate bytes")
-    mapping = Phase4DeliveryMap(
-        gate_sha256=sha256_bytes(gate.read_bytes()),
-        source_commit="a" * 40,
-        selected_weights_sha256="b" * 64,
+    shutil.copyfile(
+        Path(__file__).parents[2] / "manifests/validation/phase4/autonomous-gate-v1.json", gate
     )
-    (gate.parent / "delivery.json").write_bytes(canonical_json_bytes(mapping))
-    verified = dict(
-        recorded_outcome="passed", source_commit="a" * 40, selected_weights_sha256="b" * 64
+    delivery = gate.parent / "delivery.json"
+    shutil.copyfile(
+        Path(__file__).parents[2] / "manifests/validation/phase4/delivery.json", delivery
     )
-    # Only isolate this delivery adapter: real verifier rejection is exercised by
-    # the real gate fixture; these checks must reject even a verified foreign gate.
-    monkeypatch.setattr(pilot_evidence, "verify_phase4_gate_artifact", lambda *a, **k: verified)
-    row = (
-        "| 4 — Autonomous pilot | plan | Complete "
-        + mapping.source_commit
-        + " "
-        + mapping.selected_weights_sha256
-        + " "
-        + mapping.gate_sha256
-        + " |"
+    receipt_source = json.loads(gate.read_bytes())["local_verification"]["path"]
+    receipt = tmp_path / receipt_source
+    receipt.parent.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).parents[2] / receipt_source, receipt)
+    row = next(
+        line
+        for line in (Path(__file__).parents[2] / "docs/PLAN.md").read_text().splitlines()
+        if line.startswith("| 4 —")
     )
     check(tmp_path, row)
     if damage == "missing_gate":
@@ -222,10 +217,14 @@ def test_phase4_delivery_binds_independently_verified_identity(tmp_path, monkeyp
     elif damage == "hash":
         gate.write_bytes(b"different gate")
     elif damage == "source":
-        verified["source_commit"] = "c" * 40
+        mapping = json.loads(delivery.read_bytes())
+        mapping["source_commit"] = "c" * 40
+        delivery.write_bytes(canonical_json_bytes(mapping))
     elif damage == "weights":
-        verified["selected_weights_sha256"] = "c" * 64
+        mapping = json.loads(delivery.read_bytes())
+        mapping["selected_weights_sha256"] = "c" * 64
+        delivery.write_bytes(canonical_json_bytes(mapping))
     else:
-        verified["recorded_outcome"] = "failed"
+        receipt.write_bytes(b"damaged receipt")
     with pytest.raises(AssertionError):
         check(tmp_path, row)
