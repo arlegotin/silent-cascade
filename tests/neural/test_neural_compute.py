@@ -30,6 +30,19 @@ def test_linear_mac_accounting() -> None:
     assert snapshot.operation_estimates["linear_bias_adds"] == 2 * 4 * 5
 
 
+def test_gru_macs_match_hand_calculated_toy_cell() -> None:
+    from silent_cascade.eval.compute import NeuralComputeMeter
+
+    cell = torch.nn.GRUCell(2, 3)
+    with NeuralComputeMeter(cell) as meter, torch.no_grad():
+        cell(torch.ones(2, 2), torch.zeros(2, 3))
+        cell(torch.ones(2, 2), torch.zeros(2, 3))
+    snapshot = meter.snapshot()
+    assert snapshot.module_calls["GRUCell"] == 2
+    assert snapshot.forward_macs == 2 * 2 * 3 * 3 * (2 + 3)
+    assert snapshot.jump_applications == 4
+
+
 def test_training_backward_is_reported_separately() -> None:
     from silent_cascade.eval.compute import NeuralComputeMeter
 

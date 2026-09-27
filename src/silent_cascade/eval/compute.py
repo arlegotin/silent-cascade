@@ -86,6 +86,21 @@ def _record_functional_operations(**operations: int) -> None:
         meter._operation_estimates.update(operations)
 
 
+def _record_ponder_retrieval(valid_mask: torch.Tensor, query_dim: int) -> None:
+    """Account for executed record and null dot products after key projection."""
+    if valid_mask.ndim != 2 or valid_mask.dtype is not torch.bool or query_dim <= 0:
+        raise ValueError("ponder retrieval requires a [B,S] bool mask and positive width")
+    rows, slots = valid_mask.shape
+    macs = rows * (slots + 1) * query_dim
+    for meter in _ACTIVE_METERS.get():
+        meter._forward_macs += macs
+        meter._operation_estimates["bilinear_dot_macs"] += macs
+        meter._records_scored += int(valid_mask.sum())
+        meter._eligibility_references.append(
+            meter._capture_versioned_tensor(valid_mask, "ponder valid memory")
+        )
+
+
 class NeuralComputeMeter:
     """Observe module and functional neural work without changing execution."""
 
@@ -243,6 +258,18 @@ class NeuralComputeMeter:
             rows = tensor_inputs[0].numel() // module.in_features  # type: ignore[union-attr]
             if module.bias is not None:
                 self._operation_estimates["linear_bias_adds"] += rows * module.out_features
+            if isinstance(output, torch.Tensor) and output.requires_grad:
+                self._tensor_handles.append(output.register_hook(self._backward_counter(macs)))
+        elif isinstance(module, nn.GRUCell):
+            values = inputs[0]
+            assert isinstance(values, torch.Tensor)
+            rows = values.numel() // module.input_size
+            macs = 3 * rows * module.hidden_size * (module.input_size + module.hidden_size)
+            self._forward_macs += macs
+            self._jump_applications += rows
+            self._row_transitions += rows
+            self._operation_estimates["gru_bias_adds"] += 6 * rows * module.hidden_size
+            self._operation_estimates["gru_gate_ops"] += 8 * rows * module.hidden_size
             if isinstance(output, torch.Tensor) and output.requires_grad:
                 self._tensor_handles.append(output.register_hook(self._backward_counter(macs)))
         elif isinstance(module, nn.SiLU):

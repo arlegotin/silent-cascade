@@ -27,6 +27,7 @@ from silent_cascade.eventflow.neural_weights import load_neural_weights
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.io import atomic_create_bytes
 from silent_cascade.report.comparison import build_comparison_report
+from silent_cascade.train.activation_ponder import run_debug_competence
 from silent_cascade.train.curriculum_data import make_curriculum_example
 from silent_cascade.train.pilot_data import PilotManifest
 
@@ -259,6 +260,18 @@ def _report(args: argparse.Namespace) -> None:
     print(f"Wrote artifact-only comparison report: {output}")
 
 
+def _competence(args: argparse.Namespace) -> None:
+    result = run_debug_competence(
+        config=_config(args.config),
+        run_dir=args.run_dir / "competence",
+        source_revision=_source_revision(),
+    )
+    print(
+        f"Ponderer DEBUG competence: {result['status']}; "
+        f"{result.get('last_autonomous_successes', '?')}/64 at cap 24"
+    )
+
+
 def _ponder(args: argparse.Namespace) -> None:
     decision_path = args.run_dir / "report/decision.json"
     if not decision_path.is_file():
@@ -278,11 +291,18 @@ def main(argv: list[str] | None = None) -> int:
         "compatibility-check",
         "evaluate-a",
         "report",
+        "competence",
         "ponder",
     ):
         sub = commands.add_parser(command)
         sub.add_argument("--run-dir", type=Path, required=True)
-        if command in {"prepare", "checkpoint-check", "compatibility-check", "evaluate-a"}:
+        if command in {
+            "prepare",
+            "checkpoint-check",
+            "compatibility-check",
+            "evaluate-a",
+            "competence",
+        }:
             sub.add_argument("--config", type=Path, default=ROOT / "configs/eval/phase5a.yaml")
         if command in {"checkpoint-check", "compatibility-check"}:
             sub.add_argument("--phase4-run-dir", type=Path, required=True)
@@ -297,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         "compatibility-check": _compatibility_check,
         "evaluate-a": _evaluate_a,
         "report": _report,
+        "competence": _competence,
         "ponder": _ponder,
     }[args.command](args)
     return 0

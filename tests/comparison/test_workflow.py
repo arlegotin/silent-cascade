@@ -217,6 +217,26 @@ def test_cli_ponder_refuses_unadmitted_milestone(tmp_path) -> None:
         module.main(["ponder", "--run-dir", str(tmp_path)])
 
 
+def test_cli_competence_routes_fixed_config_and_committed_source(tmp_path, monkeypatch) -> None:
+    script = Path(__file__).parents[2] / "scripts/run_phase5a.py"
+    spec = importlib.util.spec_from_file_location("run_phase5a_competence", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    seen = []
+    monkeypatch.setattr(module, "_source_revision", lambda: "a" * 40)
+    monkeypatch.setattr(
+        module,
+        "run_debug_competence",
+        lambda **kwargs: seen.append(kwargs) or {"status": "competent"},
+        raising=False,
+    )
+    assert module.main(["competence", "--run-dir", str(tmp_path)]) == 0
+    assert seen[0]["config"].protocol_sha256 == ComparisonConfig().protocol_sha256
+    assert seen[0]["run_dir"] == tmp_path / "competence"
+    assert seen[0]["source_revision"] == "a" * 40
+
+
 def test_checkpoint_check_authenticates_frozen_producer_without_current_tree(tmp_path, monkeypatch):
     retained = Path(
         "/Users/artemlegotin/Library/Application Support/silent-cascade/runs/"
