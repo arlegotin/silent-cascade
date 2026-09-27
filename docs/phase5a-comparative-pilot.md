@@ -1,6 +1,6 @@
 # Phase 5A comparative pilot
 
-Status on 2026-09-27: **Milestone A complete; Milestone B admitted and pending execution.** This is an exploratory DEBUG comparison. It does not pass the full Phase 5 gate or establish competitive architectural merit.
+Status on 2026-09-27: **Milestone A complete; Milestone B admitted; fixed DEBUG competence complete; competitive training pending.** This is an exploratory DEBUG comparison. It does not pass the full Phase 5 gate or establish competitive architectural merit.
 
 ## Frozen inputs and checks
 
@@ -22,8 +22,12 @@ Intact EventFlow passed the predeclared B admission heuristics: IID at least 461
 
 The four comparison units consumed 708.5 cumulative scientific seconds and retained 208.2 MB of reported evidence. The larger source preparation, checkpoint authentication, local tests, and reporting work is separate. No time or storage target extension was needed. Full traces were retained for the first 32 successful episodes and every unsuccessful episode in each condition/corpus. The local run directory is `/Users/artemlegotin/Library/Application Support/silent-cascade/runs/phase5a-v1` on the larger Data volume. That path is a local artifact location, not a portable dependency of the versioned compact report.
 
+## Fixed DEBUG competence checkpoint
+
+The independent seed-11 activation ponderer used recurrent width 800, with 2,855,044 trainable parameters (2,048 entity-table parameters); accepted EventFlow has 2,781,042 parameters. Its separate, nonpromotable 64-example DEBUG fit reached **64/64 autonomous timed successes at cap 24 after 600 physical updates**, below the fixed 1,000-update ceiling. The set had 16 one-hop, 16 two-hop, and 32 primary examples with complete quartets and fixed roots `(7963, 7993)`. The final rows were independently rescored against reconstructed private truth; all cognitive timestamps equaled public activation time, and all rows recorded zero foundation-model calls. Exact CPU checkpoint continuation and a controlled nine-transition execution were verified in the local tests. The fit consumed 64.55 scientific seconds and retained 424.6 MB on the Data volume. The [compact competence receipt](../reports/phase5a-v1/competence/receipt.json) binds the dataset, final evaluation, checkpoint, and cumulative budget hashes. This DEBUG success establishes execution readiness only; none of its weights or examples are promoted to competitive training.
+
 ## Local reproduction
 
 Set the same offline environment used for the pilot (`UV_OFFLINE=1`, `UV_FROZEN=1`, `UV_NO_SYNC=1`, `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `PYTORCH_ENABLE_MPS_FALLBACK=0`). With access to the retained Phase 4 archive, run `scripts/run_phase5a.py` commands in order: `prepare`, `checkpoint-check`, `compatibility-check`, `evaluate-a`, then `report`. The exact arguments are in the [approved plan](superpowers/plans/2026-09-27-phase-5a-comparative-pilot.md#7-commands-to-deliver-during-implementation). Repeated compatible evaluations reuse immutable completed units or resume verified episode shards; they do not create new seeds.
 
-Milestone B remains governed by the same approved plan. Its competence test, measured budget admission, single-seed training, primary-validation selection, and all five cap evaluations are required before any statement about a trained competitor. Full Phase 5 still requires the later baseline and fairness work specified in the canonical design.
+Milestone B remains governed by the same approved plan. Its measured budget admission, fresh single-seed training, primary-validation selection, and all five cap evaluations are required before any statement about a trained competitor. Full Phase 5 still requires the later baseline and fairness work specified in the canonical design.
