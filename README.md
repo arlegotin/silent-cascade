@@ -7,15 +7,17 @@ comparison](docs/project-sunset.md). The first trained baseline matched or
 slightly exceeded EventFlow's pilot success rate with about 13–14 times less
 measured neural compute. The full Phase 5 program and later phases were not run;
 the final Phase 5A repository-wide verification gate was interrupted and is not
-claimed as passed. This repository retains the implementation and evidence.
+claimed as passed. The [artifact cleanup record](docs/artifact-cleanup.md) explains
+which raw data was removed; this repository retains code and compact reports.
 
 The corrected, offline, one-seed Phase 4 autonomous pilot passed its unchanged
 engineering gate. Its selected 12,000-update model achieved 9,994/10,000 timed
 successes on primary validation, 9,991/10,000 on two-hop validation and
 9,966/10,000 on robustness validation, with zero dynamics failures and zero
-foundation-model calls. See the [measured pilot and adverse history](docs/phase4-autonomous-eventflow.md),
-[canonical gate](manifests/validation/phase4/autonomous-gate-v1.json), and
-[published report](reports/phase4-pilot-v1/report.md). These are training-exposed
+foundation-model calls. See the [measured pilot and adverse history](docs/phase4-autonomous-eventflow.md)
+and [published report](reports/phase4-pilot-v1/report.md). The canonical gate's
+SHA-256 was `6353acb150fc5f46d10215e5b4206f08744818184cce3933f6d5b33e0eb75ab1`;
+its raw file was removed during cleanup. These are training-exposed
 validation results from one seed. No claim about consciousness, sentience,
 biological fidelity, or general intelligence follows.
 
@@ -28,13 +30,13 @@ time. See the [paired report and limits](docs/phase5a-comparative-pilot.md).
 This single-seed diagnostic is not the full strong-baseline program; the
 remaining controls, five-seed tests, and frozen final-test results were not run.
 
-## Local reproduction and checks
+## Historical command surface
 
-```bash
-uv sync --locked --group dev
-uv run silent-cascade doctor
-make verify
-```
+The validation manifests, raw runs, and local virtual environment were removed
+after sunset. The commands below document the implemented interface; the old
+acceptance and replay commands cannot run from this checkout without restoring
+or regenerating their inputs. The final Phase 5A `make verify` gate was not
+completed.
 
 The implemented command surface is:
 
@@ -73,25 +75,8 @@ and package builds run only in the local workspace.
 - [Research and claim boundary](docs/research-boundary.md)
 - [Approved deviations](docs/deviations.md)
 
-The accepted corrected run used `PILOT_DEVICE=cpu` and
-`PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1`. A fresh pilot
-uses an absent `PILOT_RUN_DIR` and a compatible committed data/source sequence:
-
-```sh
-make pilot PILOT_DEVICE=cpu PILOT_MANIFEST_DIR=manifests/validation/phase4-artifact-fix-v1 PILOT_RUN_DIR="$PILOT_RUN_DIR"
-```
-
-The fresh run needs its own source-bound local verification before separate gate
-collection; follow the [pilot guide](docs/phase4-autonomous-eventflow.md). To
-verify the published canonical gate, set `PILOT_RUN_DIR` to the retained corrected
-raw run, then use:
-
-```sh
-uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/validation/phase4/autonomous-gate-v1.json --raw-run-dir "$PILOT_RUN_DIR"
-```
-
-Artifact-only verification without the raw run reports missing coverage.
-`make pilot-smoke` remains debug engineering evidence. The guide records the
-exact run history, local verification receipt and source-bound setup.
+The [pilot guide](docs/phase4-autonomous-eventflow.md) records the original
+run history, local verification receipt, and source-bound setup. Its raw input
+paths are historical after the [artifact cleanup](docs/artifact-cleanup.md).
 The full canonical intervention suite, general reporting and demo commands
 were not pursued after the [sunset decision](docs/project-sunset.md).

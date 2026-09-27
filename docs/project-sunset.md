@@ -23,8 +23,8 @@ Given that evidence, we are sunsetting the project rather than spending the much
 
 ## Where work stopped
 
-The Phase 5A scientific runs and [independent artifact audit](../reports/phase5a-v1/verification/receipt.json) were completed and retained. The audit authenticated corrected comparison rows, recounted primary validation, and replayed selected episodes. Full Phase 5 controls, additional seeds, causal interventions, and frozen final tests were not run.
+The Phase 5A scientific runs and [independent artifact audit](../reports/phase5a-v1/verification/receipt.json) were completed; their compact reports and receipt remain. The audit authenticated corrected comparison rows, recounted primary validation, and replayed selected episodes before the raw inputs were removed. Full Phase 5 controls, additional seeds, causal interventions, and frozen final tests were not run.
 
 The repository-wide local `make verify` gate for the final Phase 5A source **was not completed**. An earlier run exposed a stale historical delivery-test fixture; that fixture was corrected and its focused tests passed. The subsequent full rerun was interrupted at the user's request while broad tests were still in progress. No Phase 5A-wide `make verify` pass is claimed.
 
-The code, plans, reports, and adverse results remain available as a reproducible research record. Any future revival would need a new, specific use case and a fresh approved plan; it should not assume that EventFlow has earned a performance or efficiency claim.
+The code, plans, compact reports, and adverse results remain as a historical research record. The [artifact cleanup](artifact-cleanup.md) removed raw runs and validation evidence, so exact replay from this checkout is no longer available. Any future revival would need a new, specific use case and a fresh approved plan; it should not assume that EventFlow has earned a performance or efficiency claim.

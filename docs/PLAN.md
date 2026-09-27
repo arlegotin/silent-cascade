@@ -2,7 +2,7 @@
 
 The canonical requirements live in the [design specification](superpowers/specs/2026-08-30-silent-cascade-design.md). This file is navigation only and never duplicates or overrides that specification.
 
-**Project status:** [Sunset after Phase 5A](project-sunset.md). The later phases below remain in the historical plan; they are not scheduled for execution.
+**Project status:** [Sunset after Phase 5A](project-sunset.md). The later phases below remain in the historical plan; they are not scheduled for execution. Raw validation and run artifacts were [removed after sunset](artifact-cleanup.md).
 
 | Phase | Plan | Gate |
 |---|---|---|
