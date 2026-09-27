@@ -2,12 +2,15 @@
 
 import copy
 import gzip
+import json
 import os
+import shutil
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 
 import torch
 
@@ -40,7 +43,8 @@ from silent_cascade.eventflow.invariants import validate_post_jump, validate_ses
 from silent_cascade.eventflow.neural import NeuralEventFlowAgent, NeuralModelIdentity
 from silent_cascade.eventflow.state import ComputeCounters
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
-from silent_cascade.io import atomic_create_bytes
+from silent_cascade.io import atomic_create_bytes, atomic_write_bytes
+from silent_cascade.logging.neural_trace import _host, write_full_neural_trace
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.schemas import Action, Mode
 
@@ -90,9 +94,14 @@ def _counter_delta(after: ComputeCounters, before: ComputeCounters) -> ComputeCo
 
 
 def run_intact_episode(
-    bundle: EpisodeBundle, *, model: EventFlowModel, config: ComparisonConfig
+    bundle: EpisodeBundle,
+    *,
+    model: EventFlowModel,
+    config: ComparisonConfig,
+    trace_sink: Callable[[ConditionResult, object | None], None] | None = None,
 ) -> ConditionResult:
     """Bridge the unchanged EventFlow engine into the new exploratory record."""
+    started = perf_counter()
     if type(model) is not EventFlowModel:
         raise TypeError("intact comparison requires an EventFlowModel")
     if model.config != config.phase4_config.neural:
@@ -151,7 +160,7 @@ def run_intact_episode(
         entity_parameters=entity_parameters,
         causal_flow_evaluations=performed_flows - activation_flows,
     )
-    return ConditionResult(
+    result = ConditionResult(
         actions=actions,
         stop_reason="terminal" if error is None else "dynamics_error",
         steps=()
@@ -170,14 +179,26 @@ def run_intact_episode(
         post_activation_compute=post_activation,
         error=error,
     )
+    result = result.model_copy(update={"inference_wall_seconds": perf_counter() - started})
+    if trace_sink is not None:
+        trace_sink(result, session.trajectory if session is not None else None)
+    return result
 
 
 def _row(
-    bundle: EpisodeBundle, identity: ComparisonIdentity, result: ConditionResult
+    bundle: EpisodeBundle,
+    identity: ComparisonIdentity,
+    result: ConditionResult,
+    *,
+    full_trace_ref: str | None = None,
+    full_trace_sha256: str | None = None,
 ) -> ComparisonRow:
     score = score_actions(bundle.truth, result.actions)
     return ComparisonRow(
         public_id=bundle.public.init.episode_public_id,
+        condition=identity.condition,
+        manifest_name=identity.manifest_name,
+        protocol_sha256=identity.protocol_sha256,
         episode_sha256=episode_sha256(bundle),
         identity_sha256=identity.sha256,
         variant=bundle.truth.recipe.variant,
@@ -187,6 +208,9 @@ def _row(
         score=score,
         timed_success=result.error is None and score.timed_success,
         error=result.error,
+        inference_wall_seconds=result.inference_wall_seconds,
+        full_trace_ref=full_trace_ref,
+        full_trace_sha256=full_trace_sha256,
     )
 
 
@@ -230,15 +254,21 @@ def _sum_compute(*parts: RuntimeCompute) -> RuntimeCompute:
 
 
 def _run_compressed_episode(
-    bundle: EpisodeBundle, *, model: EventFlowModel, config: ComparisonConfig
+    bundle: EpisodeBundle,
+    *,
+    model: EventFlowModel,
+    config: ComparisonConfig,
+    trace_sink: Callable[[ConditionResult, object | None], None] | None = None,
 ) -> ConditionResult:
     """Own terminal arbitration; pass only a detached public runtime state to compression."""
+    started = perf_counter()
     identity = NeuralModelIdentity.from_model(model, source_revision=ACCEPTED_PHASE4_SOURCE)
     agent = NeuralEventFlowAgent(model, identity=identity, device="cpu")
     engine = EventEngine(config.phase4_config.event_flow)
     entity_parameters = model.record_encoder.entity_embedding.weight.numel()
     prefix_snapshots = []
     session = None
+    intervention_states = []
     try:
         meter = NeuralComputeMeter(model)
         with meter, torch.no_grad():
@@ -261,7 +291,9 @@ def _run_compressed_episode(
             entity_parameters=entity_parameters,
             causal_flow_evaluations=prefix_flows,
         )
-        decision = run_compressed_from_activation(agent, copy.deepcopy(activation))
+        decision = run_compressed_from_activation(
+            agent, copy.deepcopy(activation), state_observer=intervention_states.append
+        )
         steps = [
             ComparisonStep(
                 event_id=event.event_id,
@@ -312,6 +344,7 @@ def _run_compressed_episode(
                 ),
             )
             current = after
+            intervention_states.append(after)
             steps.append(
                 ComparisonStep(
                     event_id=predicted.event_id,
@@ -344,7 +377,8 @@ def _run_compressed_episode(
             )
         )
         ordered = tuple(steps)
-        return ConditionResult(
+        intervention_states.append(after_terminal_advance)
+        result = ConditionResult(
             actions=actions,
             stop_reason=decision.stop_reason,
             steps=ordered,
@@ -354,6 +388,11 @@ def _run_compressed_episode(
             end_to_end_compute=_sum_compute(prefix, post),
             post_activation_compute=post,
         )
+        result = result.model_copy(update={"inference_wall_seconds": perf_counter() - started})
+        if trace_sink is not None:
+            prefix_states = session.trajectory.checkpoint_snapshots()
+            trace_sink(result, (*prefix_states, *intervention_states))
+        return result
     except Exception as caught:
         counters = session.state.core.counters if session is not None else ComputeCounters()
         prefix = aggregate_runtime_compute(
@@ -386,7 +425,7 @@ def _run_compressed_episode(
                 )
                 for step in partial.steps
             )
-            return ConditionResult(
+            result = ConditionResult(
                 actions=(),
                 stop_reason="dynamics_error",
                 steps=tuple(prefix_steps),
@@ -397,12 +436,27 @@ def _run_compressed_episode(
                     invariant=type(caught.__cause__).__name__ if caught.__cause__ else None,
                 ),
             )
-        return ConditionResult(
+            result = result.model_copy(update={"inference_wall_seconds": perf_counter() - started})
+            if trace_sink is not None:
+                trace_sink(
+                    result, (*session.trajectory.checkpoint_snapshots(), *intervention_states)
+                )
+            return result
+        result = ConditionResult(
             actions=(),
             stop_reason="dynamics_error",
             end_to_end_compute=prefix,
             error=EvaluationError(code="dynamics_error", invariant=type(caught).__name__),
         )
+        result = result.model_copy(update={"inference_wall_seconds": perf_counter() - started})
+        if trace_sink is not None:
+            trace_sink(
+                result,
+                (*session.trajectory.checkpoint_snapshots(), *intervention_states)
+                if session is not None
+                else None,
+            )
+        return result
 
 
 def run_comparison(
@@ -417,8 +471,6 @@ def run_comparison(
     """Stream one condition over an ordered diagnostic manifest, retaining failures."""
     if os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "0") not in {"", "0"}:
         raise ValueError("MPS fallback is forbidden for the CPU comparison")
-    if output_dir.exists():
-        raise ValueError("comparison destination must be fresh")
     if identity.protocol_sha256 != config.protocol_sha256:
         raise ValueError("comparison identity protocol mismatch")
     if identity.config_sha256 != config.config_sha256:
@@ -427,6 +479,8 @@ def run_comparison(
         raise ValueError("comparison identity generator mismatch")
     if identity.manifest_sha256 != sha256_bytes(canonical_json_bytes(manifest)):
         raise ValueError("comparison identity manifest mismatch")
+    if identity.manifest_name != manifest.name:
+        raise ValueError("comparison identity manifest name mismatch")
     if identity.condition not in {"intact_eventflow", "compressed_eventflow"}:
         raise NotImplementedError("condition implementation is assigned to a later task")
     if type(model) is not EventFlowModel or model.config != config.phase4_config.neural:
@@ -437,26 +491,207 @@ def run_comparison(
     if actual_state != identity.model_state_sha256:
         raise ValueError("comparison identity model-state mismatch")
     inference = copy.deepcopy(model).to("cpu").eval()
-    output_dir.mkdir(parents=True)
+    identity_bytes = canonical_json_bytes(identity) + b"\n"
+    resumed = output_dir.exists()
+    if output_dir.exists():
+        if (
+            not (output_dir / "identity.json").exists()
+            or (output_dir / "identity.json").read_bytes() != identity_bytes
+        ):
+            raise ValueError("existing comparison has incompatible identity")
+        if (output_dir / "inventory.json").exists():
+            inventory = json.loads((output_dir / "inventory.json").read_bytes())
+            if inventory["identity_sha256"] != identity.sha256 or inventory[
+                "rows_sha256"
+            ] != sha256_file(output_dir / "rows.jsonl.gz"):
+                raise ValueError("completed comparison inventory is corrupt")
+            return output_dir
+        if not (output_dir / "budget.json").exists():
+            raise ValueError("existing comparison lacks durable budget")
+        retained = BudgetLedger.model_validate_json((output_dir / "budget.json").read_bytes())
+        extensions = tuple(dict.fromkeys((*retained.extensions, *budget.extensions)))
+        budget = retained.model_copy(update={"extensions": extensions})
+    else:
+        output_dir.mkdir(parents=True)
+        atomic_create_bytes(output_dir / "identity.json", identity_bytes)
+    (output_dir / "rows").mkdir(exist_ok=True)
+
+    def local_retained_bytes() -> int:
+        return sum(
+            path.stat().st_size
+            for path in output_dir.rglob("*")
+            if path.is_file() and path.name != "budget.json"
+        )
+
+    local_start_bytes = local_retained_bytes()
+    base_retained_bytes = (
+        budget.retained_bytes - local_start_bytes if resumed else budget.retained_bytes
+    )
+    if base_retained_bytes < 0:
+        raise ValueError("resumed comparison budget understates retained evidence")
     started = perf_counter()
-    atomic_create_bytes(output_dir / "identity.json", canonical_json_bytes(identity) + b"\n")
+    budget = budget.model_copy(update={"attempts": budget.attempts + 1})
+
+    def charge() -> None:
+        charged = budget.model_copy(
+            update={
+                "elapsed_scientific_seconds": budget.elapsed_scientific_seconds
+                + (perf_counter() - started),
+                "retained_bytes": base_retained_bytes + local_retained_bytes(),
+            }
+        )
+        atomic_write_bytes(output_dir / "budget.json", canonical_json_bytes(charged) + b"\n")
+
+    charge()
     count = 0
     failures = 0
-    with (
-        (output_dir / "rows.jsonl.gz").open("wb") as raw,
-        gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed,
-    ):
-        for bundle in iter_bundles(manifest, config):
-            result = (
-                run_intact_episode(bundle, model=inference, config=config)
-                if identity.condition == "intact_eventflow"
-                else _run_compressed_episode(bundle, model=inference, config=config)
-            )
-            row = _row(bundle, identity, result)
-            compressed.write(canonical_json_bytes(row) + b"\n")
+    retained_successes = 0
+    try:
+        for index, bundle in enumerate(iter_bundles(manifest, config)):
+            shard = output_dir / "rows" / f"{index:05d}.json.gz"
+            if shard.exists():
+                row = ComparisonRow.model_validate_json(gzip.decompress(shard.read_bytes()))
+                if (
+                    row.public_id != bundle.public.init.episode_public_id
+                    or row.episode_sha256 != episode_sha256(bundle)
+                    or row.identity_sha256 != identity.sha256
+                ):
+                    raise ValueError("existing row shard differs from comparison identity")
+            else:
+                free = shutil.disk_usage(output_dir).free
+                if free < config.working_reserve_bytes:
+                    raise OSError("comparison storage reserve is unavailable")
+                elapsed = budget.elapsed_scientific_seconds + (perf_counter() - started)
+                notes = list(budget.extensions)
+                unit = f"{identity.condition}/{manifest.name}"
+                if elapsed >= config.milestone_a_time_target_seconds and not any(
+                    "Milestone A time target" in note for note in notes
+                ):
+                    notes.append(
+                        f"Milestone A time target extended before {unit} "
+                        f"episode {index}; {len(manifest.entries) - index} in this unit remain, "
+                        f"{free} free bytes, {elapsed:.3f} cumulative seconds; "
+                        "complete fixed paired coverage while reserve remains"
+                    )
+                retained_estimate = base_retained_bytes + local_retained_bytes()
+                if retained_estimate >= config.retained_artifact_target_bytes and not any(
+                    "Milestone A storage target" in note for note in notes
+                ):
+                    notes.append(
+                        f"Milestone A storage target extended before {unit} "
+                        f"episode {index}; {free} free bytes and {len(manifest.entries) - index} "
+                        "episodes remain in this unit"
+                    )
+                if tuple(notes) != budget.extensions:
+                    budget = budget.model_copy(update={"extensions": tuple(notes)})
+                    charge()
+                trace_binding: list[tuple[str, str]] = []
+
+                def trace_sink(
+                    result: ConditionResult,
+                    states: object | None,
+                    *,
+                    current_bundle: EpisodeBundle = bundle,
+                    current_index: int = index,
+                    successful_traces: int = retained_successes,
+                    bindings: list[tuple[str, str]] = trace_binding,
+                ) -> None:
+                    score = score_actions(current_bundle.truth, result.actions)
+                    if result.error is None and score.timed_success and successful_traces >= 32:
+                        return
+                    reference = f"traces/{current_index:05d}.trajectory.json.gz"
+                    path = output_dir / reference
+                    path.parent.mkdir(exist_ok=True)
+                    if identity.condition == "intact_eventflow":
+                        destination = (
+                            path
+                            if not path.exists()
+                            else path.with_name(f".{path.name}.{uuid4().hex}.candidate")
+                        )
+                        digest = write_full_neural_trace(
+                            destination,
+                            identity_sha256=identity.sha256,
+                            episode_sha256=episode_sha256(current_bundle),
+                            trajectory=states,
+                        )
+                        if destination != path:
+                            try:
+                                if sha256_file(path) != digest:
+                                    raise ValueError("retained intact trace differs on resume")
+                            finally:
+                                destination.unlink(missing_ok=True)
+                    else:
+                        if hasattr(states, "checkpoint_snapshots"):
+                            states = states.checkpoint_snapshots()
+                        payload = gzip.compress(
+                            canonical_json_bytes(
+                                {
+                                    "schema_version": "phase5a-compressed-trajectory-v1",
+                                    "identity_sha256": identity.sha256,
+                                    "episode_sha256": episode_sha256(current_bundle),
+                                    "states": []
+                                    if states is None
+                                    else [_host(state) for state in states],
+                                    "steps": [
+                                        step.model_dump(mode="json") for step in result.steps
+                                    ],
+                                }
+                            ),
+                            mtime=0,
+                        )
+                        digest = sha256_bytes(payload)
+                        if path.exists():
+                            if sha256_file(path) != digest:
+                                raise ValueError("retained compressed trace differs on resume")
+                        else:
+                            atomic_create_bytes(path, payload)
+                    bindings.append((reference, digest))
+
+                result = (
+                    run_intact_episode(
+                        bundle, model=inference, config=config, trace_sink=trace_sink
+                    )
+                    if identity.condition == "intact_eventflow"
+                    else _run_compressed_episode(
+                        bundle, model=inference, config=config, trace_sink=trace_sink
+                    )
+                )
+                if not trace_binding and (
+                    result.error is not None
+                    or not score_actions(bundle.truth, result.actions).timed_success
+                ):
+                    raise ValueError("failed comparison episode lacks a full trace")
+                reference, digest = trace_binding[0] if trace_binding else (None, None)
+                row = _row(
+                    bundle,
+                    identity,
+                    result,
+                    full_trace_ref=reference,
+                    full_trace_sha256=digest,
+                )
+                atomic_create_bytes(shard, gzip.compress(canonical_json_bytes(row), mtime=0))
+                charge()
             count += 1
             failures += int(row.error is not None)
+            if row.timed_success and row.full_trace_ref:
+                retained_successes += 1
+    finally:
+        charge()
     row_file = output_dir / "rows.jsonl.gz"
+    temporary = output_dir / f".rows.jsonl.gz.{uuid4().hex}.tmp"
+    try:
+        with temporary.open("wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                for index in range(count):
+                    compressed.write(
+                        gzip.decompress((output_dir / "rows" / f"{index:05d}.json.gz").read_bytes())
+                        + b"\n"
+                    )
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(temporary, row_file)
+    finally:
+        temporary.unlink(missing_ok=True)
     inventory = {
         "schema_version": "phase5a-run-inventory-v1",
         "identity_sha256": identity.sha256,
@@ -466,14 +701,5 @@ def run_comparison(
         "rows_sha256": sha256_file(row_file),
     }
     atomic_create_bytes(output_dir / "inventory.json", canonical_json_bytes(inventory) + b"\n")
-    charged = budget.model_copy(
-        update={
-            "elapsed_scientific_seconds": budget.elapsed_scientific_seconds
-            + (perf_counter() - started),
-            "retained_bytes": budget.retained_bytes
-            + sum(path.stat().st_size for path in output_dir.iterdir() if path.is_file()),
-            "attempts": budget.attempts + 1,
-        }
-    )
-    atomic_create_bytes(output_dir / "budget.json", canonical_json_bytes(charged) + b"\n")
+    charge()
     return output_dir

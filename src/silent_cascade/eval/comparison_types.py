@@ -133,6 +133,7 @@ class ComparisonIdentity(StrictModel):
     purpose: Literal["exploratory_comparison"] = "exploratory_comparison"
     gate_eligible: Literal[False] = False
     condition: Literal["intact_eventflow", "compressed_eventflow", "activation_ponder"]
+    manifest_name: Literal["iid", "depth"]
     transition_cap: int | None = Field(default=None, ge=4, le=24)
     protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -179,11 +180,15 @@ class ConditionResult(StrictModel):
     end_to_end_compute: RuntimeCompute = Field(default_factory=RuntimeCompute)
     post_activation_compute: RuntimeCompute = Field(default_factory=RuntimeCompute)
     error: EvaluationError | None = None
+    inference_wall_seconds: float = Field(default=0.0, ge=0.0)
 
 
 class ComparisonRow(StrictModel):
     schema_version: Literal["phase5a-row-v1"] = "phase5a-row-v1"
     public_id: str
+    condition: Literal["intact_eventflow", "compressed_eventflow", "activation_ponder"]
+    manifest_name: Literal["iid", "depth"]
+    protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     episode_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     variant: EpisodeVariant
@@ -193,6 +198,9 @@ class ComparisonRow(StrictModel):
     score: EpisodeScore
     timed_success: bool
     error: EvaluationError | None = None
+    inference_wall_seconds: float = Field(default=0.0, ge=0.0)
+    full_trace_ref: str | None = None
+    full_trace_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     gate_eligible: Literal[False] = False
 
     @model_validator(mode="after")
@@ -207,6 +215,8 @@ class ComparisonRow(StrictModel):
             raise ValueError("comparison variant differs from private truth")
         if self.path_length != self.truth.recipe.requested_path_length:
             raise ValueError("comparison depth differs from private truth")
+        if (self.full_trace_ref is None) != (self.full_trace_sha256 is None):
+            raise ValueError("comparison full trace reference and hash must be paired")
         return self
 
 

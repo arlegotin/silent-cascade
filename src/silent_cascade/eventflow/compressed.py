@@ -1,6 +1,7 @@
 """Detached zero-time cognitive intervention for the Phase 5A diagnostic."""
 
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields, replace
 
 import torch
@@ -106,7 +107,11 @@ def _released_view(state: RuntimeState) -> tuple[RuntimeState, float | None]:
 
 
 def run_compressed_from_activation(
-    agent: NeuralEventFlowAgent, state: RuntimeState, *, transition_cap: int = 24
+    agent: NeuralEventFlowAgent,
+    state: RuntimeState,
+    *,
+    transition_cap: int = 24,
+    state_observer: Callable[[RuntimeState], None] | None = None,
 ) -> CompressedDecision:
     """Recompute each learned guard/jump at ACTIVATE without advancing world time."""
     if not isinstance(agent, NeuralEventFlowAgent) or not isinstance(state, RuntimeState):
@@ -185,6 +190,8 @@ def run_compressed_from_activation(
                 )
             )
             current = after
+            if state_observer is not None:
+                state_observer(after)
     except Exception as caught:
         if not steps and not snapshots:
             raise

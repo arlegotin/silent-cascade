@@ -79,7 +79,10 @@ def test_compressed_recomputes_choices_at_activation(activation) -> None:
     model, agent, state = activation
     model.role = 0  # continue with predicted LINK compositions
     model.continue_search = True
-    decision = run_compressed_from_activation(agent, state, transition_cap=4)
+    observed = []
+    decision = run_compressed_from_activation(
+        agent, state, transition_cap=4, state_observer=observed.append
+    )
     assert [step.kind for step in decision.steps] == [
         InternalEventKind.RECALL,
         InternalEventKind.COMPOSE,
@@ -87,6 +90,8 @@ def test_compressed_recomputes_choices_at_activation(activation) -> None:
         InternalEventKind.COMPOSE,
     ]
     assert all(step.executed_at == state.time for step in decision.steps)
+    assert len(observed) == len(decision.steps)
+    assert all(observed_state.time == state.time for observed_state in observed)
     assert all(len(step.state_sha256) == 64 for step in decision.steps)
     recalls = [step for step in decision.steps if step.kind is InternalEventKind.RECALL]
     assert recalls[0].selected_record_id != recalls[1].selected_record_id
@@ -238,6 +243,7 @@ def test_compressed_runner_keeps_complete_paired_rows(tmp_path) -> None:
     model = EventFlowModel(config.phase4_config.neural).eval()
     identity = ComparisonIdentity(
         condition="compressed_eventflow",
+        manifest_name="iid",
         protocol_sha256=config.protocol_sha256,
         config_sha256=config.config_sha256,
         generator_sha256=config.generator_sha256,

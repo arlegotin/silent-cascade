@@ -134,6 +134,7 @@ def test_errors_keep_episode_denominators(sample, monkeypatch, tmp_path) -> None
     manifest = build_manifest(config, "iid", allocation.model_copy(update={"blocks": (first,)}))
     identity = ComparisonIdentity(
         condition="intact_eventflow",
+        manifest_name="iid",
         protocol_sha256=config.protocol_sha256,
         config_sha256=config.config_sha256,
         generator_sha256=config.generator_sha256,
@@ -165,7 +166,9 @@ def test_errors_keep_episode_denominators(sample, monkeypatch, tmp_path) -> None
     with gzip.open(output / "rows.jsonl.gz", "rt") as handle:
         rows = [json.loads(line) for line in handle]
     assert len(rows) == 4
+    assert all(row["condition"] == "intact_eventflow" for row in rows)
+    assert all(row["manifest_name"] == "iid" for row in rows)
+    assert all(row["protocol_sha256"] == config.protocol_sha256 for row in rows)
+    assert all(row["inference_wall_seconds"] >= 0 for row in rows)
     assert all(row["error"] is not None and not row["timed_success"] for row in rows)
-    assert all(
-        not ComparisonRow.model_validate_json(json.dumps(row)).timed_success for row in rows
-    )
+    assert all(not ComparisonRow.model_validate_json(json.dumps(row)).timed_success for row in rows)
