@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -214,3 +215,35 @@ def test_cli_ponder_refuses_unadmitted_milestone(tmp_path) -> None:
     (report / "decision.json").write_text(json.dumps(decision))
     with pytest.raises(ValueError, match="deferred"):
         module.main(["ponder", "--run-dir", str(tmp_path)])
+
+
+def test_checkpoint_check_authenticates_frozen_producer_without_current_tree(tmp_path, monkeypatch):
+    retained = Path(
+        "/Users/artemlegotin/Library/Application Support/silent-cascade/runs/"
+        "phase4-pilot-artifact-fix-v1/event_flow/11/pilot"
+    )
+    if not (retained / "training-result.json").is_file():
+        pytest.skip("retained accepted Phase 4 archive is unavailable")
+    script = Path(__file__).parents[2] / "scripts/run_phase5a.py"
+    spec = importlib.util.spec_from_file_location("run_phase5a_checkpoint", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "authenticate_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("historical authentication must not compare current package inventory")
+        ),
+        raising=False,
+    )
+    module._checkpoint_check(
+        Namespace(
+            config=Path(__file__).parents[2] / "configs/eval/phase5a.yaml",
+            run_dir=tmp_path,
+            phase4_run_dir=retained,
+        )
+    )
+    assert json.loads((tmp_path / "checkpoint.json").read_text())["weights_sha256"].startswith(
+        "bc2850"
+    )

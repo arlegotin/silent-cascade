@@ -28,9 +28,7 @@ from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_fi
 from silent_cascade.io import atomic_create_bytes
 from silent_cascade.report.comparison import build_comparison_report
 from silent_cascade.train.curriculum_data import make_curriculum_example
-from silent_cascade.train.pilot_config import resolve_pilot_config
 from silent_cascade.train.pilot_data import PilotManifest
-from silent_cascade.train.pilot_evidence import authenticate_run
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_DIR = ROOT / "manifests/validation/phase5a-v1"
@@ -78,23 +76,52 @@ def _checkpoint_check(args: argparse.Namespace) -> None:
     config = _config(args.config)
     if sha256_file(PHASE4_GATE) != ACCEPTED_PHASE4_GATE_SHA256:
         raise ValueError("accepted Phase 4 gate artifact hash differs")
-    _, source, result, _, weights, _ = authenticate_run(
-        args.phase4_run_dir, resolve_pilot_config("phase4_pilot"), repo_root=ROOT
+    gate = json.loads(PHASE4_GATE.read_bytes())
+    training_path = args.phase4_run_dir / "training-result.json"
+    training = json.loads(training_path.read_bytes())
+    selected = training.get("selected_weights")
+    receipt = gate.get("local_verification", {})
+    if (
+        gate.get("outcome") != "passed"
+        or gate.get("offline_passed") is not True
+        or gate.get("foundation_model_calls") != 0
+        or gate.get("source", {}).get("source_commit") != ACCEPTED_PHASE4_SOURCE
+        or gate.get("selected_weights_sha256") != ACCEPTED_EVENTFLOW_WEIGHTS_SHA256
+        or gate.get("model_state_sha256") != ACCEPTED_EVENTFLOW_STATE_SHA256
+        or gate.get("upstream_artifact_hashes", {}).get("training-result.json")
+        != sha256_file(training_path)
+        or training.get("status") != "robustness_complete"
+        or training.get("gate_eligible") is not True
+        or selected is None
+        or gate.get("training_result", {}).get("selected_weights") != selected
+        or receipt.get("passed") is not True
+        or sha256_bytes(canonical_json_bytes(receipt.get("receipt")))
+        != receipt.get("receipt_sha256")
+        or sha256_file(ROOT / receipt.get("path", "missing")) != receipt.get("receipt_sha256")
+    ):
+        raise ValueError("retained Phase 4 gate or historical receipt differs")
+    if subprocess.call(["git", "cat-file", "-e", f"{ACCEPTED_PHASE4_SOURCE}^{{commit}}"], cwd=ROOT):
+        raise ValueError("accepted Phase 4 producer revision is unavailable")
+    weights_path = args.phase4_run_dir / selected["path"]
+    weights = load_neural_weights(
+        weights_path, expected_sha256=ACCEPTED_EVENTFLOW_WEIGHTS_SHA256, device="cpu"
     )
     if (
-        source.source_commit != ACCEPTED_PHASE4_SOURCE
-        or weights is None
-        or weights.sha256 != ACCEPTED_EVENTFLOW_WEIGHTS_SHA256
+        weights.sha256 != ACCEPTED_EVENTFLOW_WEIGHTS_SHA256
         or weights.identity.model_state_sha256 != ACCEPTED_EVENTFLOW_STATE_SHA256
-        or result.selected_weights is None
-        or result.selected_weights.global_step != 12000
+        or weights.identity.source_revision != ACCEPTED_PHASE4_SOURCE
+        or weights.model.config != config.phase4_config.neural
+        or selected.get("sha256") != weights.sha256
+        or selected.get("model_state_sha256") != ACCEPTED_EVENTFLOW_STATE_SHA256
+        or selected.get("global_step") != 12000
+        or selected.get("eligible") is not True
     ):
         raise ValueError("retained selected EventFlow checkpoint differs from accepted Phase 4")
     descriptor = {
         "schema_version": "phase5a-checkpoint-binding-v1",
         "phase4_gate_sha256": ACCEPTED_PHASE4_GATE_SHA256,
-        "producing_source_revision": source.source_commit,
-        "weights_path": str(args.phase4_run_dir / result.selected_weights.path),
+        "producing_source_revision": ACCEPTED_PHASE4_SOURCE,
+        "weights_path": str(weights_path),
         "weights_sha256": weights.sha256,
         "model_state_sha256": weights.identity.model_state_sha256,
         "comparison_protocol_sha256": config.protocol_sha256,
