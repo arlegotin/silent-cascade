@@ -3,13 +3,18 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from silent_cascade.config import resolve_config
 from silent_cascade.env.config import Phase1Config, SplitNamespace
-from silent_cascade.env.episode import EpisodeVariant
+from silent_cascade.env.episode import EpisodeTruth, EpisodeVariant
 from silent_cascade.env.generator import IndependentAllocation
+from silent_cascade.env.reward import EpisodeScore, score_actions
+from silent_cascade.eval.compute import RuntimeCompute
+from silent_cascade.eval.metrics import EvaluationError
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
+from silent_cascade.schemas import Action
+from silent_cascade.train.pilot_config import Phase4Config, resolve_pilot_config
 from silent_cascade.validation import StrictModel
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -21,6 +26,10 @@ def _phase1_config() -> Phase1Config:
         Phase1Config,
         [_ROOT / "configs/base.yaml", _ROOT / "configs/data/primary.yaml"],
     ).config
+
+
+def _phase4_config() -> Phase4Config:
+    return resolve_pilot_config("phase4_pilot").config
 
 
 class ComparisonConfig(StrictModel):
@@ -41,10 +50,21 @@ class ComparisonConfig(StrictModel):
     working_reserve_bytes: Literal[2147483648] = 2147483648
     main_update_ceiling: Literal[12000] = 12000
     phase1_config: Phase1Config = Field(default_factory=_phase1_config)
+    phase4_config: Phase4Config = Field(default_factory=_phase4_config)
+
+    @model_validator(mode="after")
+    def require_matching_generator(self):
+        if self.phase1_config.data != self.phase4_config.data:
+            raise ValueError("Phase 5A and accepted Phase 4 generator settings differ")
+        return self
 
     @property
     def config_sha256(self) -> str:
         return sha256_bytes(canonical_json_bytes(self))
+
+    @property
+    def generator_sha256(self) -> str:
+        return sha256_file(_GENERATOR)
 
     @property
     def protocol_sha256(self) -> str:
@@ -52,7 +72,7 @@ class ComparisonConfig(StrictModel):
             canonical_json_bytes(
                 {
                     "config_sha256": self.config_sha256,
-                    "generator_sha256": sha256_file(_GENERATOR),
+                    "generator_sha256": self.generator_sha256,
                     "schema": "phase5a-diagnostic-v1",
                     "allocation": {"iid": [172, 172, 168], "depth": [128, 128, 128, 128]},
                     "split": "debug",
@@ -91,6 +111,99 @@ class ComparisonManifest(StrictModel):
     @classmethod
     def entries_from_json(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
+
+
+class BudgetLedger(StrictModel):
+    """Cumulative scientific resource usage, including recorded extensions."""
+
+    schema_version: Literal["phase5a-budget-v1"] = "phase5a-budget-v1"
+    elapsed_scientific_seconds: float = Field(default=0.0, ge=0.0)
+    retained_bytes: int = Field(default=0, ge=0)
+    attempts: int = Field(default=0, ge=0)
+    updates: int = Field(default=0, ge=0, le=12000)
+    extensions: tuple[str, ...] = ()
+    finish_reason: str | None = None
+
+
+class ComparisonIdentity(StrictModel):
+    """Immutable condition provenance, separate from private episode truth."""
+
+    schema_version: Literal["phase5a-identity-v1"] = "phase5a-identity-v1"
+    experiment_version: Literal["phase5a-v1"] = "phase5a-v1"
+    purpose: Literal["exploratory_comparison"] = "exploratory_comparison"
+    gate_eligible: Literal[False] = False
+    condition: Literal["intact_eventflow", "compressed_eventflow", "activation_ponder"]
+    transition_cap: int | None = Field(default=None, ge=4, le=24)
+    protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generator_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    checkpoint_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producing_source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution_source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    dirty_source: bool = False
+    scientific_seed: Literal[11] = 11
+    device: Literal["cpu"] = "cpu"
+    foundation_model_calls: Literal[0] = 0
+
+    @model_validator(mode="after")
+    def require_cap_for_ponder(self):
+        if self.condition == "activation_ponder" and self.transition_cap not in {4, 8, 12, 16, 24}:
+            raise ValueError("ponderer requires a predeclared cap")
+        if self.condition != "activation_ponder" and self.transition_cap is not None:
+            raise ValueError("EventFlow condition cannot carry a ponderer cap")
+        return self
+
+    @property
+    def sha256(self) -> str:
+        return sha256_bytes(canonical_json_bytes(self))
+
+
+class ComparisonStep(StrictModel):
+    event_id: int = Field(ge=0)
+    kind: str
+    timestamp: float
+    state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ConditionResult(StrictModel):
+    actions: tuple[Action, ...] = ()
+    stop_reason: str
+    steps: tuple[ComparisonStep, ...] = ()
+    trace_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    end_to_end_compute: RuntimeCompute = Field(default_factory=RuntimeCompute)
+    post_activation_compute: RuntimeCompute = Field(default_factory=RuntimeCompute)
+    error: EvaluationError | None = None
+
+
+class ComparisonRow(StrictModel):
+    schema_version: Literal["phase5a-row-v1"] = "phase5a-row-v1"
+    public_id: str
+    episode_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    variant: EpisodeVariant
+    path_length: int = Field(ge=1, le=8)
+    truth: EpisodeTruth
+    result: ConditionResult
+    score: EpisodeScore
+    timed_success: bool
+    error: EvaluationError | None = None
+    gate_eligible: Literal[False] = False
+
+    @model_validator(mode="after")
+    def verify_score(self):
+        if self.score != score_actions(self.truth, self.result.actions):
+            raise ValueError("comparison score differs from private scorer")
+        if self.timed_success != (self.result.error is None and self.score.timed_success):
+            raise ValueError("comparison success or error denominator is invalid")
+        if self.error != self.result.error:
+            raise ValueError("comparison error differs from condition result")
+        if self.variant is not self.truth.recipe.variant:
+            raise ValueError("comparison variant differs from private truth")
+        if self.path_length != self.truth.recipe.requested_path_length:
+            raise ValueError("comparison depth differs from private truth")
+        return self
 
 
 ACCEPTED_PHASE4_SOURCE = "3b132253512f02c0ed9f2d774fefce3036019d91"
