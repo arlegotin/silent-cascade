@@ -2,6 +2,13 @@
 
 Silent Cascade is a public research project testing persistent, learned event-flow computation on the Observation-Free Deadline benchmark.
 
+**Project status:** Scientific development was [sunset after the Phase 5A
+comparison](docs/project-sunset.md). The first trained baseline matched or
+slightly exceeded EventFlow's pilot success rate with about 13–14 times less
+measured neural compute. The full Phase 5 program and later phases were not run;
+the final Phase 5A repository-wide verification gate was interrupted and is not
+claimed as passed. This repository retains the implementation and evidence.
+
 The corrected, offline, one-seed Phase 4 autonomous pilot passed its unchanged
 engineering gate. Its selected 12,000-update model achieved 9,994/10,000 timed
 successes on primary validation, 9,991/10,000 on two-hop validation and
@@ -19,9 +26,9 @@ and used about thirteen times fewer measured forward MACs. The same EventFlow
 weights scored much lower when its cognitive work was compressed to activation
 time. See the [paired report and limits](docs/phase5a-comparative-pilot.md).
 This single-seed diagnostic is not the full strong-baseline program; the
-remaining controls, five-seed tests, and frozen final-test results are pending.
+remaining controls, five-seed tests, and frozen final-test results were not run.
 
-## Current working path
+## Local reproduction and checks
 
 ```bash
 uv sync --locked --group dev
@@ -87,4 +94,4 @@ Artifact-only verification without the raw run reports missing coverage.
 `make pilot-smoke` remains debug engineering evidence. The guide records the
 exact run history, local verification receipt and source-bound setup.
 The full canonical intervention suite, general reporting and demo commands
-remain future work.
+were not pursued after the [sunset decision](docs/project-sunset.md).

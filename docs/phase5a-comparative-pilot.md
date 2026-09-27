@@ -1,6 +1,8 @@
 # Phase 5A comparative pilot
 
-Status on 2026-09-27: **the approved exploratory Phase 5A scope is executed and independently audited; the final local `make verify` gate is pending.** This single-seed DEBUG comparison does not pass the full Phase 5 gate or establish a confirmatory architectural claim.
+**Project decision:** Silent Cascade was [sunset after these adverse comparative results](project-sunset.md). The remaining phases were not run.
+
+Status at sunset on 2026-09-27: **the approved exploratory Phase 5A scientific scope was executed and independently audited; the final local `make verify` gate was interrupted and remains incomplete.** This single-seed DEBUG comparison does not pass the full Phase 5 gate or establish a confirmatory architectural claim.
 
 ## Frozen inputs and checks
 
@@ -49,4 +51,4 @@ The [local audit receipt](../reports/phase5a-v1/verification/receipt.json) authe
 
 Set the same offline environment used for the pilot (`UV_OFFLINE=1`, `UV_FROZEN=1`, `UV_NO_SYNC=1`, `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `PYTORCH_ENABLE_MPS_FALLBACK=0`); a local writable `UV_CACHE_DIR` may be needed. With the retained Phase 4 archive, run `scripts/run_phase5a.py` commands in order: `prepare`, `checkpoint-check`, `compatibility-check`, `evaluate-a`, `report`, `competence`, then `ponder`. The exact arguments are in the [approved plan](superpowers/plans/2026-09-27-phase-5a-comparative-pilot.md#7-commands-to-deliver-during-implementation). `evaluate-selected` reruns only the immutable selected ponderer after an executor correction, without invoking the fitter. Compatible completed units are immutable; incomplete units resume verified episode shards.
 
-Phase 4 remains accepted. Phase 5A answers the inexpensive diagnostic question but leaves full Phase 5 open. The two one-shot sizes, fixed-tick and matched-count scheduling controls, other ablations and causal interventions, full OOD/clock/stress suites, five-seed evaluation, compute-curve fairness, and canonical claim gates require later phase-scoped plans. The next research decision should test whether simpler controls also solve the task and whether the ponderer's apparent efficiency repeats across seeds. These Phase 5A diagnostics remain development exposure, not a final frozen test.
+Phase 4 remains accepted. Phase 5A answers the inexpensive diagnostic question; full Phase 5 was not run. The two one-shot sizes, fixed-tick and matched-count scheduling controls, other ablations and causal interventions, full OOD/clock/stress suites, five-seed evaluation, compute-curve fairness, and canonical claim gates were not pursued after the [sunset decision](project-sunset.md). These Phase 5A diagnostics remain development exposure, not a final frozen test.
