@@ -9,9 +9,17 @@ successes on primary validation, 9,991/10,000 on two-hop validation and
 foundation-model calls. See the [measured pilot and adverse history](docs/phase4-autonomous-eventflow.md),
 [canonical gate](manifests/validation/phase4/autonomous-gate-v1.json), and
 [published report](reports/phase4-pilot-v1/report.md). These are training-exposed
-validation results from one seed. Baseline and ablation comparisons and frozen
-final-test results have not been run; no claim about consciousness, sentience,
+validation results from one seed. No claim about consciousness, sentience,
 biological fidelity, or general intelligence follows.
+
+The **Phase 5A exploratory comparison** tested fresh DEBUG episodes against a
+separately trained activation-time ponderer. EventFlow scored 512/512 on IID and
+504/512 on unseen depths 5–8; at caps 12–24, the ponderer scored 512/512 on both
+and used about thirteen times fewer measured forward MACs. The same EventFlow
+weights scored much lower when its cognitive work was compressed to activation
+time. See the [paired report and limits](docs/phase5a-comparative-pilot.md).
+This single-seed diagnostic is not the full strong-baseline program; the
+remaining controls, five-seed tests, and frozen final-test results are pending.
 
 ## Current working path
 
@@ -78,4 +86,5 @@ uv run python scripts/verify_phase4_gate_artifact.py --artifact manifests/valida
 Artifact-only verification without the raw run reports missing coverage.
 `make pilot-smoke` remains debug engineering evidence. The guide records the
 exact run history, local verification receipt and source-bound setup.
-Intervention, general reporting and demo commands remain future work.
+The full canonical intervention suite, general reporting and demo commands
+remain future work.

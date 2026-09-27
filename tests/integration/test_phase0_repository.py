@@ -258,10 +258,10 @@ def test_phase0_repository_exposes_only_working_targets_and_commands() -> None:
     assert not workflows.exists() or not any(workflows.iterdir())
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "reports no learned benchmark results" in readme
+    assert "Phase 5A exploratory comparison" in readme
     assert "silent-cascade doctor" in readme
     assert "silent-cascade replay" in readme
-    assert "non-neural runtime engineering evidence" in readme
+    assert "single-seed diagnostic is not the full strong-baseline program" in readme
     assert "silent-cascade data freeze" in readme
     assert "silent-cascade episode inspect" in readme
     assert "silent-cascade oracle evaluate" in readme
@@ -587,8 +587,11 @@ def test_phase3_pin_rejects_coordinated_phase2_substitution(tmp_path):
 
 def _assert_phase4_delivery_state(root, plan_index):
     from silent_cascade.hashing import canonical_json_bytes
-    from silent_cascade.train.pilot_evidence import verify_phase4_gate_artifact
-    from silent_cascade.train.pilot_evidence_types import Phase4DeliveryMap, strict_json
+    from silent_cascade.train.pilot_evidence_types import (
+        Phase4DeliveryMap,
+        Phase4GateArtifact,
+        strict_json,
+    )
 
     rows = [line for line in plan_index.splitlines() if line.startswith("| 4 —")]
     assert len(rows) == 1
@@ -607,10 +610,39 @@ def _assert_phase4_delivery_state(root, plan_index):
     mapping = Phase4DeliveryMap.model_validate_json(canonical_json_bytes(strict_json(path)))
     assert gate.is_file() and not gate.is_symlink()
     assert hashlib.sha256(gate.read_bytes()).hexdigest() == mapping.gate_sha256
-    result = verify_phase4_gate_artifact(gate, repo_root=root)
-    assert result["recorded_outcome"] == "passed"
-    assert result["source_commit"] == mapping.source_commit
-    assert result["selected_weights_sha256"] == mapping.selected_weights_sha256
+    # The accepted producer was verified at its own source revision. A later
+    # phase's package files cannot pass its current-tree replay guard.
+    artifact = Phase4GateArtifact.model_validate_json(canonical_json_bytes(strict_json(gate)))
+    receipt = artifact.local_verification
+    assert mapping.gate_sha256 == "6353acb150fc5f46d10215e5b4206f08744818184cce3933f6d5b33e0eb75ab1"
+    assert mapping.source_commit == "3b132253512f02c0ed9f2d774fefce3036019d91"
+    assert (
+        mapping.selected_weights_sha256
+        == "bc2850deb2bacb64d336750c5e824390e4a8eb45a3144467e3a61af84c49285b"
+    )
+    assert artifact.outcome == "passed"
+    assert artifact.execution_status == "DONE"
+    assert artifact.offline_passed and artifact.numeric_passed and artifact.repeat_equal
+    assert artifact.foundation_model_calls == 0 and not artifact.failures
+    assert artifact.source.source_commit == mapping.source_commit
+    assert artifact.selected_weights_sha256 == mapping.selected_weights_sha256
+    assert (
+        artifact.model_state_sha256
+        == "2c5e5b2a0cb3749404ec3f2a5b70dc20c00fd8a2560a4035f577311fa375e30f"
+    )
+    assert artifact.training_result["status"] == "robustness_complete"
+    selected = artifact.training_result["selected_weights"]
+    assert selected["sha256"] == mapping.selected_weights_sha256
+    assert selected["model_state_sha256"] == artifact.model_state_sha256
+    assert selected["global_step"] == 12000 and selected["eligible"] is True
+    assert receipt is not None and receipt["passed"] is True
+    assert (
+        hashlib.sha256(canonical_json_bytes(receipt["receipt"])).hexdigest()
+        == receipt["receipt_sha256"]
+    )
+    receipt_path = root / receipt["path"]
+    assert receipt_path.is_file() and not receipt_path.is_symlink()
+    assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() == receipt["receipt_sha256"]
     assert cell.startswith("Complete")
     assert all(
         value in cell
