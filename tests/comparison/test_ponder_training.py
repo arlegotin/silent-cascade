@@ -1,9 +1,15 @@
 """Masked teacher projections and finite shared recurrent supervision."""
 
+import pytest
 import torch
 
 from silent_cascade.eval.comparison_data import build_manifest, diagnostic_allocations, iter_bundles
-from silent_cascade.eval.comparison_types import ComparisonConfig
+from silent_cascade.eval.comparison_protocol import (
+    admit_ponder_budget,
+    nearest_ponder_cap,
+    ponder_checkpoint_rank,
+)
+from silent_cascade.eval.comparison_types import BudgetLedger, ComparisonConfig, CostProfile
 from silent_cascade.eval.compute import RuntimeCompute
 from silent_cascade.models.activation_ponder import (
     ActivationPonderModel,
@@ -15,9 +21,13 @@ from silent_cascade.train.activation_ponder import (
     build_fixed_competence_set,
     evaluate_competence,
     load_debug_checkpoint,
+    load_main_checkpoint,
+    main_training_stage,
     ponder_loss,
     project_ponder_batch,
+    require_clean_main_source,
     save_debug_checkpoint,
+    save_main_checkpoint,
 )
 from silent_cascade.train.batches import pack_training_examples
 from silent_cascade.train.curriculum_data import make_curriculum_example
@@ -161,3 +171,129 @@ def test_competence_evaluator_keeps_private_terminal_out_of_policy(monkeypatch) 
     rows = evaluate_competence(model, bundles, cap=24)
     assert len(rows) == len(seen) == 4
     assert all(row["actions"] == [] for row in rows)
+
+
+def test_budget_admission_counts_full_validation_and_final_caps() -> None:
+    profile = CostProfile(
+        update_seconds_by_stage={
+            name: 0.5 for name in ("one_hop", "two_hop", "primary", "robustness")
+        },
+        validation_episode_seconds=0.01,
+        final_episode_seconds=0.2,
+        replay_episode_seconds=0.2,
+        checkpoint_seconds=2.0,
+        report_seconds=10.0,
+        retained_bytes_per_update_boundary=1_000_000,
+        retained_bytes_per_validation_episode=100,
+        retained_bytes_per_final_episode=100,
+    )
+    admitted = admit_ponder_budget(profile, BudgetLedger())
+    assert admitted.chosen_updates == 12_000
+    estimate = admitted.estimates[12_000]
+    assert estimate.validation_episodes == 120_000
+    assert estimate.final_episodes == 5_120
+    assert estimate.replay_episodes >= 16 * (4 + 10)
+    assert estimate.projected_seconds >= 2 * (6_000 + 1_200 + 1_024 + 10)
+    too_costly = profile.model_copy(update={"validation_episode_seconds": 100.0})
+    decision = admit_ponder_budget(too_costly, BudgetLedger())
+    assert decision.chosen_updates is None
+    assert decision.status == "extension_required"
+
+
+def test_selection_uses_only_primary_validation_and_fixed_cap24() -> None:
+    one = ponder_checkpoint_rank(
+        update=1000, cap=24, primary_successes=9000, negative_false_actions=10
+    )
+    two = ponder_checkpoint_rank(
+        update=2000, cap=24, primary_successes=9000, negative_false_actions=9
+    )
+    assert two > one
+    assert (
+        ponder_checkpoint_rank(
+            update=3000, cap=24, primary_successes=9000, negative_false_actions=9
+        )
+        < two
+    )
+    with pytest.raises(ValueError):
+        ponder_checkpoint_rank(update=1000, cap=8, primary_successes=9000, negative_false_actions=0)
+
+
+def test_nearest_compute_uses_measured_iid_only_and_ten_percent_overlap() -> None:
+    assert nearest_ponder_cap(100.0, {4: 40.0, 8: 95.0, 12: 105.0, 16: 200.0, 24: 300.0}) == 8
+    assert nearest_ponder_cap(100.0, {4: 40.0, 8: 80.0, 12: 120.0, 16: 200.0, 24: 300.0}) is None
+
+
+def test_main_checkpoint_preserves_next_batch_optimizer_and_consumed_budget(tmp_path) -> None:
+    torch.manual_seed(11)
+    model = ActivationPonderModel(PonderModelConfig(width=800))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    budget = BudgetLedger(updates=1, attempts=1, elapsed_scientific_seconds=3.0)
+
+    def update(model, optimizer):
+        optimizer.zero_grad(set_to_none=True)
+        noise = torch.rand(())
+        loss = model.heads["halt"].weight.square().mean() + noise * model.null_key.square().mean()
+        loss.backward()
+        optimizer.step()
+
+    update(model, optimizer)
+    checkpoint = tmp_path / "main-0001.pt"
+    save_main_checkpoint(
+        checkpoint,
+        model,
+        optimizer,
+        step=1,
+        budget=budget,
+        config_sha256="a" * 64,
+        source_revision="b" * 40,
+    )
+    update(model, optimizer)
+    expected = {name: value.clone() for name, value in model.state_dict().items()}
+    restored = ActivationPonderModel(PonderModelConfig(width=800))
+    restored_optimizer = torch.optim.AdamW(restored.parameters(), lr=3e-4)
+    step, loaded_budget = load_main_checkpoint(
+        checkpoint, restored, restored_optimizer, config_sha256="a" * 64, source_revision="b" * 40
+    )
+    assert step == 1 and loaded_budget == budget
+    update(restored, restored_optimizer)
+    assert all(torch.equal(expected[name], value) for name, value in restored.state_dict().items())
+    with pytest.raises(ValueError):
+        load_main_checkpoint(
+            checkpoint,
+            restored,
+            restored_optimizer,
+            config_sha256="a" * 64,
+            source_revision="c" * 40,
+        )
+    checkpoint.write_bytes(checkpoint.read_bytes() + b"corrupt")
+    with pytest.raises(ValueError):
+        load_main_checkpoint(
+            checkpoint,
+            restored,
+            restored_optimizer,
+            config_sha256="a" * 64,
+            source_revision="b" * 40,
+        )
+
+
+def test_main_stage_schedule_and_dirty_source_rejection(monkeypatch) -> None:
+    assert [main_training_stage(n) for n in (1, 9000, 9001, 10000, 10001, 11000, 11001, 12000)] == [
+        "one_hop",
+        "one_hop",
+        "two_hop",
+        "two_hop",
+        "primary",
+        "primary",
+        "robustness",
+        "robustness",
+    ]
+    with pytest.raises(ValueError):
+        main_training_stage(12001)
+    from silent_cascade.train import activation_ponder
+
+    monkeypatch.setattr(
+        activation_ponder.subprocess, "check_output", lambda *a, **k: "b" * 40 + "\n"
+    )
+    monkeypatch.setattr(activation_ponder.subprocess, "call", lambda *a, **k: 1)
+    with pytest.raises(ValueError, match="uncommitted"):
+        require_clean_main_source()

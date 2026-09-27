@@ -125,6 +125,72 @@ class BudgetLedger(StrictModel):
     finish_reason: str | None = None
 
 
+class CostProfile(StrictModel):
+    """Observed per-unit resource costs for predeclared B admission arithmetic."""
+
+    schema_version: Literal["phase5a-ponder-cost-profile-v1"] = "phase5a-ponder-cost-profile-v1"
+    update_seconds_by_stage: dict[str, float]
+    validation_episode_seconds: float = Field(ge=0)
+    final_episode_seconds: float = Field(ge=0)
+    replay_episode_seconds: float = Field(ge=0)
+    checkpoint_seconds: float = Field(ge=0)
+    report_seconds: float = Field(ge=0)
+    retained_bytes_per_update_boundary: int = Field(ge=0)
+    retained_bytes_per_validation_episode: int = Field(ge=0)
+    retained_bytes_per_final_episode: int = Field(ge=0)
+
+
+class CostEstimate(StrictModel):
+    updates: int = Field(ge=1000, le=12000)
+    validation_episodes: int = Field(ge=10000)
+    final_episodes: Literal[5120] = 5120
+    replay_episodes: int = Field(ge=224)
+    projected_seconds: float = Field(ge=0)
+    projected_retained_bytes: int = Field(ge=0)
+
+
+class TrainingAdmission(StrictModel):
+    schema_version: Literal["phase5a-ponder-admission-v1"] = "phase5a-ponder-admission-v1"
+    status: Literal["admitted", "extension_required", "budget_insufficient"]
+    chosen_updates: int | None = Field(default=None, ge=1000, le=12000)
+    estimates: dict[int, CostEstimate]
+    time_target_seconds: Literal[21600] = 21600
+    artifact_target_bytes: Literal[10737418240] = 10737418240
+    rationale: str
+
+
+class PonderTrainingResult(StrictModel):
+    schema_version: Literal["phase5a-ponder-training-result-v1"] = (
+        "phase5a-ponder-training-result-v1"
+    )
+    status: Literal[
+        "profiling",
+        "running",
+        "completed_exploratory",
+        "inconclusive_budget",
+        "inconclusive_training",
+        "failed_engineering",
+    ]
+    source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    profile_sha256: str | None = None
+    admission_sha256: str | None = None
+    chosen_updates: int | None = Field(default=None, ge=1000, le=12000)
+    completed_updates: int = Field(ge=0, le=12000)
+    last_stage: str
+    latest_checkpoint: str | None = None
+    latest_checkpoint_sha256: str | None = None
+    selected_checkpoint: str | None = None
+    selected_checkpoint_sha256: str | None = None
+    selected_update: int | None = None
+    selected_rank: tuple[int, int, int] | None = None
+    validation_boundaries: tuple[int, ...] = ()
+    execution_complete: bool = False
+    foundation_model_calls: Literal[0] = 0
+    parameters: int | None = None
+    entity_parameters: int | None = None
+
+
 class ComparisonIdentity(StrictModel):
     """Immutable condition provenance, separate from private episode truth."""
 
@@ -170,6 +236,9 @@ class ComparisonStep(StrictModel):
     predicted_delta: float | None = Field(default=None, ge=0.0)
     bypassed_refractory_until: float | None = None
     selected_record_id: int | None = Field(default=None, ge=0)
+    halt_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    action_class: int | None = Field(default=None, ge=0, le=4)
+    action_offset: float | None = Field(default=None, ge=0.0)
 
 
 class ConditionResult(StrictModel):

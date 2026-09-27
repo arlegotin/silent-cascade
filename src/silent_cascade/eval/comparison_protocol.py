@@ -6,7 +6,14 @@ from typing import Literal
 
 from pydantic import Field
 
-from silent_cascade.eval.comparison_types import ComparisonManifest, ComparisonRow
+from silent_cascade.eval.comparison_types import (
+    BudgetLedger,
+    ComparisonManifest,
+    ComparisonRow,
+    CostEstimate,
+    CostProfile,
+    TrainingAdmission,
+)
 from silent_cascade.hashing import canonical_json_bytes
 from silent_cascade.validation import StrictModel
 
@@ -111,4 +118,90 @@ def decide_after_a(rows: Sequence[ComparisonRow], *, protocol_sha256: str) -> Mi
         depth_intact_successes=depth_successes,
         condition_counts={"/".join(key): len(groups[key]) for key in keys},
         reasons=tuple(sorted(reasons)),
+    )
+
+
+def ponder_checkpoint_rank(
+    *, update: int, cap: int, primary_successes: int, negative_false_actions: int
+) -> tuple[int, int, int]:
+    """Only complete primary validation at cap 24 may rank a checkpoint."""
+    if cap != 24 or update < 1000 or update % 1000:
+        raise ValueError("ponder selection requires a 1,000-update primary cap-24 boundary")
+    if not 0 <= primary_successes <= 10000 or not 0 <= negative_false_actions <= 5000:
+        raise ValueError("invalid complete primary validation totals")
+    return primary_successes, -negative_false_actions, -update
+
+
+def admit_ponder_budget(profile: CostProfile, budget: BudgetLedger) -> TrainingAdmission:
+    """Include every full validation, final cap episode, and deterministic replay."""
+    required = {"one_hop", "two_hop", "primary", "robustness"}
+    if set(profile.update_seconds_by_stage) != required or any(
+        value < 0 for value in profile.update_seconds_by_stage.values()
+    ):
+        raise ValueError("cost profile lacks the fixed four-stage workload")
+    estimates = {}
+    for n in range(1000, 12001, 1000):
+        stage_counts = {
+            "one_hop": min(n, 9000),
+            "two_hop": min(max(n - 9000, 0), 1000),
+            "primary": min(max(n - 10000, 0), 1000),
+            "robustness": min(max(n - 11000, 0), 1000),
+        }
+        validation_episodes = 10000 * (n // 1000)
+        final_episodes = 2 * 512 * 5
+        replay_episodes = 16 * (4 + 2 * 5)
+        measured = (
+            sum(stage_counts[stage] * profile.update_seconds_by_stage[stage] for stage in required)
+            + validation_episodes * profile.validation_episode_seconds
+            + final_episodes * profile.final_episode_seconds
+            + replay_episodes * profile.replay_episode_seconds
+            + (n // 1000 + 1) * profile.checkpoint_seconds
+            + profile.report_seconds
+        )
+        bytes_used = (
+            (n // 1000 + 1) * profile.retained_bytes_per_update_boundary
+            + validation_episodes * profile.retained_bytes_per_validation_episode
+            + final_episodes * profile.retained_bytes_per_final_episode
+        )
+        estimates[n] = CostEstimate(
+            updates=n,
+            validation_episodes=validation_episodes,
+            final_episodes=final_episodes,
+            replay_episodes=replay_episodes,
+            projected_seconds=budget.elapsed_scientific_seconds + 2 * measured,
+            projected_retained_bytes=budget.retained_bytes + 2 * bytes_used,
+        )
+    fits = [
+        n
+        for n, item in estimates.items()
+        if item.projected_seconds <= 21600 and item.projected_retained_bytes <= 10737418240
+    ]
+    chosen = max(fits) if fits else None
+    return TrainingAdmission(
+        status="admitted" if chosen else "extension_required",
+        chosen_updates=chosen,
+        estimates=estimates,
+        rationale=(
+            "largest fixed 1,000-update boundary within 2x time/storage planning targets"
+            if chosen
+            else "no boundary fits 2x planning targets; extension needs a resource ruling"
+        ),
+    )
+
+
+def nearest_ponder_cap(intact_iid_macs: float, ponder_iid_macs: dict[int, float]) -> int | None:
+    """Pick the measured IID cap nearest intact compute, if within 10%."""
+    if (
+        intact_iid_macs <= 0
+        or set(ponder_iid_macs) != {4, 8, 12, 16, 24}
+        or any(value < 0 for value in ponder_iid_macs.values())
+    ):
+        raise ValueError("nearest-compute selection requires all five measured IID caps")
+    selected = min(
+        ponder_iid_macs, key=lambda cap: (abs(ponder_iid_macs[cap] - intact_iid_macs), cap)
+    )
+    return (
+        selected
+        if abs(ponder_iid_macs[selected] - intact_iid_macs) / intact_iid_macs <= 0.10
+        else None
     )

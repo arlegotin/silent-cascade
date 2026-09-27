@@ -1,9 +1,12 @@
 """Teacher-forced content projection and masked objective for Phase 5A pondering."""
 
+import copy
+import gzip
 import io
 import json
 import math
 import shutil
+import subprocess
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -15,8 +18,14 @@ import torch.nn.functional as F
 from silent_cascade.env.episode import EpisodeBundle, episode_sha256
 from silent_cascade.env.pilot import curriculum_to_bundle
 from silent_cascade.env.reward import score_actions
+from silent_cascade.eval.comparison_protocol import admit_ponder_budget, ponder_checkpoint_rank
 from silent_cascade.eval.comparison_runner import PublicProposal, arbitrate_proposal
-from silent_cascade.eval.comparison_types import BudgetLedger, ComparisonConfig
+from silent_cascade.eval.comparison_types import (
+    BudgetLedger,
+    ComparisonConfig,
+    CostProfile,
+    PonderTrainingResult,
+)
 from silent_cascade.eval.compute import NeuralComputeMeter, parameter_counts
 from silent_cascade.eval.ponder_policy import ponder_public
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
@@ -28,13 +37,14 @@ from silent_cascade.models.activation_ponder import (
 )
 from silent_cascade.models.types import PublicInputBatch
 from silent_cascade.schemas import InternalEventKind
-from silent_cascade.train.batches import TrainingBatch, pack_training_examples
+from silent_cascade.train.batches import TrainingBatch, next_training_batch, pack_training_examples
 from silent_cascade.train.curriculum_data import (
     CURRICULUM_VERSION,
     CurriculumKey,
     make_curriculum_example,
 )
 from silent_cascade.train.pilot_config import Phase4Config
+from silent_cascade.train.pilot_data import PilotManifest
 
 _INTEGER = ("role", "focus", "hazard", "status", "action_class")
 _FLOAT = (
@@ -202,6 +212,132 @@ def load_debug_checkpoint(
     optimizer.load_state_dict(payload["optimizer"])
     torch.set_rng_state(payload["torch_rng_state"])
     return int(payload["step"])
+
+
+def save_main_checkpoint(
+    path: Path,
+    model: ActivationPonderModel,
+    optimizer: torch.optim.Optimizer,
+    *,
+    step: int,
+    budget: BudgetLedger,
+    config_sha256: str,
+    source_revision: str,
+) -> None:
+    """Durable CPU continuation with bound source, optimizer, RNG, and consumed cost."""
+    if (
+        not 0 <= step <= 12000
+        or len(config_sha256) != 64
+        or len(source_revision) != 40
+        or next(model.parameters()).device.type != "cpu"
+    ):
+        raise ValueError("invalid main checkpoint identity or device")
+    payload = {
+        "schema_version": "phase5a-ponder-main-checkpoint-v1",
+        "step": step,
+        "budget": budget.model_dump(mode="json"),
+        "config_sha256": config_sha256,
+        "source_revision": source_revision,
+        "model_config_sha256": sha256_bytes(canonical_json_bytes(model.config)),
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "torch_rng_state": torch.get_rng_state(),
+    }
+    buffer = io.BytesIO()
+    torch.save(payload, buffer)
+    raw = buffer.getvalue()
+    atomic_create_bytes(path, raw)
+    atomic_create_bytes(
+        path.with_suffix(".json"),
+        canonical_json_bytes(
+            {
+                "schema_version": "phase5a-ponder-main-checkpoint-index-v1",
+                "step": step,
+                "config_sha256": config_sha256,
+                "source_revision": source_revision,
+                "model_config_sha256": payload["model_config_sha256"],
+                "checkpoint_sha256": sha256_bytes(raw),
+            }
+        )
+        + b"\n",
+    )
+
+
+def load_main_checkpoint(
+    path: Path,
+    model: ActivationPonderModel,
+    optimizer: torch.optim.Optimizer,
+    *,
+    config_sha256: str,
+    source_revision: str,
+) -> tuple[int, BudgetLedger]:
+    descriptor = json.loads(path.with_suffix(".json").read_bytes())
+    if (
+        descriptor.get("schema_version") != "phase5a-ponder-main-checkpoint-index-v1"
+        or descriptor.get("checkpoint_sha256") != sha256_file(path)
+        or descriptor.get("config_sha256") != config_sha256
+        or descriptor.get("source_revision") != source_revision
+        or descriptor.get("model_config_sha256") != sha256_bytes(canonical_json_bytes(model.config))
+    ):
+        raise ValueError("main checkpoint binding differs")
+    payload = torch.load(io.BytesIO(path.read_bytes()), map_location="cpu", weights_only=True)
+    if (
+        payload.get("schema_version") != "phase5a-ponder-main-checkpoint-v1"
+        or payload.get("step") != descriptor.get("step")
+        or payload.get("config_sha256") != config_sha256
+        or payload.get("source_revision") != source_revision
+        or payload.get("model_config_sha256") != descriptor.get("model_config_sha256")
+    ):
+        raise ValueError("main checkpoint payload differs")
+    model.load_state_dict(payload["model"], strict=True)
+    optimizer.load_state_dict(payload["optimizer"])
+    torch.set_rng_state(payload["torch_rng_state"])
+    return int(payload["step"]), BudgetLedger.model_validate_json(
+        canonical_json_bytes(payload["budget"])
+    )
+
+
+def main_training_stage(step: int) -> str:
+    """Fixed Phase 4 exposure schedule, indexed by the next optimizer update."""
+    if type(step) is not int or not 1 <= step <= 12000:
+        raise ValueError("main training update must be in [1, 12000]")
+    if step <= 9000:
+        return "one_hop"
+    if step <= 10000:
+        return "two_hop"
+    if step <= 11000:
+        return "primary"
+    return "robustness"
+
+
+def require_clean_main_source() -> str:
+    """A learned trajectory is bound to committed implementation bytes."""
+    root = Path(__file__).resolve().parents[3]
+    execution_paths = (
+        "src/silent_cascade/env",
+        "src/silent_cascade/eventflow",
+        "src/silent_cascade/models",
+        "src/silent_cascade/train",
+        "src/silent_cascade/eval",
+        "scripts/run_phase5a.py",
+        "configs/eval/phase5a.yaml",
+    )
+    revision = subprocess.check_output(
+        ["git", "log", "-1", "--format=%H", "--", *execution_paths],
+        cwd=root,
+        text=True,
+    ).strip()
+    if len(revision) != 40 or subprocess.call(
+        ["git", "diff", "--quiet", "HEAD", "--", *execution_paths], cwd=root
+    ):
+        raise ValueError("main training source has uncommitted implementation changes")
+    if subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "--", *execution_paths],
+        cwd=root,
+        text=True,
+    ).strip():
+        raise ValueError("main training source has uncommitted implementation changes")
+    return revision
 
 
 def project_ponder_batch(batch: TrainingBatch, *, caps: torch.Tensor) -> PonderBatch:
@@ -640,4 +776,620 @@ def run_debug_competence(*, config: ComparisonConfig, run_dir: Path, source_revi
         "promotable": False,
     }
     atomic_create_bytes(result_path, canonical_json_bytes(result) + b"\n")
+    return result
+
+
+def _write_json(path: Path, value: object) -> None:
+    atomic_write_bytes(path, canonical_json_bytes(value) + b"\n")
+
+
+def _main_update(
+    model: ActivationPonderModel,
+    optimizer: torch.optim.Optimizer,
+    config: ComparisonConfig,
+    step: int,
+) -> tuple[float, float, float]:
+    """One and only one counter-addressed train batch and optimizer update."""
+    started = perf_counter()
+    batch = next_training_batch(
+        config.phase4_config,
+        stage=main_training_stage(step),
+        batch_counter=step - 1,
+    )
+    generated = perf_counter() - started
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    choices = torch.randint(0, len(PONDER_CAPS), (len(batch.teacher_traces),))
+    caps = torch.tensor(PONDER_CAPS, dtype=torch.int64)[choices]
+    projected = project_ponder_batch(batch, caps=caps)
+    loss = ponder_loss(model, projected).total
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+    return generated, perf_counter() - started - generated, float(loss.detach())
+
+
+def _primary_manifest(config: ComparisonConfig) -> PilotManifest:
+    path = Path(__file__).resolve().parents[3] / "manifests/validation/phase4/primary.json"
+    manifest = PilotManifest.model_validate_json(path.read_bytes())
+    if manifest.stage != "primary" or manifest.split != "validation" or manifest.count != 10000:
+        raise ValueError("accepted primary validation manifest differs")
+    if manifest.config_hash != sha256_bytes(manifest.config_canonical_json.encode()):
+        raise ValueError("primary validation config hash differs")
+    if manifest.config_canonical_json != canonical_json_bytes(config.phase4_config).decode():
+        raise ValueError("primary validation config differs from the fixed Phase 4 recipe")
+    return manifest
+
+
+def _profile_main(
+    model: ActivationPonderModel,
+    optimizer: torch.optim.Optimizer,
+    config: ComparisonConfig,
+    manifest: PilotManifest,
+    run_dir: Path,
+    first_100_costs: list[tuple[float, float]],
+    checkpoint_seconds: float,
+) -> CostProfile:
+    """Measure timing rows and disposable stage updates while preserving the trajectory."""
+    rng_state = torch.get_rng_state().clone()
+    original_model = copy.deepcopy(model.state_dict())
+    original_optimizer = copy.deepcopy(optimizer.state_dict())
+    stage_costs = {"one_hop": sum(sum(pair) for pair in first_100_costs) / len(first_100_costs)}
+    for stage, first_step in (("two_hop", 9001), ("primary", 10001), ("robustness", 11001)):
+        disposable = ActivationPonderModel(matched_ponder_config()).to("cpu")
+        disposable.load_state_dict(original_model)
+        trial_optimizer = torch.optim.AdamW(
+            disposable.parameters(),
+            lr=3.0e-4,
+            weight_decay=1.0e-4,
+            betas=(0.9, 0.999),
+            eps=1.0e-6,
+            foreach=False,
+            fused=False,
+        )
+        trial_optimizer.load_state_dict(original_optimizer)
+        samples = []
+        for offset in range(3):
+            generated, trained, _ = _main_update(
+                disposable, trial_optimizer, config, first_step + offset
+            )
+            samples.append(generated + trained)
+        stage_costs[stage] = max(samples)
+    torch.set_rng_state(rng_state)
+    assert all(
+        torch.equal(model.state_dict()[name], tensor) for name, tensor in original_model.items()
+    )
+    sample_path = run_dir / "profile-timing-64.json"
+    if sample_path.exists():
+        sample = json.loads(sample_path.read_bytes())
+        rows = sample["rows"]
+        seconds = sample["elapsed_seconds"]
+    else:
+        started = perf_counter()
+        rows = []
+        model.eval()
+        for entry in manifest.entries[:64]:
+            example = make_curriculum_example(config.phase4_config, entry.key)
+            bundle = curriculum_to_bundle(example, config=config.phase4_config)
+            if episode_sha256(bundle) != entry.projected.episode_sha256:
+                raise ValueError("primary timing row differs from accepted manifest")
+            rows.extend(evaluate_competence(model, (bundle,), cap=24))
+        seconds = perf_counter() - started
+        atomic_create_bytes(
+            sample_path,
+            canonical_json_bytes(
+                {
+                    "schema_version": "phase5a-ponder-profile-timing-v1",
+                    "cap": 24,
+                    "elapsed_seconds": seconds,
+                    "rows": rows,
+                }
+            )
+            + b"\n",
+        )
+    if len(rows) != 64 or any(row["compute"]["foundation_model_calls"] for row in rows):
+        raise ValueError("fixed profile timing rows are incomplete or online")
+    row_bytes = max(len(canonical_json_bytes(row)) for row in rows)
+    return CostProfile(
+        update_seconds_by_stage=stage_costs,
+        validation_episode_seconds=seconds / 64,
+        final_episode_seconds=seconds / 64,
+        replay_episode_seconds=seconds / 64,
+        checkpoint_seconds=checkpoint_seconds,
+        report_seconds=5.0,
+        retained_bytes_per_update_boundary=sum(
+            path.stat().st_size for path in run_dir.glob("main-0100.*")
+        ),
+        retained_bytes_per_validation_episode=row_bytes,
+        retained_bytes_per_final_episode=row_bytes,
+    )
+
+
+def _evaluate_primary_boundary(
+    model: ActivationPonderModel,
+    config: ComparisonConfig,
+    manifest: PilotManifest,
+    *,
+    step: int,
+    checkpoint_sha256: str,
+    run_dir: Path,
+) -> tuple[dict, float]:
+    """Stream all 10,000 accepted primary rows, preserving every adverse outcome."""
+    destination = run_dir / f"validation-{step:04d}"
+    receipt_path = destination / "receipt.json"
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_bytes())
+        if receipt["checkpoint_sha256"] != checkpoint_sha256 or receipt[
+            "rows_sha256"
+        ] != sha256_file(destination / "rows.jsonl.gz"):
+            raise ValueError("primary validation receipt or rows differ")
+        return receipt, 0.0
+    destination.mkdir(exist_ok=True)
+    temporary = destination / "rows.jsonl.gz.tmp"
+    successes = 0
+    false_actions = 0
+    errors = 0
+    started = perf_counter()
+    model.eval()
+    try:
+        with temporary.open("wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                for index, entry in enumerate(manifest.entries):
+                    example = make_curriculum_example(config.phase4_config, entry.key)
+                    bundle = curriculum_to_bundle(example, config=config.phase4_config)
+                    if episode_sha256(bundle) != entry.projected.episode_sha256:
+                        raise ValueError(f"primary validation row {index} differs from manifest")
+                    row = evaluate_competence(model, (bundle,), cap=24)[0]
+                    successes += int(row["timed_success"])
+                    false_actions += int(row["variant"] != "positive" and bool(row["actions"]))
+                    errors += int(row["compute"]["foundation_model_calls"] != 0)
+                    compressed.write(canonical_json_bytes(row) + b"\n")
+                    if (index + 1) % 1000 == 0:
+                        print(f"primary validation {step}: {index + 1}/10000", flush=True)
+            raw.flush()
+            import os
+
+            os.fsync(raw.fileno())
+        temporary.replace(destination / "rows.jsonl.gz")
+    finally:
+        temporary.unlink(missing_ok=True)
+    elapsed = perf_counter() - started
+    if errors:
+        raise ValueError("primary validation recorded a foundation-model call")
+    receipt = {
+        "schema_version": "phase5a-ponder-primary-validation-v1",
+        "update": step,
+        "cap": 24,
+        "denominator": 10000,
+        "timed_successes": successes,
+        "negative_false_actions": false_actions,
+        "foundation_model_calls": 0,
+        "checkpoint_sha256": checkpoint_sha256,
+        "manifest_sha256": sha256_file(
+            Path(__file__).resolve().parents[3] / "manifests/validation/phase4/primary.json"
+        ),
+        "rows_sha256": sha256_file(destination / "rows.jsonl.gz"),
+        "elapsed_seconds": elapsed,
+    }
+    atomic_create_bytes(receipt_path, canonical_json_bytes(receipt) + b"\n")
+    return receipt, elapsed
+
+
+def fit_ponder(
+    *,
+    config: ComparisonConfig,
+    run_dir: Path,
+    budget: BudgetLedger,
+    resume: Path | None = None,
+) -> PonderTrainingResult:
+    """Run one fresh seed-11 trajectory in durable, complete update boundaries."""
+    if not isinstance(config, ComparisonConfig) or not isinstance(budget, BudgetLedger):
+        raise TypeError("ponder fit requires the frozen comparison config and ledger")
+    source = require_clean_main_source()
+    main_dir = run_dir / "ponder"
+    main_dir.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(main_dir).free < config.working_reserve_bytes:
+        raise OSError("ponder artifact volume lacks the required 2 GiB reserve")
+    model = ActivationPonderModel(matched_ponder_config()).to("cpu")
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=3.0e-4,
+        weight_decay=1.0e-4,
+        betas=(0.9, 0.999),
+        eps=1.0e-6,
+        foreach=False,
+        fused=False,
+    )
+    budget_path = main_dir / "budget.json"
+    result_path = main_dir / "result.json"
+    base_retained = budget.retained_bytes
+
+    def main_bytes() -> int:
+        return sum(
+            path.stat().st_size
+            for path in main_dir.rglob("*")
+            if path.is_file() and path != budget_path
+        )
+
+    def save_budget() -> None:
+        nonlocal budget
+        budget = budget.model_copy(update={"retained_bytes": base_retained + main_bytes()})
+        _write_json(budget_path, budget)
+
+    if result_path.exists():
+        result = PonderTrainingResult.model_validate_json(result_path.read_bytes())
+        if result.source_revision != source or result.config_sha256 != config.config_sha256:
+            raise ValueError("existing ponder trajectory has incompatible source or config")
+        if result.latest_checkpoint is None:
+            raise ValueError("existing ponder trajectory lacks a checkpoint")
+        checkpoint = resume or main_dir / result.latest_checkpoint
+        step, checkpoint_budget = load_main_checkpoint(
+            checkpoint,
+            model,
+            optimizer,
+            config_sha256=config.config_sha256,
+            source_revision=source,
+        )
+        if (
+            sha256_file(checkpoint) != result.latest_checkpoint_sha256
+            or step != result.completed_updates
+        ):
+            raise ValueError("latest ponder checkpoint differs from recorded progress")
+        retained = BudgetLedger.model_validate_json(budget_path.read_bytes())
+        if (
+            retained.elapsed_scientific_seconds < checkpoint_budget.elapsed_scientific_seconds
+            or retained.updates < checkpoint_budget.updates
+            or retained.retained_bytes < checkpoint_budget.retained_bytes
+        ):
+            raise ValueError("resumed ponder ledger lost consumed resources")
+        budget = retained.model_copy(update={"attempts": retained.attempts + 1})
+        base_retained = max(0, budget.retained_bytes - main_bytes())
+        recovered = main_dir / "main-0100.pt"
+        progress_file = main_dir / "profile-progress.json"
+        if step == 0 and recovered.is_file() and progress_file.is_file():
+            progress = json.loads(progress_file.read_bytes())
+            if progress.get("checkpoint_sha256") != sha256_file(recovered):
+                raise ValueError("orphaned profile checkpoint differs from progress")
+            step, _ = load_main_checkpoint(
+                recovered,
+                model,
+                optimizer,
+                config_sha256=config.config_sha256,
+                source_revision=source,
+            )
+            if step != 100:
+                raise ValueError("orphaned profile checkpoint has wrong update")
+            result = result.model_copy(
+                update={
+                    "completed_updates": 100,
+                    "latest_checkpoint": recovered.name,
+                    "latest_checkpoint_sha256": sha256_file(recovered),
+                }
+            )
+            _write_json(result_path, result)
+    else:
+        if resume is not None or budget.updates != 0:
+            raise ValueError("fresh ponder trajectory cannot resume or inherit main updates")
+        torch.manual_seed(11)
+        model = ActivationPonderModel(matched_ponder_config()).to("cpu")
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=3.0e-4,
+            weight_decay=1.0e-4,
+            betas=(0.9, 0.999),
+            eps=1.0e-6,
+            foreach=False,
+            fused=False,
+        )
+        budget = budget.model_copy(update={"attempts": budget.attempts + 1})
+        checkpoint = main_dir / "main-0000.pt"
+        save_main_checkpoint(
+            checkpoint,
+            model,
+            optimizer,
+            step=0,
+            budget=budget,
+            config_sha256=config.config_sha256,
+            source_revision=source,
+        )
+        result = PonderTrainingResult(
+            status="profiling",
+            source_revision=source,
+            config_sha256=config.config_sha256,
+            completed_updates=0,
+            last_stage="one_hop",
+            latest_checkpoint=checkpoint.name,
+            latest_checkpoint_sha256=sha256_file(checkpoint),
+            parameters=parameter_counts(model)["total"],
+            entity_parameters=parameter_counts(model)["entity_table"],
+        )
+        _write_json(result_path, result)
+        save_budget()
+        step = 0
+    manifest_started = perf_counter()
+    manifest = _primary_manifest(config)
+    budget = budget.model_copy(
+        update={
+            "elapsed_scientific_seconds": budget.elapsed_scientific_seconds
+            + perf_counter()
+            - manifest_started,
+        }
+    )
+    save_budget()
+    profile_path = main_dir / "profile.json"
+    admission_path = main_dir / "admission.json"
+    profile_progress_path = main_dir / "profile-progress.json"
+
+    def advance_one(update: int) -> tuple[float, float]:
+        nonlocal budget
+        if budget.updates >= config.main_update_ceiling:
+            raise ValueError("physical main-update ceiling reached")
+        if shutil.disk_usage(main_dir).free < config.working_reserve_bytes:
+            raise OSError("ponder artifact reserve exhausted before update")
+        generated, trained, loss = _main_update(model, optimizer, config, update)
+        budget = budget.model_copy(
+            update={
+                "updates": budget.updates + 1,
+                "elapsed_scientific_seconds": budget.elapsed_scientific_seconds
+                + generated
+                + trained,
+            }
+        )
+        _write_json(budget_path, budget)
+        if update % 50 == 0 or update == 100:
+            print(f"ponder update {update}: loss={loss:.4f}", flush=True)
+        return generated, trained
+
+    if step < 100:
+        costs = []
+        for update in range(step + 1, 101):
+            costs.append(advance_one(update))
+        started = perf_counter()
+        checkpoint = main_dir / "main-0100.pt"
+        save_main_checkpoint(
+            checkpoint,
+            model,
+            optimizer,
+            step=100,
+            budget=budget,
+            config_sha256=config.config_sha256,
+            source_revision=source,
+        )
+        checkpoint_seconds = perf_counter() - started
+        budget = budget.model_copy(
+            update={
+                "elapsed_scientific_seconds": budget.elapsed_scientific_seconds + checkpoint_seconds
+            }
+        )
+        save_budget()
+        result = result.model_copy(
+            update={
+                "completed_updates": 100,
+                "latest_checkpoint": checkpoint.name,
+                "latest_checkpoint_sha256": sha256_file(checkpoint),
+            }
+        )
+        _write_json(
+            profile_progress_path,
+            {
+                "schema_version": "phase5a-ponder-profile-progress-v1",
+                "checkpoint_sha256": sha256_file(checkpoint),
+                "first_100_costs": costs,
+                "checkpoint_seconds": checkpoint_seconds,
+            },
+        )
+        _write_json(result_path, result)
+        step = 100
+
+    if step == 100 and not admission_path.exists():
+        progress = json.loads(profile_progress_path.read_bytes())
+        if (
+            progress.get("schema_version") != "phase5a-ponder-profile-progress-v1"
+            or progress.get("checkpoint_sha256") != result.latest_checkpoint_sha256
+            or len(progress.get("first_100_costs", [])) != 100
+        ):
+            raise ValueError("first 100 counted updates lack complete profile costs")
+        profiled = perf_counter()
+        if profile_path.exists():
+            profile = CostProfile.model_validate_json(profile_path.read_bytes())
+        else:
+            profile = _profile_main(
+                model,
+                optimizer,
+                config,
+                manifest,
+                main_dir,
+                [tuple(pair) for pair in progress["first_100_costs"]],
+                progress["checkpoint_seconds"],
+            )
+            budget = budget.model_copy(
+                update={
+                    "elapsed_scientific_seconds": budget.elapsed_scientific_seconds
+                    + perf_counter()
+                    - profiled,
+                }
+            )
+            atomic_create_bytes(profile_path, canonical_json_bytes(profile) + b"\n")
+            save_budget()
+        admission = admit_ponder_budget(profile, budget)
+        if admission.chosen_updates is None:
+            free = shutil.disk_usage(main_dir).free
+            practical = [
+                n
+                for n, estimate in admission.estimates.items()
+                if estimate.projected_retained_bytes - budget.retained_bytes
+                < free - config.working_reserve_bytes
+            ]
+            if practical:
+                selected = max(practical)
+                note = (
+                    f"Milestone B time target extended at profile update 100 to {selected} "
+                    f"fixed updates; projected 2x total "
+                    f"{admission.estimates[selected].projected_seconds:.1f}s, "
+                    f"free {free} bytes; decision uses throughput and storage only"
+                )
+                budget = budget.model_copy(update={"extensions": (*budget.extensions, note)})
+                admission = admission.model_copy(
+                    update={
+                        "status": "admitted",
+                        "chosen_updates": selected,
+                        "rationale": note,
+                    }
+                )
+            else:
+                admission = admission.model_copy(
+                    update={
+                        "status": "budget_insufficient",
+                        "rationale": "2x retention projection exceeds working reserve",
+                    }
+                )
+        atomic_create_bytes(admission_path, canonical_json_bytes(admission) + b"\n")
+        save_budget()
+        result = result.model_copy(
+            update={
+                "status": "profiling" if admission.chosen_updates else "inconclusive_budget",
+                "profile_sha256": sha256_file(profile_path),
+                "admission_sha256": sha256_file(admission_path),
+                "chosen_updates": admission.chosen_updates,
+            }
+        )
+        _write_json(result_path, result)
+        print(
+            f"ponder admission: N={admission.chosen_updates}, "
+            f"profiled 100 counted updates; status={admission.status}",
+            flush=True,
+        )
+        return result
+
+    profile = CostProfile.model_validate_json(profile_path.read_bytes())
+    admission = admit_ponder_budget(profile, budget)
+    # The published admission is immutable; later actual costs cannot reselect N.
+    from silent_cascade.eval.comparison_types import TrainingAdmission
+
+    frozen_admission = TrainingAdmission.model_validate_json(admission_path.read_bytes())
+    if (
+        sha256_file(profile_path) != result.profile_sha256
+        or sha256_file(admission_path) != result.admission_sha256
+        or frozen_admission.chosen_updates != result.chosen_updates
+    ):
+        raise ValueError("published ponder profile or admission differs")
+    del admission
+    if result.chosen_updates is None:
+        return result
+    target = result.chosen_updates
+
+    def finish_validation(boundary: int) -> None:
+        nonlocal budget, result
+        checkpoint_path = main_dir / f"main-{boundary:04d}.pt"
+        checkpoint_sha = sha256_file(checkpoint_path)
+        started = perf_counter()
+        receipt, measured = _evaluate_primary_boundary(
+            model,
+            config,
+            manifest,
+            step=boundary,
+            checkpoint_sha256=checkpoint_sha,
+            run_dir=main_dir,
+        )
+        if measured:
+            budget = budget.model_copy(
+                update={"elapsed_scientific_seconds": budget.elapsed_scientific_seconds + measured}
+            )
+            save_budget()
+        rank = ponder_checkpoint_rank(
+            update=boundary,
+            cap=receipt["cap"],
+            primary_successes=receipt["timed_successes"],
+            negative_false_actions=receipt["negative_false_actions"],
+        )
+        if result.selected_rank is None or rank > result.selected_rank:
+            result = result.model_copy(
+                update={
+                    "selected_checkpoint": checkpoint_path.name,
+                    "selected_checkpoint_sha256": checkpoint_sha,
+                    "selected_update": boundary,
+                    "selected_rank": rank,
+                }
+            )
+        result = result.model_copy(
+            update={
+                "validation_boundaries": tuple(
+                    sorted(set((*result.validation_boundaries, boundary)))
+                ),
+                "status": "running",
+            }
+        )
+        _write_json(result_path, result)
+        if measured:
+            print(
+                f"primary validation {boundary}: {receipt['timed_successes']}/10000, "
+                f"false actions={receipt['negative_false_actions']}, "
+                f"elapsed={perf_counter() - started:.1f}s",
+                flush=True,
+            )
+
+    if step % 1000 == 0 and step not in result.validation_boundaries:
+        finish_validation(step)
+    for update in range(step + 1, target + 1):
+        if budget.updates >= config.main_update_ceiling:
+            result = result.model_copy(update={"status": "inconclusive_budget"})
+            _write_json(result_path, result)
+            return result
+        if update % 1000 == 1:
+            free = shutil.disk_usage(main_dir).free
+            if free < config.working_reserve_bytes:
+                result = result.model_copy(update={"status": "inconclusive_budget"})
+                _write_json(result_path, result)
+                return result
+            notes = list(budget.extensions)
+            if (
+                budget.elapsed_scientific_seconds >= config.milestone_b_time_target_seconds
+                and not any("Milestone B actual time target" in note for note in notes)
+            ):
+                notes.append(
+                    f"Milestone B actual time target extended before update {update}; "
+                    f"{target - update + 1} fixed updates and remaining complete validations, "
+                    f"free {free} bytes; finish admitted trajectory while practical"
+                )
+            if budget.retained_bytes >= config.retained_artifact_target_bytes and not any(
+                "Milestone B actual storage target" in note for note in notes
+            ):
+                notes.append(
+                    f"Milestone B actual storage target extended before update {update}; "
+                    f"free {free} bytes with 2 GiB reserve"
+                )
+            if tuple(notes) != budget.extensions:
+                budget = budget.model_copy(update={"extensions": tuple(notes)})
+                save_budget()
+        advance_one(update)
+        if update % 1000 == 0:
+            started = perf_counter()
+            checkpoint = main_dir / f"main-{update:04d}.pt"
+            save_main_checkpoint(
+                checkpoint,
+                model,
+                optimizer,
+                step=update,
+                budget=budget,
+                config_sha256=config.config_sha256,
+                source_revision=source,
+            )
+            budget = budget.model_copy(
+                update={
+                    "elapsed_scientific_seconds": budget.elapsed_scientific_seconds
+                    + perf_counter()
+                    - started,
+                }
+            )
+            save_budget()
+            result = result.model_copy(
+                update={
+                    "completed_updates": update,
+                    "last_stage": main_training_stage(update),
+                    "latest_checkpoint": checkpoint.name,
+                    "latest_checkpoint_sha256": sha256_file(checkpoint),
+                }
+            )
+            _write_json(result_path, result)
+            finish_validation(update)
     return result

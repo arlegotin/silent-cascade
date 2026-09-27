@@ -7,21 +7,28 @@ from pathlib import Path
 
 import numpy as np
 
-from silent_cascade.eval.comparison_protocol import decide_after_a, timing_indices
+from silent_cascade.eval.comparison_protocol import (
+    decide_after_a,
+    nearest_ponder_cap,
+    ponder_checkpoint_rank,
+    timing_indices,
+)
 from silent_cascade.eval.comparison_types import (
     BudgetLedger,
     ComparisonIdentity,
     ComparisonManifest,
     ComparisonRow,
+    PonderTrainingResult,
 )
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.io import atomic_create_bytes
 
 
 def _read_condition(
-    run_dir: Path, *, condition: str, manifest: ComparisonManifest
+    run_dir: Path, *, condition: str, manifest: ComparisonManifest, cap: int | None = None
 ) -> tuple[ComparisonIdentity, list[ComparisonRow], BudgetLedger]:
-    root = run_dir / "conditions" / condition / manifest.name
+    name = manifest.name if cap is None else f"{manifest.name}-cap{cap}"
+    root = run_dir / "conditions" / condition / name
     for name in ("identity.json", "inventory.json", "rows.jsonl.gz", "budget.json"):
         if not (root / name).is_file():
             raise ValueError(f"missing comparison {condition}/{manifest.name}/{name}")
@@ -36,6 +43,7 @@ def _read_condition(
         or identity.config_sha256 != manifest.config_sha256
         or identity.foundation_model_calls != 0
         or identity.dirty_source
+        or identity.transition_cap != cap
     ):
         raise ValueError("comparison identity differs from diagnostic manifest")
     if (
@@ -271,4 +279,181 @@ def build_comparison_report(run_dir: Path, output_dir: Path) -> Path:
     atomic_create_bytes(output_dir / "report.json", canonical_json_bytes(report) + b"\n")
     atomic_create_bytes(output_dir / "report.md", "\n".join(lines).encode())
     atomic_create_bytes(output_dir / "decision.json", canonical_json_bytes(decision) + b"\n")
+    return output_dir
+
+
+def build_ponder_report(run_dir: Path, output_dir: Path) -> Path:
+    """Derive B from saved full rows and primary-only checkpoint selection evidence."""
+    if output_dir.exists():
+        raise ValueError("ponder report destination must be fresh")
+    trained_path = run_dir / "ponder/result.json"
+    if not trained_path.is_file():
+        raise ValueError("missing ponder training result")
+    trained = PonderTrainingResult.model_validate_json(trained_path.read_bytes())
+    if (
+        trained.chosen_updates is None
+        or trained.completed_updates != trained.chosen_updates
+        or trained.selected_update is None
+        or trained.selected_checkpoint is None
+        or sha256_file(run_dir / "ponder/profile.json") != trained.profile_sha256
+        or sha256_file(run_dir / "ponder/admission.json") != trained.admission_sha256
+    ):
+        raise ValueError("ponder training or admission is incomplete")
+    expected_boundaries = tuple(range(1000, trained.completed_updates + 1, 1000))
+    if trained.validation_boundaries != expected_boundaries:
+        raise ValueError("primary selection lacks complete validation boundaries")
+    ranked = []
+    validation_receipts = {}
+    for update in expected_boundaries:
+        path = run_dir / "ponder" / f"validation-{update:04d}/receipt.json"
+        receipt = json.loads(path.read_bytes())
+        checkpoint = run_dir / "ponder" / f"main-{update:04d}.pt"
+        if (
+            receipt.get("denominator") != 10000
+            or receipt.get("cap") != 24
+            or receipt.get("foundation_model_calls") != 0
+            or receipt.get("checkpoint_sha256") != sha256_file(checkpoint)
+            or receipt.get("rows_sha256") != sha256_file(path.parent / "rows.jsonl.gz")
+        ):
+            raise ValueError("primary validation receipt is incomplete or corrupt")
+        rank = ponder_checkpoint_rank(
+            update=update,
+            cap=24,
+            primary_successes=receipt["timed_successes"],
+            negative_false_actions=receipt["negative_false_actions"],
+        )
+        ranked.append((rank, update))
+        validation_receipts[update] = sha256_file(path)
+    best_rank, best_update = max(ranked)
+    if (
+        best_rank != trained.selected_rank
+        or best_update != trained.selected_update
+        or trained.selected_checkpoint != f"main-{best_update:04d}.pt"
+        or trained.selected_checkpoint_sha256
+        != sha256_file(run_dir / "ponder" / trained.selected_checkpoint)
+    ):
+        raise ValueError("selected ponder checkpoint differs from primary-only rank")
+    manifests = {
+        name: ComparisonManifest.model_validate_json(
+            (run_dir / "manifests" / f"{name}.json").read_bytes()
+        )
+        for name in ("iid", "depth")
+    }
+    if any(len(manifest.entries) != 512 for manifest in manifests.values()):
+        raise ValueError("ponder comparison needs both complete 512-row corpora")
+    corpora = {}
+    paired = {}
+    identities = {}
+    for name, manifest in manifests.items():
+        intact_identity, intact, _ = _read_condition(
+            run_dir, condition="intact_eventflow", manifest=manifest
+        )
+        corpora[name] = {
+            "intact_eventflow": _summary(
+                intact,
+                BudgetLedger.model_validate_json(
+                    (run_dir / "conditions/intact_eventflow" / name / "budget.json").read_bytes()
+                ),
+                timing_indices(manifest),
+            )
+        }
+        identities[f"{name}/intact_eventflow"] = intact_identity.sha256
+        paired[name] = {}
+        for cap in (4, 8, 12, 16, 24):
+            identity, rows, budget = _read_condition(
+                run_dir, condition="activation_ponder", manifest=manifest, cap=cap
+            )
+            if (
+                identity.checkpoint_sha256 != trained.selected_checkpoint_sha256
+                or identity.producing_source_revision != trained.source_revision
+                or [(r.public_id, r.episode_sha256) for r in rows]
+                != [(r.public_id, r.episode_sha256) for r in intact]
+            ):
+                raise ValueError("ponder rows are not paired to the selected checkpoint")
+            key = f"activation_ponder_cap{cap}"
+            corpora[name][key] = _summary(rows, budget, timing_indices(manifest))
+            interval = _paired_interval(intact, rows)
+            paired[name][key] = {
+                "ponder_minus_intact": interval["compressed_minus_intact"],
+                "interval_95": interval["interval_95"],
+                "interval_label": interval["interval_label"],
+                "bootstrap_replicates": interval["bootstrap_replicates"],
+                "analysis_seed": interval["analysis_seed"],
+            }
+            identities[f"{name}/{key}"] = identity.sha256
+    intact_macs = corpora["iid"]["intact_eventflow"]["mean_end_to_end_forward_macs"]
+    ponder_macs = {
+        cap: corpora["iid"][f"activation_ponder_cap{cap}"]["mean_end_to_end_forward_macs"]
+        for cap in (4, 8, 12, 16, 24)
+    }
+    nearest = nearest_ponder_cap(intact_macs, ponder_macs)
+    depth_overlap = (
+        nearest is not None
+        and abs(
+            corpora["depth"][f"activation_ponder_cap{nearest}"]["mean_end_to_end_forward_macs"]
+            - corpora["depth"]["intact_eventflow"]["mean_end_to_end_forward_macs"]
+        )
+        / corpora["depth"]["intact_eventflow"]["mean_end_to_end_forward_macs"]
+        <= 0.10
+    )
+    report = {
+        "schema_version": "phase5a-ponder-report-v1",
+        "purpose": "exploratory_comparison",
+        "gate_eligible": False,
+        "complete_b": True,
+        "training_status": "completed_exploratory",
+        "last_training_stage": trained.last_stage,
+        "completed_updates": trained.completed_updates,
+        "selected_update": best_update,
+        "selected_checkpoint_sha256": trained.selected_checkpoint_sha256,
+        "selected_rank": best_rank,
+        "parameters": trained.parameters,
+        "entity_parameters": trained.entity_parameters,
+        "profile_sha256": trained.profile_sha256,
+        "admission_sha256": trained.admission_sha256,
+        "validation_receipt_sha256": validation_receipts,
+        "identities": identities,
+        "corpora": corpora,
+        "paired_intervals": paired,
+        "nearest_iid_compute_cap": nearest,
+        "nearest_iid_compute_overlap_within_10_percent": nearest is not None,
+        "same_cap_depth_compute_overlap_within_10_percent": depth_overlap,
+        "claim_boundary": (
+            "Single-seed exploratory comparison only; no converged-baseline certification, "
+            "final Phase 5 gate, or confirmatory scientific-support claim."
+        ),
+    }
+    lines = [
+        "# Phase 5A comparative pilot — Milestone B",
+        "",
+        report["claim_boundary"],
+        "",
+        f"Training updates: {trained.completed_updates}; last stage: {trained.last_stage}; "
+        f"selected at update {best_update} by primary validation cap 24.",
+        "",
+        "| Corpus | Condition | Timed success | Errors | Mean forward MACs |",
+        "| --- | --- | ---: | ---: | ---: |",
+    ]
+    for name in ("iid", "depth"):
+        for key in (
+            "intact_eventflow",
+            *(f"activation_ponder_cap{cap}" for cap in (4, 8, 12, 16, 24)),
+        ):
+            item = corpora[name][key]
+            lines.append(
+                f"| {name} | {key} | {item['timed_successes']}/{item['episodes']} "
+                f"| {item['errors']} | {item['mean_end_to_end_forward_macs']:.0f} |"
+            )
+    lines.extend(
+        [
+            "",
+            "Nearest measured IID compute cap: "
+            f"{nearest if nearest is not None else 'none within 10%'}.",
+            f"Same cap overlaps on depth: {depth_overlap}.",
+            "",
+        ]
+    )
+    output_dir.mkdir(parents=True)
+    atomic_create_bytes(output_dir / "report.json", canonical_json_bytes(report) + b"\n")
+    atomic_create_bytes(output_dir / "report.md", "\n".join(lines).encode())
     return output_dir

@@ -26,6 +26,7 @@ from silent_cascade.eval.comparison_types import (
 )
 from silent_cascade.eventflow.neural import NeuralModelIdentity
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
+from silent_cascade.models.activation_ponder import ActivationPonderModel, matched_ponder_config
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.schemas import Action
 
@@ -215,6 +216,56 @@ def test_cli_ponder_refuses_unadmitted_milestone(tmp_path) -> None:
     (report / "decision.json").write_text(json.dumps(decision))
     with pytest.raises(ValueError, match="deferred"):
         module.main(["ponder", "--run-dir", str(tmp_path)])
+
+
+def test_ponder_condition_keeps_terminal_private_and_requires_fixed_cap(
+    tmp_path, monkeypatch
+) -> None:
+    from silent_cascade.eval import comparison_runner
+    from silent_cascade.eval.compute import RuntimeCompute
+    from silent_cascade.models.activation_ponder import PonderDecision
+
+    config = ComparisonConfig()
+    allocation = diagnostic_allocations()["iid"]
+    first = allocation.blocks[0].model_copy(update={"episode_count": 4})
+    manifest = build_manifest(config, "iid", allocation.model_copy(update={"blocks": (first,)}))
+    torch.manual_seed(11)
+    model = ActivationPonderModel(matched_ponder_config()).eval()
+    state_sha = comparison_runner.ponder_state_sha256(model)
+    identity = ComparisonIdentity(
+        condition="activation_ponder",
+        manifest_name="iid",
+        transition_cap=24,
+        protocol_sha256=config.protocol_sha256,
+        config_sha256=config.config_sha256,
+        generator_sha256=config.generator_sha256,
+        manifest_sha256=sha256_bytes(canonical_json_bytes(manifest)),
+        checkpoint_sha256="1" * 64,
+        model_state_sha256=state_sha,
+        producing_source_revision="1" * 40,
+        execution_source_revision="2" * 40,
+    )
+    observed = []
+
+    def public_only(model, public, *, cap):
+        assert cap == 24 and not hasattr(public, "truth")
+        observed.append(public.init.episode_public_id)
+        return PonderDecision(action=None, steps=(), stop_reason="halt", compute=RuntimeCompute())
+
+    monkeypatch.setattr(comparison_runner, "ponder_public", public_only)
+    run_comparison(
+        config=config,
+        manifest=manifest,
+        identity=identity,
+        model=model,
+        output_dir=tmp_path / "ponder",
+        budget=BudgetLedger(),
+    )
+    assert observed == [entry.public_id for entry in manifest.entries]
+    with pytest.raises(ValueError):
+        ComparisonIdentity.model_validate(
+            identity.model_copy(update={"transition_cap": 6}).model_dump()
+        )
 
 
 def test_cli_competence_routes_fixed_config_and_committed_source(tmp_path, monkeypatch) -> None:

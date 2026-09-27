@@ -21,7 +21,7 @@ from silent_cascade.eval.metrics import EvaluationError
 from silent_cascade.eventflow.neural import NeuralModelIdentity
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes
 from silent_cascade.models.event_flow import EventFlowModel
-from silent_cascade.report.comparison import build_comparison_report
+from silent_cascade.report.comparison import build_comparison_report, build_ponder_report
 
 
 @pytest.fixture
@@ -101,3 +101,8 @@ def test_report_rejects_missing_pair_and_corrupt_rows(small_run, tmp_path) -> No
     rows.write_bytes(rows.read_bytes() + b"corrupt")
     with pytest.raises(ValueError, match=r"hash|inventory|corrupt"):
         build_comparison_report(small_run, tmp_path / "corrupt-report")
+
+
+def test_ponder_report_requires_complete_training_and_all_five_caps(small_run, tmp_path) -> None:
+    with pytest.raises((ValueError, FileNotFoundError), match=r"ponder|training|missing"):
+        build_ponder_report(small_run, tmp_path / "ponder-report")

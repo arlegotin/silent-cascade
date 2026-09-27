@@ -2,12 +2,13 @@
 
 import copy
 import gzip
+import hashlib
 import json
 import os
 import shutil
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -33,6 +34,7 @@ from silent_cascade.eval.compute import (
     aggregate_runtime_compute,
 )
 from silent_cascade.eval.metrics import EvaluationError
+from silent_cascade.eval.ponder_policy import ponder_public
 from silent_cascade.eventflow.compressed import (
     CompressedExecutionError,
     compressed_state_sha256,
@@ -45,6 +47,7 @@ from silent_cascade.eventflow.state import ComputeCounters
 from silent_cascade.hashing import canonical_json_bytes, sha256_bytes, sha256_file
 from silent_cascade.io import atomic_create_bytes, atomic_write_bytes
 from silent_cascade.logging.neural_trace import _host, write_full_neural_trace
+from silent_cascade.models.activation_ponder import ActivationPonderModel
 from silent_cascade.models.event_flow import EventFlowModel
 from silent_cascade.schemas import Action, Mode
 
@@ -82,6 +85,70 @@ def run_public_policy(
     if not isinstance(proposal, PublicProposal):
         raise TypeError("public policy must return a PublicProposal")
     return arbitrate_proposal(bundle, proposal)
+
+
+def ponder_state_sha256(model: ActivationPonderModel) -> str:
+    """Portable logical tensor identity, independent of checkpoint serialization."""
+    if type(model) is not ActivationPonderModel:
+        raise TypeError("ponder state identity requires the exact ponderer architecture")
+    digest = hashlib.sha256()
+    for name, tensor in sorted(model.state_dict().items()):
+        value = tensor.detach().cpu().contiguous()
+        digest.update(
+            canonical_json_bytes(
+                {"name": name, "dtype": str(value.dtype), "shape": tuple(value.shape)}
+            )
+        )
+        digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def run_ponder_episode(
+    bundle: EpisodeBundle,
+    *,
+    model: ActivationPonderModel,
+    cap: int,
+    trace_sink: Callable[[ConditionResult, object | None], None] | None = None,
+) -> ConditionResult:
+    """Own the private terminal; the model sees only the complete public episode."""
+    started = perf_counter()
+    trace_steps = None
+    try:
+        decision = ponder_public(model, bundle.public, cap=cap)
+        trace_steps = tuple(asdict(step) for step in decision.steps)
+        proposal = PublicProposal(actions=() if decision.action is None else (decision.action,))
+        actions = arbitrate_proposal(bundle, proposal).actions
+        steps = tuple(
+            ComparisonStep(
+                event_id=bundle.public.events[-1].event_id + index + 1,
+                kind="ponder",
+                timestamp=step.cognitive_timestamp,
+                state_sha256=sha256_bytes(canonical_json_bytes(asdict(step))),
+                selected_record_id=step.selected_record_id,
+                halt_probability=step.halt_probability,
+                action_class=step.action_class,
+                action_offset=step.action_offset,
+            )
+            for index, step in enumerate(decision.steps)
+        )
+        result = ConditionResult(
+            actions=actions,
+            stop_reason=decision.stop_reason,
+            steps=steps,
+            trace_sha256=sha256_bytes(canonical_json_bytes({"steps": list(trace_steps)})),
+            end_to_end_compute=decision.compute,
+            post_activation_compute=decision.compute,
+            inference_wall_seconds=perf_counter() - started,
+        )
+    except Exception as caught:
+        result = ConditionResult(
+            stop_reason="dynamics_error",
+            error=EvaluationError(code="dynamics_error", invariant=type(caught).__name__),
+            inference_wall_seconds=perf_counter() - started,
+        )
+    if trace_sink is not None:
+        trace_sink(result, trace_steps)
+    return result
 
 
 def _counter_delta(after: ComputeCounters, before: ComputeCounters) -> ComputeCounters:
@@ -481,13 +548,16 @@ def run_comparison(
         raise ValueError("comparison identity manifest mismatch")
     if identity.manifest_name != manifest.name:
         raise ValueError("comparison identity manifest name mismatch")
-    if identity.condition not in {"intact_eventflow", "compressed_eventflow"}:
-        raise NotImplementedError("condition implementation is assigned to a later task")
-    if type(model) is not EventFlowModel or model.config != config.phase4_config.neural:
-        raise TypeError("intact comparison requires the accepted EventFlow architecture")
-    actual_state = NeuralModelIdentity.from_model(
-        model, source_revision=identity.producing_source_revision
-    ).model_state_sha256
+    if identity.condition == "activation_ponder":
+        if type(model) is not ActivationPonderModel:
+            raise TypeError("ponder comparison requires the exact ponderer architecture")
+        actual_state = ponder_state_sha256(model)
+    else:
+        if type(model) is not EventFlowModel or model.config != config.phase4_config.neural:
+            raise TypeError("intact comparison requires the accepted EventFlow architecture")
+        actual_state = NeuralModelIdentity.from_model(
+            model, source_revision=identity.producing_source_revision
+        ).model_state_sha256
     if actual_state != identity.model_state_sha256:
         raise ValueError("comparison identity model-state mismatch")
     inference = copy.deepcopy(model).to("cpu").eval()
@@ -564,21 +634,29 @@ def run_comparison(
                 elapsed = budget.elapsed_scientific_seconds + (perf_counter() - started)
                 notes = list(budget.extensions)
                 unit = f"{identity.condition}/{manifest.name}"
-                if elapsed >= config.milestone_a_time_target_seconds and not any(
-                    "Milestone A time target" in note for note in notes
+                milestone = (
+                    "Milestone B" if identity.condition == "activation_ponder" else "Milestone A"
+                )
+                time_target = (
+                    config.milestone_b_time_target_seconds
+                    if identity.condition == "activation_ponder"
+                    else config.milestone_a_time_target_seconds
+                )
+                if elapsed >= time_target and not any(
+                    f"{milestone} time target" in note for note in notes
                 ):
                     notes.append(
-                        f"Milestone A time target extended before {unit} "
+                        f"{milestone} time target extended before {unit} "
                         f"episode {index}; {len(manifest.entries) - index} in this unit remain, "
                         f"{free} free bytes, {elapsed:.3f} cumulative seconds; "
                         "complete fixed paired coverage while reserve remains"
                     )
                 retained_estimate = base_retained_bytes + local_retained_bytes()
                 if retained_estimate >= config.retained_artifact_target_bytes and not any(
-                    "Milestone A storage target" in note for note in notes
+                    f"{milestone} storage target" in note for note in notes
                 ):
                     notes.append(
-                        f"Milestone A storage target extended before {unit} "
+                        f"{milestone} storage target extended before {unit} "
                         f"episode {index}; {free} free bytes and {len(manifest.entries) - index} "
                         "episodes remain in this unit"
                     )
@@ -626,7 +704,11 @@ def run_comparison(
                         payload = gzip.compress(
                             canonical_json_bytes(
                                 {
-                                    "schema_version": "phase5a-compressed-trajectory-v1",
+                                    "schema_version": (
+                                        "phase5a-ponder-trajectory-v1"
+                                        if identity.condition == "activation_ponder"
+                                        else "phase5a-compressed-trajectory-v1"
+                                    ),
                                     "identity_sha256": identity.sha256,
                                     "episode_sha256": episode_sha256(current_bundle),
                                     "states": []
@@ -647,15 +729,21 @@ def run_comparison(
                             atomic_create_bytes(path, payload)
                     bindings.append((reference, digest))
 
-                result = (
-                    run_intact_episode(
+                if identity.condition == "intact_eventflow":
+                    result = run_intact_episode(
                         bundle, model=inference, config=config, trace_sink=trace_sink
                     )
-                    if identity.condition == "intact_eventflow"
-                    else _run_compressed_episode(
+                elif identity.condition == "compressed_eventflow":
+                    result = _run_compressed_episode(
                         bundle, model=inference, config=config, trace_sink=trace_sink
                     )
-                )
+                else:
+                    result = run_ponder_episode(
+                        bundle,
+                        model=inference,
+                        cap=identity.transition_cap,
+                        trace_sink=trace_sink,
+                    )
                 if not trace_binding and (
                     result.error is not None
                     or not score_actions(bundle.truth, result.actions).timed_success
