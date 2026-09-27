@@ -61,6 +61,21 @@ def _source_revision() -> str:
     return revision
 
 
+def _starting_budget(base: BudgetLedger, superseded_path: Path) -> BudgetLedger:
+    """Charge corrected execution after all already incurred scientific work."""
+    if not superseded_path.is_file():
+        return base
+    old = BudgetLedger.model_validate_json(superseded_path.read_bytes())
+    if (
+        old.updates != base.updates
+        or old.elapsed_scientific_seconds < base.elapsed_scientific_seconds
+        or old.retained_bytes < base.retained_bytes
+        or old.attempts < base.attempts
+    ):
+        raise ValueError("superseded scientific budget differs from current progress")
+    return old
+
+
 def _committed_manifest(path: Path) -> None:
     relative = path.relative_to(ROOT)
     if subprocess.call(
@@ -165,7 +180,10 @@ def _evaluate_a(args: argparse.Namespace) -> None:
         Path(binding["weights_path"]), expected_sha256=binding["weights_sha256"], device="cpu"
     )
     execution_revision = _source_revision()
-    cumulative_budget = BudgetLedger(extensions=tuple(args.extension))
+    cumulative_budget = _starting_budget(
+        BudgetLedger(extensions=tuple(args.extension)),
+        args.run_dir / "conditions-preaccounting/compressed_eventflow/depth/budget.json",
+    )
     for name in ("iid", "depth"):
         committed = MANIFEST_DIR / f"{name}.json"
         _committed_manifest(committed)
@@ -370,8 +388,9 @@ def _evaluate_selected_ponder(
         raise ValueError("selected ponder checkpoint differs from primary validation rank")
     model.eval()
     state_sha = ponder_state_sha256(model)
-    cumulative = BudgetLedger.model_validate_json(
-        (args.run_dir / "ponder/budget.json").read_bytes()
+    cumulative = _starting_budget(
+        BudgetLedger.model_validate_json((args.run_dir / "ponder/budget.json").read_bytes()),
+        args.run_dir / "conditions-preaccounting/activation_ponder/depth-cap24/budget.json",
     )
     for name in ("iid", "depth"):
         committed = MANIFEST_DIR / f"{name}.json"

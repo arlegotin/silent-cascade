@@ -331,6 +331,22 @@ def test_evaluate_selected_command_uses_completed_checkpoint_without_refitting(
     assert seen == [(12000, ComparisonConfig().config_sha256)]
 
 
+def test_reexecution_budget_carries_superseded_scientific_cost(tmp_path) -> None:
+    script = Path(__file__).parents[2] / "scripts/run_phase5a.py"
+    spec = importlib.util.spec_from_file_location("run_phase5a_budget", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    base = BudgetLedger(updates=12000, elapsed_scientific_seconds=100.0, retained_bytes=1000)
+    old = BudgetLedger(updates=12000, elapsed_scientific_seconds=105.0, retained_bytes=1500)
+    path = tmp_path / "superseded-budget.json"
+    path.write_text(old.model_dump_json())
+    assert module._starting_budget(base, path) == old
+    path.write_text(base.model_copy(update={"elapsed_scientific_seconds": 99.0}).model_dump_json())
+    with pytest.raises(ValueError, match="superseded"):
+        module._starting_budget(base, path)
+
+
 def test_checkpoint_check_authenticates_frozen_producer_without_current_tree(tmp_path, monkeypatch):
     retained = Path(
         "/Users/artemlegotin/Library/Application Support/silent-cascade/runs/"
