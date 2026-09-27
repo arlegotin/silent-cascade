@@ -13,6 +13,35 @@ def checkout(path):
     return module.checkout(path), module.execute
 
 
+def checkout_phase4(path):
+    """Run historical gate fixtures against the accepted Phase 4 source closure."""
+    import io
+    import subprocess
+    import tarfile
+
+    revision = "3b132253512f02c0ed9f2d774fefce3036019d91"
+    repository = Path(__file__).resolve().parents[2]
+    path.mkdir()
+    archive = subprocess.check_output(["git", "archive", "--format=tar", revision], cwd=repository)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+        source.extractall(path, filter="data")
+    for args in (
+        ("init", "-q"),
+        ("config", "user.email", "test@example.invalid"),
+        ("config", "user.name", "Local test"),
+        ("add", "."),
+        ("commit", "-qm", "accepted Phase 4 source"),
+    ):
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+    import importlib.util
+
+    helper = Path(__file__).parents[1] / "neural/test_phase3_provenance.py"
+    spec = importlib.util.spec_from_file_location("phase3_test_utilities", helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return path, module.execute
+
+
 DATA_SETUP = """
 from pathlib import Path
 import subprocess
@@ -35,6 +64,14 @@ subprocess.run(['git','commit','-qm','introduce immutable debug data'], check=Tr
 subprocess.run(['git','commit','--allow-empty','-qm','training attempt'], check=True)
 source = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
 """
+
+
+def test_historical_phase4_checkout_has_exact_accepted_package_inventory(tmp_path):
+    from silent_cascade.train.pilot_evidence import REQUIRED_PACKAGE_FILES
+
+    root, _ = checkout_phase4(tmp_path / "phase4")
+    actual = {str(path.relative_to(root)) for path in (root / "src/silent_cascade").rglob("*.py")}
+    assert actual == set(REQUIRED_PACKAGE_FILES)
 
 
 def test_real_introduction_chain_and_dirty_archive_helper(tmp_path):

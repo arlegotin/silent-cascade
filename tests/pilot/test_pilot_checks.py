@@ -44,9 +44,9 @@ assert run_pilot_checks.__module__ == 'silent_cascade.train.pilot_checks'
 
 @pytest.fixture(scope="session")
 def gate_artifact_case(tmp_path_factory):
-    from .test_pilot_source import DATA_SETUP, checkout
+    from .test_pilot_source import DATA_SETUP, checkout_phase4
 
-    root, execute = checkout(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
+    root, execute = checkout_phase4(tmp_path_factory.mktemp("task11-fixture-only") / "repo")
     execute(
         root,
         DATA_SETUP
